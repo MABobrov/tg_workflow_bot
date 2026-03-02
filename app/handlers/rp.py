@@ -1,0 +1,787 @@
+from __future__ import annotations
+
+import logging
+from datetime import timedelta
+from typing import Any
+
+from aiogram import Router, F
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+
+from ..callbacks import ProjectCb
+from ..config import Config
+from ..db import Database
+from ..enums import ProjectStatus, Role, TaskStatus, TaskType
+from ..keyboards import main_menu, projects_kb, tasks_kb, task_actions_kb
+from ..services.assignment import resolve_default_assignee
+from ..services.integration_hub import IntegrationHub
+from ..services.notifier import Notifier
+from ..states import (
+    AssignLeadSG,
+    DeliveryRequestSG,
+    OrderMaterialSG,
+    TintingRequestSG,
+)
+from ..utils import fmt_project_card, parse_date, private_only_reply_markup, to_iso, utcnow
+from .auth import require_role_callback, require_role_message
+
+log = logging.getLogger(__name__)
+router = Router()
+router.message.filter(F.chat.type == "private")
+router.callback_query.filter(F.message.chat.type == "private")
+
+
+# ==================== ВХОДЯЩИЕ ЗАДАЧИ ====================
+
+@router.message(F.text == "📥 Входящие задачи")
+async def inbox_tasks(message: Message, db: Database) -> None:
+    if not await require_role_message(message, db, roles=[Role.MANAGER, Role.RP, Role.TD, Role.ACCOUNTING, Role.GD, Role.DRIVER, Role.LOADER, Role.TINTER]):
+        return
+    tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)  # type: ignore
+    if not tasks:
+        await message.answer("Входящих задач нет ✅")
+        return
+    await message.answer(
+        f"📥 Ваши задачи: <b>{len(tasks)}</b>\n"
+        "Нажмите на задачу, чтобы открыть карточку и доступные действия.",
+        reply_markup=tasks_kb(tasks),
+    )
+
+
+@router.message(F.text == "🗂 Проекты")
+async def list_projects(message: Message, db: Database, config: Config) -> None:
+    if not await require_role_message(message, db, roles=[Role.RP, Role.TD, Role.ACCOUNTING, Role.GD]):
+        return
+    projects = await db.list_recent_projects(limit=20)
+    if not projects:
+        await message.answer("Проектов нет.")
+        return
+    await message.answer(
+        f"🗂 Последние проекты: <b>{len(projects)}</b>\n"
+        "Нажмите на проект, чтобы открыть карточку.",
+        reply_markup=projects_kb(projects, ctx="view"),
+    )
+
+
+# ==================== ЗАКАЗ МАТЕРИАЛОВ (РП -> Поставщик) ====================
+
+@router.message(F.text == "📦 Заказ материалов")
+async def start_order_material(message: Message, state: FSMContext, db: Database) -> None:
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    await state.clear()
+    projects = await db.list_recent_projects(limit=20)
+    await state.set_state(OrderMaterialSG.project)
+    await message.answer(
+        "📦 <b>Заказ материалов</b>\n"
+        "Шаг 1/6: выберите проект.\n"
+        "Для отмены: <code>/cancel</code>.",
+        reply_markup=projects_kb(projects, ctx="order_mat"),
+    )
+
+
+@router.callback_query(ProjectCb.filter(F.ctx == "order_mat"))
+async def order_mat_pick_project(cb: CallbackQuery, callback_data: ProjectCb, state: FSMContext, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    project = await db.get_project(int(callback_data.project_id))
+    await state.update_data(project_id=int(project["id"]))
+    await state.set_state(OrderMaterialSG.material_type)
+
+    kb = ReplyKeyboardBuilder()
+    kb.button(text="Профиль")
+    kb.button(text="Стекло")
+    kb.button(text="ЛДСП")
+    kb.button(text="ГКЛ")
+    kb.button(text="Сэндвич")
+    kb.button(text="Нестандарт")
+    kb.button(text="❌ Отмена")
+    kb.adjust(3, 3, 1)
+    await cb.message.answer(
+        "Тип материала:",
+        reply_markup=private_only_reply_markup(cb.message, kb.as_markup(resize_keyboard=True)),
+    )  # type: ignore
+
+
+@router.message(OrderMaterialSG.material_type)
+async def order_mat_type(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if t in {"", "❌ Отмена"}:
+        return
+    await state.update_data(material_type=t)
+    await state.set_state(OrderMaterialSG.supplier)
+    await message.answer("Укажите поставщика (название компании или «-» если стандартный):")
+
+
+@router.message(OrderMaterialSG.supplier)
+async def order_mat_supplier(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if t == "-":
+        t = ""
+    await state.update_data(supplier=t)
+    await state.set_state(OrderMaterialSG.description)
+    await message.answer("Спецификация заказа (размеры, количество, артикулы):")
+
+
+@router.message(OrderMaterialSG.description)
+async def order_mat_description(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if len(t) < 5:
+        await message.answer("Опишите подробнее (минимум 5 символов):")
+        return
+    await state.update_data(description=t)
+    await state.set_state(OrderMaterialSG.comment)
+    await message.answer("Комментарий (или «-» чтобы пропустить):")
+
+
+@router.message(OrderMaterialSG.comment)
+async def order_mat_comment(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if t == "-":
+        t = ""
+    await state.update_data(comment=t, attachments=[])
+    await state.set_state(OrderMaterialSG.attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Создать заказ", callback_data="ordermat:create")
+    b.button(text="⏭ Без вложений", callback_data="ordermat:create")
+    b.adjust(1)
+    await message.answer(
+        "Приложите чертежи / спецификации / бланк заказа (или нажмите кнопку):",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(OrderMaterialSG.attachments)
+async def order_mat_attach(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    attachments: list[dict[str, Any]] = data.get("attachments", [])
+    if message.document:
+        attachments.append({"file_type": "document", "file_id": message.document.file_id, "file_unique_id": message.document.file_unique_id, "caption": message.caption})
+    elif message.photo:
+        ph = message.photo[-1]
+        attachments.append({"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id, "caption": message.caption})
+    else:
+        await message.answer("Пришлите файл/фото или нажмите «✅ Создать заказ».")
+        return
+    await state.update_data(attachments=attachments)
+    await message.answer(f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>.")
+
+
+@router.callback_query(F.data == "ordermat:create")
+async def order_mat_finalize(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+
+    data = await state.get_data()
+    project_id = data.get("project_id")
+    if not project_id:
+        await cb.message.answer("Не выбран проект. Начните заново.")  # type: ignore
+        await state.clear()
+        return
+
+    material_type = data.get("material_type") or "Материал"
+    supplier = data.get("supplier") or ""
+    description = data.get("description") or ""
+    comment = data.get("comment") or ""
+    attachments = data.get("attachments") or []
+
+    # Определяем тип задачи по типу материала
+    type_map = {
+        "Профиль": TaskType.ORDER_PROFILE,
+        "Стекло": TaskType.ORDER_GLASS,
+    }
+    task_type = type_map.get(material_type, TaskType.ORDER_MATERIALS)
+
+    project = await db.get_project(int(project_id))
+
+    # Обновляем статус проекта если он в IN_WORK
+    if project.get("status") == ProjectStatus.IN_WORK:
+        project = await db.update_project_status(int(project_id), ProjectStatus.ORDERING)
+
+    # Задача назначается на ТД (для оплаты) или ГД (для контроля)
+    td_id = await resolve_default_assignee(db, config, Role.TD)
+
+    due = utcnow() + timedelta(hours=24)
+    task = await db.create_task(
+        project_id=int(project_id),
+        type_=task_type,
+        status=TaskStatus.OPEN,
+        created_by=u.id,
+        assigned_to=td_id,
+        due_at_iso=to_iso(due),
+        payload={
+            "material_type": material_type,
+            "supplier": supplier,
+            "description": description,
+            "comment": comment,
+            "rp_id": u.id,
+            "rp_username": u.username,
+        },
+    )
+
+    for a in attachments:
+        await db.add_attachment(
+            task_id=int(task["id"]),
+            file_id=a["file_id"],
+            file_unique_id=a.get("file_unique_id"),
+            file_type=a["file_type"],
+            caption=a.get("caption"),
+        )
+
+    msg = (
+        f"📦 <b>Заказ: {material_type}</b>\n\n"
+        f"{fmt_project_card(project, config.timezone)}\n\n"
+        f"🏭 Поставщик: <b>{supplier or '—'}</b>\n"
+        f"📋 Спецификация: {description}\n"
+    )
+    if comment:
+        msg += f"📝 Комментарий: {comment}\n"
+    msg += f"👷 От РП: <code>{u.id}</code> @{u.username or '-'}"
+
+    task_kb = task_actions_kb(task)
+    if td_id:
+        await notifier.safe_send(int(td_id), msg, reply_markup=task_kb)
+    await notifier.notify_workchat(msg, reply_markup=task_kb)
+
+    # Отправляем вложения
+    attaches = await db.list_attachments(int(task["id"]))
+    for a in attaches:
+        if td_id:
+            await notifier.safe_send_media(int(td_id), a["file_type"], a["tg_file_id"], caption=a.get("caption"))
+        await notifier.notify_workchat_media(a["file_type"], a["tg_file_id"], caption=a.get("caption"))
+
+    await integrations.sync_project(project)
+    await integrations.sync_task(task, project_code=project.get("code", ""))
+
+    user_now = await db.get_user_optional(u.id)
+    role_now = user_now.role if user_now else Role.RP
+    await cb.message.answer(
+        (
+            f"✅ Заказ «{material_type}» создан."
+            + (" Отправлен ТД на оплату." if td_id else " ⚠️ ТД не назначен (role=td), заявка ушла только в рабочий чат.")
+        ),
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(role_now, is_admin=u.id in (config.admin_ids or set())),
+        ),
+    )  # type: ignore
+    await state.clear()
+
+
+# ==================== ЗАЯВКА НА ДОСТАВКУ (РП -> Водитель) ====================
+
+@router.message(F.text == "🚚 Заявка на доставку")
+async def start_delivery_request(message: Message, state: FSMContext, db: Database) -> None:
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    await state.clear()
+    projects = await db.list_recent_projects(limit=20)
+    await state.set_state(DeliveryRequestSG.project)
+    await message.answer(
+        "🚚 <b>Заявка на доставку</b>\n"
+        "Шаг 1/6: выберите проект.\n"
+        "Для отмены: <code>/cancel</code>.",
+        reply_markup=projects_kb(projects, ctx="delivery_req"),
+    )
+
+
+@router.callback_query(ProjectCb.filter(F.ctx == "delivery_req"))
+async def delivery_req_pick_project(cb: CallbackQuery, callback_data: ProjectCb, state: FSMContext, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    project = await db.get_project(int(callback_data.project_id))
+    await state.update_data(project_id=int(project["id"]))
+    await state.set_state(DeliveryRequestSG.address_from)
+    await cb.message.answer("Откуда забрать? (адрес склада/поставщика):")  # type: ignore
+
+
+@router.message(DeliveryRequestSG.address_from)
+async def delivery_req_from(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if len(t) < 3:
+        await message.answer("Укажите адрес подробнее:")
+        return
+    await state.update_data(address_from=t)
+    await state.set_state(DeliveryRequestSG.address_to)
+    await message.answer("Куда доставить? (адрес объекта):")
+
+
+@router.message(DeliveryRequestSG.address_to)
+async def delivery_req_to(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if len(t) < 3:
+        await message.answer("Укажите адрес подробнее:")
+        return
+    await state.update_data(address_to=t)
+    await state.set_state(DeliveryRequestSG.delivery_date)
+    await message.answer("Дата доставки (ДД.ММ.ГГГГ или «сегодня/завтра»):")
+
+
+@router.message(DeliveryRequestSG.delivery_date)
+async def delivery_req_date(message: Message, state: FSMContext, config: Config) -> None:
+    t = (message.text or "").strip()
+    dt = parse_date(t, config.timezone)
+    if not dt:
+        await message.answer("Не понял дату. Пример: 25.03.2026 или «сегодня».")
+        return
+    await state.update_data(delivery_date=to_iso(dt))
+    await state.set_state(DeliveryRequestSG.cargo_description)
+    await message.answer("Что везём? (профиль / стекло / другое — кратко):")
+
+
+@router.message(DeliveryRequestSG.cargo_description)
+async def delivery_req_cargo(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if len(t) < 3:
+        await message.answer("Опишите груз подробнее:")
+        return
+    await state.update_data(cargo_description=t)
+    await state.set_state(DeliveryRequestSG.comment)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Создать заявку", callback_data="deliveryreq:create")
+    b.adjust(1)
+    await message.answer("Комментарий (или нажмите кнопку для создания заявки):", reply_markup=b.as_markup())
+
+
+@router.message(DeliveryRequestSG.comment)
+async def delivery_req_comment(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if t == "-":
+        t = ""
+    await state.update_data(comment=t)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Создать заявку", callback_data="deliveryreq:create")
+    b.adjust(1)
+    await message.answer("Готово. Нажмите кнопку для создания заявки:", reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data == "deliveryreq:create")
+async def delivery_req_finalize(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+
+    data = await state.get_data()
+    project_id = data.get("project_id")
+    if not project_id:
+        await cb.message.answer("Не выбран проект. Начните заново.")  # type: ignore
+        await state.clear()
+        return
+
+    project = await db.get_project(int(project_id))
+
+    # Обновляем статус проекта
+    if project.get("status") in {ProjectStatus.IN_WORK, ProjectStatus.ORDERING}:
+        project = await db.update_project_status(int(project_id), ProjectStatus.DELIVERY)
+
+    driver_id = await resolve_default_assignee(db, config, Role.DRIVER)
+
+    address_from = data.get("address_from") or ""
+    address_to = data.get("address_to") or ""
+    delivery_date = data.get("delivery_date")
+    cargo = data.get("cargo_description") or ""
+    comment = data.get("comment") or ""
+
+    due = utcnow() + timedelta(hours=24)
+    task = await db.create_task(
+        project_id=int(project_id),
+        type_=TaskType.DELIVERY_REQUEST,
+        status=TaskStatus.OPEN,
+        created_by=u.id,
+        assigned_to=driver_id,
+        due_at_iso=to_iso(due),
+        payload={
+            "address_from": address_from,
+            "address_to": address_to,
+            "delivery_date": delivery_date,
+            "cargo": cargo,
+            "comment": comment,
+            "rp_id": u.id,
+            "rp_username": u.username,
+        },
+    )
+
+    msg = (
+        "🚚 <b>Заявка на доставку</b>\n\n"
+        f"{fmt_project_card(project, config.timezone)}\n\n"
+        f"📍 Откуда: <b>{address_from}</b>\n"
+        f"📍 Куда: <b>{address_to}</b>\n"
+        f"📅 Дата: <b>{delivery_date[:10] if isinstance(delivery_date, str) else '—'}</b>\n"
+        f"📦 Груз: <b>{cargo}</b>\n"
+    )
+    if comment:
+        msg += f"📝 Комментарий: {comment}\n"
+    msg += f"👷 От РП: <code>{u.id}</code> @{u.username or '-'}"
+
+    task_kb = task_actions_kb(task)
+    if driver_id:
+        await notifier.safe_send(int(driver_id), msg, reply_markup=task_kb)
+    await notifier.notify_workchat(msg, reply_markup=task_kb)
+
+    await integrations.sync_project(project)
+    await integrations.sync_task(task, project_code=project.get("code", ""))
+
+    user_now = await db.get_user_optional(u.id)
+    role_now = user_now.role if user_now else Role.RP
+    await cb.message.answer(
+        "✅ Заявка на доставку создана." + (" Водитель уведомлён." if driver_id else " ⚠️ Водитель не назначен (role=driver)."),
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(role_now, is_admin=u.id in (config.admin_ids or set())),
+        ),
+    )  # type: ignore
+    await state.clear()
+
+
+# ==================== РАСПРЕДЕЛЕНИЕ ЛИДА (РП -> Менеджер) ====================
+
+@router.message(F.text == "🎯 Распределить лид")
+async def start_assign_lead(message: Message, state: FSMContext, db: Database) -> None:
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    await state.clear()
+
+    managers = await db.find_users_by_role(Role.MANAGER, limit=30)
+    if not managers:
+        await message.answer("Не найдено менеджеров с ролью manager.")
+        return
+
+    b = InlineKeyboardBuilder()
+    for m in managers:
+        label = (m.full_name or "").strip() or (m.username or str(m.telegram_id))
+        if m.username:
+            label = f"{label} (@{m.username})"
+        b.button(text=label[:64], callback_data=f"assignlead:pick:{m.telegram_id}")
+    b.adjust(1)
+
+    await state.set_state(AssignLeadSG.manager)
+    await message.answer(
+        "🎯 <b>Распределение лида</b>\n"
+        "Шаг 1/3: выберите менеджера.\n"
+        "Для отмены: <code>/cancel</code>.",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("assignlead:pick:"))
+async def assign_lead_pick(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    parts = (cb.data or "").split(":")
+    if len(parts) != 3 or not parts[2].isdigit():
+        await cb.message.answer("Ошибка выбора. Попробуйте ещё раз.")  # type: ignore
+        return
+    manager_id = int(parts[2])
+    manager = await db.get_user_optional(manager_id)
+    if not manager:
+        await cb.message.answer("Менеджер не найден.")  # type: ignore
+        return
+    label = (manager.full_name or "") or f"@{manager.username or manager_id}"
+    await state.update_data(manager_id=manager_id, manager_label=label)
+    await state.set_state(AssignLeadSG.description)
+    await cb.message.answer(f"Опишите лид для <b>{label}</b> (источник, контакт, суть запроса):")  # type: ignore
+
+
+@router.message(AssignLeadSG.description)
+async def assign_lead_desc(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if len(t) < 5:
+        await message.answer("Опишите подробнее (минимум 5 символов):")
+        return
+    await state.update_data(description=t)
+    await state.set_state(AssignLeadSG.comment)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Отправить менеджеру", callback_data="assignlead:create")
+    b.adjust(1)
+    await message.answer("Комментарий (или нажмите кнопку):", reply_markup=b.as_markup())
+
+
+@router.message(AssignLeadSG.comment)
+async def assign_lead_comment(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if t == "-":
+        t = ""
+    await state.update_data(comment=t)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Отправить менеджеру", callback_data="assignlead:create")
+    b.adjust(1)
+    await message.answer("Готово. Нажмите кнопку:", reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data == "assignlead:create")
+async def assign_lead_finalize(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+
+    data = await state.get_data()
+    manager_id = data.get("manager_id")
+    if not manager_id:
+        await cb.message.answer("Не выбран менеджер. Начните заново.")  # type: ignore
+        await state.clear()
+        return
+
+    description = data.get("description") or ""
+    comment = data.get("comment") or ""
+    manager_label = data.get("manager_label") or str(manager_id)
+
+    due = utcnow() + timedelta(hours=4)
+    task = await db.create_task(
+        project_id=None,
+        type_=TaskType.ASSIGN_LEAD,
+        status=TaskStatus.OPEN,
+        created_by=u.id,
+        assigned_to=int(manager_id),
+        due_at_iso=to_iso(due),
+        payload={
+            "description": description,
+            "comment": comment,
+            "rp_id": u.id,
+            "rp_username": u.username,
+        },
+    )
+
+    msg = (
+        "🎯 <b>Новый лид</b>\n\n"
+        f"Менеджер: <b>{manager_label}</b>\n"
+        f"📝 Описание: {description}\n"
+    )
+    if comment:
+        msg += f"📝 Комментарий: {comment}\n"
+    msg += f"\nОт РП: <code>{u.id}</code> @{u.username or '-'}"
+
+    task_kb = task_actions_kb(task)
+    await notifier.safe_send(int(manager_id), msg, reply_markup=task_kb)
+    await notifier.notify_workchat(msg, reply_markup=task_kb)
+
+    await integrations.sync_task(task, project_code="")
+
+    user_now = await db.get_user_optional(u.id)
+    role_now = user_now.role if user_now else Role.RP
+    await cb.message.answer(
+        f"✅ Лид отправлен менеджеру ({manager_label}).",
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(role_now, is_admin=u.id in (config.admin_ids or set())),
+        ),
+    )  # type: ignore
+    await state.clear()
+
+
+# ==================== ЗАЯВКА НА ТОНИРОВКУ (РП -> Тонировщик) ====================
+
+@router.message(F.text == "🎨 Заявка на тонировку")
+async def start_tinting_request(message: Message, state: FSMContext, db: Database) -> None:
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    await state.clear()
+    projects = await db.list_recent_projects(limit=20)
+    await state.set_state(TintingRequestSG.project)
+    await message.answer(
+        "🎨 <b>Заявка на тонировку</b>\n"
+        "Шаг 1/5: выберите проект.\n"
+        "Для отмены: <code>/cancel</code>.",
+        reply_markup=projects_kb(projects, ctx="tinting_req"),
+    )
+
+
+@router.callback_query(ProjectCb.filter(F.ctx == "tinting_req"))
+async def tinting_req_pick_project(cb: CallbackQuery, callback_data: ProjectCb, state: FSMContext, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    project = await db.get_project(int(callback_data.project_id))
+    await state.update_data(project_id=int(project["id"]))
+    await state.set_state(TintingRequestSG.description)
+    await cb.message.answer("Опишите что нужно затонировать (площадь, тип плёнки, особенности):")  # type: ignore
+
+
+@router.message(TintingRequestSG.description)
+async def tinting_req_desc(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if len(t) < 5:
+        await message.answer("Опишите подробнее (минимум 5 символов):")
+        return
+    await state.update_data(description=t)
+    await state.set_state(TintingRequestSG.deadline)
+    await message.answer("Срок выполнения (ДД.ММ.ГГГГ или «-» — 3 дня по умолчанию):")
+
+
+@router.message(TintingRequestSG.deadline)
+async def tinting_req_deadline(message: Message, state: FSMContext, config: Config) -> None:
+    t = (message.text or "").strip()
+    if t == "-":
+        dt = utcnow() + timedelta(days=3)
+    else:
+        dt = parse_date(t, config.timezone)
+        if not dt:
+            await message.answer("Не понял дату. Пример: 25.03.2026 или «-».")
+            return
+    await state.update_data(deadline=to_iso(dt))
+    await state.set_state(TintingRequestSG.comment)
+    await message.answer("Комментарий (или «-»):")
+
+
+@router.message(TintingRequestSG.comment)
+async def tinting_req_comment(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    if t == "-":
+        t = ""
+    await state.update_data(comment=t, attachments=[])
+    await state.set_state(TintingRequestSG.attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Создать заявку", callback_data="tintingreq:create")
+    b.button(text="⏭ Без вложений", callback_data="tintingreq:create")
+    b.adjust(1)
+    await message.answer("Приложите фото/чертёж (или нажмите кнопку):", reply_markup=b.as_markup())
+
+
+@router.message(TintingRequestSG.attachments)
+async def tinting_req_attach(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    attachments: list[dict[str, Any]] = data.get("attachments", [])
+    if message.document:
+        attachments.append({"file_type": "document", "file_id": message.document.file_id, "file_unique_id": message.document.file_unique_id, "caption": message.caption})
+    elif message.photo:
+        ph = message.photo[-1]
+        attachments.append({"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id, "caption": message.caption})
+    else:
+        await message.answer("Пришлите файл/фото или нажмите «✅ Создать заявку».")
+        return
+    await state.update_data(attachments=attachments)
+    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+
+
+@router.callback_query(F.data == "tintingreq:create")
+async def tinting_req_finalize(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+
+    data = await state.get_data()
+    project_id = data.get("project_id")
+    if not project_id:
+        await cb.message.answer("Не выбран проект. Начните заново.")  # type: ignore
+        await state.clear()
+        return
+
+    project = await db.get_project(int(project_id))
+    description = data.get("description") or ""
+    deadline = data.get("deadline")
+    comment = data.get("comment") or ""
+    attachments = data.get("attachments") or []
+
+    # Обновляем статус
+    if project.get("status") in {ProjectStatus.IN_WORK, ProjectStatus.INSTALLATION}:
+        project = await db.update_project_status(int(project_id), ProjectStatus.TINTING)
+
+    tinter_id = await resolve_default_assignee(db, config, Role.TINTER)
+
+    task = await db.create_task(
+        project_id=int(project_id),
+        type_=TaskType.TINTING_REQUEST,
+        status=TaskStatus.OPEN,
+        created_by=u.id,
+        assigned_to=tinter_id,
+        due_at_iso=deadline,
+        payload={
+            "description": description,
+            "comment": comment,
+            "rp_id": u.id,
+            "rp_username": u.username,
+        },
+    )
+
+    for a in attachments:
+        await db.add_attachment(
+            task_id=int(task["id"]),
+            file_id=a["file_id"],
+            file_unique_id=a.get("file_unique_id"),
+            file_type=a["file_type"],
+            caption=a.get("caption"),
+        )
+
+    msg = (
+        "🎨 <b>Заявка на тонировку</b>\n\n"
+        f"{fmt_project_card(project, config.timezone)}\n\n"
+        f"📋 Описание: {description}\n"
+    )
+    if comment:
+        msg += f"📝 Комментарий: {comment}\n"
+    msg += f"👷 От РП: <code>{u.id}</code> @{u.username or '-'}"
+
+    task_kb = task_actions_kb(task)
+    if tinter_id:
+        await notifier.safe_send(int(tinter_id), msg, reply_markup=task_kb)
+    await notifier.notify_workchat(msg, reply_markup=task_kb)
+
+    attaches = await db.list_attachments(int(task["id"]))
+    for a in attaches:
+        if tinter_id:
+            await notifier.safe_send_media(int(tinter_id), a["file_type"], a["tg_file_id"], caption=a.get("caption"))
+        await notifier.notify_workchat_media(a["file_type"], a["tg_file_id"], caption=a.get("caption"))
+
+    await integrations.sync_project(project)
+    await integrations.sync_task(task, project_code=project.get("code", ""))
+
+    user_now = await db.get_user_optional(u.id)
+    role_now = user_now.role if user_now else Role.RP
+    await cb.message.answer(
+        "✅ Заявка на тонировку создана." + (" Тонировщик уведомлён." if tinter_id else " ⚠️ Тонировщик не назначен (role=tinter)."),
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(role_now, is_admin=u.id in (config.admin_ids or set())),
+        ),
+    )  # type: ignore
+    await state.clear()

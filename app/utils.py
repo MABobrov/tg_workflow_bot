@@ -1,0 +1,360 @@
+from __future__ import annotations
+
+import base64
+import json
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
+
+from aiogram import html
+
+
+ROLE_LABELS: dict[str, str] = {
+    "manager": "Менеджер",
+    "rp": "РП",
+    "td": "ТД",
+    "accounting": "Бухгалтерия",
+    "installer": "Монтажник",
+    "gd": "Ген.дир",
+    "driver": "Водитель",
+    "loader": "Грузчик",
+    "tinter": "Тонировщик",
+}
+ROLE_ORDER: list[str] = ["manager", "rp", "td", "accounting", "installer", "driver", "loader", "tinter", "gd"]
+
+PROJECT_STATUS_LABELS: dict[str, str] = {
+    "docs_request": "Запрос документов",
+    "quote_request": "Запрос КП",
+    "invoice_sent": "Счёт/документы отправлены",
+    "waiting_payment": "Ожидает оплату",
+    "payment_reported": "Оплата поступила",
+    "in_work": "В работе",
+    "ordering": "Заказ материалов",
+    "delivery": "Доставка",
+    "installation": "Монтаж",
+    "tinting": "Тонировка",
+    "closing_docs": "Закрывающие / ЭДО",
+    "archive": "Архив",
+}
+
+TASK_STATUS_LABELS: dict[str, str] = {
+    "open": "Новая",
+    "in_progress": "В работе",
+    "done": "Завершена",
+    "rejected": "Отклонена",
+}
+
+TASK_TYPE_LABELS: dict[str, str] = {
+    "docs_request": "Запрос документов/счёта",
+    "quote_request": "Запрос КП",
+    "payment_confirm": "Подтверждение оплаты",
+    "closing_docs": "Документы / ЭДО",
+    "manager_info_request": "Запрос информации менеджеру",
+    "urgent_gd": "Срочно ГД",
+    "issue": "Проблема / вопрос",
+    "daily_report": "Ежедневный отчёт",
+    "installation_done": "Счёт ОК / монтаж завершён",
+    "project_end": "Счёт End",
+    # --- новые типы ---
+    "order_profile": "Заказ профиля",
+    "order_glass": "Заказ стекла",
+    "order_materials": "Заказ материалов",
+    "supplier_payment": "Оплата поставщику",
+    "delivery_request": "Заявка на доставку",
+    "delivery_done": "Доставка выполнена",
+    "tinting_request": "Заявка на тонировку",
+    "tinting_done": "Тонировка выполнена",
+    "assign_lead": "Распределение лида",
+}
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def to_iso(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def from_iso(s: str) -> datetime:
+    # Python parses ISO with timezone
+    return datetime.fromisoformat(s)
+
+
+def tzinfo(tz_name: str) -> ZoneInfo:
+    return ZoneInfo(tz_name)
+
+
+def format_dt_iso(iso_s: str | None, tz_name: str) -> str:
+    if not iso_s:
+        return "—"
+    dt = from_iso(iso_s).astimezone(tzinfo(tz_name))
+    return dt.strftime("%d.%m.%Y %H:%M")
+
+
+def format_date_iso(iso_s: str | None, tz_name: str) -> str:
+    if not iso_s:
+        return "—"
+    dt = from_iso(iso_s).astimezone(tzinfo(tz_name))
+    return dt.strftime("%d.%m.%Y")
+
+
+def parse_amount(text: str) -> Optional[float]:
+    if not text:
+        return None
+    t = text.strip().replace(" ", "").replace(",", ".")
+    # allow "100k" "100000"
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([kк]?)", t, flags=re.IGNORECASE)
+    if not m:
+        return None
+    num = float(m.group(1))
+    if m.group(2):
+        num *= 1000
+    return num
+
+
+def parse_date(text: str, tz_name: str) -> Optional[datetime]:
+    if not text:
+        return None
+    t = text.strip()
+    now_local = utcnow().astimezone(tzinfo(tz_name))
+
+    # YYYY-MM-DD
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", t)
+    if m:
+        y, mo, d = map(int, m.groups())
+        try:
+            return datetime(y, mo, d, 12, 0, tzinfo(tzinfo(tz_name)))
+        except ValueError:
+            return None
+
+    # DD.MM.YYYY or DD.MM
+    m = re.fullmatch(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?", t)
+    if m:
+        d = int(m.group(1))
+        mo = int(m.group(2))
+        y_raw = m.group(3)
+        if y_raw:
+            y = int(y_raw)
+            if y < 100:
+                y += 2000
+        else:
+            y = now_local.year
+        try:
+            return datetime(y, mo, d, 12, 0, tzinfo(tzinfo(tz_name)))
+        except ValueError:
+            return None
+
+    # "today", "tomorrow" in ru
+    if t.lower() in {"сегодня", "today"}:
+        return now_local.replace(hour=12, minute=0, second=0, microsecond=0)
+    if t.lower() in {"завтра", "tomorrow"}:
+        dt = now_local + timedelta(days=1)
+        return dt.replace(hour=12, minute=0, second=0, microsecond=0)
+
+    return None
+
+
+def try_json_loads(s: str | None) -> dict[str, Any]:
+    if not s:
+        return {}
+    try:
+        return json.loads(s)
+    except Exception:
+        return {}
+
+
+def role_label(value: str | None) -> str:
+    if not value:
+        return "—"
+    roles = parse_roles(value)
+    if len(roles) > 1:
+        return ", ".join(ROLE_LABELS.get(r, r) for r in roles)
+    return ROLE_LABELS.get(value, value)
+
+
+def parse_roles(value: str | None) -> list[str]:
+    if not value:
+        return []
+    parts = [p.strip().lower() for p in value.replace(";", ",").split(",")]
+    seen: set[str] = set()
+    out: list[str] = []
+    for role in parts:
+        if not role or role not in ROLE_LABELS:
+            continue
+        if role in seen:
+            continue
+        seen.add(role)
+        out.append(role)
+    # stable business order for predictable menus/labels
+    order_index = {r: i for i, r in enumerate(ROLE_ORDER)}
+    out.sort(key=lambda r: order_index.get(r, 10_000))
+    return out
+
+
+def roles_to_storage(roles: list[str] | tuple[str, ...] | set[str]) -> str | None:
+    normalized = parse_roles(",".join(str(r) for r in roles))
+    if not normalized:
+        return None
+    return ",".join(normalized)
+
+
+def has_role(value: str | None, role: str) -> bool:
+    return role in set(parse_roles(value))
+
+
+def has_any_role(value: str | None, roles: set[str]) -> bool:
+    current = set(parse_roles(value))
+    return bool(current & roles)
+
+
+def project_status_label(value: str | None) -> str:
+    if not value:
+        return "—"
+    return PROJECT_STATUS_LABELS.get(value, value)
+
+
+def task_status_label(value: str | None) -> str:
+    if not value:
+        return "—"
+    return TASK_STATUS_LABELS.get(value, value)
+
+
+def task_type_label(value: str | None) -> str:
+    if not value:
+        return "—"
+    return TASK_TYPE_LABELS.get(value, value)
+
+
+def private_only_reply_markup(event_message: Any, markup: Any | None) -> Any | None:
+    """Return reply markup only for private chats.
+
+    Prevents bot reply keyboards from appearing in groups/supergroups.
+    """
+    if markup is None:
+        return None
+    chat = getattr(event_message, "chat", None)
+    chat_type = getattr(chat, "type", None)
+    if chat_type == "private":
+        return markup
+    return None
+
+
+def encode_sa_json(value: str) -> dict[str, Any]:
+    """Accept raw JSON or base64 JSON and return dict."""
+    raw = value.strip()
+    if not raw:
+        raise ValueError("Empty service account json")
+    if raw.startswith("{"):
+        return json.loads(raw)
+    # assume base64
+    decoded = base64.b64decode(raw).decode("utf-8")
+    return json.loads(decoded)
+
+
+@dataclass
+class TgUserView:
+    telegram_id: int
+    username: str | None
+    full_name: str | None
+    role: str | None
+
+    def mention(self) -> str:
+        # prefer @username
+        if self.username:
+            return f"@{html.quote(self.username)}"
+        # fallback to tg://user?id=
+        name = html.quote(self.full_name or str(self.telegram_id))
+        return f"<a href=\"tg://user?id={self.telegram_id}\">{name}</a>"
+
+
+def fmt_project_card(project: dict[str, Any], tz_name: str) -> str:
+    """Pretty HTML card for a project dict."""
+    code = html.quote(project.get("code") or f"#{project.get('id')}")
+    title = html.quote(project.get("title") or "—")
+    address = html.quote(project.get("address") or "—")
+    client = html.quote(project.get("client") or "—")
+    status = html.quote(project_status_label(str(project.get("status") or "")))
+    amount = project.get("amount")
+    amount_s = f"{amount:,.0f}".replace(",", " ") if isinstance(amount, (int, float)) else "—"
+    deadline = format_date_iso(project.get("deadline"), tz_name)
+
+    created = format_dt_iso(project.get("created_at"), tz_name)
+    updated = format_dt_iso(project.get("updated_at"), tz_name)
+
+    lines = [
+        f"<b>Проект {code}</b> — {title}",
+        f"📍 Адрес: <b>{address}</b>",
+        f"👤 Клиент: <b>{client}</b>",
+        f"💰 Сумма: <b>{amount_s}</b>",
+        f"🗓 Дедлайн: <b>{deadline}</b>",
+        f"📌 Статус: <b>{status}</b>",
+        f"🕒 Создан: {created}",
+        f"🔄 Обновлён: {updated}",
+    ]
+    return "\n".join(lines)
+
+
+def fmt_task_card(task: dict[str, Any], project: dict[str, Any] | None, tz_name: str) -> str:
+    tid = task["id"]
+    ttype = html.quote(task_type_label(task.get("type")))
+    status = html.quote(task_status_label(task.get("status")))
+    due = format_dt_iso(task.get("due_at"), tz_name)
+    created = format_dt_iso(task.get("created_at"), tz_name)
+
+    header = f"<b>Задача #{tid}</b> — <b>{ttype}</b>"
+    if project:
+        header += f"\n{fmt_project_card(project, tz_name)}"
+
+    payload = try_json_loads(task.get("payload_json"))
+    extra_lines = []
+    if payload.get("comment"):
+        extra_lines.append(f"📝 Комментарий: {html.quote(str(payload['comment']))}")
+    if payload.get("measurements"):
+        extra_lines.append(f"📐 Размеры/ТЗ: {html.quote(str(payload['measurements']))}")
+    if payload.get("payment_method"):
+        extra_lines.append(f"💳 Тип оплаты: <b>{html.quote(str(payload['payment_method']))}</b>")
+    if payload.get("payment_type"):
+        extra_lines.append(f"🧾 Этап оплаты: <b>{html.quote(str(payload['payment_type']))}</b>")
+    if payload.get("payment_amount"):
+        extra_lines.append(f"💰 Сумма оплаты: <b>{html.quote(str(payload['payment_amount']))}</b>")
+    if payload.get("issue_type"):
+        extra_lines.append(f"⚠️ Тип проблемы: <b>{html.quote(str(payload['issue_type']))}</b>")
+    if payload.get("doc_type"):
+        extra_lines.append(f"📄 Документы: <b>{html.quote(str(payload['doc_type']))}</b>")
+    if payload.get("details"):
+        extra_lines.append(f"ℹ️ Уточнение: {html.quote(str(payload['details']))}")
+    if payload.get("invoice_number"):
+        extra_lines.append(f"🧾 № счёта: <b>{html.quote(str(payload['invoice_number']))}</b>")
+    if payload.get("sign_type"):
+        extra_lines.append(f"✍️ Подписание: <b>{html.quote(str(payload['sign_type']))}</b>")
+    if payload.get("material_type"):
+        extra_lines.append(f"📦 Материал: <b>{html.quote(str(payload['material_type']))}</b>")
+    if payload.get("supplier"):
+        extra_lines.append(f"🏭 Поставщик: <b>{html.quote(str(payload['supplier']))}</b>")
+    if payload.get("description"):
+        extra_lines.append(f"📋 Описание: {html.quote(str(payload['description']))}")
+    if payload.get("address_from"):
+        extra_lines.append(f"📍 Откуда: <b>{html.quote(str(payload['address_from']))}</b>")
+    if payload.get("address_to"):
+        extra_lines.append(f"📍 Куда: <b>{html.quote(str(payload['address_to']))}</b>")
+    if payload.get("cargo"):
+        extra_lines.append(f"📦 Груз: <b>{html.quote(str(payload['cargo']))}</b>")
+    if payload.get("amount") and not payload.get("payment_amount"):
+        extra_lines.append(f"💰 Сумма: <b>{html.quote(str(payload['amount']))}</b>")
+
+    lines = [
+        header,
+        "",
+        f"📌 Статус задачи: <b>{status}</b>",
+        f"⏳ Срок: <b>{due}</b>",
+        f"🕒 Создана: {created}",
+    ]
+    if extra_lines:
+        lines.append("")
+        lines.extend(extra_lines)
+    return "\n".join(lines)
