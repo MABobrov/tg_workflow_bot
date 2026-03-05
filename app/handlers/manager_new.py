@@ -666,12 +666,20 @@ async def _show_invoice_end_conditions(
         f"☐ 4. Пояснения (опционально)\n"
     )
 
-    # Показываем информацию об оригиналах, если она есть
+    # Показываем информацию о документах: ЭДО или оригиналы
+    primary_edo = bool(inv.get("docs_edo_signed"))
+    closing_edo = bool(inv.get("edo_signed"))
     primary_h = inv.get("docs_originals_holder")
     closing_h = inv.get("closing_originals_holder")
-    if primary_h:
+
+    if primary_edo:
+        text += "\n📄 Первичные: подписаны в ЭДО"
+    elif primary_h:
         text += f"\n📁 Оригиналы первичных: у {'ГД' if primary_h == 'gd' else 'менеджера'}"
-    if closing_h:
+
+    if closing_edo:
+        text += "\n📄 Закрывающие: подписаны в ЭДО"
+    elif closing_h:
         text += f"\n📁 Оригиналы закрывающих: у {'ГД' if closing_h == 'gd' else 'менеджера'}"
 
     # If conditions 1+2 met -> auto-ask GD about debts
@@ -711,9 +719,12 @@ async def invoice_end_select(
 
     await state.update_data(invoice_id=invoice_id)
 
-    # Дополнение 2: проверяем наличие информации об оригиналах
-    primary_missing = not inv.get("docs_originals_holder")
-    closing_missing = not inv.get("closing_originals_holder")
+    # Сначала проверяем ЭДО — если подписано, оригиналы не нужны
+    primary_edo = bool(inv.get("docs_edo_signed"))
+    closing_edo = bool(inv.get("edo_signed"))
+
+    primary_missing = not primary_edo and not inv.get("docs_originals_holder")
+    closing_missing = not closing_edo and not inv.get("closing_originals_holder")
 
     if primary_missing:
         # Спрашиваем менеджера: у кого оригиналы первичных документов
@@ -771,8 +782,9 @@ async def invoice_end_primary_originals(
         f"✅ Оригиналы первичных — у {holder_label}."
     )
 
-    # Теперь проверяем закрывающие
-    if not inv.get("closing_originals_holder"):
+    # Проверяем закрывающие: если ЭДО подписано — оригиналы не нужны
+    closing_edo = bool(inv.get("edo_signed"))
+    if not closing_edo and not inv.get("closing_originals_holder"):
         b = InlineKeyboardBuilder()
         b.button(text="📁 У ГД", callback_data=f"invend_clos_orig:gd:{invoice_id}")
         b.button(text="📁 У менеджера", callback_data=f"invend_clos_orig:manager:{invoice_id}")
@@ -783,7 +795,7 @@ async def invoice_end_primary_originals(
             reply_markup=b.as_markup(),
         )
     else:
-        # Всё есть — переходим к условиям
+        # ЭДО подписано или оригиналы указаны — переходим к условиям
         await _show_invoice_end_conditions(cb, state, db, config, notifier, invoice_id)
 
 
