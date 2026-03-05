@@ -13,7 +13,15 @@ from ..callbacks import AdminRoleCb, AdminUserCb
 from ..config import Config
 from ..db import Database
 from ..enums import Role
-from ..keyboards import BACK_TO_HOME, OPEN_ACTIONS, OPEN_HELP, actions_menu, main_menu
+from ..enums import MANAGER_ROLES
+from ..keyboards import (
+    BACK_TO_HOME, OPEN_ACTIONS, OPEN_HELP, actions_menu, main_menu,
+    gd_more_menu, GD_BTN_MORE, GD_BTN_BACK_HOME,
+    manager_more_menu, MGR_BTN_MORE, MGR_BTN_BACK_HOME, MGR_BTN_SYNC,
+    rp_more_menu, RP_BTN_MORE, RP_BTN_BACK_HOME,
+    tasks_kb,
+)
+from ..services.integration_hub import IntegrationHub
 from ..utils import parse_roles, private_only_reply_markup, role_label
 
 log = logging.getLogger(__name__)
@@ -38,15 +46,18 @@ async def _guard_blocked_message(message: Message, db: Database) -> bool:
 def _new_user_admin_kb(user_id: int) -> InlineKeyboardBuilder:
     b = InlineKeyboardBuilder()
     for role, label in (
-        (Role.MANAGER, "Менеджер"),
+        (Role.MANAGER_KV, "Менеджер КВ"),
+        (Role.MANAGER_KIA, "Менеджер КИА"),
+        (Role.MANAGER_NPN, "Менеджер НПН"),
         (Role.RP, "РП"),
         (Role.TD, "ТД"),
         (Role.ACCOUNTING, "Бухгалтерия"),
         (Role.INSTALLER, "Монтажник"),
+        (Role.ZAMERY, "Замерщик"),
         (Role.DRIVER, "Водитель"),
         (Role.LOADER, "Грузчик"),
         (Role.TINTER, "Тонировщик"),
-        (Role.GD, "Ген.дир"),
+        (Role.GD, "ГД"),
     ):
         b.button(text=f"✅ {label}", callback_data=AdminRoleCb(user_id=user_id, action="set", role=role).pack())
     b.button(text="🚫 Заблокировать", callback_data=AdminUserCb(user_id=user_id, action="block").pack())
@@ -104,31 +115,31 @@ def _role_guide(role: str | None) -> str:
         )
 
     sections: list[str] = []
-    if Role.MANAGER in roles:
+    # Manager roles (new)
+    manager_roles_in_user = roles & MANAGER_ROLES
+    if manager_roles_in_user or Role.MANAGER in roles:
         sections.append(
             "\n<b>Ваши сценарии (Менеджер)</b>\n"
-            "• «Проверить КП/Запросить документы» — единый старт флоу.\n"
-            "После создания проекта работайте через карточку проекта: все последующие шаги и задачи привязаны к нему.\n"
-            "• «💰 Оплата поступила» — отправить оплату на подтверждение ТД.\n"
-            "Заполните: проект, сумма, тип оплаты, этап, дата, комментарий, платёжка.\n"
-            "• «📄 Док. / ЭДО» — запрос в бухгалтерию на документы.\n"
-            "• «🆘 Проблема / вопрос» — сигнал РП по проекту.\n"
-            "• «🏁 Счёт End» — финальное закрытие проекта.\n"
-            "• «🚨 Срочно ГД» — срочный вопрос Ген.диру.\n"
+            "• «📋 Проверить КП/Счет» — отправить КП на проверку РП, создать счёт в БД.\n"
+            "• «💼 Счет в Работу» — отправить счёт ГД на оплату.\n"
+            "• «🏁 Счет End» — инициировать закрытие счёта (проверка 4 условий).\n"
+            "• «📐 Замеры» — запрос замерщику.\n"
+            "• «📄 Бухгалтерия (ЭДО)» — запрос ЭДО в бухгалтерию.\n"
+            "• «📩 Не срочно ГД» — задача ГД (пониженный приоритет).\n"
+            "• Подменю «Еще»: 💬 Менеджер (кред), 📑 Мои Счета, 🆘 Проблема/Вопрос, 🚨 Срочно ГД, 🔍 Поиск Счета.\n"
         )
     if Role.RP in roles:
         sections.append(
             "\n<b>Ваши сценарии (РП)</b>\n"
-            "• «📥 Входящие задачи» — открыть список задач.\n"
-            "• Внутри задачи используйте кнопки:\n"
-            "«⏳ Взять в работу», «✅ Завершить», «❌ Отклонить».\n"
-            "• «🗂 Проекты» / «📌 Поиск проекта» — просмотр карточек проектов.\n"
-            "• «📦 Заказ материалов» — заказать профиль/стекло/ЛДСП/ГКЛ.\n"
-            "• «🚚 Заявка на доставку» — отправить заявку водителю.\n"
-            "• «🎯 Распределить лид» — назначить лид менеджеру.\n"
-            "• «🎨 Заявка на тонировку» — отправить тонировщику.\n"
-            "• «🆘 Проблема / простой» — эскалация вопроса.\n"
-            "• «🚨 Срочно ГД» — срочный вопрос Ген.диру.\n"
+            "• «📥 Входящие Отд.Продаж» — входящие задачи от менеджеров и ГД.\n"
+            "• «💼 Счета в Работу» — мониторинг счетов (информационный).\n"
+            "• «🏁 Счет End» — входящие условия закрытия.\n"
+            "• «💳 Счета на оплату» — счёт на оплату ГД.\n"
+            "• «🆘 Проблема/Вопрос» — входящие от ГД, менеджеров, монтажников.\n"
+            "• «👤 Менеджер 1 (КВ)» / «👤 Менеджер 2 (КИА)» — чат-прокси с менеджерами.\n"
+            "• «🔧 Монтажная гр.» — чат с монтажной группой.\n"
+            "• «📄 Бухгалтерия (ЭДО)» — запрос ЭДО.\n"
+            "• Подменю «Еще»: 🎯 Лид в проект, 🔄 Смена роли, 🚨 Срочно ГД, 🔍 Поиск Счета.\n"
         )
     if Role.TD in roles:
         sections.append(
@@ -140,34 +151,44 @@ def _role_guide(role: str | None) -> str:
             "Заполните: проект, поставщик, сумма, № счёта, платёжка.\n"
             "• «📥 Входящие задачи» — все прочие задачи.\n"
             "• «📌 Поиск проекта» — найти и открыть карточку проекта.\n"
-            "• «🚨 Срочно ГД» — срочный вопрос Ген.диру.\n"
+            "• «🚨 Срочно ГД» — срочный вопрос ГД.\n"
         )
     if Role.ACCOUNTING in roles:
         sections.append(
             "\n<b>Ваши сценарии (Бухгалтерия)</b>\n"
-            "• «📄 Закрывающие» — входящие задачи по закрывающим документам.\n"
-            "• «📨 Менеджеру (Имя)» — запросить у менеджера недостающую информацию.\n"
-            "Можно приложить файлы/скриншоты.\n"
-            "• «📥 Входящие задачи» — общий список задач.\n"
-            "• «🚨 Срочно ГД» — срочный вопрос Ген.диру.\n"
+            "• «📥 Входящие задачи» — запросы ЭДО от менеджеров и РП.\n"
+            "• «📩 Не срочно ГД» — задача ГД (пониженный приоритет).\n"
+            "• «🔍 Найти Счет №» — поиск счетов по критериям.\n"
+            "• «🏁 Закрытые Счета» — список закрытых счетов.\n"
+            "• «🚨 Срочно ГД» — срочный вопрос ГД.\n"
         )
     if Role.INSTALLER in roles:
         sections.append(
             "\n<b>Ваши сценарии (Монтажник)</b>\n"
-            "• «📝 Отчёт за день» — ежедневный отчёт по объекту.\n"
-            "Заполните: объект, что сделано, часы, проблемы, вложения.\n"
-            "• «✅ Счёт ОК» — подтверждение завершения монтажа.\n"
-            "Заполните: объект, дата окончания, комментарий по допработам.\n"
-            "• «🆘 Проблема / простой» — сигнал по объекту в РП.\n"
-            "• «📌 Мои объекты» — список последних объектов.\n"
-            "• «🚨 Срочно ГД» — срочный вопрос Ген.диру.\n"
+            "• «📦 Заказ материалов» — запрос материалов у РП.\n"
+            "• «✅ Счет ок» — подтверждение выполнения работ по счёту.\n"
+            "• «📦 Заказ доп.материалов» — доп. запрос материалов у РП.\n"
+            "• «📌 Мои объекты» — список объектов и статусы ЗП.\n"
+            "• «📝 Отчёт за день» — текстовое сообщение РП.\n"
+            "• «🔨 В Работу» — принять задачу от РП.\n"
+            "• «📩 Не срочно ГД» / «🚨 Срочно ГД» — сообщения ГД.\n"
+        )
+    if Role.ZAMERY in roles:
+        sections.append(
+            "\n<b>Ваши сценарии (Замерщик)</b>\n"
+            "• «📋 Заявка на замер» — входящие заявки на замеры. Ответ: «ок» + бланк замера.\n"
+            "• «📋 Мои замеры» — список объектов и статусы ЗП.\n"
+            "• «🚨 Срочно ГД» / «📩 Не срочно ГД» — сообщения ГД.\n"
         )
     if Role.GD in roles:
         sections.append(
-            "\n<b>Ваши сценарии (Ген.дир)</b>\n"
-            "• «📥 Входящие задачи» — срочные запросы и поручения.\n"
-            "• «📌 Поиск проекта» — поиск карточек проектов.\n"
-            "• «🚨 Срочно ГД» — быстрый канал срочных вопросов.\n"
+            "\n<b>Ваши сценарии (ГД)</b>\n"
+            "• «Счета на Оплату» — входящие счета от РП.\n"
+            "• «Срочно для ГД» — срочные запросы + подтверждения оплат.\n"
+            "• «Поиск Счета» — поиск счетов по критериям.\n"
+            "• «Чат с РП», «Замеры», «Бухгалтерия», «Монтажная гр.», «Отд.Продаж» — чаты с сотрудниками.\n"
+            "• «Синхронизация данных» — синхронизация с Google Sheets.\n"
+            "• «Еще» — КВ Кред, КИА Кред, Бухгалтер 1, Сообщение Всем.\n"
         )
     if Role.DRIVER in roles:
         sections.append(
@@ -187,7 +208,7 @@ def _role_guide(role: str | None) -> str:
         sections.append(
             "\n<b>Ваши сценарии (Грузчик)</b>\n"
             "• «📥 Входящие задачи» — входящие задачи по объектам.\n"
-            "• «🚨 Срочно ГД» — срочная эскалация Ген.диру.\n"
+            "• «🚨 Срочно ГД» — срочная эскалация ГД.\n"
         )
 
     return common + "".join(sections)
@@ -241,7 +262,8 @@ async def cmd_id(message: Message, db: Database) -> None:
 
 @router.message(Command("menu"))
 @router.message(lambda m: (m.text or "").strip() == "🔄 Обновить меню")
-async def cmd_menu(message: Message, db: Database, config: Config) -> None:
+async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    await state.clear()
     if not await _guard_blocked_message(message, db):
         return
     u = message.from_user
@@ -301,8 +323,62 @@ async def menu_actions(message: Message, db: Database, config: Config) -> None:
 
 
 @router.message(lambda m: (m.text or "").strip() == BACK_TO_HOME)
-async def back_to_home(message: Message, db: Database, config: Config) -> None:
-    await cmd_menu(message, db, config)
+async def back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    await cmd_menu(message, state, db, config)
+
+
+@router.message(lambda m: (m.text or "").strip() == GD_BTN_MORE)
+async def gd_menu_more(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    """GD: open 'Еще' submenu."""
+    await state.clear()
+    if not await _guard_blocked_message(message, db):
+        return
+    await message.answer(
+        "Выберите действие:",
+        reply_markup=private_only_reply_markup(message, gd_more_menu()),
+    )
+
+
+@router.message(lambda m: (m.text or "").strip() == GD_BTN_BACK_HOME)
+async def gd_back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    """GD: return from 'Еще' submenu to main menu."""
+    await cmd_menu(message, state, db, config)
+
+
+@router.message(lambda m: (m.text or "").strip() == MGR_BTN_MORE)
+async def mgr_menu_more(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    """Manager: open 'Еще' submenu."""
+    await state.clear()
+    if not await _guard_blocked_message(message, db):
+        return
+    await message.answer(
+        "Выберите действие:",
+        reply_markup=private_only_reply_markup(message, manager_more_menu()),
+    )
+
+
+@router.message(lambda m: (m.text or "").strip() == MGR_BTN_BACK_HOME)
+async def mgr_back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    """Manager: return from 'Еще' submenu."""
+    await cmd_menu(message, state, db, config)
+
+
+@router.message(lambda m: (m.text or "").strip() == RP_BTN_MORE)
+async def rp_menu_more(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    """RP: open 'Еще' submenu."""
+    await state.clear()
+    if not await _guard_blocked_message(message, db):
+        return
+    await message.answer(
+        "Выберите действие:",
+        reply_markup=private_only_reply_markup(message, rp_more_menu()),
+    )
+
+
+@router.message(lambda m: (m.text or "").strip() == RP_BTN_BACK_HOME)
+async def rp_back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    """RP: return from 'Еще' submenu."""
+    await cmd_menu(message, state, db, config)
 
 
 @router.message(lambda m: (m.text or "").strip() == OPEN_HELP)
@@ -327,6 +403,99 @@ async def menu_help(message: Message, db: Database, config: Config) -> None:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
     await message.answer(
         text,
+        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin)),
+    )
+
+
+# =====================================================================
+# ВХОДЯЩИЕ ЗАДАЧИ (универсальный обработчик для всех ролей)
+# =====================================================================
+
+@router.message(lambda m: (m.text or "").strip() == "📥 Входящие задачи")
+async def inbox_tasks_universal(message: Message, db: Database) -> None:
+    """Universal inbox handler for all roles that use '📥 Входящие задачи' button."""
+    if not message.from_user:
+        return
+    if not await _guard_blocked_message(message, db):
+        return
+    tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)
+    if not tasks:
+        await message.answer("📥 Входящих задач нет ✅")
+        return
+    await message.answer(
+        f"📥 <b>Входящие задачи</b> ({len(tasks)}):\n\n"
+        "Нажмите на задачу для просмотра:",
+        reply_markup=tasks_kb(tasks),
+    )
+
+
+# =====================================================================
+# СИНХРОНИЗАЦИЯ ДАННЫХ (для менеджеров, РП, бухгалтерии)
+# =====================================================================
+
+@router.message(lambda m: (m.text or "").strip() == MGR_BTN_SYNC)
+async def sync_data_non_gd(
+    message: Message, db: Database, config: Config, integrations: IntegrationHub,
+) -> None:
+    """Sync data with Google Sheets for non-GD roles (button text with emoji)."""
+    if not message.from_user:
+        return
+    user = await db.get_user_optional(message.from_user.id)
+    if not user:
+        return
+
+    role = user.role
+    is_admin = message.from_user.id in (config.admin_ids or set())
+
+    if not integrations.sheets:
+        await message.answer(
+            "⚠️ Интеграция Google Sheets не настроена.",
+            reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin)),
+        )
+        return
+
+    await message.answer("⏳ Запускаю синхронизацию данных с Google Sheets...")
+
+    projects = await db.list_recent_projects(limit=10000)
+    tasks = await db.list_recent_tasks(limit=50000)
+
+    project_code_by_id: dict[int, str] = {}
+    projects_ok = 0
+    tasks_ok = 0
+
+    for p in sorted(projects, key=lambda x: int(x["id"])):
+        manager_label = ""
+        manager_id = p.get("manager_id")
+        if manager_id:
+            manager_user = await db.get_user_optional(int(manager_id))
+            if manager_user:
+                manager_label = f"@{manager_user.username}" if manager_user.username else str(manager_user.telegram_id)
+        await integrations.sheets.upsert_project(p, manager_label=manager_label)
+        project_code = str(p.get("code") or "")
+        if project_code:
+            project_code_by_id[int(p["id"])] = project_code
+        projects_ok += 1
+
+    for t in sorted(tasks, key=lambda x: int(x["id"])):
+        project_code = ""
+        project_id = t.get("project_id")
+        if project_id:
+            project_code = project_code_by_id.get(int(project_id), "")
+            if not project_code:
+                try:
+                    proj = await db.get_project(int(project_id))
+                    project_code = str(proj.get("code") or "")
+                    if project_code:
+                        project_code_by_id[int(project_id)] = project_code
+                except Exception:
+                    project_code = ""
+        await integrations.sheets.upsert_task(t, project_code=project_code)
+        tasks_ok += 1
+
+    await message.answer(
+        "✅ Синхронизация завершена.\n"
+        f"Проектов: <b>{projects_ok}</b>\n"
+        f"Задач: <b>{tasks_ok}</b>",
         reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin)),
     )
 

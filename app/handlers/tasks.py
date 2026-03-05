@@ -18,7 +18,7 @@ from ..keyboards import main_menu, manager_project_actions_kb, task_actions_kb
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
-from ..states import SupplierPaymentSG, TaskCompleteSG
+from ..states import InvoicePaymentSG, SupplierPaymentSG, TaskCompleteSG
 from ..utils import fmt_task_card, private_only_reply_markup, to_iso, try_json_loads, utcnow
 from .auth import require_role_callback
 
@@ -194,6 +194,60 @@ async def task_actions(
         )  # type: ignore
         return
 
+    # INVOICE_PAYMENT actions (GD)
+    if action == "inv_pay" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        # GD wants to pay — ask for payment order attachment
+        await state.clear()
+        await state.set_state(InvoicePaymentSG.attaching_pp)
+        await state.update_data(invoice_task_id=task_id)
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ Отправить ПП", callback_data=f"inv_pp_done:{task_id}")
+        b.button(text="❌ Отмена", callback_data=f"inv_pp_cancel:{task_id}")
+        b.adjust(1)
+        await cb.message.answer(  # type: ignore
+            "💳 <b>Оплата счёта</b>\n\n"
+            "Прикрепите платёжное поручение (файл/фото).\n"
+            "Когда готовы — нажмите «✅ Отправить ПП».",
+            reply_markup=b.as_markup(),
+        )
+        return
+
+    if action == "inv_hold" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        # Mark as in_progress (on hold)
+        task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+        payload = try_json_loads(task.get("payload_json"))
+        sender_id = payload.get("sender_id")
+        if sender_id:
+            await notifier.safe_send(int(sender_id), f"⏸ Счёт #{task_id} отложен ГД.")
+        await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await cb.message.answer(  # type: ignore
+            "⏸ Счёт отложен.",
+            reply_markup=private_only_reply_markup(
+                cb.message,
+                main_menu(Role.GD, is_admin=bool(cb.from_user and cb.from_user.id in (config.admin_ids or set()))),
+            ),
+        )
+        return
+
+    if action == "inv_reject" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        task = await db.update_task_status(task_id, TaskStatus.REJECTED)
+        payload = try_json_loads(task.get("payload_json"))
+        sender_id = payload.get("sender_id")
+        if sender_id:
+            await notifier.safe_send(
+                int(sender_id),
+                f"❌ Счёт #{task_id} отклонён ГД.",
+            )
+        await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await cb.message.answer(  # type: ignore
+            "❌ Счёт отклонён. РП уведомлён.",
+            reply_markup=private_only_reply_markup(
+                cb.message,
+                main_menu(Role.GD, is_admin=bool(cb.from_user and cb.from_user.id in (config.admin_ids or set()))),
+            ),
+        )
+        return
+
     # DONE (generic)
     if action == "done":
         # For request/closing tasks we can optionally collect and send attachments to manager
@@ -345,3 +399,132 @@ async def taskcomplete_finalize(
         ),
     )  # type: ignore
     await state.clear()
+
+
+
+# ---------------------------------------------------------------------------
+# Invoice payment: attach payment order (PP) and send to RP
+# ---------------------------------------------------------------------------
+
+@router.message(InvoicePaymentSG.attaching_pp)
+async def invoice_pp_collect(message: Message, state: FSMContext) -> None:
+    """Collect payment order attachments from GD."""
+    data = await state.get_data()
+    pp_files: list[dict[str, Any]] = data.get("pp_files", [])
+
+    if message.document:
+        pp_files.append({
+            "file_type": "document",
+            "file_id": message.document.file_id,
+            "file_unique_id": message.document.file_unique_id,
+            "caption": message.caption,
+        })
+    elif message.photo:
+        ph = message.photo[-1]
+        pp_files.append({
+            "file_type": "photo",
+            "file_id": ph.file_id,
+            "file_unique_id": ph.file_unique_id,
+            "caption": message.caption,
+        })
+    else:
+        await message.answer("Прикрепите файл/фото платёжного поручения.")
+        return
+
+    await state.update_data(pp_files=pp_files)
+    await message.answer(f"📎 Принял. Файлов: <b>{len(pp_files)}</b>.")
+
+
+@router.callback_query(F.data.startswith("inv_pp_done:"))
+async def invoice_pp_finalize(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    """Send payment order to RP and close invoice task."""
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+
+    data = await state.get_data()
+    task_id = data.get("invoice_task_id")
+    pp_files = data.get("pp_files", [])
+
+    if not task_id:
+        await state.clear()
+        return
+
+    task = await db.get_task(int(task_id))
+    payload = try_json_loads(task.get("payload_json"))
+    sender_id = payload.get("sender_id")
+
+    # Mark task as done
+    task = await db.update_task_status(int(task_id), TaskStatus.DONE)
+
+    project = None
+    if task.get("project_id"):
+        try:
+            project = await db.get_project(int(task["project_id"]))
+        except Exception:
+            pass
+
+    # Save PP attachments to task
+    for a in pp_files:
+        await db.add_attachment(
+            task_id=int(task_id),
+            file_id=a["file_id"],
+            file_unique_id=a.get("file_unique_id"),
+            file_type=a["file_type"],
+            caption=a.get("caption"),
+        )
+
+    # Notify RP
+    if sender_id:
+        inv_num = payload.get("invoice_number", "")
+        supplier = payload.get("supplier", "")
+        amount = payload.get("amount", "")
+        msg = (
+            "✅ <b>Счёт оплачен</b>\n\n"
+            f"🔢 № счёта: {inv_num}\n"
+            f"🏢 Поставщик: {supplier}\n"
+            f"💰 Сумма: {amount}\n\n"
+            "Платёжное поручение прикреплено ниже."
+        )
+        await notifier.safe_send(int(sender_id), msg)
+        for a in pp_files:
+            await notifier.safe_send_media(
+                int(sender_id), a["file_type"], a["file_id"], caption=a.get("caption"),
+            )
+
+    await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+    await state.clear()
+
+    is_admin = u.id in (config.admin_ids or set())
+    await cb.message.answer(  # type: ignore[union-attr]
+        "✅ Счёт оплачен. Платёжка отправлена РП.",
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(Role.GD, is_admin=is_admin),
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("inv_pp_cancel:"))
+async def invoice_pp_cancel(cb: CallbackQuery, state: FSMContext, config: Config, db: Database) -> None:
+    """Cancel payment order attachment."""
+    await cb.answer()
+    await state.clear()
+    u = cb.from_user
+    is_admin = bool(u and u.id in (config.admin_ids or set()))
+    role = (await _current_role(db, u.id)) if u else None
+    await cb.message.answer(  # type: ignore[union-attr]
+        "Отменено.",
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(role, is_admin=is_admin),
+        ),
+    )

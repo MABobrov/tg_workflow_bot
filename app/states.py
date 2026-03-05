@@ -150,3 +150,187 @@ class AssignLeadSG(StatesGroup):
     manager = State()
     description = State()
     comment = State()
+
+
+class ChatProxySG(StatesGroup):
+    """Чат-прокси: ГД ↔ сотрудник/группа."""
+    menu = State()              # Подменю чата
+    writing = State()           # Ввод текста сообщения
+    writing_attachments = State()  # Прикрепление файлов
+
+
+class BroadcastSG(StatesGroup):
+    """Рассылка 'Сообщение Всем'."""
+    text = State()              # Ввод текста
+    attachments = State()       # Прикрепление файлов
+    confirm = State()           # Подтверждение
+
+
+class GdTaskCreateSG(StatesGroup):
+    """Создание задачи от ГД из чат-прокси."""
+    description = State()
+    deadline = State()
+    attachments = State()
+
+
+class InvoicePaymentSG(StatesGroup):
+    """Счёт на оплату — реакция ГД."""
+    viewing = State()           # Просмотр карточки счёта
+    attaching_pp = State()      # Прикрепление платёжки
+
+
+class InvoiceSearchSG(StatesGroup):
+    """Поиск счёта по критериям."""
+    criteria = State()          # Выбор критерия
+    value = State()             # Ввод значения
+
+
+class InvoiceCreateSG(StatesGroup):
+    """Создание счёта на оплату (РП -> ГД)."""
+    project = State()
+    supplier = State()
+    amount = State()
+    invoice_number = State()
+    comment = State()
+    attachments = State()
+
+
+class NotUrgentGDSG(StatesGroup):
+    """Не срочно ГД — задача с пониженным приоритетом."""
+    description = State()
+    attachments = State()
+
+
+class SalesWriteSG(StatesGroup):
+    """Отд.Продаж — выбор адресата и написание сообщения."""
+    pick_target = State()
+    writing = State()
+
+
+class ReplyToGDSG(StatesGroup):
+    """Reply from employee to GD via chat-proxy."""
+    text = State()
+
+
+# ======================================================================
+# Новые FSM-группы (расширение на все роли)
+# ======================================================================
+
+class CheckKpSG(StatesGroup):
+    """Менеджер: Проверить КП / Счет — создание счёта в БД."""
+    invoice_number = State()     # номер счёта (вводит менеджер)
+    address = State()            # адрес установки
+    amount = State()             # полная сумма
+    documents = State()          # вложения (КП)
+    comment = State()            # комментарий
+
+
+class KpReviewResponseSG(StatesGroup):
+    """РП: ответ на запрос «Проверить КП» — формирует пакет документов."""
+    documents = State()          # вложения (счёт, договор, приложение)
+    comment = State()            # комментарий к проверке
+
+
+class InvoiceStartSG(StatesGroup):
+    """Менеджер: Счет в Работу — отправка счёта ГД на оплату."""
+    invoice_number = State()     # номер счёта (поиск в БД)
+    attachments = State()        # счёт, договор, приложение
+    # Дополнение 1: проверка ЭДО / бумажных подписей
+    edo_check = State()          # ГД: документы подписаны в ЭДО? (да/нет)
+    paper_check = State()        # ГД: есть бумажные подписанные? (да/нет)
+    originals_holder = State()   # ГД: у кого оригиналы? (gd/manager)
+
+
+class InvoiceEndSG(StatesGroup):
+    """Менеджер/РП: Счет End — инициация закрытия счёта."""
+    select_invoice = State()     # выбор счёта из списка
+    comment = State()            # пояснение (условие 4, опционально)
+    # Дополнение 2: проверка оригиналов закрывающих
+    closing_originals = State()  # у кого оригиналы закрывающих? (gd/manager)
+    closing_originals_comment = State()  # доп. пояснение
+
+
+class GdInvoiceEndSG(StatesGroup):
+    """ГД: Счет End — финальное решение по закрытию счёта."""
+    viewing = State()            # просмотр карточки с условиями
+
+
+class EdoRequestSG(StatesGroup):
+    """Менеджер/РП: запрос ЭДО к бухгалтерии."""
+    request_type = State()       # тип запроса (1-4 inline-кнопки)
+    invoice_number = State()     # номер счёта (для типов 1-3)
+    description = State()        # пояснение (для типа «Другое»)
+    comment = State()            # комментарий
+    attachments = State()        # вложения
+
+
+class EdoResponseSG(StatesGroup):
+    """Бухгалтерия: ответ на запрос ЭДО."""
+    response_type = State()      # Подписано / Ожидание / Запрос документов
+    comment = State()            # комментарий
+    attachments = State()        # вложения
+
+
+class MyInvoicesSG(StatesGroup):
+    """Менеджер: Мои Счета — просмотр списка счетов."""
+    viewing = State()
+
+
+class LeadToProjectSG(StatesGroup):
+    """РП: Лид в проект — назначение лида менеджеру."""
+    pick_manager = State()       # выбор менеджера (КВ / КИА / НПН)
+    description = State()        # описание + источник лида
+    source = State()             # источник лида
+    attachments = State()        # вложения
+
+
+class RoleSwitchSG(StatesGroup):
+    """РП: Смена роли — переключение РП ↔ Менеджер НПН."""
+    confirm = State()            # подтверждение переключения
+
+
+class InstallerInvoiceOkSG(StatesGroup):
+    """Монтажник: Счет ОК — подтверждение выполнения работ."""
+    select_invoice = State()     # выбор счёта из списка
+    comment = State()            # комментарий
+
+
+class InstallerWorkAcceptSG(StatesGroup):
+    """Монтажник: В Работу — принятие задачи."""
+    viewing = State()
+
+
+class InstallerOrderMaterialsSG(StatesGroup):
+    """Монтажник: Заказ материалов / Заказ доп.материалов → РП."""
+    description = State()        # описание: что нужно
+    comment = State()            # комментарий
+    attachments = State()        # фото/документы с размерами
+
+
+class InstallerDailyReportSG(StatesGroup):
+    """Монтажник: Отчёт за день — текстовое сообщение РП."""
+    text = State()               # объект, что сделано, проблемы, простой
+    attachments = State()        # вложения
+
+
+class ZameryWorkSG(StatesGroup):
+    """Замерщик: работа с замерами."""
+    viewing = State()            # просмотр входящих запросов
+    responding = State()         # ответ: «ок» + бланк замера
+    attachments = State()        # фото, видео, комментарии
+
+
+class ManagerChatProxySG(StatesGroup):
+    """Менеджер/РП: чат-прокси с другими сотрудниками (зеркало для ГД)."""
+    menu = State()               # подменю чата
+    writing = State()            # ввод сообщения
+    writing_attachments = State()  # прикрепление файлов
+
+
+class ZameryZpSG(StatesGroup):
+    """Замерщик: Расчёт ЗП — запрос выплаты с указанием стоимости замеров."""
+    select_invoice = State()     # выбор счёта / объекта
+    cost_per_zamery = State()    # стоимость каждого замера
+    all_same_price = State()     # все замеры по одной цене? (да/нет)
+    custom_prices = State()      # ввод разных цен
+    confirm = State()            # подтверждение + отправка ГД

@@ -171,7 +171,7 @@ def _employee_roles_kb(user_id: int, mode: str) -> InlineKeyboardBuilder:
         (Role.DRIVER, "Водитель"),
         (Role.LOADER, "Грузчик"),
         (Role.TINTER, "Тонировщик"),
-        (Role.GD, "Ген.дир"),
+        (Role.GD, "ГД"),
     ]
     prefix = "➕" if mode == "add" else ("➖" if mode == "remove" else "✅")
     for role, label in roles:

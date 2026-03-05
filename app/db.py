@@ -153,8 +153,171 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_leads_amo ON leads(amo_lead_id);
             CREATE INDEX IF NOT EXISTS idx_leads_claimed ON leads(claimed_by);
+
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel TEXT NOT NULL,
+                sender_id INTEGER NOT NULL,
+                receiver_id INTEGER,
+                receiver_chat_id INTEGER,
+                direction TEXT NOT NULL,
+                text TEXT,
+                tg_message_id INTEGER,
+                forwarded_message_id INTEGER,
+                has_attachment INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_channel ON chat_messages(channel, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_sender ON chat_messages(sender_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS chat_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_message_id INTEGER NOT NULL REFERENCES chat_messages(id),
+                tg_file_id TEXT NOT NULL,
+                tg_file_unique_id TEXT,
+                file_type TEXT NOT NULL,
+                caption TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_attach_msg ON chat_attachments(chat_message_id);
+
+            CREATE TABLE IF NOT EXISTS finance_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel TEXT NOT NULL,
+                chat_message_id INTEGER REFERENCES chat_messages(id),
+                amount REAL NOT NULL,
+                description TEXT,
+                entered_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_finance_channel ON finance_entries(channel, created_at DESC);
+
+            -- ======== НОВЫЕ ТАБЛИЦЫ (расширение на все роли) ========
+
+            CREATE TABLE IF NOT EXISTS invoices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_number TEXT NOT NULL,
+                project_id INTEGER REFERENCES projects(id),
+                supplier TEXT,
+                amount REAL,
+                description TEXT,
+                object_address TEXT,
+                payment_deadline TEXT,
+
+                created_by INTEGER NOT NULL,
+                creator_role TEXT NOT NULL,
+                assigned_to INTEGER,
+
+                status TEXT NOT NULL DEFAULT 'new',
+                is_credit INTEGER DEFAULT 0,
+
+                installer_ok INTEGER DEFAULT 0,
+                installer_ok_at TEXT,
+                installer_ok_by INTEGER,
+
+                edo_signed INTEGER DEFAULT 0,
+                edo_signed_at TEXT,
+                edo_task_id INTEGER,
+
+                no_debts INTEGER DEFAULT 0,
+                no_debts_at TEXT,
+
+                close_comment TEXT,
+
+                zp_status TEXT DEFAULT 'not_requested',
+                zp_requested_at TEXT,
+                zp_approved_at TEXT,
+
+                task_id INTEGER REFERENCES tasks(id),
+
+                payment_file_id TEXT,
+                payment_comment TEXT,
+
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_invoices_number ON invoices(invoice_number);
+            CREATE INDEX IF NOT EXISTS idx_invoices_created_by ON invoices(created_by, status);
+            CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
+
+            CREATE TABLE IF NOT EXISTS edo_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_type TEXT NOT NULL,
+                invoice_number TEXT,
+                description TEXT,
+                comment TEXT,
+
+                requested_by INTEGER NOT NULL,
+                requested_by_role TEXT NOT NULL,
+
+                assigned_to INTEGER NOT NULL,
+                task_id INTEGER REFERENCES tasks(id),
+
+                status TEXT NOT NULL DEFAULT 'open',
+                signed_at TEXT,
+
+                received_at TEXT NOT NULL,
+                processing_started_at TEXT,
+                completed_at TEXT,
+                processing_time_minutes INTEGER,
+
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_edo_req_status ON edo_requests(status);
+            CREATE INDEX IF NOT EXISTS idx_edo_req_assigned ON edo_requests(assigned_to, status);
+
+            CREATE TABLE IF NOT EXISTS lead_tracking (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_source TEXT,
+                assigned_manager_role TEXT NOT NULL,
+                assigned_manager_id INTEGER NOT NULL,
+
+                assigned_by INTEGER NOT NULL,
+                assigned_at TEXT NOT NULL,
+
+                response_at TEXT,
+                processing_time_minutes INTEGER,
+
+                project_id INTEGER REFERENCES projects(id),
+                task_id INTEGER REFERENCES tasks(id),
+
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_lead_tracking_mgr ON lead_tracking(assigned_manager_id);
             """
         )
+        await self.conn.commit()
+
+        # --- Migrations: add columns if they don't exist yet ---
+        migration_columns = [
+            # Дополнение 1: подписание ЭДО / бумажные оригиналы при «Счёт в работу»
+            ("invoices", "docs_edo_signed", "INTEGER DEFAULT 0"),
+            ("invoices", "docs_paper_signed", "INTEGER DEFAULT 0"),
+            ("invoices", "docs_originals_holder", "TEXT"),  # 'gd' | 'manager' | NULL
+            ("invoices", "docs_originals_comment", "TEXT"),
+            # Дополнение 2: оригиналы закрывающих при «Счёт End»
+            ("invoices", "closing_originals_holder", "TEXT"),  # 'gd' | 'manager' | NULL
+            ("invoices", "closing_originals_comment", "TEXT"),
+            # Дополнение 3: Расчёт ЗП замерщика
+            ("invoices", "zp_zamery_details_json", "TEXT"),  # JSON: [{address, cost}, ...]
+            ("invoices", "zp_zamery_total", "REAL"),
+            # EDO response columns (для complete_edo_request)
+            ("edo_requests", "response_type", "TEXT"),
+            ("edo_requests", "responded_by", "INTEGER"),
+            ("edo_requests", "response_comment", "TEXT"),
+            ("edo_requests", "response_attachments_json", "TEXT"),
+        ]
+        for table, col, col_type in migration_columns:
+            try:
+                await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass  # column already exists
         await self.conn.commit()
 
     # ------------------------- users -------------------------
@@ -804,3 +967,499 @@ class Database:
             )
         rows = await cur.fetchall()
         return [{"entity_id": str(r["entity_id"]), "cnt": int(r["cnt"])} for r in rows]
+
+    # ------------------------- chat proxy -------------------------
+
+    async def save_chat_message(
+        self,
+        channel: str,
+        sender_id: int,
+        direction: str,
+        text: str | None = None,
+        receiver_id: int | None = None,
+        receiver_chat_id: int | None = None,
+        tg_message_id: int | None = None,
+        forwarded_message_id: int | None = None,
+        has_attachment: bool = False,
+    ) -> dict[str, Any]:
+        now = to_iso(utcnow())
+        cur = await self.conn.execute(
+            """
+            INSERT INTO chat_messages
+                (channel, sender_id, receiver_id, receiver_chat_id, direction, text,
+                 tg_message_id, forwarded_message_id, has_attachment, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                channel,
+                sender_id,
+                receiver_id,
+                receiver_chat_id,
+                direction,
+                text,
+                tg_message_id,
+                forwarded_message_id,
+                int(has_attachment),
+                now,
+            ),
+        )
+        await self.conn.commit()
+        row_id = cur.lastrowid
+        cur2 = await self.conn.execute("SELECT * FROM chat_messages WHERE id = ?", (row_id,))
+        row = await cur2.fetchone()
+        return dict(row)
+
+    async def list_chat_messages(self, channel: str, limit: int = 20) -> list[dict[str, Any]]:
+        cur = await self.conn.execute(
+            """
+            SELECT * FROM chat_messages
+            WHERE channel = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (channel, limit),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    async def save_chat_attachment(
+        self,
+        chat_message_id: int,
+        tg_file_id: str,
+        file_type: str,
+        tg_file_unique_id: str | None = None,
+        caption: str | None = None,
+    ) -> dict[str, Any]:
+        now = to_iso(utcnow())
+        cur = await self.conn.execute(
+            """
+            INSERT INTO chat_attachments
+                (chat_message_id, tg_file_id, tg_file_unique_id, file_type, caption, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (chat_message_id, tg_file_id, tg_file_unique_id, file_type, caption, now),
+        )
+        await self.conn.commit()
+        row_id = cur.lastrowid
+        cur2 = await self.conn.execute("SELECT * FROM chat_attachments WHERE id = ?", (row_id,))
+        row = await cur2.fetchone()
+        return dict(row)
+
+    async def list_chat_attachments(self, chat_message_id: int) -> list[dict[str, Any]]:
+        cur = await self.conn.execute(
+            "SELECT * FROM chat_attachments WHERE chat_message_id = ? ORDER BY id",
+            (chat_message_id,),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------- finance entries -------------------------
+
+    async def save_finance_entry(
+        self,
+        channel: str,
+        amount: float,
+        entered_by: int,
+        chat_message_id: int | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        now = to_iso(utcnow())
+        cur = await self.conn.execute(
+            """
+            INSERT INTO finance_entries (channel, chat_message_id, amount, description, entered_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (channel, chat_message_id, amount, description, entered_by, now),
+        )
+        await self.conn.commit()
+        row_id = cur.lastrowid
+        cur2 = await self.conn.execute("SELECT * FROM finance_entries WHERE id = ?", (row_id,))
+        row = await cur2.fetchone()
+        return dict(row)
+
+    async def get_finance_summary(self, channel: str) -> dict[str, Any]:
+        """Return total balance and last entries for a channel."""
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) as total FROM finance_entries WHERE channel = ?",
+            (channel,),
+        )
+        row = await cur.fetchone()
+        total = row["total"] if row else 0.0
+
+        cur2 = await self.conn.execute(
+            """
+            SELECT * FROM finance_entries
+            WHERE channel = ?
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            (channel,),
+        )
+        rows = await cur2.fetchall()
+        entries = [dict(r) for r in rows]
+
+        return {"total": total, "entries": entries}
+
+    # ------------------------- invoice search -------------------------
+
+    async def search_tasks_by_payload(
+        self,
+        field: str,
+        value: str,
+        type_filter: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search tasks by a field inside payload_json (using LIKE)."""
+        types = type_filter or []
+        if types:
+            placeholders = ",".join("?" for _ in types)
+            type_clause = f" AND type IN ({placeholders})"
+        else:
+            type_clause = ""
+
+        # Use JSON extract or LIKE on payload_json
+        like_pattern = f'%"{field}":%{value}%'
+        params: list[Any] = [like_pattern, *types, limit]
+
+        cur = await self.conn.execute(
+            f"""
+            SELECT * FROM tasks
+            WHERE payload_json LIKE ? {type_clause}
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    # =====================================================================
+    # INVOICES
+    # =====================================================================
+
+    async def create_invoice(
+        self,
+        invoice_number: str,
+        project_id: int | None,
+        created_by: int,
+        creator_role: str,
+        object_address: str = "",
+        amount: float = 0.0,
+        supplier: str | None = None,
+        description: str | None = None,
+        assigned_to: int | None = None,
+        payment_deadline: str | None = None,
+    ) -> int:
+        """Create a new invoice record (status = NEW)."""
+        now = utcnow()
+        cur = await self.conn.execute(
+            """
+            INSERT INTO invoices
+                (invoice_number, project_id, created_by, creator_role,
+                 object_address, amount, supplier, description,
+                 assigned_to, payment_deadline, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+            """,
+            (invoice_number, project_id, created_by, creator_role,
+             object_address, amount, supplier, description,
+             assigned_to, payment_deadline, now, now),
+        )
+        await self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def get_invoice(self, invoice_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices WHERE id = ?", (invoice_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_invoice_by_number(self, invoice_number: str) -> dict[str, Any] | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices WHERE invoice_number = ?", (invoice_number,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_invoices(
+        self,
+        created_by: int | None = None,
+        assigned_to: int | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if created_by is not None:
+            clauses.append("created_by = ?")
+            params.append(created_by)
+        if assigned_to is not None:
+            clauses.append("assigned_to = ?")
+            params.append(assigned_to)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        cur = await self.conn.execute(
+            f"SELECT * FROM invoices {where} ORDER BY created_at DESC LIMIT ?",
+            tuple(params),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def update_invoice_status(
+        self, invoice_id: int, new_status: str
+    ) -> None:
+        await self.conn.execute(
+            "UPDATE invoices SET status = ?, updated_at = ? WHERE id = ?",
+            (new_status, utcnow(), invoice_id),
+        )
+        await self.conn.commit()
+
+    async def update_invoice(
+        self, invoice_id: int, **fields: Any
+    ) -> None:
+        """Generic update: pass column=value pairs."""
+        if not fields:
+            return
+        fields["updated_at"] = utcnow()
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [invoice_id]
+        await self.conn.execute(
+            f"UPDATE invoices SET {set_clause} WHERE id = ?",
+            tuple(vals),
+        )
+        await self.conn.commit()
+
+    async def set_invoice_installer_ok(
+        self, invoice_id: int, ok: bool = True
+    ) -> None:
+        fields: dict[str, Any] = {"installer_ok": int(ok)}
+        if ok:
+            fields["installer_ok_at"] = utcnow()
+        await self.update_invoice(invoice_id, **fields)
+
+    async def set_invoice_edo_signed(
+        self, invoice_id: int, signed: bool = True
+    ) -> None:
+        fields: dict[str, Any] = {"edo_signed": int(signed)}
+        if signed:
+            fields["edo_signed_at"] = utcnow()
+        await self.update_invoice(invoice_id, **fields)
+
+    async def set_invoice_no_debts(
+        self, invoice_id: int, no_debts: bool = True
+    ) -> None:
+        fields: dict[str, Any] = {"no_debts": int(no_debts)}
+        if no_debts:
+            fields["no_debts_at"] = utcnow()
+        await self.update_invoice(invoice_id, **fields)
+
+    async def set_invoice_zp_status(
+        self, invoice_id: int, zp_status: str
+    ) -> None:
+        await self.update_invoice(invoice_id, zp_status=zp_status)
+
+    async def check_close_conditions(self, invoice_id: int) -> dict[str, bool]:
+        """Return dict with 4 close-condition flags."""
+        inv = await self.get_invoice(invoice_id)
+        if not inv:
+            return {
+                "installer_ok": False,
+                "edo_signed": False,
+                "no_debts": False,
+                "zp_approved": False,
+            }
+        return {
+            "installer_ok": bool(inv.get("installer_ok")),
+            "edo_signed": bool(inv.get("edo_signed")),
+            "no_debts": bool(inv.get("no_debts")),
+            "zp_approved": inv.get("zp_status") == "approved",
+        }
+
+    async def search_invoices(
+        self, query: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Search invoices by number or address (LIKE)."""
+        pattern = f"%{query}%"
+        cur = await self.conn.execute(
+            """
+            SELECT * FROM invoices
+            WHERE invoice_number LIKE ? OR object_address LIKE ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (pattern, pattern, limit),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    # =====================================================================
+    # EDO REQUESTS
+    # =====================================================================
+
+    async def create_edo_request(
+        self,
+        request_type: str,
+        requested_by: int,
+        requested_by_role: str,
+        assigned_to: int,
+        invoice_number: str | None = None,
+        description: str | None = None,
+        comment: str | None = None,
+        task_id: int | None = None,
+    ) -> int:
+        now = utcnow()
+        cur = await self.conn.execute(
+            """
+            INSERT INTO edo_requests
+                (request_type, requested_by, requested_by_role, assigned_to,
+                 invoice_number, description, comment, task_id,
+                 status, received_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+            """,
+            (request_type, requested_by, requested_by_role, assigned_to,
+             invoice_number, description, comment, task_id,
+             now, now),
+        )
+        await self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def get_edo_request(self, edo_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM edo_requests WHERE id = ?", (edo_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_edo_requests(
+        self,
+        requested_by: int | None = None,
+        assigned_to: int | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if requested_by is not None:
+            clauses.append("requested_by = ?")
+            params.append(requested_by)
+        if assigned_to is not None:
+            clauses.append("assigned_to = ?")
+            params.append(assigned_to)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        cur = await self.conn.execute(
+            f"SELECT * FROM edo_requests {where} ORDER BY created_at DESC LIMIT ?",
+            tuple(params),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def update_edo_request(
+        self, edo_id: int, **fields: Any
+    ) -> None:
+        if not fields:
+            return
+        fields["updated_at"] = utcnow()
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [edo_id]
+        await self.conn.execute(
+            f"UPDATE edo_requests SET {set_clause} WHERE id = ?",
+            tuple(vals),
+        )
+        await self.conn.commit()
+
+    async def complete_edo_request(
+        self,
+        edo_id: int,
+        response_type: str,
+        responder_id: int,
+        response_comment: str | None = None,
+        response_attachments_json: str | None = None,
+    ) -> None:
+        now = utcnow()
+        # Use generic update — response columns added via migration
+        await self.update_edo_request(
+            edo_id,
+            status="done",
+            response_type=response_type,
+            responded_by=responder_id,
+            response_comment=response_comment,
+            response_attachments_json=response_attachments_json,
+            completed_at=now,
+        )
+
+    # =====================================================================
+    # LEAD TRACKING
+    # =====================================================================
+
+    async def create_lead_tracking(
+        self,
+        assigned_by: int,
+        assigned_manager_id: int,
+        assigned_manager_role: str,
+        lead_source: str | None = None,
+        task_id: int | None = None,
+        project_id: int | None = None,
+    ) -> int:
+        now = utcnow()
+        cur = await self.conn.execute(
+            """
+            INSERT INTO lead_tracking
+                (assigned_by, assigned_manager_id, assigned_manager_role,
+                 lead_source, task_id, project_id, assigned_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (assigned_by, assigned_manager_id, assigned_manager_role,
+             lead_source, task_id, project_id, now, now),
+        )
+        await self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def update_lead_tracking_response(
+        self, lead_id: int
+    ) -> None:
+        now = utcnow()
+        await self.conn.execute(
+            "UPDATE lead_tracking SET response_at = ? WHERE id = ?",
+            (now, lead_id),
+        )
+        await self.conn.commit()
+
+    async def list_leads(
+        self,
+        assigned_manager_id: int | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if assigned_manager_id is not None:
+            clauses.append("assigned_manager_id = ?")
+            params.append(assigned_manager_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        cur = await self.conn.execute(
+            f"SELECT * FROM lead_tracking {where} ORDER BY assigned_at DESC LIMIT ?",
+            tuple(params),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    # =====================================================================
+    # ROLE SWITCHING (РП ↔ НПН)
+    # =====================================================================
+
+    async def switch_user_role(
+        self, telegram_id: int, new_role: str
+    ) -> None:
+        """Overwrite user role in DB (for РП ↔ НПН switching)."""
+        await self.conn.execute(
+            "UPDATE users SET role = ?, updated_at = ? WHERE telegram_id = ?",
+            (new_role, utcnow(), telegram_id),
+        )
+        await self.conn.commit()

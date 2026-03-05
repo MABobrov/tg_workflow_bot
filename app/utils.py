@@ -13,16 +13,24 @@ from aiogram import html
 
 ROLE_LABELS: dict[str, str] = {
     "manager": "Менеджер",
+    "manager_kv": "Менеджер КВ",
+    "manager_kia": "Менеджер КИА",
+    "manager_npn": "Менеджер НПН",
     "rp": "РП",
     "td": "ТД",
     "accounting": "Бухгалтерия",
     "installer": "Монтажник",
-    "gd": "Ген.дир",
+    "zamery": "Замерщик",
+    "gd": "ГД",
     "driver": "Водитель",
     "loader": "Грузчик",
     "tinter": "Тонировщик",
 }
-ROLE_ORDER: list[str] = ["manager", "rp", "td", "accounting", "installer", "driver", "loader", "tinter", "gd"]
+ROLE_ORDER: list[str] = [
+    "manager", "manager_kv", "manager_kia", "manager_npn",
+    "rp", "td", "accounting", "installer", "zamery",
+    "driver", "loader", "tinter", "gd",
+]
 
 PROJECT_STATUS_LABELS: dict[str, str] = {
     "docs_request": "Запрос документов",
@@ -67,6 +75,16 @@ TASK_TYPE_LABELS: dict[str, str] = {
     "tinting_request": "Заявка на тонировку",
     "tinting_done": "Тонировка выполнена",
     "assign_lead": "Распределение лида",
+    "invoice_payment": "Счёт на оплату",
+    "gd_task": "Задача от ГД",
+    "not_urgent_gd": "Не срочно ГД",
+    # --- новые типы (фаза расширения) ---
+    "edo_request": "Запрос ЭДО",
+    "installer_ok": "Монтажник — Счет ОК",
+    "zp_calculation": "Расчёт ЗП",
+    "lead_to_project": "Лид в проект",
+    "invoice_end": "Счет End",
+    "check_kp": "Проверить КП / Счет",
 }
 
 

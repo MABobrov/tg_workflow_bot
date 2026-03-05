@@ -23,21 +23,25 @@ from .services.lead_poller import lead_poller_loop
 from .services.reminders import reminders_loop
 
 from .handlers import (
-    accounting,
+    accounting_new,
     admin,
+    chat_proxy,
     common,
     driver,
+    gd,
     group_guard,
-    installer,
+    installer_new,
     leads,
     manager,
+    manager_new,
     projects,
-    rp,
+    rp_new,
     search,
     tasks,
     td,
     tinter,
     urgent,
+    zamery,
 )
 
 
@@ -145,13 +149,20 @@ async def main() -> None:
     dp.include_router(search.router)
     dp.include_router(projects.router)
 
-    dp.include_router(manager.router)
-    dp.include_router(rp.router)
-    dp.include_router(td.router)
-    dp.include_router(accounting.router)
-    dp.include_router(installer.router)
-    dp.include_router(driver.router)
-    dp.include_router(tinter.router)
+    # New role-specific routers
+    dp.include_router(manager_new.router)
+    dp.include_router(rp_new.router)
+    dp.include_router(accounting_new.router)
+    dp.include_router(installer_new.router)
+    dp.include_router(zamery.router)
+
+    # Legacy routers (kept: unique active handlers)
+    dp.include_router(manager.router)     # ManagerProjectCb, DocsRequest, etc.
+    dp.include_router(td.router)          # SupplierPayment, Подтверждение оплат
+    dp.include_router(driver.router)      # Доставка выполнена
+    dp.include_router(tinter.router)      # Тонировка выполнена
+    dp.include_router(gd.router)
+    dp.include_router(chat_proxy.router)
     dp.include_router(urgent.router)
     dp.include_router(leads.router)
 

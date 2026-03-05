@@ -66,6 +66,17 @@ class Config:
     default_driver_username: Optional[str]
     default_tinter_username: Optional[str]
 
+    # GD chat-proxy: managers and zamery
+    default_manager_kv_id: Optional[int]
+    default_manager_kv_username: Optional[str]
+    default_manager_kia_id: Optional[int]
+    default_manager_kia_username: Optional[str]
+    default_manager_npn_id: Optional[int]
+    default_manager_npn_username: Optional[str]
+    default_zamery_id: Optional[int]
+    default_zamery_username: Optional[str]
+    chat_history_limit: int
+
     # Google Sheets integration
     sheets_enabled: bool
     gsheet_spreadsheet_id: Optional[str]
@@ -94,6 +105,38 @@ class Config:
     remind_soon_minutes: int
     remind_overdue_minutes: int
 
+    def get_role_id(self, role: str) -> int | None:
+        """Return default telegram_id for a given role string."""
+        mapping = {
+            "rp": self.default_rp_id,
+            "td": self.default_td_id,
+            "accounting": self.default_accounting_id,
+            "gd": self.default_gd_id,
+            "driver": self.default_driver_id,
+            "tinter": self.default_tinter_id,
+            "manager_kv": self.default_manager_kv_id,
+            "manager_kia": self.default_manager_kia_id,
+            "manager_npn": self.default_manager_npn_id,
+            "zamery": self.default_zamery_id,
+        }
+        return mapping.get(role)
+
+    def get_role_username(self, role: str) -> str | None:
+        """Return default username for a given role string."""
+        mapping = {
+            "rp": self.default_rp_username,
+            "td": self.default_td_username,
+            "accounting": self.default_accounting_username,
+            "gd": self.default_gd_username,
+            "driver": self.default_driver_username,
+            "tinter": self.default_tinter_username,
+            "manager_kv": self.default_manager_kv_username,
+            "manager_kia": self.default_manager_kia_username,
+            "manager_npn": self.default_manager_npn_username,
+            "zamery": self.default_zamery_username,
+        }
+        return mapping.get(role)
+
 
 def load_config() -> Config:
     token = os.getenv("BOT_TOKEN", "").strip()
@@ -119,6 +162,16 @@ def load_config() -> Config:
     default_gd_username = _parse_username(os.getenv("DEFAULT_GD_USERNAME"))
     default_driver_username = _parse_username(os.getenv("DEFAULT_DRIVER_USERNAME"))
     default_tinter_username = _parse_username(os.getenv("DEFAULT_TINTER_USERNAME"))
+
+    default_manager_kv_id = _parse_int(os.getenv("DEFAULT_MANAGER_KV_ID"))
+    default_manager_kv_username = _parse_username(os.getenv("DEFAULT_MANAGER_KV_USERNAME"))
+    default_manager_kia_id = _parse_int(os.getenv("DEFAULT_MANAGER_KIA_ID"))
+    default_manager_kia_username = _parse_username(os.getenv("DEFAULT_MANAGER_KIA_USERNAME"))
+    default_manager_npn_id = _parse_int(os.getenv("DEFAULT_MANAGER_NPN_ID"))
+    default_manager_npn_username = _parse_username(os.getenv("DEFAULT_MANAGER_NPN_USERNAME"))
+    default_zamery_id = _parse_int(os.getenv("DEFAULT_ZAMERY_ID"))
+    default_zamery_username = _parse_username(os.getenv("DEFAULT_ZAMERY_USERNAME"))
+    chat_history_limit = int(os.getenv("CHAT_HISTORY_LIMIT", "20"))
 
     sheets_enabled = _parse_bool(os.getenv("SHEETS_ENABLED"), default=False)
     gsheet_spreadsheet_id = os.getenv("GSHEET_SPREADSHEET_ID")
@@ -161,6 +214,15 @@ def load_config() -> Config:
         default_gd_username=default_gd_username,
         default_driver_username=default_driver_username,
         default_tinter_username=default_tinter_username,
+        default_manager_kv_id=default_manager_kv_id,
+        default_manager_kv_username=default_manager_kv_username,
+        default_manager_kia_id=default_manager_kia_id,
+        default_manager_kia_username=default_manager_kia_username,
+        default_manager_npn_id=default_manager_npn_id,
+        default_manager_npn_username=default_manager_npn_username,
+        default_zamery_id=default_zamery_id,
+        default_zamery_username=default_zamery_username,
+        chat_history_limit=chat_history_limit,
         sheets_enabled=sheets_enabled,
         gsheet_spreadsheet_id=gsheet_spreadsheet_id,
         gsheet_projects_tab=gsheet_projects_tab,

@@ -20,6 +20,7 @@ from ..services.notifier import Notifier
 from ..states import (
     AssignLeadSG,
     DeliveryRequestSG,
+    InvoiceCreateSG,
     OrderMaterialSG,
     TintingRequestSG,
 )
@@ -36,7 +37,7 @@ router.callback_query.filter(F.message.chat.type == "private")
 
 @router.message(F.text == "📥 Входящие задачи")
 async def inbox_tasks(message: Message, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.MANAGER, Role.RP, Role.TD, Role.ACCOUNTING, Role.GD, Role.DRIVER, Role.LOADER, Role.TINTER]):
+    if not await require_role_message(message, db, roles=[Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN, Role.RP, Role.TD, Role.ACCOUNTING, Role.GD, Role.DRIVER, Role.LOADER, Role.TINTER, Role.ZAMERY]):
         return
     tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)  # type: ignore
     if not tasks:
@@ -785,3 +786,217 @@ async def tinting_req_finalize(
         ),
     )  # type: ignore
     await state.clear()
+
+
+# ---------------------------------------------------------------------------
+# Invoice creation flow (РП -> ГД): "Создать счёт на оплату"
+# ---------------------------------------------------------------------------
+
+@router.message(F.text == "💳 Счёт на оплату ГД")
+async def start_invoice_create(message: Message, state: FSMContext, db: Database) -> None:
+    """RP starts creating an invoice payment task for GD."""
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+
+    projects = await db.list_recent_projects(limit=30)
+    if not projects:
+        await message.answer("Нет проектов. Сначала создайте проект.")
+        return
+
+    from ..keyboards import projects_kb
+    await state.clear()
+    await state.set_state(InvoiceCreateSG.project)
+    await message.answer(
+        "💳 <b>Счёт на оплату ГД</b>\n"
+        "Шаг 1/5: выберите проект:",
+        reply_markup=projects_kb(projects, ctx="invoice"),
+    )
+
+
+@router.callback_query(
+    InvoiceCreateSG.project,
+    lambda cb: cb.data and cb.data.startswith("project:"),
+)
+async def invoice_pick_project(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Pick project for invoice."""
+    await cb.answer()
+    # Parse project_id from callback data
+    from ..callbacks import ProjectCb
+    data = ProjectCb.unpack(cb.data)
+    project = await db.get_project(data.project_id)
+    await state.update_data(project_id=data.project_id, project_code=project.get("code", ""))
+    await state.set_state(InvoiceCreateSG.supplier)
+    await cb.message.answer("Шаг 2/5: укажите поставщика:")  # type: ignore[union-attr]
+
+
+@router.message(InvoiceCreateSG.supplier)
+async def invoice_supplier(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Укажите поставщика:")
+        return
+    await state.update_data(supplier=text)
+    await state.set_state(InvoiceCreateSG.amount)
+    await message.answer("Шаг 3/5: укажите сумму:")
+
+
+@router.message(InvoiceCreateSG.amount)
+async def invoice_amount(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip().replace(",", ".").replace(" ", "")
+    try:
+        amount = float(text)
+    except ValueError:
+        await message.answer("Укажите сумму числом:")
+        return
+    await state.update_data(amount=amount)
+    await state.set_state(InvoiceCreateSG.invoice_number)
+    await message.answer("Шаг 4/5: укажите номер счёта:")
+
+
+@router.message(InvoiceCreateSG.invoice_number)
+async def invoice_number(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Укажите номер счёта:")
+        return
+    await state.update_data(invoice_number=text)
+    await state.set_state(InvoiceCreateSG.comment)
+    await message.answer("Шаг 5/5: комментарий (или напишите «-» для пропуска):")
+
+
+@router.message(InvoiceCreateSG.comment)
+async def invoice_comment(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    comment = text if text != "-" else ""
+    await state.update_data(comment=comment, attachments=[])
+    await state.set_state(InvoiceCreateSG.attachments)
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Создать счёт", callback_data="invoice_create:finalize")
+    b.button(text="⏭ Без вложений", callback_data="invoice_create:finalize")
+    b.adjust(1)
+    await message.answer(
+        "Прикрепите файлы (счёт, скан). Когда готовы — нажмите кнопку:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(InvoiceCreateSG.attachments)
+async def invoice_attach(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    attachments = data.get("attachments", [])
+    if message.document:
+        attachments.append({
+            "file_type": "document",
+            "file_id": message.document.file_id,
+            "file_unique_id": message.document.file_unique_id,
+            "caption": message.caption,
+        })
+    elif message.photo:
+        ph = message.photo[-1]
+        attachments.append({
+            "file_type": "photo",
+            "file_id": ph.file_id,
+            "file_unique_id": ph.file_unique_id,
+            "caption": message.caption,
+        })
+    else:
+        await message.answer("Прикрепите файл/фото или нажмите кнопку.")
+        return
+    await state.update_data(attachments=attachments)
+    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+
+
+@router.callback_query(F.data == "invoice_create:finalize")
+async def invoice_finalize(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: "Notifier",
+    integrations: "IntegrationHub",
+) -> None:
+    """Create INVOICE_PAYMENT task and notify GD."""
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+
+    data = await state.get_data()
+    project_id = data.get("project_id")
+    supplier = data.get("supplier", "")
+    amount = data.get("amount", 0)
+    invoice_number = data.get("invoice_number", "")
+    comment = data.get("comment", "")
+    attachments = data.get("attachments", [])
+
+    from ..services.assignment import resolve_default_assignee
+    from ..enums import TaskType, TaskStatus
+    from ..utils import utcnow, to_iso
+    from datetime import timedelta
+
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
+    if not gd_id:
+        await cb.message.answer("⚠️ ГД не найден. Настройте роль GD.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+
+    due = utcnow() + timedelta(days=3)
+    task = await db.create_task(
+        project_id=project_id,
+        type_=TaskType.INVOICE_PAYMENT,
+        status=TaskStatus.OPEN,
+        created_by=u.id,
+        assigned_to=int(gd_id),
+        due_at_iso=to_iso(due),
+        payload={
+            "supplier": supplier,
+            "amount": amount,
+            "invoice_number": invoice_number,
+            "comment": comment,
+            "sender_id": u.id,
+            "sender_username": u.username,
+        },
+    )
+
+    for a in attachments:
+        await db.add_attachment(
+            task_id=int(task["id"]),
+            file_id=a["file_id"],
+            file_unique_id=a.get("file_unique_id"),
+            file_type=a["file_type"],
+            caption=a.get("caption"),
+        )
+
+    project_code = data.get("project_code", "")
+    msg = (
+        "💳 <b>Новый счёт на оплату</b>\n\n"
+        f"📋 Проект: {project_code}\n"
+        f"🏢 Поставщик: {supplier}\n"
+        f"💰 Сумма: {amount}\n"
+        f"🔢 № счёта: {invoice_number}\n"
+    )
+    if comment:
+        msg += f"💬 {comment}\n"
+    msg += f"\nОт: @{u.username or '-'}"
+
+    from ..keyboards import task_actions_kb
+    await notifier.safe_send(int(gd_id), msg, reply_markup=task_actions_kb(task))
+
+    for a in attachments:
+        await notifier.safe_send_media(int(gd_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+
+    await integrations.sync_task(task, project_code=project_code)
+    await state.clear()
+
+    from ..keyboards import main_menu
+    role_raw = None
+    user_row = await db.get_user_optional(u.id)
+    if user_row:
+        role_raw = user_row.role
+    is_admin = u.id in (config.admin_ids or set())
+    await cb.message.answer(  # type: ignore[union-attr]
+        "✅ Счёт на оплату отправлен ГД.",
+        reply_markup=main_menu(role_raw, is_admin=is_admin),
+    )
