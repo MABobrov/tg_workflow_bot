@@ -45,7 +45,6 @@ from ..keyboards import (
     MGR_BTN_ZAMERY,
     edo_type_kb,
     invoice_list_kb,
-    invoice_end_conditions_kb,
     main_menu,
     manager_chat_submenu,
     tasks_kb,

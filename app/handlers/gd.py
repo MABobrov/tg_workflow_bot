@@ -6,14 +6,12 @@ Phase 1:
 
 Phase 2:
 - Chat-proxy buttons: Чат с РП, Замеры, Бухгалтерия, Монтажная гр., Отд.Продаж,
-  КВ Кред, КИА Кред, Бухгалтер 1
-- "Сообщение Всем" — broadcast to all channels
+  КВ Кред, КИА Кред, НПН Кред
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -27,8 +25,6 @@ from ..keyboards import (
     gd_sales_submenu,
     gd_sales_write_to_kb,
     GD_BTN_ACCOUNTING,
-    GD_BTN_ACCOUNTANT1,
-    GD_BTN_BROADCAST,
     GD_BTN_CHAT_RP,
     GD_BTN_INVOICES,
     GD_BTN_KIA_CRED,
@@ -45,8 +41,8 @@ from ..keyboards import (
 )
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
-from ..states import BroadcastSG, ChatProxySG, InvoiceSearchSG, SalesWriteSG
-from ..utils import private_only_reply_markup, task_type_label
+from ..states import ChatProxySG, InvoiceSearchSG, SalesWriteSG
+from ..utils import private_only_reply_markup
 from .auth import require_role_message
 from .chat_proxy import enter_chat_menu, resolve_channel_target, channel_label
 
@@ -299,13 +295,6 @@ async def gd_chat_npn(message: Message, state: FSMContext, db: Database) -> None
     await enter_chat_menu(message, state, channel="manager_npn")
 
 
-@router.message(F.text == GD_BTN_ACCOUNTANT1)
-async def gd_chat_accountant1(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.GD]):
-        return
-    await enter_chat_menu(message, state, channel="accountant1")
-
-
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -475,150 +464,6 @@ async def sales_send_message(
 
 
 # "Сообщение Всем" — broadcast to all channels
-# ---------------------------------------------------------------------------
-
-BROADCAST_CHANNELS = ["rp", "manager_kv", "manager_kia", "accounting", "zamery", "montazh"]
-
-
-@router.message(F.text == GD_BTN_BROADCAST)
-async def gd_broadcast_start(message: Message, state: FSMContext, db: Database) -> None:
-    """Start broadcast message flow."""
-    if not await require_role_message(message, db, roles=[Role.GD]):
-        return
-    await state.clear()
-    await state.set_state(BroadcastSG.text)
-    await state.update_data(attachments=[])
-    await message.answer(
-        "📢 <b>Сообщение Всем</b>\n\n"
-        "Введите текст сообщения для рассылки.\n"
-        "Для отмены: /cancel",
-    )
-
-
-@router.message(BroadcastSG.text)
-async def gd_broadcast_text(message: Message, state: FSMContext) -> None:
-    """Capture broadcast text, ask for attachments."""
-    text = (message.text or "").strip()
-    if len(text) < 2:
-        await message.answer("Сообщение слишком короткое. Введите текст:")
-        return
-
-    await state.update_data(broadcast_text=text)
-    await state.set_state(BroadcastSG.attachments)
-
-    b = InlineKeyboardBuilder()
-    b.button(text="✅ Отправить всем", callback_data="gd_broadcast:send")
-    b.button(text="❌ Отмена", callback_data="gd_broadcast:cancel")
-    b.adjust(1)
-    await message.answer(
-        f"📢 <b>Предпросмотр:</b>\n\n{text}\n\n"
-        "Прикрепите файлы (необязательно) или нажмите кнопку для отправки.",
-        reply_markup=b.as_markup(),
-    )
-
-
-@router.message(BroadcastSG.attachments)
-async def gd_broadcast_attachments(message: Message, state: FSMContext) -> None:
-    """Collect file attachments for broadcast."""
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
-
-    if message.document:
-        attachments.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-        })
-    else:
-        await message.answer("Прикрепите файл/фото или нажмите «✅ Отправить всем».")
-        return
-
-    await state.update_data(attachments=attachments)
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
-
-
-@router.callback_query(F.data == "gd_broadcast:send")
-async def gd_broadcast_send(
-    cb: CallbackQuery,
-    state: FSMContext,
-    db: Database,
-    config: Config,
-    notifier: Notifier,
-) -> None:
-    """Send broadcast message to all channels."""
-    await cb.answer()
-    data = await state.get_data()
-    text = data.get("broadcast_text", "")
-    attachments = data.get("attachments", [])
-
-    if not text:
-        await cb.message.answer("⚠️ Текст сообщения пуст.")  # type: ignore[union-attr]
-        await state.clear()
-        return
-
-    header = "📢 <b>Сообщение от ГД:</b>\n\n"
-    full_text = header + text
-
-    sent_count = 0
-    for channel in BROADCAST_CHANNELS:
-        target_id = await resolve_channel_target(channel, db, config)
-        if not target_id:
-            continue
-
-        ok = await notifier.safe_send(target_id, full_text)
-        if ok:
-            sent_count += 1
-            for a in attachments:
-                await notifier.safe_send_media(target_id, a["file_type"], a["file_id"])
-
-            # Save to chat history
-            u = cb.from_user
-            if u:
-                await db.save_chat_message(
-                    channel=channel,
-                    sender_id=u.id,
-                    direction="outgoing",
-                    text=text,
-                    receiver_id=target_id,
-                    has_attachment=bool(attachments),
-                )
-
-    await state.clear()
-    u = cb.from_user
-    is_admin = bool(u and u.id in (config.admin_ids or set()))
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ Сообщение отправлено <b>{sent_count}</b> адресатам.",
-        reply_markup=private_only_reply_markup(
-            cb.message, main_menu(Role.GD, is_admin=is_admin)
-        ),
-    )
-
-
-@router.callback_query(F.data == "gd_broadcast:cancel")
-async def gd_broadcast_cancel(
-    cb: CallbackQuery,
-    state: FSMContext,
-    db: Database,
-    config: Config,
-) -> None:
-    """Cancel broadcast."""
-    await cb.answer("Отменено")
-    await state.clear()
-    u = cb.from_user
-    is_admin = bool(u and u.id in (config.admin_ids or set()))
-    await cb.message.answer(  # type: ignore[union-attr]
-        "Рассылка отменена.",
-        reply_markup=private_only_reply_markup(
-            cb.message, main_menu(Role.GD, is_admin=is_admin)
-        ),
-    )
-
-
 # ---------------------------------------------------------------------------
 # "Синхронизация данных" — Google Sheets resync from GD main menu
 # ---------------------------------------------------------------------------

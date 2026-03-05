@@ -7,7 +7,7 @@ Handles:
 - Processing incoming replies from recipients back to GD
 - Showing tasks related to a channel
 
-Channels: rp, zamery, accounting, montazh, otd_prodazh, manager_kv, manager_kia, manager_npn, accountant1
+Channels: rp, zamery, accounting, montazh, otd_prodazh, manager_kv, manager_kia, manager_npn
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ async def resolve_channel_target(
             return u.telegram_id if u else None
         return None
 
-    if channel in ("accounting", "accountant1"):
+    if channel == "accounting":
         if config.default_accounting_id:
             return config.default_accounting_id
         if config.default_accounting_username:
@@ -120,7 +120,6 @@ def channel_label(channel: str) -> str:
         "manager_kv": "КВ Кред",
         "manager_kia": "КИА Кред",
         "manager_npn": "НПН Кред",
-        "accountant1": "Бухгалтер 1",
     }
     return labels.get(channel, channel)
 

@@ -36,8 +36,6 @@ GD_BTN_CANCEL = "❌ Отмена"
 GD_BTN_ADMIN = "🛠 Админ-панель"
 GD_BTN_KV_CRED = "КВ Кред"
 GD_BTN_KIA_CRED = "КИА Кред"
-GD_BTN_ACCOUNTANT1 = "Бухгалтер 1"
-GD_BTN_BROADCAST = "Сообщение Всем"
 GD_BTN_NPN_CRED = "НПН Кред"
 GD_BTN_PAYMENT_CONFIRM = "✅ Подтверждение оплат"
 GD_BTN_SUPPLIER_PAY = "💸 Оплата поставщику"
@@ -226,7 +224,6 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
         # TD merged into GD — use GD submenu
         return [
             [GD_BTN_KV_CRED, GD_BTN_KIA_CRED],
-            [GD_BTN_ACCOUNTANT1, GD_BTN_BROADCAST],
         ]
     if role == Role.ACCOUNTING:
         return []  # Accounting has no submenu
@@ -235,7 +232,6 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
     if role == Role.GD:
         return [
             [GD_BTN_KV_CRED, GD_BTN_KIA_CRED],
-            [GD_BTN_ACCOUNTANT1, GD_BTN_BROADCAST],
         ]
     if role == Role.DRIVER:
         return [
@@ -485,7 +481,6 @@ def gd_more_menu() -> ReplyKeyboardMarkup:
     """Подменю 'Еще' для ГД."""
     rows = [
         [GD_BTN_KV_CRED, GD_BTN_KIA_CRED],
-        [GD_BTN_ACCOUNTANT1, GD_BTN_BROADCAST],
         [GD_BTN_NPN_CRED],
         [GD_BTN_BACK_HOME, GD_BTN_REFRESH],
         [GD_BTN_CANCEL, GD_BTN_HELP],
