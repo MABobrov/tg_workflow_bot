@@ -100,6 +100,7 @@ async def task_actions(
     if action == "reject":
         task = await db.update_task_status(task_id, TaskStatus.REJECTED)
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await state.clear()
         await cb.message.answer(
             "❌ Задача отклонена.",
             reply_markup=private_only_reply_markup(
@@ -167,6 +168,7 @@ async def task_actions(
         await integrations.sync_task(task, project_code=project.get("code", ""))
         role_now = (await _current_role(db, cb.from_user.id)) if cb.from_user else Role.GD
 
+        await state.clear()
         await cb.message.answer(
             "Готово.",
             reply_markup=private_only_reply_markup(
@@ -220,6 +222,7 @@ async def task_actions(
         if sender_id:
             await notifier.safe_send(int(sender_id), f"⏸ Счёт #{task_id} отложен ГД.")
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await state.clear()
         await cb.message.answer(  # type: ignore
             "⏸ Счёт отложен.",
             reply_markup=private_only_reply_markup(
@@ -239,6 +242,7 @@ async def task_actions(
                 f"❌ Счёт #{task_id} отклонён ГД.",
             )
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await state.clear()
         await cb.message.answer(  # type: ignore
             "❌ Счёт отклонён. РП уведомлён.",
             reply_markup=private_only_reply_markup(
@@ -287,6 +291,7 @@ async def task_actions(
             await integrations.sync_project(project)
 
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await state.clear()
         await cb.message.answer(
             "✅ Закрыл задачу.",
             reply_markup=private_only_reply_markup(
