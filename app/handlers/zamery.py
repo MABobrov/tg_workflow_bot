@@ -29,7 +29,7 @@ from ..keyboards import (
 from ..services.assignment import resolve_default_assignee
 from ..services.notifier import Notifier
 from ..states import ZameryWorkSG, ZameryZpSG
-from ..utils import private_only_reply_markup
+from ..utils import get_initiator_label, private_only_reply_markup
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -256,14 +256,15 @@ async def zamery_zp_confirm_count(
 
     # Отправляем ГД
     gd_id = await resolve_default_assignee(db, config, Role.GD)
+    initiator = await get_initiator_label(db, message.from_user.id)
     summary = (
-        f"💰 <b>Расчёт ЗП замерщика</b>\n\n"
+        f"💰 <b>Расчёт ЗП замерщика</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"📄 Счёт №: <code>{invoice_number}</code>\n"
         f"📍 Адрес: {address}\n\n"
         f"Замеров: <b>{count}</b>\n"
         f"Цена за замер: <b>{cost:,.0f}₽</b>\n"
-        f"<b>Итого: {total:,.0f}₽</b>\n\n"
-        f"От: @{message.from_user.username or '-'}"
+        f"<b>Итого: {total:,.0f}₽</b>"
     )
 
     if gd_id:
@@ -326,13 +327,14 @@ async def zamery_zp_custom(
             lines.append(f"  {i}. {e['description']} — {e['cost']:,.0f}₽")
         details_text = "\n".join(lines)
 
+        initiator = await get_initiator_label(db, message.from_user.id)
         summary = (
-            f"💰 <b>Расчёт ЗП замерщика</b>\n\n"
+            f"💰 <b>Расчёт ЗП замерщика</b>\n"
+            f"👤 От: {initiator}\n\n"
             f"📄 Счёт №: <code>{invoice_number}</code>\n"
             f"📍 Адрес: {address}\n\n"
             f"Замеры:\n{details_text}\n\n"
-            f"<b>Итого: {total:,.0f}₽</b>\n\n"
-            f"От: @{message.from_user.username or '-'}"
+            f"<b>Итого: {total:,.0f}₽</b>"
         )
 
         gd_id = await resolve_default_assignee(db, config, Role.GD)

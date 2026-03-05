@@ -28,6 +28,7 @@ from ..states import (
 )
 from ..utils import (
     fmt_project_card,
+    get_initiator_label,
     parse_amount,
     parse_date,
     parse_roles,
@@ -452,11 +453,12 @@ async def docs_finalize(
         )
 
     # 4) notify RP + work chat
+    initiator = await get_initiator_label(db, u.id)
     project_card = fmt_project_card(project, config.timezone)
     msg_to_rp = (
-        "🟢 <b>Новый запрос: документы/счёт</b>\n\n"
+        "🟢 <b>Новый запрос: документы/счёт</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{project_card}\n\n"
-        f"🧑‍💼 Менеджер: <code>{u.id}</code> @{u.username or '-'}\n"
     )
     if comment:
         msg_to_rp += f"📝 Комментарий: {comment}"
@@ -674,11 +676,12 @@ async def quote_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     project_card = fmt_project_card(project, config.timezone)
     msg = (
-        "🟢 <b>Новый запрос: КП</b>\n\n"
+        "🟢 <b>Новый запрос: КП</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{project_card}\n\n"
-        f"🧑‍💼 Менеджер: <code>{u.id}</code> @{u.username or '-'}\n"
     )
     if measurements:
         msg += f"📐 Размеры/ТЗ: {measurements}\n"
@@ -943,9 +946,11 @@ async def payment_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     project_card = fmt_project_card(project, config.timezone)
     msg = (
-        "🟡 <b>Требуется подтверждение оплаты</b>\n\n"
+        "🟡 <b>Требуется подтверждение оплаты</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{project_card}\n\n"
         f"💰 Сумма: <b>{payment_amount}</b>\n"
         f"💳 Тип: <b>{payment_method}</b>\n"
@@ -1158,9 +1163,11 @@ async def closing_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     project_card = fmt_project_card(project, config.timezone)
     msg = (
-        "🟣 <b>Запрос закрывающих</b>\n\n"
+        "🟣 <b>Запрос закрывающих</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{project_card}\n\n"
         f"📄 Документы: <b>{doc_type}</b>\n"
     )
@@ -1305,12 +1312,13 @@ async def project_end_finalize(
         },
     )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        "🏁 <b>Счёт End</b>\n\n"
+        "🏁 <b>Счёт End</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{fmt_project_card(project, config.timezone)}\n\n"
         f"🧾 Счёт: <b>{invoice_number}</b>\n"
-        f"✍️ Подписание: <b>{sign_type}</b>\n"
-        f"🧑‍💼 От: <code>{u.id}</code> @{u.username or '-'}"
+        f"✍️ Подписание: <b>{sign_type}</b>"
     )
     if comment:
         msg += f"\n📝 Комментарий: {comment}"
@@ -1496,12 +1504,13 @@ async def issue_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        "🟠 <b>Проблема/вопрос</b>\n\n"
+        "🟠 <b>Проблема/вопрос</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{fmt_project_card(project, config.timezone)}\n\n"
         f"⚠️ Тип: <b>{issue_type}</b>\n"
-        f"📝 Описание: {description}\n"
-        f"🧑‍💼 От: <code>{u.id}</code> @{u.username or '-'}"
+        f"📝 Описание: {description}"
     )
     task_kb = task_actions_kb(task)
     await notifier.safe_send(rp_id, msg, reply_markup=task_kb)

@@ -61,7 +61,7 @@ from ..states import (
     IssueSG,
     ManagerChatProxySG,
 )
-from ..utils import private_only_reply_markup, to_iso, utcnow
+from ..utils import get_initiator_label, private_only_reply_markup, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -273,15 +273,16 @@ async def check_kp_comment(
         )
 
     # Notify RP
+    initiator = await get_initiator_label(db, message.from_user.id)
     msg_text = (
-        f"📋 <b>Новый КП от {role_label}</b>\n\n"
+        f"📋 <b>Новый КП от {role_label}</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"📄 Счёт №: <code>{invoice_number}</code>\n"
         f"📍 Адрес: {address}\n"
         f"💰 Сумма: {amount:,.0f}₽\n"
     )
     if comment:
         msg_text += f"💬 Комментарий: {comment}\n"
-    msg_text += f"\nОт: @{message.from_user.username or '-'}"
 
     # Inline button for RP to respond with documents
     b_kp = InlineKeyboardBuilder()
@@ -451,12 +452,13 @@ async def invoice_start_send(
         )
 
     # Notify GD
+    initiator = await get_initiator_label(db, u.id)
     msg_text = (
-        f"💼 <b>Новый счёт на оплату от {role_label}</b>\n\n"
+        f"💼 <b>Новый счёт на оплату от {role_label}</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"📄 Счёт №: <code>{invoice_number}</code>\n"
         f"📍 Адрес: {inv_data.get('object_address', '-')}\n"
         f"💰 Сумма: {inv_data.get('amount', 0):,.0f}₽\n"
-        f"\nОт: @{u.username or '-'}"
     )
 
     from ..keyboards import task_actions_kb
@@ -872,6 +874,7 @@ async def invoice_end_comment(
         },
     )
 
+    initiator = await get_initiator_label(db, message.from_user.id)
     conditions = await db.check_close_conditions(invoice_id)
     cond_text = (
         f"1. {'✅' if conditions['installer_ok'] else '⏳'} Монтажник — Счет ОК\n"
@@ -881,7 +884,8 @@ async def invoice_end_comment(
     )
 
     msg = (
-        f"🏁 <b>Счет End: №{inv['invoice_number']}</b>\n\n"
+        f"🏁 <b>Счет End: №{inv['invoice_number']}</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"📍 Адрес: {inv.get('object_address', '-')}\n"
         f"💰 Сумма: {inv.get('amount', 0):,.0f}₽\n\n"
         f"<b>Условия:</b>\n{cond_text}\n"
@@ -1168,8 +1172,10 @@ async def edo_finalize(
         "other": "Другое",
     }.get(request_type, request_type)
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        f"📄 <b>Запрос ЭДО</b>\n\n"
+        f"📄 <b>Запрос ЭДО</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"Тип: {type_label}\n"
     )
     if invoice_number:
@@ -1178,7 +1184,6 @@ async def edo_finalize(
         msg += f"Описание: {description}\n"
     if comment:
         msg += f"Комментарий: {comment}\n"
-    msg += f"\nОт: @{u.username or '-'}"
 
     # Inline button for accountant to respond to EDO request
     b_edo_resp = InlineKeyboardBuilder()

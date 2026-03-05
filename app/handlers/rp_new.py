@@ -54,7 +54,7 @@ from ..states import (
     LeadToProjectSG,
     ManagerChatProxySG,
 )
-from ..utils import private_only_reply_markup, utcnow
+from ..utils import get_initiator_label, private_only_reply_markup, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -423,11 +423,12 @@ async def lead_finalize(
         "manager_npn": "Менеджер НПН",
     }.get(manager_role, manager_role)
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        f"🎯 <b>Новый лид от РП</b>\n\n"
+        f"🎯 <b>Новый лид от РП</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"📝 {description}\n"
         f"📌 Источник: {source}\n"
-        f"\nОт: @{u.username or '-'}"
     )
 
     from ..keyboards import task_actions_kb
@@ -630,8 +631,10 @@ async def kp_review_comment(
 
     # Send documents to manager
     if manager_id:
+        initiator = await get_initiator_label(db, message.from_user.id)
         msg = (
-            f"📋 <b>Документы по счёту №{invoice_number}</b>\n\n"
+            f"📋 <b>Документы по счёту №{invoice_number}</b>\n"
+            f"👤 От: {initiator}\n\n"
             f"РП проверил КП и подготовил:\n"
             f"• Счёт, Договор, Приложение\n"
         )

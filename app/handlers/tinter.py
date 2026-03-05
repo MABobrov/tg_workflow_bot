@@ -17,7 +17,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import TintingDoneSG
-from ..utils import fmt_project_card, private_only_reply_markup, to_iso, utcnow
+from ..utils import fmt_project_card, get_initiator_label, private_only_reply_markup, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -139,10 +139,11 @@ async def tinting_done_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        "🎨 <b>Тонировка выполнена</b>\n\n"
+        "🎨 <b>Тонировка выполнена</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{fmt_project_card(project, config.timezone)}\n\n"
-        f"🎨 Тонировщик: <code>{u.id}</code> @{u.username or '-'}\n"
     )
     if comment:
         msg += f"📝 Комментарий: {comment}"

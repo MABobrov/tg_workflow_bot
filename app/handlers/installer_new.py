@@ -41,7 +41,7 @@ from ..states import (
     InstallerInvoiceOkSG,
     InstallerOrderMaterialsSG,
 )
-from ..utils import private_only_reply_markup, utcnow
+from ..utils import get_initiator_label, private_only_reply_markup, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -177,13 +177,14 @@ async def order_mat_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        f"📦 <b>Заказ материалов от монтажника</b>\n\n"
+        f"📦 <b>Заказ материалов от монтажника</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"📝 {description}\n"
     )
     if comment:
         msg += f"💬 {comment}\n"
-    msg += f"\nОт: @{u.username or '-'}"
 
     from ..keyboards import task_actions_kb
     await notifier.safe_send(int(rp_id), msg, reply_markup=task_actions_kb(task))
@@ -315,13 +316,14 @@ async def invoice_ok_comment(
         },
     )
 
+    initiator = await get_initiator_label(db, message.from_user.id)
     msg = (
-        f"✅ <b>Монтажник — Счет ОК</b>\n\n"
+        f"✅ <b>Монтажник — Счет ОК</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"Счёт №{inv['invoice_number']}\n"
     )
     if comment:
         msg += f"💬 {comment}\n"
-    msg += f"\nОт: @{message.from_user.username or '-'}"
 
     # Notify manager + RP
     manager_id = inv.get("created_by")
@@ -480,10 +482,11 @@ async def daily_report_finalize(
         has_attachment=bool(attachments),
     )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        f"📝 <b>Отчёт за день от монтажника</b>\n\n"
-        f"{text}\n\n"
-        f"От: @{u.username or '-'}"
+        f"📝 <b>Отчёт за день от монтажника</b>\n"
+        f"👤 От: {initiator}\n\n"
+        f"{text}\n"
     )
 
     await notifier.safe_send(int(rp_id), msg)

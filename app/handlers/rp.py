@@ -24,7 +24,7 @@ from ..states import (
     OrderMaterialSG,
     TintingRequestSG,
 )
-from ..utils import fmt_project_card, parse_date, private_only_reply_markup, to_iso, utcnow
+from ..utils import fmt_project_card, get_initiator_label, parse_date, private_only_reply_markup, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -243,15 +243,16 @@ async def order_mat_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        f"📦 <b>Заказ: {material_type}</b>\n\n"
+        f"📦 <b>Заказ: {material_type}</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{fmt_project_card(project, config.timezone)}\n\n"
         f"🏭 Поставщик: <b>{supplier or '—'}</b>\n"
         f"📋 Спецификация: {description}\n"
     )
     if comment:
         msg += f"📝 Комментарий: {comment}\n"
-    msg += f"👷 От РП: <code>{u.id}</code> @{u.username or '-'}"
 
     task_kb = task_actions_kb(task)
     if td_id:
@@ -429,8 +430,10 @@ async def delivery_req_finalize(
         },
     )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        "🚚 <b>Заявка на доставку</b>\n\n"
+        "🚚 <b>Заявка на доставку</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{fmt_project_card(project, config.timezone)}\n\n"
         f"📍 Откуда: <b>{address_from}</b>\n"
         f"📍 Куда: <b>{address_to}</b>\n"
@@ -439,7 +442,6 @@ async def delivery_req_finalize(
     )
     if comment:
         msg += f"📝 Комментарий: {comment}\n"
-    msg += f"👷 От РП: <code>{u.id}</code> @{u.username or '-'}"
 
     task_kb = task_actions_kb(task)
     if driver_id:
@@ -582,14 +584,15 @@ async def assign_lead_finalize(
         },
     )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        "🎯 <b>Новый лид</b>\n\n"
+        "🎯 <b>Новый лид</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"Менеджер: <b>{manager_label}</b>\n"
         f"📝 Описание: {description}\n"
     )
     if comment:
         msg += f"📝 Комментарий: {comment}\n"
-    msg += f"\nОт РП: <code>{u.id}</code> @{u.username or '-'}"
 
     task_kb = task_actions_kb(task)
     await notifier.safe_send(int(manager_id), msg, reply_markup=task_kb)
@@ -753,14 +756,15 @@ async def tinting_req_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        "🎨 <b>Заявка на тонировку</b>\n\n"
+        "🎨 <b>Заявка на тонировку</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{fmt_project_card(project, config.timezone)}\n\n"
         f"📋 Описание: {description}\n"
     )
     if comment:
         msg += f"📝 Комментарий: {comment}\n"
-    msg += f"👷 От РП: <code>{u.id}</code> @{u.username or '-'}"
 
     task_kb = task_actions_kb(task)
     if tinter_id:
@@ -969,9 +973,11 @@ async def invoice_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     project_code = data.get("project_code", "")
     msg = (
-        "💳 <b>Новый счёт на оплату</b>\n\n"
+        "💳 <b>Новый счёт на оплату</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"📋 Проект: {project_code}\n"
         f"🏢 Поставщик: {supplier}\n"
         f"💰 Сумма: {amount}\n"
@@ -979,7 +985,6 @@ async def invoice_finalize(
     )
     if comment:
         msg += f"💬 {comment}\n"
-    msg += f"\nОт: @{u.username or '-'}"
 
     from ..keyboards import task_actions_kb
     await notifier.safe_send(int(gd_id), msg, reply_markup=task_actions_kb(task))

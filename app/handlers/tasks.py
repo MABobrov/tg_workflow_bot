@@ -19,7 +19,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import InvoicePaymentSG, SupplierPaymentSG, TaskCompleteSG
-from ..utils import fmt_task_card, private_only_reply_markup, to_iso, try_json_loads, utcnow
+from ..utils import fmt_task_card, get_initiator_label, private_only_reply_markup, to_iso, try_json_loads, utcnow
 from .auth import require_role_callback
 
 log = logging.getLogger(__name__)
@@ -115,7 +115,12 @@ async def task_actions(
         # notify creator
         created_by = task.get("created_by")
         if created_by:
-            await notifier.safe_send(int(created_by), f"❌ Ваша задача #{task_id} отклонена исполнителем.")
+            initiator = await get_initiator_label(db, cb.from_user.id)
+            await notifier.safe_send(
+                int(created_by),
+                f"❌ Ваша задача #{task_id} отклонена\n"
+                f"👤 Исполнитель: {initiator}",
+            )
         return
 
     # PAYMENT CONFIRM actions (TD)
@@ -132,8 +137,10 @@ async def task_actions(
             task = await db.update_task_status(task_id, TaskStatus.DONE)
             project = await db.update_project_status(int(project["id"]), ProjectStatus.IN_WORK)
 
+            initiator = await get_initiator_label(db, cb.from_user.id)
             text = (
-                "✅ <b>Оплата подтверждена</b> — можно запускать закупки и монтаж.\n\n"
+                "✅ <b>Оплата подтверждена</b> — можно запускать закупки и монтаж.\n"
+                f"👤 От: {initiator}\n\n"
                 f"{project.get('code','')} • {project.get('title','')}"
             )
             if manager_id:
@@ -150,8 +157,10 @@ async def task_actions(
             task = await db.update_task_status(task_id, TaskStatus.REJECTED)
             project = await db.update_project_status(int(project["id"]), ProjectStatus.WAITING_PAYMENT)
 
+            initiator = await get_initiator_label(db, cb.from_user.id)
             text = (
-                "⚠️ <b>Оплата не подтверждена</b>: нужна доплата/уточнение.\n\n"
+                "⚠️ <b>Оплата не подтверждена</b>: нужна доплата/уточнение.\n"
+                f"👤 От: {initiator}\n\n"
                 f"{project.get('code','')} • {project.get('title','')}"
             )
             if manager_id:
@@ -220,7 +229,12 @@ async def task_actions(
         payload = try_json_loads(task.get("payload_json"))
         sender_id = payload.get("sender_id")
         if sender_id:
-            await notifier.safe_send(int(sender_id), f"⏸ Счёт #{task_id} отложен ГД.")
+            initiator = await get_initiator_label(db, cb.from_user.id)
+            await notifier.safe_send(
+                int(sender_id),
+                f"⏸ Счёт #{task_id} отложен\n"
+                f"👤 От: {initiator}",
+            )
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await state.clear()
         await cb.message.answer(  # type: ignore
@@ -237,9 +251,11 @@ async def task_actions(
         payload = try_json_loads(task.get("payload_json"))
         sender_id = payload.get("sender_id")
         if sender_id:
+            initiator = await get_initiator_label(db, cb.from_user.id)
             await notifier.safe_send(
                 int(sender_id),
-                f"❌ Счёт #{task_id} отклонён ГД.",
+                f"❌ Счёт #{task_id} отклонён\n"
+                f"👤 От: {initiator}",
             )
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await state.clear()
@@ -373,9 +389,12 @@ async def taskcomplete_finalize(
             if project and task.get("project_id")
             else None
         )
+        initiator = await get_initiator_label(db, cb.from_user.id)
         await notifier.safe_send(
             int(target_user_id),
-            f"📄 Документы по задаче #{task_id} готовы. См. вложения.",
+            f"📄 <b>Документы по задаче #{task_id} готовы</b>\n"
+            f"👤 От: {initiator}\n\n"
+            f"См. вложения.",
             reply_markup=manager_markup,
         )
         # send actual files
@@ -492,8 +511,10 @@ async def invoice_pp_finalize(
         inv_num = payload.get("invoice_number", "")
         supplier = payload.get("supplier", "")
         amount = payload.get("amount", "")
+        initiator = await get_initiator_label(db, u.id)
         msg = (
-            "✅ <b>Счёт оплачен</b>\n\n"
+            "✅ <b>Счёт оплачен</b>\n"
+            f"👤 От: {initiator}\n\n"
             f"🔢 № счёта: {inv_num}\n"
             f"🏢 Поставщик: {supplier}\n"
             f"💰 Сумма: {amount}\n\n"

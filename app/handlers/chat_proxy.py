@@ -35,7 +35,7 @@ from ..keyboards import (
 from ..services.notifier import Notifier
 from ..services.integration_hub import IntegrationHub
 from ..states import ChatProxySG, GdTaskCreateSG, ReplyToGDSG
-from ..utils import private_only_reply_markup, utcnow, to_iso
+from ..utils import get_initiator_label, private_only_reply_markup, utcnow, to_iso
 from .auth import require_role_message
 
 log = logging.getLogger(__name__)
@@ -680,10 +680,11 @@ async def gd_task_create_finalize(
         )
 
     label = channel_label(channel)
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        f"📝 <b>Новая задача от ГД</b>\n\n"
-        f"📋 {description}\n\n"
-        f"От: @{u.username or '-'}"
+        f"📝 <b>Новая задача от ГД</b>\n"
+        f"👤 От: {initiator}\n\n"
+        f"📋 {description}"
     )
 
     from ..keyboards import task_actions_kb

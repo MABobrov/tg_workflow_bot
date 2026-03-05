@@ -5,10 +5,13 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from zoneinfo import ZoneInfo
 
 from aiogram import html
+
+if TYPE_CHECKING:
+    from .db import Database
 
 
 ROLE_LABELS: dict[str, str] = {
@@ -288,6 +291,19 @@ class TgUserView:
         # fallback to tg://user?id=
         name = html.quote(self.full_name or str(self.telegram_id))
         return f"<a href=\"tg://user?id={self.telegram_id}\">{name}</a>"
+
+
+async def get_initiator_label(db: Database, user_id: int) -> str:
+    """Return formatted initiator string: 'Full Name (@username)' with fallback."""
+    user = await db.get_user_optional(user_id)
+    if not user:
+        return f"User#{user_id}"
+    parts: list[str] = []
+    if user.full_name:
+        parts.append(html.quote(user.full_name))
+    if user.username:
+        parts.append(f"(@{html.quote(user.username)})")
+    return " ".join(parts) if parts else f"User#{user_id}"
 
 
 def fmt_project_card(project: dict[str, Any], tz_name: str) -> str:

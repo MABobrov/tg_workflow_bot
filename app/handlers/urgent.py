@@ -17,7 +17,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import NotUrgentGDSG, UrgentGDSG
-from ..utils import private_only_reply_markup, to_iso, utcnow
+from ..utils import get_initiator_label, private_only_reply_markup, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -166,10 +166,11 @@ async def urgent_gd_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        "🚨 <b>СРОЧНО ГД</b>\n\n"
-        f"📝 {description}\n\n"
-        f"От: <code>{u.id}</code> @{u.username or '-'}"
+        "🚨 <b>СРОЧНО ГД</b>\n"
+        f"👤 От: {initiator}\n\n"
+        f"📝 {description}"
     )
 
     task_kb = task_actions_kb(task)
@@ -317,10 +318,11 @@ async def not_urgent_gd_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        "📩 <b>Не срочно ГД</b>\n\n"
-        f"📝 {description}\n\n"
-        f"От: <code>{u.id}</code> @{u.username or '-'}"
+        "📩 <b>Не срочно ГД</b>\n"
+        f"👤 От: {initiator}\n\n"
+        f"📝 {description}"
     )
 
     task_kb = task_actions_kb(task)

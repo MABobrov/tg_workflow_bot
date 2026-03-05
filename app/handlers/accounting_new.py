@@ -31,7 +31,7 @@ from ..keyboards import (
 from ..services.assignment import resolve_default_assignee
 from ..services.notifier import Notifier
 from ..states import EdoResponseSG
-from ..utils import private_only_reply_markup, utcnow
+from ..utils import get_initiator_label, private_only_reply_markup, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -232,8 +232,10 @@ async def edo_respond_finalize(
 
     # Notify requester
     if requester_id:
+        initiator = await get_initiator_label(db, u.id)
         msg = (
-            f"📄 <b>Ответ бухгалтерии на ЭДО</b>\n\n"
+            f"📄 <b>Ответ бухгалтерии на ЭДО</b>\n"
+            f"👤 От: {initiator}\n\n"
             f"Статус: {resp_label}\n"
         )
         if invoice_number:

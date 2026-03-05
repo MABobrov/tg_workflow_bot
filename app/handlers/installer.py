@@ -18,7 +18,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import DailyReportSG, InstallationDoneSG, IssueSG
-from ..utils import fmt_project_card, parse_date, private_only_reply_markup, project_status_label, to_iso, utcnow
+from ..utils import fmt_project_card, get_initiator_label, parse_date, private_only_reply_markup, project_status_label, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -175,15 +175,16 @@ async def daily_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        "🔵 <b>Ежедневный отчёт (20:00)</b>\n\n"
+        "🔵 <b>Ежедневный отчёт (20:00)</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{fmt_project_card(project, config.timezone)}\n\n"
         f"✅ Сделано: {done}\n"
         f"⏱ Часы: <b>{hours}</b>\n"
     )
     if issues:
         msg += f"⚠️ Проблемы: {issues}\n"
-    msg += f"👷 От: <code>{u.id}</code> @{u.username or '-'}"
 
     if rp_id:
         await notifier.safe_send(int(rp_id), msg)
@@ -298,11 +299,12 @@ async def installation_done_finalize(
         },
     )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        "✅ <b>Счёт ОК / монтаж завершён</b>\n\n"
+        "✅ <b>Счёт ОК / монтаж завершён</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{fmt_project_card(project, config.timezone)}\n\n"
         f"📅 Дата окончания: <b>{end_date[:10] if isinstance(end_date, str) else end_date}</b>\n"
-        f"👷 От: <code>{u.id}</code> @{u.username or '-'}"
     )
     if extra_comment:
         msg += f"\n📝 Допработы: {extra_comment}"
@@ -473,12 +475,13 @@ async def issue_finalize(
             caption=a.get("caption"),
         )
 
+    initiator = await get_initiator_label(db, u.id)
     msg = (
-        "🟠 <b>Сигнал с объекта</b>\n\n"
+        "🟠 <b>Сигнал с объекта</b>\n"
+        f"👤 От: {initiator}\n\n"
         f"{fmt_project_card(project, config.timezone)}\n\n"
         f"⚠️ Тип: <b>{issue_type}</b>\n"
         f"📝 Описание: {description}\n"
-        f"👷 От: <code>{u.id}</code> @{u.username or '-'}"
     )
     task_kb = task_actions_kb(task)
     await notifier.safe_send(int(rp_id), msg, reply_markup=task_kb)
