@@ -107,12 +107,14 @@ INST_BTN_DAILY_REPORT = "📝 Отчёт за день"
 INST_BTN_IN_WORK = "🔨 В Работу"
 INST_BTN_NOT_URGENT = "📩 Не срочно ГД"
 INST_BTN_URGENT = "🚨 Срочно ГД"
+INST_BTN_SYNC = "🔄 Синхронизация данных"
 
 # --- Zamery buttons ---
 ZAM_BTN_ZAMERY = "📋 Заявка на замер"
 ZAM_BTN_MY_OBJECTS = "📋 Мои замеры"
 ZAM_BTN_URGENT = "🚨 Срочно ГД"
 ZAM_BTN_NOT_URGENT = "📩 Не срочно ГД"
+ZAM_BTN_SYNC = "🔄 Синхронизация данных"
 
 
 def _build_reply_rows(rows: list[list[str]]) -> ReplyKeyboardMarkup:
@@ -150,7 +152,8 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [RP_BTN_INVOICES_PAY, RP_BTN_ISSUE],
             [RP_BTN_MGR_KV, RP_BTN_MGR_KIA],
             [RP_BTN_MONTAZH, RP_BTN_EDO],
-            [RP_BTN_MORE, RP_BTN_CANCEL],
+            [RP_BTN_SYNC, RP_BTN_MORE],
+            [RP_BTN_CANCEL],
         ]
     if role == Role.TD:
         # TD merged into GD — redirect to GD menu
@@ -174,6 +177,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [INST_BTN_ORDER_EXTRA, INST_BTN_MY_OBJECTS],
             [INST_BTN_DAILY_REPORT, INST_BTN_IN_WORK],
             [INST_BTN_NOT_URGENT, INST_BTN_URGENT],
+            [INST_BTN_SYNC],
         ]
     if role == Role.GD:
         return [
@@ -200,6 +204,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         return [
             [ZAM_BTN_ZAMERY, ZAM_BTN_MY_OBJECTS],
             [ZAM_BTN_URGENT, ZAM_BTN_NOT_URGENT],
+            [ZAM_BTN_SYNC],
         ]
     return []
 
@@ -357,7 +362,7 @@ def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
     # Accounting — compact layout, no submenu
     if _is_pure_accounting(role):
         rows = [list(row) for row in _role_primary_action_rows(Role.ACCOUNTING)]
-        rows.append(["❌ Отмена"])
+        rows.append(["❌ Отмена", OPEN_HELP])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         return _build_reply_rows(rows)
@@ -365,7 +370,7 @@ def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
     # Installer — compact layout, no submenu
     if _is_pure_installer(role):
         rows = [list(row) for row in _role_primary_action_rows(Role.INSTALLER)]
-        rows.append(["❌ Отмена"])
+        rows.append(["❌ Отмена", OPEN_HELP])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         return _build_reply_rows(rows)
@@ -373,7 +378,7 @@ def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
     # Zamery — compact layout, no submenu
     if _is_pure_zamery(role):
         rows = [list(row) for row in _role_primary_action_rows(Role.ZAMERY)]
-        rows.append(["❌ Отмена"])
+        rows.append(["❌ Отмена", OPEN_HELP])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         return _build_reply_rows(rows)
