@@ -165,7 +165,6 @@ def _employee_roles_kb(user_id: int, mode: str) -> InlineKeyboardBuilder:
     roles = [
         (Role.MANAGER, "Менеджер"),
         (Role.RP, "РП"),
-        (Role.TD, "ТД"),
         (Role.ACCOUNTING, "Бухгалтерия"),
         (Role.INSTALLER, "Монтажник"),
         (Role.DRIVER, "Водитель"),
@@ -437,7 +436,6 @@ async def cmd_users(message: Message, db: Database, config: Config) -> None:
     role_order = [
         Role.MANAGER,
         Role.RP,
-        Role.TD,
         Role.ACCOUNTING,
         Role.INSTALLER,
         Role.DRIVER,
@@ -632,7 +630,6 @@ async def admin_role_action(cb: CallbackQuery, callback_data: AdminRoleCb, db: D
     allowed_roles = {
         Role.MANAGER.value,
         Role.RP.value,
-        Role.TD.value,
         Role.ACCOUNTING.value,
         Role.INSTALLER.value,
         Role.DRIVER.value,
@@ -721,7 +718,6 @@ async def cmd_stats(message: Message, db: Database, config: Config) -> None:
     role_order = [
         Role.MANAGER,
         Role.RP,
-        Role.TD,
         Role.ACCOUNTING,
         Role.INSTALLER,
         Role.DRIVER,
@@ -966,9 +962,6 @@ async def cmd_setdefaults(message: Message, db: Database, config: Config) -> Non
         if k == "rp":
             await db.set_setting("default_rp_id", setting_value)
             changed.append(("default_rp_id", value_label))
-        elif k == "td":
-            await db.set_setting("default_td_id", setting_value)
-            changed.append(("default_td_id", value_label))
         elif k in {"acc", "accounting"}:
             await db.set_setting("default_accounting_id", setting_value)
             changed.append(("default_accounting_id", value_label))

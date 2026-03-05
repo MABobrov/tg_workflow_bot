@@ -896,9 +896,9 @@ async def payment_finalize(
         return
 
     project = await db.get_project(int(project_id))
-    td_id = await resolve_default_assignee(db, config, Role.TD)
+    td_id = await resolve_default_assignee(db, config, Role.GD)
     if not td_id:
-        await cb.message.answer("⚠️ Не найден ТД (role=td). Админ должен назначить роль хотя бы одному пользователю.")
+        await cb.message.answer("⚠️ Не найден ГД (role=gd). Админ должен назначить роль хотя бы одному пользователю.")
         await state.clear()
         return
 

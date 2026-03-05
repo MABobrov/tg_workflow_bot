@@ -31,7 +31,7 @@ router.callback_query.filter(F.message.chat.type == "private")
 
 @router.message(F.text == "✅ Подтверждение оплат")
 async def payment_tasks(message: Message, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.TD]):
+    if not await require_role_message(message, db, roles=[Role.GD]):
         return
     tasks = await db.list_tasks_for_user(message.from_user.id, limit=30, type_filter=TaskType.PAYMENT_CONFIRM)  # type: ignore
     if not tasks:
@@ -48,7 +48,7 @@ async def payment_tasks(message: Message, db: Database) -> None:
 
 @router.message(F.text == "💸 Оплата поставщику")
 async def start_supplier_payment(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.TD, Role.GD]):
+    if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await state.clear()
     projects = await db.list_recent_projects(limit=20)
@@ -63,7 +63,7 @@ async def start_supplier_payment(message: Message, state: FSMContext, db: Databa
 
 @router.callback_query(ProjectCb.filter(F.ctx == "suppl_pay"))
 async def supplier_pay_pick_project(cb: CallbackQuery, callback_data: ProjectCb, state: FSMContext, db: Database) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.TD, Role.GD]):
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
         return
     await cb.answer()
     project = await db.get_project(int(callback_data.project_id))
@@ -147,7 +147,7 @@ async def supplier_pay_finalize(
     notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.TD, Role.GD]):
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
         return
     await cb.answer()
     u = cb.from_user
@@ -212,7 +212,7 @@ async def supplier_pay_finalize(
         msg += f"🧾 Счёт №: <b>{invoice_number}</b>\n"
     if comment:
         msg += f"📝 Комментарий: {comment}\n"
-    msg += f"\nОт ТД: <code>{u.id}</code> @{u.username or '-'}"
+    msg += f"\nОт ГД: <code>{u.id}</code> @{u.username or '-'}"
 
     # Уведомляем РП и рабочий чат
     if rp_id:
@@ -242,7 +242,7 @@ async def supplier_pay_finalize(
             log.exception("Failed to auto-close source order task id=%s", source_order_task_id)
 
     user_now = await db.get_user_optional(u.id)
-    role_now = user_now.role if user_now else Role.TD
+    role_now = user_now.role if user_now else Role.GD
     await cb.message.answer(
         (
             f"✅ Оплата поставщику «{supplier}» зафиксирована. "

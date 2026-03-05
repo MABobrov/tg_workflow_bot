@@ -21,7 +21,6 @@ async def resolve_default_assignee(db: Database, config: Config, role: str) -> i
     # 1) settings override
     key_map = {
         Role.RP: "default_rp_id",
-        Role.TD: "default_td_id",
         Role.ACCOUNTING: "default_accounting_id",
         Role.GD: "default_gd_id",
         Role.DRIVER: "default_driver_id",
@@ -41,8 +40,6 @@ async def resolve_default_assignee(db: Database, config: Config, role: str) -> i
     # 2) env defaults
     if role == Role.RP and config.default_rp_id:
         return config.default_rp_id
-    if role == Role.TD and config.default_td_id:
-        return config.default_td_id
     if role == Role.ACCOUNTING and config.default_accounting_id:
         return config.default_accounting_id
     if role == Role.GD and config.default_gd_id:
@@ -54,10 +51,6 @@ async def resolve_default_assignee(db: Database, config: Config, role: str) -> i
 
     if role == Role.RP and config.default_rp_username:
         user = await db.find_user_by_username(config.default_rp_username)
-        if user:
-            return user.telegram_id
-    if role == Role.TD and config.default_td_username:
-        user = await db.find_user_by_username(config.default_td_username)
         if user:
             return user.telegram_id
     if role == Role.ACCOUNTING and config.default_accounting_username:

@@ -320,6 +320,28 @@ class Database:
                 pass  # column already exists
         await self.conn.commit()
 
+        # --- Auto-migration: TD -> GD (role merge) ---
+        await self.conn.execute(
+            "UPDATE users SET role = 'gd' WHERE role = 'td'"
+        )
+        # Handle combined roles containing 'td'
+        cur = await self.conn.execute(
+            "SELECT telegram_id, role FROM users WHERE role LIKE '%td%'"
+        )
+        for row in await cur.fetchall():
+            old_role = row["role"]
+            parts = [p.strip() for p in old_role.replace(";", ",").split(",")]
+            new_parts = [p for p in parts if p != "td"]
+            if "gd" not in new_parts:
+                new_parts.append("gd")
+            new_role = ",".join(new_parts)
+            if new_role != old_role:
+                await self.conn.execute(
+                    "UPDATE users SET role = ? WHERE telegram_id = ?",
+                    (new_role, row["telegram_id"]),
+                )
+        await self.conn.commit()
+
     # ------------------------- users -------------------------
 
     async def upsert_user(self, telegram_id: int, username: str | None, full_name: str | None) -> UserRow:

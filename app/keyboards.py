@@ -39,6 +39,8 @@ GD_BTN_KIA_CRED = "КИА Кред"
 GD_BTN_ACCOUNTANT1 = "Бухгалтер 1"
 GD_BTN_BROADCAST = "Сообщение Всем"
 GD_BTN_NPN_CRED = "НПН Кред"
+GD_BTN_PAYMENT_CONFIRM = "✅ Подтверждение оплат"
+GD_BTN_SUPPLIER_PAY = "💸 Оплата поставщику"
 GD_BTN_BACK_HOME = "Назад в Гл.меню"
 GD_BTN_REFRESH = "🔄 Обновить меню"
 GD_BTN_HELP = "📚 Справка"
@@ -153,9 +155,14 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [RP_BTN_MORE, RP_BTN_CANCEL],
         ]
     if role == Role.TD:
+        # TD merged into GD — redirect to GD menu
         return [
-            ["✅ Подтверждение оплат", "💸 Оплата поставщику"],
-            ["📥 Входящие задачи"],
+            [GD_BTN_INVOICES, GD_BTN_URGENT],
+            [GD_BTN_PAYMENT_CONFIRM, GD_BTN_SUPPLIER_PAY],
+            [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
+            [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
+            [GD_BTN_MONTAZH, GD_BTN_SALES],
+            [GD_BTN_SYNC, GD_BTN_MORE],
         ]
     if role == Role.ACCOUNTING:
         return [
@@ -173,6 +180,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
     if role == Role.GD:
         return [
             [GD_BTN_INVOICES, GD_BTN_URGENT],
+            [GD_BTN_PAYMENT_CONFIRM, GD_BTN_SUPPLIER_PAY],
             [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
             [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
@@ -215,8 +223,10 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
             [RP_BTN_CANCEL, RP_BTN_BACK_HOME],
         ]
     if role == Role.TD:
+        # TD merged into GD — use GD submenu
         return [
-            ["📌 Поиск проекта", "🚨 Срочно ГД"],
+            [GD_BTN_KV_CRED, GD_BTN_KIA_CRED],
+            [GD_BTN_ACCOUNTANT1, GD_BTN_BROADCAST],
         ]
     if role == Role.ACCOUNTING:
         return []  # Accounting has no submenu

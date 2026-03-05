@@ -165,7 +165,7 @@ async def task_actions(
 
         await integrations.sync_project(project, manager_label="")
         await integrations.sync_task(task, project_code=project.get("code", ""))
-        role_now = (await _current_role(db, cb.from_user.id)) if cb.from_user else Role.TD
+        role_now = (await _current_role(db, cb.from_user.id)) if cb.from_user else Role.GD
 
         await cb.message.answer(
             "Готово.",

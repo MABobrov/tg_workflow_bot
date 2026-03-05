@@ -61,6 +61,52 @@ async def migrate():
     await db.conn.commit()
     log.info("Migration complete. %d users migrated to manager_kv.", len(users))
 
+    # --- Phase 2: TD -> GD migration ---
+    log.info("Starting role migration: TD -> GD")
+
+    cur = await db.conn.execute(
+        "SELECT telegram_id, username, full_name, role FROM users WHERE role = 'td'"
+    )
+    td_rows = await cur.fetchall()
+    td_users = [dict(r) for r in td_rows]
+
+    if not td_users:
+        log.info("No users with role='td' found. Nothing to migrate.")
+    else:
+        log.info("Found %d users with role='td':", len(td_users))
+        for u in td_users:
+            log.info("  - ID: %s, username: %s, name: %s", u["telegram_id"], u["username"], u["full_name"])
+
+        for u in td_users:
+            await db.conn.execute(
+                "UPDATE users SET role = 'gd' WHERE telegram_id = ?",
+                (u["telegram_id"],),
+            )
+            log.info("  Migrated user %s -> gd", u["telegram_id"])
+
+        await db.conn.commit()
+        log.info("TD->GD migration complete. %d users migrated.", len(td_users))
+
+    # Also handle combined roles containing 'td' (e.g. 'td,gd' -> 'gd')
+    cur = await db.conn.execute(
+        "SELECT telegram_id, role FROM users WHERE role LIKE '%td%' AND role != 'td'"
+    )
+    combo_rows = await cur.fetchall()
+    for row in combo_rows:
+        old_role = row["role"]
+        parts = [p.strip() for p in old_role.replace(";", ",").split(",")]
+        new_parts = [p for p in parts if p != "td"]
+        if "gd" not in new_parts:
+            new_parts.append("gd")
+        new_role = ",".join(new_parts)
+        if new_role != old_role:
+            await db.conn.execute(
+                "UPDATE users SET role = ? WHERE telegram_id = ?",
+                (new_role, row["telegram_id"]),
+            )
+            log.info("  Migrated combined role user %s: '%s' -> '%s'", row["telegram_id"], old_role, new_role)
+    await db.conn.commit()
+
     await db.close()
 
 

@@ -214,7 +214,7 @@ async def order_mat_finalize(
         project = await db.update_project_status(int(project_id), ProjectStatus.ORDERING)
 
     # Задача назначается на ТД (для оплаты) или ГД (для контроля)
-    td_id = await resolve_default_assignee(db, config, Role.TD)
+    td_id = await resolve_default_assignee(db, config, Role.GD)
 
     due = utcnow() + timedelta(hours=24)
     task = await db.create_task(
