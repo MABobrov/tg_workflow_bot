@@ -26,7 +26,7 @@ GD_BTN_INBOX_GD = "📥 Входящие для ГД"
 GD_BTN_INVOICES = "Счета на Оплату"
 GD_BTN_URGENT = "Срочно для ГД"
 GD_BTN_SEARCH_INVOICE = "Поиск Счета"
-GD_BTN_CHAT_RP = "Чат с РП (НПН)"
+GD_BTN_CHAT_RP = "Чат с РП"
 GD_BTN_ZAMERY = "Замеры"
 GD_BTN_ACCOUNTING = "Бухгалтерия"
 GD_BTN_MONTAZH = "Монтажная гр."
@@ -359,8 +359,8 @@ def main_menu(
     }
     # Build labels with per-channel unread counts
     _uc = unread_channels or {}
-    # For composite channel "otd_prodazh", sum sub-channels
-    _otd_sum = sum(_uc.get(sc, 0) for sc in ("rp", "manager_kv", "manager_kia", "manager_npn"))
+    # For composite channel "otd_prodazh", sum manager sub-channels (without rp)
+    _otd_sum = sum(_uc.get(sc, 0) for sc in ("manager_kv", "manager_kia", "manager_npn"))
     _chan_labels: dict[str, str] = {}
     for chan, base_btn in _CHAN_BTN.items():
         cnt = _otd_sum if chan == "otd_prodazh" else _uc.get(chan, 0)
