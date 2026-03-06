@@ -330,6 +330,7 @@ def main_menu(
     is_admin: bool = False,
     unread: int = 0,
     unread_channels: dict[str, int] | None = None,
+    gd_inbox_unread: int | None = None,
 ) -> ReplyKeyboardMarkup:
     inbox_label = "📥 Входящие задачи"
     if unread > 0:
@@ -339,9 +340,11 @@ def main_menu(
     if unread > 0:
         rp_inbox_label += f" 🔴{unread}"
 
+    # GD inbox uses separate counter (tasks only, excl. invoices & payment confirms)
+    _gd_count = gd_inbox_unread if gd_inbox_unread is not None else unread
     gd_inbox_label = GD_BTN_INBOX_GD
-    if unread > 0:
-        gd_inbox_label += f" 🔴{unread}"
+    if _gd_count > 0:
+        gd_inbox_label += f" 🔴{_gd_count}"
 
     # Map channel names to chat button constants (for per-channel badge)
     _CHAN_BTN: dict[str, str] = {
