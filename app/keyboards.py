@@ -376,6 +376,7 @@ def main_menu(
     unread_channels: dict[str, int] | None = None,
     gd_inbox_unread: int | None = None,
     gd_invoice_unread: int | None = None,
+    gd_invoice_end_unread: int | None = None,
     isolated_role: bool = False,
 ) -> ReplyKeyboardMarkup:
     parsed_roles = parse_roles(role)
@@ -400,6 +401,11 @@ def main_menu(
     gd_invoice_label = GD_BTN_INVOICES
     if gd_invoice_unread and gd_invoice_unread > 0:
         gd_invoice_label += f" 🔴{gd_invoice_unread}"
+
+    # GD "Счёт END" badge (payment_confirm + invoice_end tasks)
+    gd_invoice_end_label = GD_BTN_INVOICE_END_GD
+    if gd_invoice_end_unread and gd_invoice_end_unread > 0:
+        gd_invoice_end_label += f" 🔴{gd_invoice_end_unread}"
 
     # Map channel names to chat button constants (for per-channel badge)
     _CHAN_BTN: dict[str, str] = {
@@ -439,6 +445,9 @@ def main_menu(
                 # GD invoice payment badge
                 if btn == GD_BTN_INVOICES:
                     row[i] = gd_invoice_label
+                # GD "Счёт END" badge
+                if btn == GD_BTN_INVOICE_END_GD:
+                    row[i] = gd_invoice_end_label
                 # Per-channel chat badges
                 if btn in _chan_labels:
                     row[i] = _chan_labels[btn]

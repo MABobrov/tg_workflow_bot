@@ -684,6 +684,18 @@ class Database:
         await self.conn.commit()
         return await self.get_task(task_id)
 
+    async def close_tasks_by_invoice(self, invoice_id: int, task_type: str) -> int:
+        """Set tasks matching invoice_id (in payload_json) and type to DONE. Returns count."""
+        now = to_iso(utcnow())
+        cur = await self.conn.execute(
+            "UPDATE tasks SET status = 'done', updated_at = ? "
+            "WHERE type = ? AND status IN ('open', 'in_progress') "
+            "AND json_extract(payload_json, '$.invoice_id') = ?",
+            (now, task_type, invoice_id),
+        )
+        await self.conn.commit()
+        return cur.rowcount
+
     async def mark_task_reminded_soon(self, task_id: int) -> None:
         await self.conn.execute("UPDATE tasks SET reminded_soon = 1 WHERE id = ?", (task_id,))
         await self.conn.commit()
@@ -766,6 +778,17 @@ class Database:
             "SELECT COUNT(*) FROM tasks WHERE assigned_to = ? "
             "AND status IN ('open', 'in_progress') "
             "AND type = 'invoice_payment'",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def count_gd_invoice_end_tasks(self, user_id: int) -> int:
+        """Count OPEN/IN_PROGRESS payment_confirm + invoice_end tasks for GD."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE assigned_to = ? "
+            "AND status IN ('open', 'in_progress') "
+            "AND type IN ('payment_confirm', 'invoice_end')",
             (user_id,),
         )
         row = await cur.fetchone()

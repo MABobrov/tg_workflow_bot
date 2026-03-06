@@ -519,6 +519,7 @@ async def chat_menu_back(
     from ..utils import parse_roles as _parse_roles
     gd_ur = await db.count_gd_inbox_tasks(u.id) if role and _Role.GD in _parse_roles(role) else None
     gd_inv = await db.count_gd_invoice_tasks(u.id) if role and _Role.GD in _parse_roles(role) else None
+    gd_ie = await db.count_gd_invoice_end_tasks(u.id) if role and _Role.GD in _parse_roles(role) else None
     await message.answer(
         "Главное меню.",
         reply_markup=private_only_reply_markup(
@@ -530,6 +531,7 @@ async def chat_menu_back(
                 unread_channels=uc,
                 gd_inbox_unread=gd_ur,
                 gd_invoice_unread=gd_inv,
+                gd_invoice_end_unread=gd_ie,
                 isolated_role=isolated_role,
             ),
         ),

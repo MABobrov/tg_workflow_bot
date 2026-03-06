@@ -29,7 +29,7 @@ router.callback_query.filter(F.message.chat.type == "private")
 
 # ==================== СЧЁТ END (объединяет подтверждение оплат + Счет End) ====================
 
-@router.message(F.text == GD_BTN_INVOICE_END_GD)
+@router.message(F.text.startswith(GD_BTN_INVOICE_END_GD))
 async def gd_invoice_end_combined(message: Message, db: Database) -> None:
     """Show both PAYMENT_CONFIRM and INVOICE_END_REQUEST tasks for GD."""
     if not await require_role_message(message, db, roles=[Role.GD]):
@@ -272,6 +272,7 @@ async def supplier_pay_finalize(
                 unread_channels=await db.count_unread_by_channel(u.id),
                 gd_inbox_unread=await db.count_gd_inbox_tasks(u.id),
                 gd_invoice_unread=await db.count_gd_invoice_tasks(u.id),
+                gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(u.id),
                 isolated_role=isolated_role,
             ),
         ),

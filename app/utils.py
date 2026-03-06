@@ -406,7 +406,8 @@ async def refresh_recipient_keyboard(
     is_admin = user_id in (config.admin_ids or set())
     gd_unread = await db.count_gd_inbox_tasks(user_id) if user.role and Role.GD in parse_roles(user.role) else None
     gd_inv = await db.count_gd_invoice_tasks(user_id) if user.role and Role.GD in parse_roles(user.role) else None
-    kb = main_menu(user.role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_unread, gd_invoice_unread=gd_inv)
+    gd_ie = await db.count_gd_invoice_end_tasks(user_id) if user.role and Role.GD in parse_roles(user.role) else None
+    kb = main_menu(user.role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_unread, gd_invoice_unread=gd_inv, gd_invoice_end_unread=gd_ie)
     text = f"📥 У вас {unread} активных задач." if unread else "📥 Нет активных задач."
     await notifier.safe_send(user_id, text, reply_markup=kb)
 
