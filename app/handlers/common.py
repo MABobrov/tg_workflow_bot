@@ -29,7 +29,7 @@ from ..services.menu_scope import (
     resolve_active_menu_role,
     set_active_menu_role,
 )
-from ..utils import parse_roles, private_only_reply_markup, role_label
+from ..utils import answer_service, parse_roles, private_only_reply_markup, role_label
 
 log = logging.getLogger(__name__)
 
@@ -304,7 +304,7 @@ async def cmd_id(message: Message, db: Database) -> None:
     u = message.from_user
     if not u:
         return
-    await message.answer(f"Ваш Telegram ID: <code>{u.id}</code>")
+    await answer_service(message, f"Ваш Telegram ID: <code>{u.id}</code>", delay_seconds=60)
 
 
 @router.message(Command("menu"))
@@ -331,8 +331,10 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
         text = "🎭 <b>Выберите роль</b>\n\nСначала выберите, в каком контексте открыть меню."
     else:
         text = "✅ Меню обновлено."
-    await message.answer(
+    await answer_service(
+        message,
         text,
+        delay_seconds=60,
         reply_markup=private_only_reply_markup(
             message,
             main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv),
@@ -388,8 +390,10 @@ async def menu_actions(message: Message, db: Database, config: Config) -> None:
     if not role:
         unread = await db.count_unread_tasks(u.id)
         uc = await db.count_unread_by_channel(u.id)
-        await message.answer(
+        await answer_service(
+            message,
             "Роль пока не назначена. Попросите администратора назначить роль и нажмите «🔄 Обновить меню».",
+            delay_seconds=60,
             reply_markup=private_only_reply_markup(
                 message,
                 main_menu(None, is_admin=u.id in (config.admin_ids or set()), unread=unread, unread_channels=uc, gd_inbox_unread=None),
@@ -397,8 +401,10 @@ async def menu_actions(message: Message, db: Database, config: Config) -> None:
         )
         return
     if len(parse_roles(role)) > 1 and not isolated_role:
-        await message.answer(
+        await answer_service(
+            message,
             "🎭 <b>Выберите роль</b>\n\nСначала выберите роль, для которой хотите открыть действия:",
+            delay_seconds=60,
             reply_markup=private_only_reply_markup(
                 message,
                 main_menu(role, is_admin=u.id in (config.admin_ids or set())),
@@ -406,8 +412,10 @@ async def menu_actions(message: Message, db: Database, config: Config) -> None:
         )
         return
     is_admin = u.id in (config.admin_ids or set())
-    await message.answer(
+    await answer_service(
+        message,
         "Выберите действие:",
+        delay_seconds=60,
         reply_markup=private_only_reply_markup(
             message,
             actions_menu(
@@ -435,8 +443,10 @@ async def role_selector_pick(message: Message, db: Database, config: Config) -> 
 
     menu_context = await _menu_context(db, u.id, selected_role)
     is_admin = u.id in (config.admin_ids or set())
-    await message.answer(
+    await answer_service(
+        message,
         "🎭 <b>Выбрана роль</b>\n\nДоступны действия только этой роли.",
+        delay_seconds=60,
         reply_markup=private_only_reply_markup(
             message,
             main_menu(
@@ -462,8 +472,10 @@ async def back_to_home(message: Message, state: FSMContext, db: Database, config
     menu_role, isolated_role = _menu_scope(u.id, role)
     if isolated_role:
         menu_context = await _menu_context(db, u.id, menu_role)
-        await message.answer(
+        await answer_service(
+            message,
             "Главное меню выбранной роли.",
+            delay_seconds=60,
             reply_markup=private_only_reply_markup(
                 message,
                 main_menu(
@@ -493,8 +505,10 @@ async def back_to_role_selector(message: Message, state: FSMContext, db: Databas
         return
     clear_active_menu_role(u.id)
     menu_context = await _menu_context(db, u.id, role)
-    await message.answer(
+    await answer_service(
+        message,
         "🎭 <b>Выберите роль</b>\n\nВыберите, в каком контексте продолжить работу.",
+        delay_seconds=60,
         reply_markup=private_only_reply_markup(
             message,
             main_menu(
@@ -530,19 +544,25 @@ async def menu_more_universal(message: Message, state: FSMContext, db: Database,
         active_role = roles[0] if roles else None
 
     if text == GD_BTN_CRED or active_role == Role.GD:
-        await message.answer(
+        await answer_service(
+            message,
             "Выберите действие:",
+            delay_seconds=60,
             reply_markup=private_only_reply_markup(message, gd_more_menu(show_role_selector_back=isolated_role)),
         )
     elif active_role == Role.RP:
-        await message.answer(
+        await answer_service(
+            message,
             "Выберите действие:",
+            delay_seconds=60,
             reply_markup=private_only_reply_markup(message, rp_more_menu(show_role_selector_back=isolated_role)),
         )
     else:
         # Manager roles (KV / KIA / NPN) and legacy Manager
-        await message.answer(
+        await answer_service(
+            message,
             "Выберите действие:",
+            delay_seconds=60,
             reply_markup=private_only_reply_markup(message, manager_more_menu(show_role_selector_back=isolated_role)),
         )
 
@@ -573,8 +593,10 @@ async def rp_menu_team(message: Message, state: FSMContext, db: Database, config
         return
     user = await db.get_user_optional(message.from_user.id) if message.from_user else None
     _, isolated_role = _menu_scope(message.from_user.id if message.from_user else None, user.role if user else None)
-    await message.answer(
+    await answer_service(
+        message,
         "Выберите сотрудника:",
+        delay_seconds=60,
         reply_markup=private_only_reply_markup(message, rp_team_menu(show_role_selector_back=isolated_role)),
     )
 
@@ -634,7 +656,7 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
         return
     tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)
     if not tasks:
-        await message.answer("📥 Входящих задач нет ✅")
+        await answer_service(message, "📥 Входящих задач нет ✅", delay_seconds=60)
         return
     await message.answer(
         f"📥 <b>Входящие задачи</b> ({len(tasks)}):\n\n"
@@ -669,7 +691,8 @@ async def sync_data_non_gd(
     menu_context = await _menu_context(db, message.from_user.id, active_role or role)
 
     if not integrations.sheets:
-        await message.answer(
+        await answer_service(
+            message,
             "⚠️ Интеграция Google Sheets не настроена.",
             reply_markup=private_only_reply_markup(
                 message,
@@ -683,7 +706,7 @@ async def sync_data_non_gd(
         )
         return
 
-    await message.answer("⏳ Запускаю синхронизацию данных с Google Sheets...")
+    await answer_service(message, "⏳ Запускаю синхронизацию данных с Google Sheets...")
 
     projects = await db.list_recent_projects(limit=10000)
     tasks = await db.list_recent_tasks(limit=50000)
@@ -722,10 +745,12 @@ async def sync_data_non_gd(
         tasks_ok += 1
 
     menu_context = await _menu_context(db, message.from_user.id, active_role or role)
-    await message.answer(
+    await answer_service(
+        message,
         "✅ Синхронизация завершена.\n"
         f"Проектов: <b>{projects_ok}</b>\n"
         f"Задач: <b>{tasks_ok}</b>",
+        delay_seconds=300,
         reply_markup=private_only_reply_markup(
             message,
             main_menu(
@@ -752,8 +777,10 @@ async def cmd_cancel(message: Message, state: FSMContext, db: Database, config: 
     active_role = resolve_active_menu_role(u.id if u else None, role)
     is_admin = bool(u and u.id in (config.admin_ids or set()))
     menu_context = await _menu_context(db, u.id if u else None, active_role or role)
-    await message.answer(
+    await answer_service(
+        message,
         "Операция отменена. Выберите следующее действие в меню.",
+        delay_seconds=60,
         reply_markup=private_only_reply_markup(
             message,
             main_menu(

@@ -30,7 +30,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import ZameryZpSG
-from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
+from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ async def zamery_inbox(message: Message, db: Database) -> None:
 
     tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)  # type: ignore[union-attr]
     if not tasks:
-        await message.answer("📐 Нет входящих заявок на замеры ✅")
+        await answer_service(message, "📐 Нет входящих заявок на замеры ✅", delay_seconds=60)
         return
 
     await message.answer(
@@ -88,7 +88,7 @@ async def zamery_my_objects(message: Message, db: Database) -> None:
     )]
 
     if not active:
-        await message.answer("📌 Нет активных объектов.")
+        await answer_service(message, "📌 Нет активных объектов.", delay_seconds=60)
         return
 
     lines = []

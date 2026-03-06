@@ -40,7 +40,7 @@ async def gd_invoice_end_combined(message: Message, db: Database) -> None:
     tasks = tasks_pc + tasks_ie
     tasks.sort(key=lambda t: t.get("created_at") or "", reverse=True)
     if not tasks:
-        await message.answer("✅ Нет задач «Счёт END» и подтверждений оплат.")
+        await answer_service(message, "✅ Нет задач «Счёт END» и подтверждений оплат.", delay_seconds=60)
         return
     n_pc = len(tasks_pc)
     n_ie = len(tasks_ie)

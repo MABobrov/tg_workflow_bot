@@ -244,7 +244,7 @@ async def start_invoice_ok(message: Message, state: FSMContext, db: Database) ->
     user_id = message.from_user.id  # type: ignore[union-attr]
     invoices = await db.list_invoices(assigned_to=user_id, status=InvoiceStatus.IN_PROGRESS)
     if not invoices:
-        await message.answer("Нет счетов «В работе» для подтверждения.")
+        await answer_service(message, "Нет счетов «В работе» для подтверждения.", delay_seconds=60)
         return
 
     await state.set_state(InstallerInvoiceOkSG.select_invoice)
@@ -380,7 +380,7 @@ async def installer_my_objects(message: Message, db: Database) -> None:
     )]
 
     if not active:
-        await message.answer("📌 Нет активных объектов.")
+        await answer_service(message, "📌 Нет активных объектов.", delay_seconds=60)
         return
 
     lines = []

@@ -65,7 +65,7 @@ async def acc_invoice_end(message: Message, db: Database) -> None:
         return
     invoices = await db.list_invoices(status=InvoiceStatus.ENDED, limit=30)
     if not invoices:
-        await message.answer("🏁 Нет закрытых счетов.")
+        await answer_service(message, "🏁 Нет закрытых счетов.", delay_seconds=60)
         return
     await message.answer(
         f"🏁 <b>Закрытые Счета</b> ({len(invoices)}):",

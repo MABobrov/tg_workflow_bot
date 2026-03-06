@@ -107,7 +107,7 @@ async def rp_invoice_start_monitor(message: Message, db: Database) -> None:
     paid = await db.list_invoices(status=InvoiceStatus.PAID, limit=50)
     invoices = list(in_progress) + list(paid)
     if not invoices:
-        await message.answer("💼 Нет счетов «В работе».")
+        await answer_service(message, "💼 Нет счетов «В работе».", delay_seconds=60)
         return
     header_parts: list[str] = []
     if in_progress:
@@ -174,7 +174,7 @@ async def rp_invoices_pay(message: Message, db: Database) -> None:
     all_inv = list(pending) + list(in_progress)
 
     if not all_inv:
-        await message.answer("💳 Нет счетов, ожидающих оплаты.")
+        await answer_service(message, "💳 Нет счетов, ожидающих оплаты.", delay_seconds=60)
         return
 
     n_pending = len(pending)
@@ -207,7 +207,7 @@ async def rp_invoice_end(message: Message, db: Database) -> None:
     all_inv = list(invoices) + list(ended)
 
     if not all_inv:
-        await message.answer("🏁 Нет счетов в процессе закрытия / закрытых.")
+        await answer_service(message, "🏁 Нет счетов в процессе закрытия / закрытых.", delay_seconds=60)
         return
     await message.answer(
         f"🏁 <b>Счет End</b> ({len(all_inv)}):\n\n"
@@ -227,7 +227,7 @@ async def rp_issue(message: Message, db: Database) -> None:
     tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)  # type: ignore[union-attr]
     issues = [t for t in tasks if t.get("type") == TaskType.ISSUE]
     if not issues:
-        await message.answer("🆘 Нет входящих проблем/вопросов.")
+        await answer_service(message, "🆘 Нет входящих проблем/вопросов.", delay_seconds=60)
         return
     await message.answer(
         f"🆘 <b>Проблема / Вопрос</b> ({len(issues)}):",

@@ -659,7 +659,7 @@ async def start_invoice_end(message: Message, state: FSMContext, db: Database) -
     active = [i for i in invoices if i["status"] in (InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID)]
 
     if not active:
-        await message.answer("У вас нет активных счетов для закрытия.")
+        await answer_service(message, "У вас нет активных счетов для закрытия.", delay_seconds=60)
         return
 
     await state.set_state(InvoiceEndSG.select_invoice)
@@ -1299,7 +1299,7 @@ async def my_invoices(message: Message, db: Database) -> None:
 
     invoices = await db.list_invoices(created_by=message.from_user.id)  # type: ignore[union-attr]
     if not invoices:
-        await message.answer("📑 У вас пока нет счетов.")
+        await answer_service(message, "📑 У вас пока нет счетов.", delay_seconds=60)
         return
 
     await message.answer(

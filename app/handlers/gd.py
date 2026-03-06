@@ -47,6 +47,7 @@ from ..services.menu_scope import get_active_menu_role
 from ..services.notifier import Notifier
 from ..states import ChatProxySG, InvoiceSearchSG, SalesWriteSG
 from ..utils import (
+    answer_service,
     format_dt_iso,
     get_initiator_label,
     parse_roles,
@@ -137,8 +138,10 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
     is_admin = user_id in (config.admin_ids or set())
 
     if not all_tasks:
-        await message.answer(
+        await answer_service(
+            message,
             "✅ Нет входящих задач.",
+            delay_seconds=60,
             reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id), gd_invoice_unread=await db.count_gd_invoice_tasks(user_id))),
         )
         return
@@ -384,8 +387,10 @@ async def sales_incoming(message: Message, state: FSMContext, db: Database, conf
     tasks = [task for task in tasks if await _is_sales_not_urgent_task(db, task)]
 
     if not tasks:
-        await message.answer(
+        await answer_service(
+            message,
             "✅ Нет входящих «Не срочно ГД».",
+            delay_seconds=60,
             reply_markup=gd_sales_submenu(),
         )
         return

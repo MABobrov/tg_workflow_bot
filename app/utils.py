@@ -20,6 +20,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 SERVICE_MESSAGE_TTL_SECONDS = 120
 
+# Strong references to pending cleanup tasks so the GC doesn't collect them
+# before the sleep completes. Entries are discarded automatically on completion.
+_pending_cleanup_tasks: set[asyncio.Task] = set()
+
 
 ROLE_LABELS: dict[str, str] = {
     "manager": "Менеджер",
@@ -330,7 +334,9 @@ def schedule_message_cleanup(sent_message: Any, delay_seconds: int = SERVICE_MES
         except Exception:
             log.exception("Failed to auto-delete service message chat_id=%s message_id=%s", chat_id, message_id)
 
-    asyncio.create_task(_cleanup())
+    task = asyncio.create_task(_cleanup())
+    _pending_cleanup_tasks.add(task)
+    task.add_done_callback(_pending_cleanup_tasks.discard)
 
 
 async def answer_service(
