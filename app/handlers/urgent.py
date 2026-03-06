@@ -17,7 +17,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import NotUrgentGDSG, UrgentGDSG
-from ..utils import get_initiator_label, private_only_reply_markup, to_iso, utcnow
+from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -181,6 +181,7 @@ async def urgent_gd_finalize(
     for a in attaches:
         await notifier.safe_send_media(int(gd_id), a["file_type"], a["tg_file_id"], caption=a.get("caption"))
         await notifier.notify_workchat_media(a["file_type"], a["tg_file_id"], caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
     await integrations.sync_task(task, project_code="")
 
@@ -332,6 +333,7 @@ async def not_urgent_gd_finalize(
         await notifier.safe_send_media(
             int(gd_id), a["file_type"], a["file_id"], caption=a.get("caption"),
         )
+    await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
     await integrations.sync_task(task, project_code="")
 

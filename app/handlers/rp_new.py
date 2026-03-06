@@ -54,7 +54,7 @@ from ..states import (
     LeadToProjectSG,
     ManagerChatProxySG,
 )
-from ..utils import get_initiator_label, private_only_reply_markup, utcnow
+from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -435,6 +435,7 @@ async def lead_finalize(
     await notifier.safe_send(manager_id, msg, reply_markup=task_actions_kb(task))
     for a in attachments:
         await notifier.safe_send_media(manager_id, a["file_type"], a["file_id"], caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, manager_id)
 
     role = await _current_role(db, u.id)
     await state.clear()
@@ -646,6 +647,7 @@ async def kp_review_comment(
             await notifier.safe_send_media(
                 int(manager_id), doc["file_type"], doc["file_id"], caption=doc.get("caption")
             )
+        await refresh_recipient_keyboard(notifier, db, config, int(manager_id))
 
     role = await _current_role(db, message.from_user.id)
     await state.clear()

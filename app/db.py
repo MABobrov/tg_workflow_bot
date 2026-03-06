@@ -312,6 +312,10 @@ class Database:
             ("edo_requests", "responded_by", "INTEGER"),
             ("edo_requests", "response_comment", "TEXT"),
             ("edo_requests", "response_attachments_json", "TEXT"),
+            # Дополнение: принятие задач и напоминания
+            ("tasks", "accepted_at", "TEXT"),
+            ("tasks", "last_reminded_at", "TEXT"),
+            ("tasks", "reminder_2h_sent", "INTEGER DEFAULT 0"),
         ]
         for table, col, col_type in migration_columns:
             try:
@@ -661,6 +665,61 @@ class Database:
               AND due_at IS NOT NULL
             ORDER BY due_at ASC
             """
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def accept_task(self, task_id: int) -> None:
+        """Mark task as accepted (user clicked 'Принято')."""
+        await self.conn.execute(
+            "UPDATE tasks SET accepted_at = ?, updated_at = ? WHERE id = ?",
+            (utcnow(), utcnow(), task_id),
+        )
+        await self.conn.commit()
+
+    async def mark_task_reminded_15(self, task_id: int) -> None:
+        """Update last_reminded_at for 15-min acceptance reminders."""
+        await self.conn.execute(
+            "UPDATE tasks SET last_reminded_at = ? WHERE id = ?",
+            (utcnow(), task_id),
+        )
+        await self.conn.commit()
+
+    async def mark_task_reminded_2h(self, task_id: int) -> None:
+        """Mark that the 2-hour post-acceptance reminder was sent."""
+        await self.conn.execute(
+            "UPDATE tasks SET reminder_2h_sent = 1 WHERE id = ?",
+            (task_id,),
+        )
+        await self.conn.commit()
+
+    async def count_unread_tasks(self, user_id: int) -> int:
+        """Count tasks with status OPEN or IN_PROGRESS assigned to user."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE assigned_to = ? AND status IN ('open', 'in_progress')",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def list_tasks_needing_15m_reminder(self, cutoff_iso: str) -> list[dict]:
+        """Tasks: OPEN, not accepted, last reminder > 15 min ago (or never reminded)."""
+        cur = await self.conn.execute(
+            "SELECT * FROM tasks WHERE status = 'open' AND accepted_at IS NULL "
+            "AND (last_reminded_at IS NULL OR last_reminded_at <= ?) "
+            "AND created_at <= ?",
+            (cutoff_iso, cutoff_iso),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def list_tasks_needing_2h_reminder(self, cutoff_iso: str) -> list[dict]:
+        """Tasks: accepted, reminder_2h_sent=0, accepted_at > 2h ago."""
+        cur = await self.conn.execute(
+            "SELECT * FROM tasks WHERE status IN ('open', 'in_progress') "
+            "AND accepted_at IS NOT NULL AND accepted_at <= ? "
+            "AND (reminder_2h_sent IS NULL OR reminder_2h_sent = 0)",
+            (cutoff_iso,),
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]

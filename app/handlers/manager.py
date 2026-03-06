@@ -33,6 +33,7 @@ from ..utils import (
     parse_date,
     parse_roles,
     private_only_reply_markup,
+    refresh_recipient_keyboard,
     task_status_label,
     task_type_label,
     to_iso,
@@ -467,6 +468,7 @@ async def docs_finalize(
 
     task_kb = task_actions_kb(task)
     await notifier.safe_send(rp_id, msg_to_rp, reply_markup=task_kb)
+    await refresh_recipient_keyboard(notifier, db, config, rp_id)
     await notifier.notify_workchat(msg_to_rp, reply_markup=task_kb)
 
     # resend attachments to RP
@@ -690,6 +692,7 @@ async def quote_finalize(
 
     task_kb = task_actions_kb(task)
     await notifier.safe_send(rp_id, msg, reply_markup=task_kb)
+    await refresh_recipient_keyboard(notifier, db, config, rp_id)
     await notifier.notify_workchat(msg, reply_markup=task_kb)
 
     attaches = await db.list_attachments(int(task["id"]))
@@ -961,6 +964,7 @@ async def payment_finalize(
 
     task_kb = task_actions_kb(task)
     await notifier.safe_send(td_id, msg, reply_markup=task_kb)
+    await refresh_recipient_keyboard(notifier, db, config, td_id)
     await notifier.notify_workchat(msg, reply_markup=task_kb)
 
     attaches = await db.list_attachments(int(task["id"]))
@@ -1178,6 +1182,7 @@ async def closing_finalize(
 
     task_kb = task_actions_kb(task)
     await notifier.safe_send(acc_id, msg, reply_markup=task_kb)
+    await refresh_recipient_keyboard(notifier, db, config, acc_id)
     await notifier.notify_workchat(msg, reply_markup=task_kb)
 
     attaches = await db.list_attachments(int(task["id"]))
@@ -1325,9 +1330,11 @@ async def project_end_finalize(
 
     task_kb = task_actions_kb(task)
     await notifier.safe_send(int(rp_id), msg, reply_markup=task_kb)
+    await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
     for admin_id in sorted(config.admin_ids or set()):
         if admin_id != int(rp_id):
             await notifier.safe_send(int(admin_id), msg, reply_markup=task_kb)
+            await refresh_recipient_keyboard(notifier, db, config, int(admin_id))
     await notifier.notify_workchat(msg, reply_markup=task_kb)
 
     await integrations.sync_task(task, project_code=project.get("code", ""))
@@ -1514,6 +1521,7 @@ async def issue_finalize(
     )
     task_kb = task_actions_kb(task)
     await notifier.safe_send(rp_id, msg, reply_markup=task_kb)
+    await refresh_recipient_keyboard(notifier, db, config, rp_id)
     await notifier.notify_workchat(msg, reply_markup=task_kb)
 
     attaches = await db.list_attachments(int(task["id"]))

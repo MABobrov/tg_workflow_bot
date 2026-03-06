@@ -20,7 +20,7 @@ from .services.assignment import get_work_chat_id
 from .services.integration_hub import IntegrationHub
 from .services.notifier import Notifier
 from .services.lead_poller import lead_poller_loop
-from .services.reminders import reminders_loop
+from .services.reminders import acceptance_reminders_loop, reminders_loop
 
 from .handlers import (
     accounting_new,
@@ -180,6 +180,12 @@ async def main() -> None:
                 interval_seconds=60,
             )
         )
+
+    # 15-min acceptance reminders + 2h post-accept reminder
+    acceptance_task: asyncio.Task | None = None
+    acceptance_task = asyncio.create_task(
+        acceptance_reminders_loop(db=db, notifier=notifier, interval_seconds=60)
+    )
 
     lead_poller_task: asyncio.Task | None = None
     if config.amocrm_enabled and amocrm_service is not None:

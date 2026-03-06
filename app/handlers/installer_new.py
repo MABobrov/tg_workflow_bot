@@ -41,7 +41,7 @@ from ..states import (
     InstallerInvoiceOkSG,
     InstallerOrderMaterialsSG,
 )
-from ..utils import get_initiator_label, private_only_reply_markup, utcnow
+from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -190,6 +190,7 @@ async def order_mat_finalize(
     await notifier.safe_send(int(rp_id), msg, reply_markup=task_actions_kb(task))
     for a in attachments:
         await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
     role = await _current_role(db, u.id)
     await state.clear()
@@ -331,6 +332,7 @@ async def invoice_ok_comment(
     for target in [manager_id, rp_id]:
         if target:
             await notifier.safe_send(int(target), msg)
+            await refresh_recipient_keyboard(notifier, db, config, int(target))
 
     role = await _current_role(db, message.from_user.id)
     await state.clear()
@@ -492,6 +494,7 @@ async def daily_report_finalize(
     await notifier.safe_send(int(rp_id), msg)
     for a in attachments:
         await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
     role = await _current_role(db, u.id)
     await state.clear()

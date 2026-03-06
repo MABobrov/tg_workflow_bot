@@ -35,7 +35,7 @@ from ..keyboards import (
 from ..services.notifier import Notifier
 from ..services.integration_hub import IntegrationHub
 from ..states import ChatProxySG, GdTaskCreateSG, ReplyToGDSG
-from ..utils import get_initiator_label, private_only_reply_markup, utcnow, to_iso
+from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, utcnow, to_iso
 from .auth import require_role_message
 
 log = logging.getLogger(__name__)
@@ -692,6 +692,7 @@ async def gd_task_create_finalize(
 
     for a in attachments:
         await notifier.safe_send_media(int(target_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, int(target_id))
 
     await integrations.sync_task(task, project_code="")
     await state.clear()

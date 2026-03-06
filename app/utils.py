@@ -306,6 +306,25 @@ async def get_initiator_label(db: Database, user_id: int) -> str:
     return " ".join(parts) if parts else f"User#{user_id}"
 
 
+async def refresh_recipient_keyboard(
+    notifier: Any,
+    db: Database,
+    config: Any,
+    user_id: int,
+) -> None:
+    """Send updated main_menu with unread counter to the recipient."""
+    from .keyboards import main_menu  # lazy import to avoid circular
+
+    user = await db.get_user_optional(user_id)
+    if not user:
+        return
+    unread = await db.count_unread_tasks(user_id)
+    is_admin = user_id in (config.admin_ids or set())
+    kb = main_menu(user.role, is_admin=is_admin, unread=unread)
+    text = f"📥 У вас {unread} активных задач." if unread else "📥 Нет активных задач."
+    await notifier.safe_send(user_id, text, reply_markup=kb)
+
+
 def fmt_project_card(project: dict[str, Any], tz_name: str) -> str:
     """Pretty HTML card for a project dict."""
     code = html.quote(project.get("code") or f"#{project.get('id')}")

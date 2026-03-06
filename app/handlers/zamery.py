@@ -29,7 +29,7 @@ from ..keyboards import (
 from ..services.assignment import resolve_default_assignee
 from ..services.notifier import Notifier
 from ..states import ZameryWorkSG, ZameryZpSG
-from ..utils import get_initiator_label, private_only_reply_markup
+from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -273,6 +273,7 @@ async def zamery_zp_confirm_count(
         b.button(text="❌ Отклонить", callback_data=f"zamzp_approve:no:{invoice_id}")
         b.adjust(1)
         await notifier.safe_send(int(gd_id), summary, reply_markup=b.as_markup())
+        await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
     role = await _current_role(db, message.from_user.id)
     await state.clear()
@@ -344,6 +345,7 @@ async def zamery_zp_custom(
             b.button(text="❌ Отклонить", callback_data=f"zamzp_approve:no:{invoice_id}")
             b.adjust(1)
             await notifier.safe_send(int(gd_id), summary, reply_markup=b.as_markup())
+            await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
         role = await _current_role(db, message.from_user.id)
         await state.clear()
@@ -431,6 +433,7 @@ async def zamery_zp_approve(
                 f"Счёт №: <code>{inv['invoice_number']}</code>\n"
                 f"Сумма: {total:,.0f}₽",
             )
+            await refresh_recipient_keyboard(notifier, db, config, int(zamery_id))
     else:
         await db.set_invoice_zp_status(invoice_id, "not_requested")
         await cb.message.answer(  # type: ignore[union-attr]
@@ -443,3 +446,4 @@ async def zamery_zp_approve(
                 f"Счёт №: <code>{inv['invoice_number']}</code>\n"
                 "Свяжитесь с ГД для уточнения.",
             )
+            await refresh_recipient_keyboard(notifier, db, config, int(zamery_id))

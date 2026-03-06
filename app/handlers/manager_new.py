@@ -61,7 +61,7 @@ from ..states import (
     IssueSG,
     ManagerChatProxySG,
 )
-from ..utils import get_initiator_label, private_only_reply_markup, to_iso, utcnow
+from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -292,6 +292,7 @@ async def check_kp_comment(
     await notifier.safe_send(int(rp_id), msg_text, reply_markup=b_kp.as_markup())
     for a in documents:
         await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
     await state.clear()
     await message.answer(
@@ -466,6 +467,7 @@ async def invoice_start_send(
     await notifier.safe_send(int(gd_id), msg_text, reply_markup=task_kb)
     for a in attachments:
         await notifier.safe_send_media(int(gd_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
     # Дополнение 1: спрашиваем ГД — подписаны ли документы в ЭДО
     b_edo = InlineKeyboardBuilder()
@@ -900,10 +902,12 @@ async def invoice_end_comment(
         b.button(text="🏁 Счет End", callback_data=f"invend_final:end:{invoice_id}")
         b.adjust(1)
         await notifier.safe_send(int(gd_id), msg, reply_markup=b.as_markup())
+        await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
     # Notify RP
     if rp_id:
         await notifier.safe_send(int(rp_id), msg)
+        await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
     role = await _current_role(db, message.from_user.id)
     await state.clear()
@@ -1193,6 +1197,7 @@ async def edo_finalize(
     await notifier.safe_send(int(acc_id), msg, reply_markup=b_edo_resp.as_markup())
     for a in attachments:
         await notifier.safe_send_media(int(acc_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, int(acc_id))
 
     role = await _current_role(db, u.id)
     await state.clear()

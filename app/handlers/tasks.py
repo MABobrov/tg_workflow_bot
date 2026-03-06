@@ -59,7 +59,6 @@ async def task_actions(
     integrations: IntegrationHub,
     state: FSMContext,
 ) -> None:
-    await cb.answer()
     task_id = int(callback_data.task_id)
     action = callback_data.action
 
@@ -68,6 +67,28 @@ async def task_actions(
     if not await _can_manage_task(cb, db, config, task):
         await cb.answer("Эта задача назначена другому человеку", show_alert=True)
         return
+
+    if action == "accept":
+        await db.accept_task(task_id)
+        await cb.answer("✅ Принято")
+        # Update the inline keyboard to remove the "Принято" button
+        task = await db.get_task(task_id)
+        if task:
+            try:
+                await cb.message.edit_reply_markup(reply_markup=task_actions_kb(task))
+            except Exception:
+                pass
+        # Notify task creator
+        created_by = task.get("created_by") if task else None
+        if created_by:
+            initiator = await get_initiator_label(db, cb.from_user.id)
+            await notifier.safe_send(
+                int(created_by),
+                f"✅ Задача #{task_id} принята\n👤 Исполнитель: {initiator}"
+            )
+        return
+
+    await cb.answer()
 
     project = None
     if task.get("project_id"):

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from ..db import Database
-from ..utils import from_iso, utcnow, fmt_task_card
+from ..keyboards import task_actions_kb
+from ..utils import fmt_task_card, from_iso, utcnow
 from .notifier import Notifier
 
 log = logging.getLogger(__name__)
@@ -71,3 +72,57 @@ async def _send_task_reminder(db: Database, notifier: Notifier, task: dict, tz_n
     text = prefix + "\n\n" + fmt_task_card(task, project, tz_name)
     await notifier.safe_send(int(assigned_to), text)
     await notifier.notify_workchat(text)
+
+
+# =====================================================================
+# Acceptance reminders: 15-min repeat + 2h post-accept
+# =====================================================================
+
+async def acceptance_reminders_loop(
+    db: Database,
+    notifier: Notifier,
+    interval_seconds: int = 60,
+) -> None:
+    """Background loop: remind every 15 min until accepted, then once after 2h."""
+    while True:
+        try:
+            now_dt = datetime.now(timezone.utc)
+
+            # 1. Непринятые задачи — напоминание каждые 15 мин
+            cutoff_15m = (now_dt - timedelta(minutes=15)).isoformat()
+            tasks_15m = await db.list_tasks_needing_15m_reminder(cutoff_15m)
+            for task in tasks_15m:
+                assigned = task.get("assigned_to")
+                if not assigned:
+                    continue
+                tid = int(task["id"])
+                await notifier.safe_send(
+                    int(assigned),
+                    f"🔔 <b>Напоминание</b>\n\n"
+                    f"Задача #{tid} ожидает подтверждения.\n"
+                    f"Нажмите «✅ Принято» для подтверждения.",
+                    reply_markup=task_actions_kb(task),
+                )
+                await db.mark_task_reminded_15(tid)
+
+            # 2. Принятые задачи — одно напоминание через 2 часа
+            cutoff_2h = (now_dt - timedelta(hours=2)).isoformat()
+            tasks_2h = await db.list_tasks_needing_2h_reminder(cutoff_2h)
+            for task in tasks_2h:
+                assigned = task.get("assigned_to")
+                if not assigned:
+                    continue
+                tid = int(task["id"])
+                await notifier.safe_send(
+                    int(assigned),
+                    f"🔔 <b>Напоминание о задаче</b>\n\n"
+                    f"Задача #{tid} ожидает выполнения.",
+                )
+                await db.mark_task_reminded_2h(tid)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Acceptance reminders loop iteration failed")
+
+        await asyncio.sleep(interval_seconds)

@@ -18,7 +18,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import DailyReportSG, InstallationDoneSG, IssueSG
-from ..utils import fmt_project_card, get_initiator_label, parse_date, private_only_reply_markup, project_status_label, to_iso, utcnow
+from ..utils import fmt_project_card, get_initiator_label, parse_date, private_only_reply_markup, project_status_label, refresh_recipient_keyboard, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -188,6 +188,7 @@ async def daily_finalize(
 
     if rp_id:
         await notifier.safe_send(int(rp_id), msg)
+        await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
     await notifier.notify_workchat(msg)
 
     attaches = await db.list_attachments(int(task["id"]))
@@ -310,9 +311,11 @@ async def installation_done_finalize(
         msg += f"\n📝 Допработы: {extra_comment}"
 
     await notifier.safe_send(int(rp_id), msg, reply_markup=task_actions_kb(task))
+    await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
     for admin_id in sorted(config.admin_ids or set()):
         if admin_id != int(rp_id):
             await notifier.safe_send(int(admin_id), msg, reply_markup=task_actions_kb(task))
+            await refresh_recipient_keyboard(notifier, db, config, int(admin_id))
 
     await integrations.sync_task(task, project_code=project.get("code", ""))
     user_now = await db.get_user_optional(u.id)
@@ -485,6 +488,7 @@ async def issue_finalize(
     )
     task_kb = task_actions_kb(task)
     await notifier.safe_send(int(rp_id), msg, reply_markup=task_kb)
+    await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
     await notifier.notify_workchat(msg, reply_markup=task_kb)
 
     attaches = await db.list_attachments(int(task["id"]))

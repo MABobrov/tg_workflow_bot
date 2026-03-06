@@ -324,7 +324,19 @@ def _is_pure_zamery(role: str | None) -> bool:
     return roles == [Role.ZAMERY]
 
 
-def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
+def main_menu(role: str | None, is_admin: bool = False, unread: int = 0) -> ReplyKeyboardMarkup:
+    inbox_label = "📥 Входящие задачи"
+    if unread > 0:
+        inbox_label += f" 🔴{unread}"
+
+    def _patch_inbox(rows: list[list[str]]) -> None:
+        """Replace hardcoded inbox text with dynamic counter."""
+        if unread > 0:
+            for row in rows:
+                for i, btn in enumerate(row):
+                    if btn == MGR_BTN_INBOX or btn == ACC_BTN_INBOX or btn == "📥 Входящие задачи":
+                        row[i] = inbox_label
+
     # GD gets a custom layout (no separate "Ещё действия" row, admin in grid)
     if _is_pure_gd(role):
         rows: list[list[str]] = [list(r) for r in _role_primary_action_rows(Role.GD)]
@@ -332,6 +344,7 @@ def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
         if is_admin:
             last_row.append(GD_BTN_ADMIN)
         rows.append(last_row)
+        _patch_inbox(rows)
         return _build_reply_rows(rows)
 
     # MANAGER_NPN (switched from RP) — role-switching row + NPN manager menu
@@ -341,6 +354,7 @@ def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
         rows.extend([list(row) for row in _role_primary_action_rows(Role.MANAGER_NPN)])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
+        _patch_inbox(rows)
         return _build_reply_rows(rows)
 
     # Manager (КВ/КИА) — custom layout with built-in "Еще" button
@@ -349,6 +363,7 @@ def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
         rows = [list(row) for row in _role_primary_action_rows(r)]
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
+        _patch_inbox(rows)
         return _build_reply_rows(rows)
 
     # RP — custom layout with role-switching row + built-in "Еще" button
@@ -357,6 +372,7 @@ def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
         rows.extend([list(row) for row in _role_primary_action_rows(Role.RP)])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
+        _patch_inbox(rows)
         return _build_reply_rows(rows)
 
     # Accounting — compact layout, no submenu
@@ -365,6 +381,7 @@ def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
         rows.append(["❌ Отмена", OPEN_HELP])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
+        _patch_inbox(rows)
         return _build_reply_rows(rows)
 
     # Installer — compact layout, no submenu
@@ -373,6 +390,7 @@ def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
         rows.append(["❌ Отмена", OPEN_HELP])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
+        _patch_inbox(rows)
         return _build_reply_rows(rows)
 
     # Zamery — compact layout, no submenu
@@ -381,6 +399,7 @@ def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
         rows.append(["❌ Отмена", OPEN_HELP])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
+        _patch_inbox(rows)
         return _build_reply_rows(rows)
 
     # Generic: combined roles or old roles
@@ -394,6 +413,7 @@ def main_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
     if is_admin:
         rows.append([OPEN_ADMIN_PANEL])
     rows.append(["❌ Отмена"])
+    _patch_inbox(rows)
     return _build_reply_rows(rows)
 
 
@@ -438,32 +458,38 @@ def task_actions_kb(task: dict[str, Any]) -> InlineKeyboardMarkup:
     status = task.get("status")
     b = InlineKeyboardBuilder()
 
+    tid = int(task["id"])
+
+    # accept button — only for open tasks not yet accepted
+    if status == TaskStatus.OPEN and not task.get("accepted_at"):
+        b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+
     # universal
     if status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
-        b.button(text="✅ Завершить", callback_data=TaskCb(task_id=int(task["id"]), action="done").pack())
-        b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=int(task["id"]), action="take").pack())
-        b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=int(task["id"]), action="reject").pack())
+        b.button(text="✅ Завершить", callback_data=TaskCb(task_id=tid, action="done").pack())
+        b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="take").pack())
+        b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
 
     # payment confirm special actions (TD)
     if ttype == TaskType.PAYMENT_CONFIRM and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         b = InlineKeyboardBuilder()
-        b.button(text="✅ Оплата подтверждена", callback_data=TaskCb(task_id=int(task["id"]), action="pay_ok").pack())
-        b.button(text="⚠️ Нужна доплата", callback_data=TaskCb(task_id=int(task["id"]), action="pay_need").pack())
-        b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=int(task["id"]), action="reject").pack())
+        b.button(text="✅ Оплата подтверждена", callback_data=TaskCb(task_id=tid, action="pay_ok").pack())
+        b.button(text="⚠️ Нужна доплата", callback_data=TaskCb(task_id=tid, action="pay_need").pack())
+        b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
 
     # Заказ материалов — кнопки для ТД (оплатить/отклонить)
     if ttype in {TaskType.ORDER_PROFILE, TaskType.ORDER_GLASS, TaskType.ORDER_MATERIALS} and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         b = InlineKeyboardBuilder()
-        b.button(text="💸 Оплатить поставщику", callback_data=TaskCb(task_id=int(task["id"]), action="pay_supplier").pack())
-        b.button(text="✅ Завершить", callback_data=TaskCb(task_id=int(task["id"]), action="done").pack())
-        b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=int(task["id"]), action="reject").pack())
+        b.button(text="💸 Оплатить поставщику", callback_data=TaskCb(task_id=tid, action="pay_supplier").pack())
+        b.button(text="✅ Завершить", callback_data=TaskCb(task_id=tid, action="done").pack())
+        b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
 
     # Счёт на оплату — кнопки для ГД
     if ttype == TaskType.INVOICE_PAYMENT and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         b = InlineKeyboardBuilder()
-        b.button(text="✅ Оплатить", callback_data=TaskCb(task_id=int(task["id"]), action="inv_pay").pack())
-        b.button(text="⏸ Отложить", callback_data=TaskCb(task_id=int(task["id"]), action="inv_hold").pack())
-        b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=int(task["id"]), action="inv_reject").pack())
+        b.button(text="✅ Оплатить", callback_data=TaskCb(task_id=tid, action="inv_pay").pack())
+        b.button(text="⏸ Отложить", callback_data=TaskCb(task_id=tid, action="inv_hold").pack())
+        b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="inv_reject").pack())
 
     b.adjust(1)
     return b.as_markup()

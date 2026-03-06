@@ -24,7 +24,7 @@ from ..states import (
     OrderMaterialSG,
     TintingRequestSG,
 )
-from ..utils import fmt_project_card, get_initiator_label, parse_date, private_only_reply_markup, to_iso, utcnow
+from ..utils import fmt_project_card, get_initiator_label, parse_date, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -257,6 +257,7 @@ async def order_mat_finalize(
     task_kb = task_actions_kb(task)
     if td_id:
         await notifier.safe_send(int(td_id), msg, reply_markup=task_kb)
+        await refresh_recipient_keyboard(notifier, db, config, int(td_id))
     await notifier.notify_workchat(msg, reply_markup=task_kb)
 
     # Отправляем вложения
@@ -446,6 +447,7 @@ async def delivery_req_finalize(
     task_kb = task_actions_kb(task)
     if driver_id:
         await notifier.safe_send(int(driver_id), msg, reply_markup=task_kb)
+        await refresh_recipient_keyboard(notifier, db, config, int(driver_id))
     await notifier.notify_workchat(msg, reply_markup=task_kb)
 
     await integrations.sync_project(project)
@@ -596,6 +598,7 @@ async def assign_lead_finalize(
 
     task_kb = task_actions_kb(task)
     await notifier.safe_send(int(manager_id), msg, reply_markup=task_kb)
+    await refresh_recipient_keyboard(notifier, db, config, int(manager_id))
     await notifier.notify_workchat(msg, reply_markup=task_kb)
 
     await integrations.sync_task(task, project_code="")
@@ -769,6 +772,7 @@ async def tinting_req_finalize(
     task_kb = task_actions_kb(task)
     if tinter_id:
         await notifier.safe_send(int(tinter_id), msg, reply_markup=task_kb)
+        await refresh_recipient_keyboard(notifier, db, config, int(tinter_id))
     await notifier.notify_workchat(msg, reply_markup=task_kb)
 
     attaches = await db.list_attachments(int(task["id"]))
@@ -988,6 +992,7 @@ async def invoice_finalize(
 
     from ..keyboards import task_actions_kb
     await notifier.safe_send(int(gd_id), msg, reply_markup=task_actions_kb(task))
+    await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
     for a in attachments:
         await notifier.safe_send_media(int(gd_id), a["file_type"], a["file_id"], caption=a.get("caption"))
