@@ -26,6 +26,7 @@ from ..keyboards import (
     gd_sales_write_to_kb,
     GD_BTN_ACCOUNTING,
     GD_BTN_CHAT_RP,
+    GD_BTN_INBOX_GD,
     GD_BTN_INVOICES,
     GD_BTN_KIA_CRED,
     GD_BTN_NPN_CRED,
@@ -34,7 +35,6 @@ from ..keyboards import (
     GD_BTN_SALES,
     GD_BTN_SEARCH_INVOICE,
     GD_BTN_SYNC,
-    GD_BTN_URGENT,
     GD_BTN_ZAMERY,
     main_menu,
     tasks_kb,
@@ -53,56 +53,52 @@ router.message.filter(F.chat.type == "private")
 
 
 # ---------------------------------------------------------------------------
-# "Срочно для ГД" — for GD role: show incoming URGENT_GD + PAYMENT_CONFIRM
+# "📥 Входящие для ГД" — all incoming tasks for GD
 # ---------------------------------------------------------------------------
 
-@router.message(F.text == GD_BTN_URGENT)
-async def gd_urgent_inbox(message: Message, db: Database, config: Config) -> None:
-    """Show GD a combined list of open URGENT_GD and PAYMENT_CONFIRM tasks."""
+@router.message(lambda m: (m.text or "").strip().startswith("📥 Входящие для ГД"))
+async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
+    """Show GD all open tasks (urgent, payment confirm, GD_TASK, etc.)."""
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
 
     user_id = message.from_user.id  # type: ignore[union-attr]
 
-    urgent_tasks = await db.list_tasks_for_user(
+    all_tasks = await db.list_tasks_for_user(
         assigned_to=user_id,
         statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
-        type_filter=TaskType.URGENT_GD,
         limit=50,
     )
-
-    payment_tasks = await db.list_tasks_for_user(
-        assigned_to=user_id,
-        statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
-        type_filter=TaskType.PAYMENT_CONFIRM,
-        limit=50,
-    )
-
-    all_tasks = urgent_tasks + payment_tasks
-    all_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
 
     is_admin = user_id in (config.admin_ids or set())
 
     if not all_tasks:
         await message.answer(
-            "✅ Нет открытых срочных запросов и подтверждений оплат.",
+            "✅ Нет входящих задач.",
             reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
         )
         return
 
-    n_urgent = len(urgent_tasks)
-    n_payment = len(payment_tasks)
+    # Count by type for summary
+    n_urgent = sum(1 for t in all_tasks if t.get("type") == TaskType.URGENT_GD)
+    n_payment = sum(1 for t in all_tasks if t.get("type") == TaskType.PAYMENT_CONFIRM)
+    n_invoice = sum(1 for t in all_tasks if t.get("type") == TaskType.INVOICE_PAYMENT)
+    n_other = len(all_tasks) - n_urgent - n_payment - n_invoice
 
-    header_parts = []
+    parts = []
     if n_urgent:
-        header_parts.append(f"🚨 Срочных: {n_urgent}")
+        parts.append(f"🚨 Срочных: {n_urgent}")
     if n_payment:
-        header_parts.append(f"💰 Оплат: {n_payment}")
+        parts.append(f"💰 Подтв.оплат: {n_payment}")
+    if n_invoice:
+        parts.append(f"📄 Счетов: {n_invoice}")
+    if n_other:
+        parts.append(f"📋 Прочих: {n_other}")
 
     text = (
-        f"<b>Срочно для ГД</b>\n"
-        f"{' | '.join(header_parts)}\n\n"
-        "Выберите задачу для просмотра:"
+        f"<b>📥 Входящие для ГД</b> ({len(all_tasks)})\n"
+        f"{' | '.join(parts)}\n\n"
+        "Выберите задачу:"
     )
 
     await message.answer(text, reply_markup=tasks_kb(all_tasks))

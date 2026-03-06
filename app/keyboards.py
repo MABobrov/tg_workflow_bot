@@ -22,6 +22,7 @@ ADMIN_WORKCHAT_TEST_BUTTON = "🧪 Тест рабочего чата"
 ADMIN_RESYNC_BUTTON = "🔄 Синхронизация Sheets"
 
 # --- GD-specific buttons ---
+GD_BTN_INBOX_GD = "📥 Входящие для ГД"
 GD_BTN_INVOICES = "Счета на Оплату"
 GD_BTN_URGENT = "Срочно для ГД"
 GD_BTN_SEARCH_INVOICE = "Поиск Счета"
@@ -158,13 +159,12 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
     if role == Role.TD:
         # TD merged into GD — redirect to GD menu
         return [
-            ["📥 Входящие задачи", GD_BTN_INVOICES],
-            [GD_BTN_URGENT, GD_BTN_PAYMENT_CONFIRM],
-            [GD_BTN_SUPPLIER_PAY, GD_BTN_SEARCH_INVOICE],
-            [GD_BTN_CHAT_RP, GD_BTN_ZAMERY],
-            [GD_BTN_ACCOUNTING, GD_BTN_MONTAZH],
-            [GD_BTN_SALES, GD_BTN_SYNC],
-            [GD_BTN_MORE],
+            [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
+            [GD_BTN_PAYMENT_CONFIRM, GD_BTN_SUPPLIER_PAY],
+            [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
+            [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
+            [GD_BTN_MONTAZH, GD_BTN_SALES],
+            [GD_BTN_SYNC, GD_BTN_MORE],
         ]
     if role == Role.ACCOUNTING:
         return [
@@ -182,13 +182,12 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         ]
     if role == Role.GD:
         return [
-            ["📥 Входящие задачи", GD_BTN_INVOICES],
-            [GD_BTN_URGENT, GD_BTN_PAYMENT_CONFIRM],
-            [GD_BTN_SUPPLIER_PAY, GD_BTN_SEARCH_INVOICE],
-            [GD_BTN_CHAT_RP, GD_BTN_ZAMERY],
-            [GD_BTN_ACCOUNTING, GD_BTN_MONTAZH],
-            [GD_BTN_SALES, GD_BTN_SYNC],
-            [GD_BTN_MORE],
+            [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
+            [GD_BTN_PAYMENT_CONFIRM, GD_BTN_SUPPLIER_PAY],
+            [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
+            [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
+            [GD_BTN_MONTAZH, GD_BTN_SALES],
+            [GD_BTN_SYNC, GD_BTN_MORE],
         ]
     if role == Role.DRIVER:
         return [
@@ -335,6 +334,10 @@ def main_menu(role: str | None, is_admin: bool = False, unread: int = 0) -> Repl
     if unread > 0:
         rp_inbox_label += f" 🔴{unread}"
 
+    gd_inbox_label = GD_BTN_INBOX_GD
+    if unread > 0:
+        gd_inbox_label += f" 🔴{unread}"
+
     def _patch_inbox(rows: list[list[str]]) -> None:
         """Replace hardcoded inbox text with dynamic counter."""
         if unread > 0:
@@ -344,6 +347,8 @@ def main_menu(role: str | None, is_admin: bool = False, unread: int = 0) -> Repl
                         row[i] = inbox_label
                     elif btn == RP_BTN_INBOX_SALES:
                         row[i] = rp_inbox_label
+                    elif btn == GD_BTN_INBOX_GD:
+                        row[i] = gd_inbox_label
 
     # GD gets a custom layout (no separate "Ещё действия" row, admin in grid)
     if _is_pure_gd(role):
