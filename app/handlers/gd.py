@@ -279,21 +279,21 @@ async def gd_chat_sales(message: Message, state: FSMContext, db: Database) -> No
     )
 
 
-@router.message(F.text == GD_BTN_KV_CRED)
+@router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_KV_CRED))
 async def gd_chat_kv(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await enter_chat_menu(message, state, channel="manager_kv")
 
 
-@router.message(F.text == GD_BTN_KIA_CRED)
+@router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_KIA_CRED))
 async def gd_chat_kia(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await enter_chat_menu(message, state, channel="manager_kia")
 
 
-@router.message(F.text == GD_BTN_NPN_CRED)
+@router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_NPN_CRED))
 async def gd_chat_npn(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return

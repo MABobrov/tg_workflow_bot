@@ -353,6 +353,9 @@ def main_menu(
         "zamery": GD_BTN_ZAMERY,
         "montazh": GD_BTN_MONTAZH,
         "otd_prodazh": GD_BTN_SALES,
+        "manager_kv": GD_BTN_KV_CRED,
+        "manager_kia": GD_BTN_KIA_CRED,
+        "manager_npn": GD_BTN_NPN_CRED,
     }
     # Build labels with per-channel unread counts
     _uc = unread_channels or {}
