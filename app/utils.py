@@ -117,11 +117,18 @@ def format_dt_iso(iso_s: str | None, tz_name: str) -> str:
     return dt.strftime("%d.%m.%Y %H:%M")
 
 
+_MONTHS_RU_GEN = {
+    1: "января", 2: "февраля", 3: "марта", 4: "апреля",
+    5: "мая", 6: "июня", 7: "июля", 8: "августа",
+    9: "сентября", 10: "октября", 11: "ноября", 12: "декабря",
+}
+
+
 def format_date_iso(iso_s: str | None, tz_name: str) -> str:
     if not iso_s:
         return "—"
     dt = from_iso(iso_s).astimezone(tzinfo(tz_name))
-    return dt.strftime("%d.%m.%Y")
+    return f"{dt.day:02d} {_MONTHS_RU_GEN[dt.month]}"
 
 
 def parse_amount(text: str) -> Optional[float]:
@@ -169,6 +176,36 @@ def parse_date(text: str, tz_name: str) -> Optional[datetime]:
             return datetime(y, mo, d, 12, 0, tzinfo(tzinfo(tz_name)))
         except ValueError:
             return None
+
+    # "DD месяц" — e.g. "07 марта", "15 апреля"
+    MONTHS_RU = {
+        "января": 1, "янв": 1,
+        "февраля": 2, "фев": 2,
+        "марта": 3, "мар": 3,
+        "апреля": 4, "апр": 4,
+        "мая": 5,
+        "июня": 6, "июн": 6,
+        "июля": 7, "июл": 7,
+        "августа": 8, "авг": 8,
+        "сентября": 9, "сен": 9,
+        "октября": 10, "окт": 10,
+        "ноября": 11, "ноя": 11,
+        "декабря": 12, "дек": 12,
+    }
+    m_ru = re.fullmatch(r"(\d{1,2})\s+([а-яё]+)", t.lower())
+    if m_ru:
+        d_val = int(m_ru.group(1))
+        mo_val = MONTHS_RU.get(m_ru.group(2))
+        if mo_val:
+            y_val = now_local.year
+            try:
+                result = datetime(y_val, mo_val, d_val, 12, 0, tzinfo=tzinfo(tz_name))
+                # If the date is in the past, assume next year
+                if result < now_local:
+                    result = datetime(y_val + 1, mo_val, d_val, 12, 0, tzinfo=tzinfo(tz_name))
+                return result
+            except ValueError:
+                return None
 
     # "today", "tomorrow" in ru
     if t.lower() in {"сегодня", "today"}:

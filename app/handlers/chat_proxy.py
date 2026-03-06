@@ -553,8 +553,34 @@ async def gd_task_create_start(cb: CallbackQuery, state: FSMContext, db: Databas
     label = channel_label(channel)
     await cb.message.answer(  # type: ignore[union-attr]
         f"📝 <b>Новая задача → {label}</b>\n\n"
-        "Шаг 1/3: опишите задачу:",
+        "Шаг 1/3: опишите задачу\n"
+        "(«❌ Отмена» — отменить):",
     )
+
+
+# --- Cancel task creation at any step ---
+_CANCEL_TEXTS = {"❌ отмена", "отмена", "cancel", "/cancel", "❌отмена"}
+
+
+@router.message(GdTaskCreateSG.description, F.text.casefold().in_(_CANCEL_TEXTS))
+@router.message(GdTaskCreateSG.deadline, F.text.casefold().in_(_CANCEL_TEXTS))
+@router.message(GdTaskCreateSG.attachments, F.text.casefold().in_(_CANCEL_TEXTS))
+async def gd_task_create_cancel(
+    message: Message, state: FSMContext, db: Database, config: Config,
+) -> None:
+    """Cancel task creation and return to chat submenu."""
+    data = await state.get_data()
+    channel = data.get("task_channel", "")
+    await state.clear()
+    await state.set_state(ChatProxySG.menu)
+    await state.update_data(channel=channel)
+
+    if channel in FINANCE_CHANNELS:
+        kb = gd_chat_submenu_finance()
+    else:
+        kb = gd_chat_submenu()
+
+    await message.answer("❌ Создание задачи отменено.", reply_markup=kb)
 
 
 @router.message(GdTaskCreateSG.description)
@@ -566,7 +592,8 @@ async def gd_task_create_desc(message: Message, state: FSMContext) -> None:
     await state.update_data(task_description=text)
     await state.set_state(GdTaskCreateSG.deadline)
     await message.answer(
-        "Шаг 2/3: укажите срок (дд.мм.гггг) или напишите «-» без срока:",
+        "Шаг 2/3: укажите срок — например <b>07 марта</b> или <b>15.03.2026</b>\n"
+        "Напишите «-» без срока, «❌ Отмена» для отмены:",
     )
 
 
@@ -581,7 +608,10 @@ async def gd_task_create_deadline(message: Message, state: FSMContext, config: C
         from ..utils import parse_date
         parsed = parse_date(text, config.timezone)
         if not parsed:
-            await message.answer("Не удалось распознать дату. Укажите в формате дд.мм.гггг:")
+            await message.answer(
+                "Не удалось распознать дату.\n"
+                "Укажите в формате <b>07 марта</b> или <b>дд.мм.гггг</b>:"
+            )
             return
         due = parsed
 
@@ -591,6 +621,7 @@ async def gd_task_create_deadline(message: Message, state: FSMContext, config: C
     b = InlineKeyboardBuilder()
     b.button(text="✅ Создать задачу", callback_data="gd_task_finalize")
     b.button(text="⏭ Без вложений", callback_data="gd_task_finalize")
+    b.button(text="❌ Отмена", callback_data="gd_task_cancel")
     b.adjust(1)
     await message.answer(
         "Шаг 3/3: прикрепите файлы (по желанию). Когда готовы — нажмите кнопку:",
@@ -624,6 +655,26 @@ async def gd_task_create_attach(message: Message, state: FSMContext) -> None:
 
     await state.update_data(task_attachments=attachments)
     await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+
+
+@router.callback_query(F.data == "gd_task_cancel")
+async def gd_task_cancel_cb(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
+) -> None:
+    """Cancel task creation via inline button."""
+    await cb.answer("Отменено")
+    data = await state.get_data()
+    channel = data.get("task_channel", "")
+    await state.clear()
+    await state.set_state(ChatProxySG.menu)
+    await state.update_data(channel=channel)
+
+    if channel in FINANCE_CHANNELS:
+        kb = gd_chat_submenu_finance()
+    else:
+        kb = gd_chat_submenu()
+
+    await cb.message.answer("❌ Создание задачи отменено.", reply_markup=kb)  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data == "gd_task_finalize")
