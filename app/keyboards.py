@@ -14,7 +14,7 @@ BACK_TO_HOME = "⬅️ Назад в главное меню"
 BACK_TO_ROLE_SELECTOR = "⬅️ К выбору роли"
 OPEN_ACTIONS = "📂 Ещё действия"
 OPEN_HELP = "📚 Справка"
-OPEN_ADMIN_PANEL = "🛠 Админ-панель"
+OPEN_ADMIN_PANEL = "🛠 Адм.панель"
 ADMIN_HELP_BUTTON = "🛠 Админ-инструкция"
 ADMIN_EMPLOYEES_BUTTON = "👥 Сотрудники"
 ADMIN_STATS_BUTTON = "📊 Статистика бота"
@@ -26,7 +26,7 @@ ADMIN_RESYNC_BUTTON = "🔄 Синхронизация Sheets"
 GD_BTN_INBOX_GD = "📥 Входящие для ГД"
 GD_BTN_INVOICES = "Счета на Оплату"
 GD_BTN_SEARCH_INVOICE = "🔍 Поиск счёта"
-GD_BTN_CHAT_RP = "Чат с РП"
+GD_BTN_CHAT_RP = "Чат с РП (НПН)"
 GD_BTN_ZAMERY = "Замеры"
 GD_BTN_ACCOUNTING = "Бухгалтерия"
 GD_BTN_MONTAZH = "Монтажная гр."
@@ -35,13 +35,13 @@ GD_BTN_SYNC = "Синхронизация данных"
 GD_BTN_MORE = "📂 Ещё"
 GD_BTN_CRED = "💬 Кред"
 GD_BTN_CANCEL = "❌ Отмена"
-GD_BTN_ADMIN = "🛠 Админ-панель"
+GD_BTN_ADMIN = "🛠 Адм.панель"
 GD_BTN_KV_CRED = "КВ Кред"
 GD_BTN_KIA_CRED = "КИА Кред"
 GD_BTN_NPN_CRED = "НПН Кред"
-GD_SUBBTN_KV_CRED = "КВ"
-GD_SUBBTN_KIA_CRED = "КИА"
-GD_SUBBTN_NPN_CRED = "НПН"
+GD_SUBBTN_KV_CRED = "Менеджер КВ (кредит)"
+GD_SUBBTN_KIA_CRED = "Менеджер КИА (кредит)"
+GD_SUBBTN_NPN_CRED = "Менеджер НПН (кредит)"
 GD_BTN_INVOICE_END_GD = "🏁 Счёт END"
 GD_BTN_SUPPLIER_PAY = "💸 Оплата поставщику"
 GD_BTN_BACK_HOME = BACK_TO_HOME
@@ -203,10 +203,10 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         return [
             [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
             [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
-            [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
-            [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
+            [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
-            [GD_BTN_SYNC, GD_BTN_CRED],
+            [GD_BTN_SYNC, GD_BTN_SEARCH_INVOICE],
+            [GD_BTN_CANCEL, GD_BTN_MORE],
         ]
     if role == Role.ACCOUNTING:
         return [
@@ -226,10 +226,10 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         return [
             [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
             [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
-            [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
-            [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
+            [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
-            [GD_BTN_SYNC, GD_BTN_CRED],
+            [GD_BTN_SYNC, GD_BTN_SEARCH_INVOICE],
+            [GD_BTN_CANCEL, GD_BTN_MORE],
         ]
     if role == Role.DRIVER:
         return [
@@ -414,7 +414,7 @@ def main_menu(
         "zamery": GD_BTN_ZAMERY,
         "montazh": GD_BTN_MONTAZH,
         "otd_prodazh": GD_BTN_SALES,
-        "cred": GD_BTN_CRED,
+        "cred": GD_BTN_MORE,
     }
     # Build labels with per-channel unread counts
     _uc = unread_channels or {}
@@ -452,13 +452,9 @@ def main_menu(
                 if btn in _chan_labels:
                     row[i] = _chan_labels[btn]
 
-    # GD gets a custom layout (no separate "Ещё действия" row, admin in grid)
+    # GD gets a custom layout — Отмена и Ещё уже в grid, админ в подменю
     if _is_pure_gd(role):
         rows: list[list[str]] = [list(r) for r in _role_primary_action_rows(Role.GD)]
-        last_row = [GD_BTN_CANCEL]
-        if is_admin:
-            last_row.append(GD_BTN_ADMIN)
-        rows.append(last_row)
         if isolated_role:
             rows.append([BACK_TO_ROLE_SELECTOR])
         _patch_inbox(rows)
@@ -659,13 +655,16 @@ def manager_project_actions_kb(project_id: int) -> InlineKeyboardMarkup:
 
 
 
-def gd_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
-    """Подменю 'Кред' для ГД."""
+def gd_more_menu(is_admin: bool = False, show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
+    """Подменю 'Ещё' для ГД."""
     rows = [
         [GD_SUBBTN_KV_CRED, GD_SUBBTN_KIA_CRED],
-        [GD_SUBBTN_NPN_CRED],
-        [GD_BTN_BACK_HOME, GD_BTN_REFRESH],
+        [GD_SUBBTN_NPN_CRED, GD_BTN_ZAMERY],
     ]
+    if is_admin:
+        rows.append([GD_BTN_ADMIN, GD_BTN_REFRESH])
+    else:
+        rows.append([GD_BTN_REFRESH])
     if show_role_selector_back:
         rows.append([BACK_TO_ROLE_SELECTOR])
     rows.append([GD_BTN_CANCEL, GD_BTN_HELP])

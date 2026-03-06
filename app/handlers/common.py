@@ -16,7 +16,7 @@ from ..enums import Role
 from ..enums import MANAGER_ROLES
 from ..keyboards import (
     BACK_TO_HOME, BACK_TO_ROLE_SELECTOR, OPEN_ACTIONS, OPEN_HELP, actions_menu, main_menu,
-    gd_more_menu, GD_BTN_BACK_HOME, GD_BTN_CRED, GD_BTN_MORE,
+    gd_more_menu, GD_BTN_BACK_HOME, GD_BTN_MORE,
     manager_more_menu, MGR_BTN_MORE, MGR_BTN_BACK_HOME, MGR_BTN_SYNC,
     role_selector_choices, ROLE_SELECTOR_PREFIX,
     rp_more_menu, rp_team_menu, RP_BTN_MORE, RP_BTN_BACK_HOME, RP_BTN_TEAM,
@@ -527,13 +527,12 @@ async def back_to_role_selector(message: Message, state: FSMContext, db: Databas
     )
 
 
-@router.message(lambda m: (m.text or "").strip() in {GD_BTN_CRED, GD_BTN_MORE, MGR_BTN_MORE, RP_BTN_MORE, "Еще"})
+@router.message(lambda m: (m.text or "").strip() in {GD_BTN_MORE, MGR_BTN_MORE, RP_BTN_MORE, "Еще"})
 async def menu_more_universal(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    """Unified 'More/Кред' handler — dispatches to correct submenu based on active role.
+    """Unified 'More/Ещё' handler — dispatches to correct submenu based on active role.
 
     GD_BTN_MORE == MGR_BTN_MORE == RP_BTN_MORE == "📂 Ещё", so a single handler
     is needed to avoid aiogram selecting whichever was registered first.
-    GD users arrive here via GD_BTN_CRED ("💬 Кред") which is unique to them.
     """
     await state.clear()
     if not await _guard_blocked_message(message, db):
@@ -544,18 +543,18 @@ async def menu_more_universal(message: Message, state: FSMContext, db: Database,
     user = await db.get_user_optional(u.id)
     _, isolated_role = _menu_scope(u.id, user.role if user else None)
 
-    text = (message.text or "").strip()
     active_role = get_active_menu_role(u.id)
     if active_role is None and user and user.role:
         roles = parse_roles(user.role)
         active_role = roles[0] if roles else None
 
-    if text == GD_BTN_CRED or active_role == Role.GD:
+    if active_role == Role.GD:
+        _is_adm = bool(u.id in (config.admin_ids or set()))
         await answer_service(
             message,
             "Выберите действие:",
             delay_seconds=60,
-            reply_markup=private_only_reply_markup(message, gd_more_menu(show_role_selector_back=isolated_role)),
+            reply_markup=private_only_reply_markup(message, gd_more_menu(is_admin=_is_adm, show_role_selector_back=isolated_role)),
         )
     elif active_role == Role.RP:
         await answer_service(
