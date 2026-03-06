@@ -174,11 +174,11 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         ]
     if role == Role.INSTALLER:
         return [
-            [INST_BTN_ORDER_MAT, INST_BTN_INVOICE_OK],
-            [INST_BTN_ORDER_EXTRA, INST_BTN_MY_OBJECTS],
-            [INST_BTN_DAILY_REPORT, INST_BTN_IN_WORK],
-            [INST_BTN_NOT_URGENT, INST_BTN_URGENT],
-            [INST_BTN_SYNC],
+            ["📥 Входящие задачи", INST_BTN_ORDER_MAT],
+            [INST_BTN_INVOICE_OK, INST_BTN_ORDER_EXTRA],
+            [INST_BTN_MY_OBJECTS, INST_BTN_DAILY_REPORT],
+            [INST_BTN_IN_WORK, INST_BTN_NOT_URGENT],
+            [INST_BTN_URGENT, INST_BTN_SYNC],
         ]
     if role == Role.GD:
         return [
@@ -204,9 +204,9 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         ]
     if role == Role.ZAMERY:
         return [
-            [ZAM_BTN_ZAMERY, ZAM_BTN_MY_OBJECTS],
-            [ZAM_BTN_URGENT, ZAM_BTN_NOT_URGENT],
-            [ZAM_BTN_SYNC],
+            ["📥 Входящие задачи", ZAM_BTN_ZAMERY],
+            [ZAM_BTN_MY_OBJECTS, ZAM_BTN_URGENT],
+            [ZAM_BTN_NOT_URGENT, ZAM_BTN_SYNC],
         ]
     return []
 
@@ -331,6 +331,10 @@ def main_menu(role: str | None, is_admin: bool = False, unread: int = 0) -> Repl
     if unread > 0:
         inbox_label += f" 🔴{unread}"
 
+    rp_inbox_label = RP_BTN_INBOX_SALES
+    if unread > 0:
+        rp_inbox_label += f" 🔴{unread}"
+
     def _patch_inbox(rows: list[list[str]]) -> None:
         """Replace hardcoded inbox text with dynamic counter."""
         if unread > 0:
@@ -338,6 +342,8 @@ def main_menu(role: str | None, is_admin: bool = False, unread: int = 0) -> Repl
                 for i, btn in enumerate(row):
                     if btn == MGR_BTN_INBOX or btn == ACC_BTN_INBOX or btn == "📥 Входящие задачи":
                         row[i] = inbox_label
+                    elif btn == RP_BTN_INBOX_SALES:
+                        row[i] = rp_inbox_label
 
     # GD gets a custom layout (no separate "Ещё действия" row, admin in grid)
     if _is_pure_gd(role):

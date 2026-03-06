@@ -72,7 +72,7 @@ async def _current_role(db: Database, user_id: int) -> str | None:
 # ВХОДЯЩИЕ ОТД.ПРОДАЖ
 # =====================================================================
 
-@router.message(F.text == RP_BTN_INBOX_SALES)
+@router.message(lambda m: (m.text or "").strip().startswith("📥 Входящие Отд.Продаж"))
 async def rp_inbox_sales(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
