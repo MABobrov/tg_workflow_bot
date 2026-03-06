@@ -190,7 +190,7 @@ async def urgent_gd_finalize(
         "✅ Срочный запрос отправлен ГД.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
         ),
     )  # type: ignore
     await state.clear()
@@ -342,7 +342,7 @@ async def not_urgent_gd_finalize(
         "✅ Задача отправлена ГД (не срочно).",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
         ),
     )
     await state.clear()

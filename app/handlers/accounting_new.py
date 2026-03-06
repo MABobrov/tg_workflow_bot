@@ -267,6 +267,6 @@ async def edo_respond_finalize(
         f"✅ Ответ отправлен ({resp_label}).",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
         ),
     )

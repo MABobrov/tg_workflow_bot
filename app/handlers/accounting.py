@@ -235,7 +235,7 @@ async def manager_request_finalize(
         "✅ Запрос отправлен менеджеру.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role_now, is_admin=u.id in (config.admin_ids or set())),
+            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
         ),
     )  # type: ignore
     await state.clear()

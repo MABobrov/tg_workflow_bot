@@ -282,7 +282,7 @@ async def zamery_zp_confirm_count(
         f"Замеров: {count}, итого: {total:,.0f}₽",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
         ),
     )
 
@@ -354,7 +354,7 @@ async def zamery_zp_custom(
             f"Замеров: {len(entries)}, итого: {total:,.0f}₽",
             reply_markup=private_only_reply_markup(
                 message,
-                main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set())),
+                main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
             ),
         )
         return

@@ -443,7 +443,7 @@ async def lead_finalize(
         f"✅ Лид отправлен {role_label}.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
         ),
     )
 
@@ -481,7 +481,7 @@ async def role_switch_to_other(message: Message, state: FSMContext, db: Database
         f"✅ Роль изменена на: <b>{role_label_str}</b>",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(target_role, is_admin=is_admin),
+            main_menu(target_role, is_admin=is_admin, unread=await db.count_unread_tasks(u.id)),
         ),
     )
 
@@ -504,7 +504,7 @@ async def role_switch_already_active(message: Message, db: Database, config: Con
         f"Вы уже в роли <b>{role_label_str}</b>.",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=is_admin),
+            main_menu(role, is_admin=is_admin, unread=await db.count_unread_tasks(u.id)),
         ),
     )
 
@@ -655,6 +655,6 @@ async def kp_review_comment(
         f"✅ Документы отправлены менеджеру по счёту №{invoice_number}.",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
         ),
     )

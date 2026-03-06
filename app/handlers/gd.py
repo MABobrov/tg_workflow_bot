@@ -86,7 +86,7 @@ async def gd_urgent_inbox(message: Message, db: Database, config: Config) -> Non
     if not all_tasks:
         await message.answer(
             "✅ Нет открытых срочных запросов и подтверждений оплат.",
-            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin)),
+            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
         )
         return
 
@@ -134,7 +134,7 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
     if not invoice_tasks:
         await message.answer(
             "✅ Нет открытых счетов на оплату.",
-            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin)),
+            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
         )
         return
 
@@ -219,7 +219,7 @@ async def gd_search_execute(message: Message, state: FSMContext, db: Database, c
     if not results:
         await message.answer(
             "Ничего не найдено.",
-            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin)),
+            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
         )
         return
 
@@ -482,7 +482,7 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
     if not integrations.sheets:
         await message.answer(
             "⚠️ Интеграция Google Sheets выключена.",
-            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin)),
+            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
         )
         return
 
@@ -528,5 +528,5 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
         "✅ Синхронизация завершена.\n"
         f"Проектов: <b>{projects_ok}</b>\n"
         f"Задач: <b>{tasks_ok}</b>",
-        reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin)),
+        reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
     )

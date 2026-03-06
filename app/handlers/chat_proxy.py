@@ -208,6 +208,7 @@ async def show_history(
 ) -> None:
     """Display last N messages for a channel."""
     limit = config.chat_history_limit
+    viewer_id = message.from_user.id if message.from_user else None
 
     if channel in COMPOSITE_CHANNELS:
         # Aggregate messages from all sub-channels
@@ -217,10 +218,15 @@ async def show_history(
             for m in sub_msgs:
                 m["_channel"] = sub_ch
             all_msgs.extend(sub_msgs)
+            # Mark incoming messages as read for viewer
+            if viewer_id:
+                await db.mark_messages_read(viewer_id, sub_ch)
         all_msgs.sort(key=lambda m: m.get("created_at", ""), reverse=True)
         messages = all_msgs[:limit]
     else:
         messages = await db.list_chat_messages(channel, limit=limit)
+        if viewer_id:
+            await db.mark_messages_read(viewer_id, channel)
 
     label = channel_label(channel)
 
@@ -531,9 +537,10 @@ async def chat_menu_back(
     user = await db.get_user_optional(u.id)
     role = user.role if user else None
     is_admin = u.id in (config.admin_ids or set())
+    unread = await db.count_unread_tasks(u.id)
     await message.answer(
         "Главное меню.",
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin)),
+        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread)),
     )
 
 

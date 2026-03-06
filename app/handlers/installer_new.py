@@ -198,7 +198,7 @@ async def order_mat_finalize(
         "✅ Заказ материалов отправлен РП.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
         ),
     )
 
@@ -340,7 +340,7 @@ async def invoice_ok_comment(
         f"✅ Подтверждение отправлено по счёту №{inv['invoice_number']}.",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
         ),
     )
 
@@ -502,7 +502,7 @@ async def daily_report_finalize(
         "✅ Отчёт отправлен РП.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
         ),
     )
 

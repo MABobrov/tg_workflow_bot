@@ -300,7 +300,7 @@ async def check_kp_comment(
         f"Счёт №{invoice_number} создан в базе (статус: Новый).",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
         ),
     )
 
@@ -486,7 +486,7 @@ async def invoice_start_send(
         f"✅ Счёт №{invoice_number} отправлен ГД на оплату.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
         ),
     )
 
@@ -915,7 +915,7 @@ async def invoice_end_comment(
         f"✅ Запрос «Счет End» по счёту №{inv['invoice_number']} отправлен.",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
         ),
     )
 
@@ -1205,7 +1205,7 @@ async def edo_finalize(
         f"✅ Запрос ЭДО отправлен бухгалтеру ({type_label}).",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set())),
+            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
         ),
     )
 
@@ -1591,5 +1591,5 @@ async def mgr_chat_back(message: Message, state: FSMContext, db: Database, confi
     is_admin = message.from_user.id in (config.admin_ids or set())
     await message.answer(
         "Выберите действие:",
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin)),
+        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=await db.count_unread_tasks(message.from_user.id))),
     )

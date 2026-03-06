@@ -316,6 +316,8 @@ class Database:
             ("tasks", "accepted_at", "TEXT"),
             ("tasks", "last_reminded_at", "TEXT"),
             ("tasks", "reminder_2h_sent", "INTEGER DEFAULT 0"),
+            # Отслеживание прочтения входящих сообщений
+            ("chat_messages", "is_read", "INTEGER DEFAULT 0"),
         ]
         for table, col, col_type in migration_columns:
             try:
@@ -694,13 +696,33 @@ class Database:
         await self.conn.commit()
 
     async def count_unread_tasks(self, user_id: int) -> int:
-        """Count tasks with status OPEN or IN_PROGRESS assigned to user."""
+        """Count tasks (OPEN/IN_PROGRESS) + unread incoming messages for user."""
         cur = await self.conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE assigned_to = ? AND status IN ('open', 'in_progress')",
             (user_id,),
         )
         row = await cur.fetchone()
-        return row[0] if row else 0
+        task_count = row[0] if row else 0
+
+        cur2 = await self.conn.execute(
+            "SELECT COUNT(*) FROM chat_messages "
+            "WHERE receiver_id = ? AND direction = 'incoming' AND is_read = 0",
+            (user_id,),
+        )
+        row2 = await cur2.fetchone()
+        msg_count = row2[0] if row2 else 0
+
+        return task_count + msg_count
+
+    async def mark_messages_read(self, user_id: int, channel: str) -> int:
+        """Mark all incoming messages for user in channel as read. Returns count."""
+        cur = await self.conn.execute(
+            "UPDATE chat_messages SET is_read = 1 "
+            "WHERE receiver_id = ? AND channel = ? AND direction = 'incoming' AND is_read = 0",
+            (user_id, channel),
+        )
+        await self.conn.commit()
+        return cur.rowcount
 
     async def list_tasks_needing_15m_reminder(self, cutoff_iso: str) -> list[dict]:
         """Tasks: OPEN, not accepted, last reminder > 15 min ago (or never reminded)."""

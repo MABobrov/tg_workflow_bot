@@ -100,7 +100,7 @@ async def _push_menu_to_user(message: Message, user_id: int, role: str | None, i
         await message.bot.send_message(
             chat_id=user_id,
             text=text,
-            reply_markup=main_menu(role, is_admin=is_admin),
+            reply_markup=main_menu(role, is_admin=is_admin, unread=await db.count_unread_tasks(user_id)),
         )
         return True
     except TelegramForbiddenError:
