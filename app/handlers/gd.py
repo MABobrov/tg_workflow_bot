@@ -84,7 +84,7 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
     if not all_tasks:
         await message.answer(
             "✅ Нет входящих задач.",
-            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id))),
+            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id), gd_invoice_unread=await db.count_gd_invoice_tasks(user_id))),
         )
         return
 
@@ -119,7 +119,7 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
 # "Счета на Оплату" — show INVOICE_PAYMENT tasks for GD
 # ---------------------------------------------------------------------------
 
-@router.message(F.text == GD_BTN_INVOICES)
+@router.message(F.text.startswith(GD_BTN_INVOICES))
 async def gd_invoices(message: Message, db: Database, config: Config) -> None:
     """Show list of open invoice payment tasks."""
     if not await require_role_message(message, db, roles=[Role.GD]):
@@ -139,7 +139,7 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
     if not invoice_tasks:
         await message.answer(
             "✅ Нет открытых счетов на оплату.",
-            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id))),
+            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id), gd_invoice_unread=await db.count_gd_invoice_tasks(user_id))),
         )
         return
 
@@ -224,7 +224,7 @@ async def gd_search_execute(message: Message, state: FSMContext, db: Database, c
     if not results:
         await message.answer(
             "Ничего не найдено.",
-            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id))),
+            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id), gd_invoice_unread=await db.count_gd_invoice_tasks(user_id))),
         )
         return
 
@@ -642,5 +642,5 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
 
     await message.answer(
         "✅ Синхронизация данных завершена.",
-        reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id))),
+        reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id), gd_invoice_unread=await db.count_gd_invoice_tasks(user_id))),
     )

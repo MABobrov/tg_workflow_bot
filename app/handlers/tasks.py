@@ -267,7 +267,7 @@ async def task_actions(
             reply_markup=private_only_reply_markup(
                 cb.message,
                 main_menu(Role.GD, is_admin=bool(cb.from_user and _uid_hold in (config.admin_ids or set())),
-                           unread=await db.count_unread_tasks(_uid_hold)),
+                           unread=await db.count_unread_tasks(_uid_hold), unread_channels=await db.count_unread_by_channel(_uid_hold), gd_inbox_unread=await db.count_gd_inbox_tasks(_uid_hold), gd_invoice_unread=await db.count_gd_invoice_tasks(_uid_hold)),
             ),
         )
         return
@@ -291,7 +291,7 @@ async def task_actions(
             reply_markup=private_only_reply_markup(
                 cb.message,
                 main_menu(Role.GD, is_admin=bool(cb.from_user and _uid_rej in (config.admin_ids or set())),
-                           unread=await db.count_unread_tasks(_uid_rej)),
+                           unread=await db.count_unread_tasks(_uid_rej), unread_channels=await db.count_unread_by_channel(_uid_rej), gd_inbox_unread=await db.count_gd_inbox_tasks(_uid_rej), gd_invoice_unread=await db.count_gd_invoice_tasks(_uid_rej)),
             ),
         )
         return
@@ -566,7 +566,7 @@ async def invoice_pp_finalize(
         "✅ Счёт оплачен. Платёжка отправлена РП.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(u.id)),
+            main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(u.id), unread_channels=await db.count_unread_by_channel(u.id), gd_inbox_unread=await db.count_gd_inbox_tasks(u.id), gd_invoice_unread=await db.count_gd_invoice_tasks(u.id)),
         ),
     )
 

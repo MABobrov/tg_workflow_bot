@@ -725,6 +725,17 @@ class Database:
         row = await cur.fetchone()
         return row[0] if row else 0
 
+    async def count_gd_invoice_tasks(self, user_id: int) -> int:
+        """Count OPEN/IN_PROGRESS invoice_payment tasks assigned to user."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE assigned_to = ? "
+            "AND status IN ('open', 'in_progress') "
+            "AND type = 'invoice_payment'",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
     async def count_unread_by_channel(self, user_id: int) -> dict[str, int]:
         """Count unread incoming messages per channel for a user."""
         cur = await self.conn.execute(
