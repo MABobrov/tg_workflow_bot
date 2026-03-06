@@ -11,6 +11,7 @@ Phase 2:
 
 from __future__ import annotations
 
+import html
 import logging
 
 from aiogram import F, Router
@@ -42,7 +43,15 @@ from ..keyboards import (
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import ChatProxySG, InvoiceSearchSG, SalesWriteSG
-from ..utils import private_only_reply_markup, refresh_recipient_keyboard
+from ..utils import (
+    format_dt_iso,
+    get_initiator_label,
+    private_only_reply_markup,
+    project_status_label,
+    refresh_recipient_keyboard,
+    task_status_label,
+    task_type_label,
+)
 from .auth import require_role_message
 from .chat_proxy import enter_chat_menu, resolve_channel_target, channel_label
 
@@ -468,61 +477,170 @@ async def sales_send_message(
 
 @router.message(F.text == GD_BTN_SYNC)
 async def gd_sync_data(message: Message, db: Database, config: Config, integrations: IntegrationHub) -> None:
-    """Trigger Google Sheets resync from GD main menu."""
+    """Trigger Google Sheets resync + show detailed task/project summary."""
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
 
     user_id = message.from_user.id  # type: ignore[union-attr]
     is_admin = user_id in (config.admin_ids or set())
+    tz = config.timezone
 
-    if not integrations.sheets:
+    # --- 1. Google Sheets sync (if enabled) ---
+    if integrations.sheets:
+        await message.answer("⏳ Запускаю синхронизацию данных с Google Sheets...")
+
+        all_projects = await db.list_recent_projects(limit=10000)
+        all_tasks_gs = await db.list_recent_tasks(limit=50000)
+
+        project_code_by_id: dict[int, str] = {}
+        projects_ok = 0
+        tasks_ok = 0
+
+        for p in sorted(all_projects, key=lambda x: int(x["id"])):
+            manager_label = ""
+            manager_id = p.get("manager_id")
+            if manager_id:
+                manager = await db.get_user_optional(int(manager_id))
+                if manager:
+                    manager_label = f"@{manager.username}" if manager.username else str(manager.telegram_id)
+            await integrations.sheets.upsert_project(p, manager_label=manager_label)
+            project_code = str(p.get("code") or "")
+            if project_code:
+                project_code_by_id[int(p["id"])] = project_code
+            projects_ok += 1
+
+        for t in sorted(all_tasks_gs, key=lambda x: int(x["id"])):
+            project_code = ""
+            project_id = t.get("project_id")
+            if project_id:
+                project_code = project_code_by_id.get(int(project_id), "")
+                if not project_code:
+                    try:
+                        proj = await db.get_project(int(project_id))
+                        project_code = str(proj.get("code") or "")
+                        if project_code:
+                            project_code_by_id[int(project_id)] = project_code
+                    except Exception:
+                        project_code = ""
+            await integrations.sheets.upsert_task(t, project_code=project_code)
+            tasks_ok += 1
+
         await message.answer(
-            "⚠️ Интеграция Google Sheets выключена.",
-            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
+            "✅ Синхронизация Google Sheets завершена.\n"
+            f"Проектов: <b>{projects_ok}</b> | Задач: <b>{tasks_ok}</b>",
         )
-        return
 
-    await message.answer("⏳ Запускаю синхронизацию данных с Google Sheets...")
+    # --- 2. Detailed task report ---
+    active_tasks = await db.list_recent_tasks(limit=5000)
+    active_tasks = [
+        t for t in active_tasks
+        if t.get("status") in (TaskStatus.OPEN, TaskStatus.IN_PROGRESS)
+    ]
+    active_tasks.sort(key=lambda t: t.get("created_at") or "", reverse=True)
 
-    projects = await db.list_recent_projects(limit=10000)
-    tasks = await db.list_recent_tasks(limit=50000)
+    # Pre-resolve user names
+    user_cache: dict[int, str] = {}
 
-    project_code_by_id: dict[int, str] = {}
-    projects_ok = 0
-    tasks_ok = 0
+    async def _user_label(uid: int | None) -> str:
+        if not uid:
+            return "—"
+        uid = int(uid)
+        if uid not in user_cache:
+            user_cache[uid] = await get_initiator_label(db, uid)
+        return user_cache[uid]
 
-    for p in sorted(projects, key=lambda x: int(x["id"])):
-        manager_label = ""
-        manager_id = p.get("manager_id")
-        if manager_id:
-            manager = await db.get_user_optional(int(manager_id))
-            if manager:
-                manager_label = f"@{manager.username}" if manager.username else str(manager.telegram_id)
-        await integrations.sheets.upsert_project(p, manager_label=manager_label)
-        project_code = str(p.get("code") or "")
-        if project_code:
-            project_code_by_id[int(p["id"])] = project_code
-        projects_ok += 1
+    if active_tasks:
+        header = f"📋 <b>Активные задачи ({len(active_tasks)})</b>\n"
+        chunks: list[str] = [header]
+        current_chunk = header
 
-    for t in sorted(tasks, key=lambda x: int(x["id"])):
-        project_code = ""
-        project_id = t.get("project_id")
-        if project_id:
-            project_code = project_code_by_id.get(int(project_id), "")
-            if not project_code:
-                try:
-                    p = await db.get_project(int(project_id))
-                    project_code = str(p.get("code") or "")
-                    if project_code:
-                        project_code_by_id[int(project_id)] = project_code
-                except Exception:
-                    project_code = ""
-        await integrations.sheets.upsert_task(t, project_code=project_code)
-        tasks_ok += 1
+        for t in active_tasks:
+            created_by_label = await _user_label(t.get("created_by"))
+            assigned_to_label = await _user_label(t.get("assigned_to"))
+            ttype = task_type_label(t.get("type"))
+            tstatus = task_status_label(t.get("status"))
+            created_at = format_dt_iso(t.get("created_at"), tz)
+            due_at = format_dt_iso(t.get("due_at"), tz) if t.get("due_at") else "—"
+
+            line = (
+                f"\n<b>#{t['id']}</b> {html.escape(ttype)}\n"
+                f"  👤 От: {created_by_label}\n"
+                f"  👉 Кому: {assigned_to_label}\n"
+                f"  📌 Статус: <b>{html.escape(tstatus)}</b>\n"
+                f"  🕒 Создана: {created_at}\n"
+                f"  ⏰ Дедлайн: {due_at}\n"
+            )
+
+            if len(current_chunk) + len(line) > 3800:
+                chunks.append(current_chunk)
+                current_chunk = line
+            else:
+                current_chunk += line
+
+        if current_chunk and current_chunk != header:
+            chunks.append(current_chunk)
+
+        # Send first chunk as header, rest as continuations
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                continue  # header was merged into first data chunk
+            await message.answer(chunk)
+    else:
+        await message.answer("📋 Активных задач нет.")
+
+    # --- 3. Active projects report ---
+    all_projects_list = await db.list_recent_projects(limit=500)
+    active_projects = [
+        p for p in all_projects_list
+        if p.get("status") and p.get("status") != "archive"
+    ]
+    active_projects.sort(key=lambda p: p.get("updated_at") or "", reverse=True)
+
+    if active_projects:
+        header_p = f"\n🏗 <b>Активные проекты ({len(active_projects)})</b>\n"
+        chunks_p: list[str] = [header_p]
+        current_chunk_p = header_p
+
+        for p in active_projects:
+            code = html.escape(p.get("code") or f"#{p['id']}")
+            title = html.escape(p.get("title") or "—")
+            client = html.escape(p.get("client") or "—")
+            address = html.escape(p.get("address") or "—")
+            pstatus = project_status_label(str(p.get("status") or ""))
+            manager_label = await _user_label(p.get("manager_id"))
+            rp_label = await _user_label(p.get("rp_id"))
+            amount = p.get("amount")
+            amount_s = f"{amount:,.0f}".replace(",", " ") if isinstance(amount, (int, float)) else "—"
+            updated = format_dt_iso(p.get("updated_at"), tz)
+
+            line = (
+                f"\n<b>{code}</b> — {title}\n"
+                f"  👤 Клиент: {client}\n"
+                f"  📍 Адрес: {address}\n"
+                f"  💰 Сумма: {amount_s}\n"
+                f"  📌 Статус: <b>{html.escape(pstatus)}</b>\n"
+                f"  👷 Менеджер: {manager_label}\n"
+                f"  👔 РП: {rp_label}\n"
+                f"  🔄 Обновлён: {updated}\n"
+            )
+
+            if len(current_chunk_p) + len(line) > 3800:
+                chunks_p.append(current_chunk_p)
+                current_chunk_p = line
+            else:
+                current_chunk_p += line
+
+        if current_chunk_p and current_chunk_p != header_p:
+            chunks_p.append(current_chunk_p)
+
+        for i, chunk in enumerate(chunks_p):
+            if i == 0:
+                continue
+            await message.answer(chunk)
+    else:
+        await message.answer("🏗 Активных проектов нет.")
 
     await message.answer(
-        "✅ Синхронизация завершена.\n"
-        f"Проектов: <b>{projects_ok}</b>\n"
-        f"Задач: <b>{tasks_ok}</b>",
+        "✅ Синхронизация данных завершена.",
         reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
     )
