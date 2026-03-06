@@ -233,9 +233,10 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
 
     is_admin = u.id in (config.admin_ids or set())
     unread = await db.count_unread_tasks(u.id)
+    uc = await db.count_unread_by_channel(u.id)
     await message.answer(
         text,
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread)),
+        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc)),
     )
     if existed is None and not role and not is_admin:
         await _notify_admins_new_user_without_role(message, config)
@@ -264,9 +265,10 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
     role = user.role if user else None
     is_admin = u.id in (config.admin_ids or set())
     unread = await db.count_unread_tasks(u.id)
+    uc = await db.count_unread_by_channel(u.id)
     await message.answer(
         "✅ Меню обновлено.",
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread)),
+        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc)),
     )
 
 
@@ -284,9 +286,10 @@ async def cmd_help(message: Message, db: Database, config: Config) -> None:
     if is_admin:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
     unread = await db.count_unread_tasks(message.from_user.id) if message.from_user else 0
+    uc = await db.count_unread_by_channel(message.from_user.id) if message.from_user else {}
     await message.answer(
         text,
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread)),
+        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc)),
     )
 
 
@@ -301,11 +304,12 @@ async def menu_actions(message: Message, db: Database, config: Config) -> None:
     role = user.role if user else None
     if not role:
         unread = await db.count_unread_tasks(u.id)
+        uc = await db.count_unread_by_channel(u.id)
         await message.answer(
             "Роль пока не назначена. Попросите администратора назначить роль и нажмите «🔄 Обновить меню».",
             reply_markup=private_only_reply_markup(
                 message,
-                main_menu(None, is_admin=u.id in (config.admin_ids or set()), unread=unread),
+                main_menu(None, is_admin=u.id in (config.admin_ids or set()), unread=unread, unread_channels=uc),
             ),
         )
         return
@@ -396,9 +400,10 @@ async def menu_help(message: Message, db: Database, config: Config) -> None:
     if is_admin:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
     unread = await db.count_unread_tasks(message.from_user.id) if message.from_user else 0
+    uc = await db.count_unread_by_channel(message.from_user.id) if message.from_user else {}
     await message.answer(
         text,
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread)),
+        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc)),
     )
 
 
@@ -444,9 +449,10 @@ async def sync_data_non_gd(
 
     if not integrations.sheets:
         unread = await db.count_unread_tasks(message.from_user.id)
+        uc = await db.count_unread_by_channel(message.from_user.id)
         await message.answer(
             "⚠️ Интеграция Google Sheets не настроена.",
-            reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread)),
+            reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc)),
         )
         return
 
@@ -489,11 +495,12 @@ async def sync_data_non_gd(
         tasks_ok += 1
 
     unread = await db.count_unread_tasks(message.from_user.id)
+    uc = await db.count_unread_by_channel(message.from_user.id)
     await message.answer(
         "✅ Синхронизация завершена.\n"
         f"Проектов: <b>{projects_ok}</b>\n"
         f"Задач: <b>{tasks_ok}</b>",
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread)),
+        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc)),
     )
 
 
@@ -512,7 +519,7 @@ async def cmd_cancel(message: Message, state: FSMContext, db: Database, config: 
     unread = await db.count_unread_tasks(u.id) if u else 0
     await message.answer(
         "Операция отменена. Выберите следующее действие в меню.",
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread)),
+        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc)),
     )
 
 

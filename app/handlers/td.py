@@ -252,7 +252,7 @@ async def supplier_pay_finalize(
         ),
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id), unread_channels=await db.count_unread_by_channel(u.id)),
         ),
     )  # type: ignore
     await state.clear()

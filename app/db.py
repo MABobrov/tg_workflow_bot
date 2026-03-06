@@ -714,6 +714,17 @@ class Database:
 
         return task_count + msg_count
 
+    async def count_unread_by_channel(self, user_id: int) -> dict[str, int]:
+        """Count unread incoming messages per channel for a user."""
+        cur = await self.conn.execute(
+            "SELECT channel, COUNT(*) FROM chat_messages "
+            "WHERE receiver_id = ? AND direction = 'incoming' AND is_read = 0 "
+            "GROUP BY channel",
+            (user_id,),
+        )
+        rows = await cur.fetchall()
+        return {row[0]: row[1] for row in rows}
+
     async def mark_messages_read(self, user_id: int, channel: str) -> int:
         """Mark all incoming messages for user in channel as read. Returns count."""
         cur = await self.conn.execute(

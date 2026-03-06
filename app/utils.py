@@ -356,8 +356,9 @@ async def refresh_recipient_keyboard(
     if not user:
         return
     unread = await db.count_unread_tasks(user_id)
+    uc = await db.count_unread_by_channel(user_id)
     is_admin = user_id in (config.admin_ids or set())
-    kb = main_menu(user.role, is_admin=is_admin, unread=unread)
+    kb = main_menu(user.role, is_admin=is_admin, unread=unread, unread_channels=uc)
     text = f"📥 У вас {unread} активных задач." if unread else "📥 Нет активных задач."
     await notifier.safe_send(user_id, text, reply_markup=kb)
 

@@ -538,9 +538,10 @@ async def chat_menu_back(
     role = user.role if user else None
     is_admin = u.id in (config.admin_ids or set())
     unread = await db.count_unread_tasks(u.id)
+    uc = await db.count_unread_by_channel(u.id)
     await message.answer(
         "Главное меню.",
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread)),
+        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc)),
     )
 
 

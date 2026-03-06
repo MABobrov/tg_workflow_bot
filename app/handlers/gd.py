@@ -84,7 +84,7 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
     if not all_tasks:
         await message.answer(
             "✅ Нет входящих задач.",
-            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
+            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id))),
         )
         return
 
@@ -139,7 +139,7 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
     if not invoice_tasks:
         await message.answer(
             "✅ Нет открытых счетов на оплату.",
-            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
+            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id))),
         )
         return
 
@@ -224,7 +224,7 @@ async def gd_search_execute(message: Message, state: FSMContext, db: Database, c
     if not results:
         await message.answer(
             "Ничего не найдено.",
-            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
+            reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id))),
         )
         return
 
@@ -237,35 +237,35 @@ async def gd_search_execute(message: Message, state: FSMContext, db: Database, c
 # Chat-proxy buttons — each opens chat submenu with its channel
 # ---------------------------------------------------------------------------
 
-@router.message(F.text == GD_BTN_CHAT_RP)
+@router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_CHAT_RP))
 async def gd_chat_rp(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await enter_chat_menu(message, state, channel="rp")
 
 
-@router.message(F.text == GD_BTN_ZAMERY)
+@router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_ZAMERY))
 async def gd_chat_zamery(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await enter_chat_menu(message, state, channel="zamery")
 
 
-@router.message(F.text == GD_BTN_ACCOUNTING)
+@router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_ACCOUNTING))
 async def gd_chat_accounting(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await enter_chat_menu(message, state, channel="accounting")
 
 
-@router.message(F.text == GD_BTN_MONTAZH)
+@router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_MONTAZH))
 async def gd_chat_montazh(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await enter_chat_menu(message, state, channel="montazh")
 
 
-@router.message(F.text == GD_BTN_SALES)
+@router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_SALES))
 async def gd_chat_sales(message: Message, state: FSMContext, db: Database) -> None:
     """Отд.Продаж — составной канал."""
     if not await require_role_message(message, db, roles=[Role.GD]):
@@ -642,5 +642,5 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
 
     await message.answer(
         "✅ Синхронизация данных завершена.",
-        reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id))),
+        reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id))),
     )

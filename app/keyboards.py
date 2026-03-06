@@ -325,7 +325,12 @@ def _is_pure_zamery(role: str | None) -> bool:
     return roles == [Role.ZAMERY]
 
 
-def main_menu(role: str | None, is_admin: bool = False, unread: int = 0) -> ReplyKeyboardMarkup:
+def main_menu(
+    role: str | None,
+    is_admin: bool = False,
+    unread: int = 0,
+    unread_channels: dict[str, int] | None = None,
+) -> ReplyKeyboardMarkup:
     inbox_label = "📥 Входящие задачи"
     if unread > 0:
         inbox_label += f" 🔴{unread}"
@@ -338,17 +343,37 @@ def main_menu(role: str | None, is_admin: bool = False, unread: int = 0) -> Repl
     if unread > 0:
         gd_inbox_label += f" 🔴{unread}"
 
+    # Map channel names to chat button constants (for per-channel badge)
+    _CHAN_BTN: dict[str, str] = {
+        "rp": GD_BTN_CHAT_RP,
+        "accounting": GD_BTN_ACCOUNTING,
+        "zamery": GD_BTN_ZAMERY,
+        "montazh": GD_BTN_MONTAZH,
+        "otd_prodazh": GD_BTN_SALES,
+    }
+    # Build labels with per-channel unread counts
+    _uc = unread_channels or {}
+    # For composite channel "otd_prodazh", sum sub-channels
+    _otd_sum = sum(_uc.get(sc, 0) for sc in ("rp", "manager_kv", "manager_kia", "manager_npn"))
+    _chan_labels: dict[str, str] = {}
+    for chan, base_btn in _CHAN_BTN.items():
+        cnt = _otd_sum if chan == "otd_prodazh" else _uc.get(chan, 0)
+        _chan_labels[base_btn] = f"{base_btn} 🔴{cnt}" if cnt > 0 else base_btn
+
     def _patch_inbox(rows: list[list[str]]) -> None:
-        """Replace hardcoded inbox text with dynamic counter."""
-        if unread > 0:
-            for row in rows:
-                for i, btn in enumerate(row):
+        """Replace hardcoded inbox/chat text with dynamic counter."""
+        for row in rows:
+            for i, btn in enumerate(row):
+                if unread > 0:
                     if btn == MGR_BTN_INBOX or btn == ACC_BTN_INBOX or btn == "📥 Входящие задачи":
                         row[i] = inbox_label
                     elif btn == RP_BTN_INBOX_SALES:
                         row[i] = rp_inbox_label
                     elif btn == GD_BTN_INBOX_GD:
                         row[i] = gd_inbox_label
+                # Per-channel chat badges
+                if btn in _chan_labels:
+                    row[i] = _chan_labels[btn]
 
     # GD gets a custom layout (no separate "Ещё действия" row, admin in grid)
     if _is_pure_gd(role):
