@@ -715,11 +715,11 @@ class Database:
         return task_count + msg_count
 
     async def count_gd_inbox_tasks(self, user_id: int) -> int:
-        """Count tasks for GD inbox: OPEN/IN_PROGRESS, excluding invoice_payment and payment_confirm."""
+        """Count tasks for GD inbox: OPEN/IN_PROGRESS, excluding invoice_payment, payment_confirm, invoice_end."""
         cur = await self.conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE assigned_to = ? "
             "AND status IN ('open', 'in_progress') "
-            "AND type NOT IN ('invoice_payment', 'payment_confirm')",
+            "AND type NOT IN ('invoice_payment', 'payment_confirm', 'invoice_end')",
             (user_id,),
         )
         row = await cur.fetchone()

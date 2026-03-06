@@ -38,7 +38,7 @@ GD_BTN_ADMIN = "🛠 Админ-панель"
 GD_BTN_KV_CRED = "КВ Кред"
 GD_BTN_KIA_CRED = "КИА Кред"
 GD_BTN_NPN_CRED = "НПН Кред"
-GD_BTN_PAYMENT_CONFIRM = "✅ Подтверждение оплат"
+GD_BTN_INVOICE_END_GD = "🏁 Счёт END"
 GD_BTN_SUPPLIER_PAY = "💸 Оплата поставщику"
 GD_BTN_BACK_HOME = "Назад в Гл.меню"
 GD_BTN_REFRESH = "🔄 Обновить меню"
@@ -160,7 +160,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         # TD merged into GD — redirect to GD menu
         return [
             [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
-            [GD_BTN_PAYMENT_CONFIRM, GD_BTN_SUPPLIER_PAY],
+            [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
             [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
             [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
@@ -183,7 +183,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
     if role == Role.GD:
         return [
             [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
-            [GD_BTN_PAYMENT_CONFIRM, GD_BTN_SUPPLIER_PAY],
+            [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
             [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
             [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],

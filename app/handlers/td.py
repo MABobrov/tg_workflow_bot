@@ -13,7 +13,7 @@ from ..callbacks import ProjectCb
 from ..config import Config
 from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
-from ..keyboards import main_menu, projects_kb, tasks_kb, task_actions_kb
+from ..keyboards import GD_BTN_INVOICE_END_GD, main_menu, projects_kb, tasks_kb, task_actions_kb
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
@@ -27,19 +27,32 @@ router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 
 
-# ==================== ПОДТВЕРЖДЕНИЕ ОПЛАТ (существующий процесс) ====================
+# ==================== СЧЁТ END (объединяет подтверждение оплат + Счет End) ====================
 
-@router.message(F.text == "✅ Подтверждение оплат")
-async def payment_tasks(message: Message, db: Database) -> None:
+@router.message(F.text == GD_BTN_INVOICE_END_GD)
+async def gd_invoice_end_combined(message: Message, db: Database) -> None:
+    """Show both PAYMENT_CONFIRM and INVOICE_END_REQUEST tasks for GD."""
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
-    tasks = await db.list_tasks_for_user(message.from_user.id, limit=30, type_filter=TaskType.PAYMENT_CONFIRM)  # type: ignore
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    tasks_pc = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.PAYMENT_CONFIRM)
+    tasks_ie = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.INVOICE_END_REQUEST)
+    tasks = tasks_pc + tasks_ie
+    tasks.sort(key=lambda t: t.get("created_at") or "", reverse=True)
     if not tasks:
-        await message.answer("Нет задач на подтверждение оплат ✅")
+        await message.answer("✅ Нет задач «Счёт END» и подтверждений оплат.")
         return
+    n_pc = len(tasks_pc)
+    n_ie = len(tasks_ie)
+    parts = []
+    if n_pc:
+        parts.append(f"💰 Подтв.оплат: {n_pc}")
+    if n_ie:
+        parts.append(f"🏁 Счёт End: {n_ie}")
+    summary = " | ".join(parts)
     await message.answer(
-        f"✅ Задачи на подтверждение оплат: <b>{len(tasks)}</b>\n"
-        "Нажмите на задачу для подтверждения или запроса доплаты.",
+        f"🏁 <b>Счёт END</b> ({len(tasks)})\n{summary}\n\n"
+        "Выберите задачу:",
         reply_markup=tasks_kb(tasks),
     )
 
