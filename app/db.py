@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable
 
 import aiosqlite
 
+from .enums import Role
 from .utils import parse_roles, roles_to_storage, to_iso, utcnow
+
+log = logging.getLogger(__name__)
 
 
 def _json_dumps(obj: Any) -> str:
@@ -265,6 +269,7 @@ class Database:
                 completed_at TEXT,
                 processing_time_minutes INTEGER,
 
+                updated_at TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -312,6 +317,7 @@ class Database:
             ("edo_requests", "responded_by", "INTEGER"),
             ("edo_requests", "response_comment", "TEXT"),
             ("edo_requests", "response_attachments_json", "TEXT"),
+            ("edo_requests", "updated_at", "TEXT"),
             # Дополнение: принятие задач и напоминания
             ("tasks", "accepted_at", "TEXT"),
             ("tasks", "last_reminded_at", "TEXT"),
@@ -319,12 +325,39 @@ class Database:
             # Отслеживание прочтения входящих сообщений
             ("chat_messages", "is_read", "INTEGER DEFAULT 0"),
         ]
+        async def _column_exists(table: str, column: str) -> bool:
+            cur = await self.conn.execute(f"PRAGMA table_info({table})")
+            rows = await cur.fetchall()
+            return any(str(row["name"]) == column for row in rows)
+
         for table, col, col_type in migration_columns:
-            try:
-                await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
-            except Exception:
-                pass  # column already exists
+            if await _column_exists(table, col):
+                continue
+            await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
         await self.conn.commit()
+
+        cur = await self.conn.execute(
+            """
+            SELECT invoice_number
+            FROM invoices
+            WHERE invoice_number IS NOT NULL AND trim(invoice_number) != ''
+            GROUP BY invoice_number
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """
+        )
+        duplicate_invoice = await cur.fetchone()
+        if duplicate_invoice:
+            log.error(
+                "Duplicate invoice_number detected (%s); unique index was not created. "
+                "Clean duplicates to restore invoice uniqueness.",
+                duplicate_invoice["invoice_number"],
+            )
+        else:
+            await self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_number_unique ON invoices(invoice_number)"
+            )
+            await self.conn.commit()
 
         # --- Auto-migration: TD -> GD (role merge) ---
         await self.conn.execute(
@@ -673,17 +706,19 @@ class Database:
 
     async def accept_task(self, task_id: int) -> None:
         """Mark task as accepted (user clicked 'Принято')."""
+        now = to_iso(utcnow())
         await self.conn.execute(
             "UPDATE tasks SET accepted_at = ?, updated_at = ? WHERE id = ?",
-            (utcnow(), utcnow(), task_id),
+            (now, now, task_id),
         )
         await self.conn.commit()
 
     async def mark_task_reminded_15(self, task_id: int) -> None:
         """Update last_reminded_at for 15-min acceptance reminders."""
+        now = to_iso(utcnow())
         await self.conn.execute(
             "UPDATE tasks SET last_reminded_at = ? WHERE id = ?",
-            (utcnow(), task_id),
+            (now, task_id),
         )
         await self.conn.commit()
 
@@ -1287,7 +1322,14 @@ class Database:
         payment_deadline: str | None = None,
     ) -> int:
         """Create a new invoice record (status = NEW)."""
-        now = utcnow()
+        invoice_number_normalized = (invoice_number or "").strip()
+        if not invoice_number_normalized:
+            raise ValueError("invoice_number is required")
+        existing = await self.get_invoice_by_number(invoice_number_normalized)
+        if existing:
+            raise ValueError(f"invoice_number '{invoice_number_normalized}' already exists")
+
+        now = to_iso(utcnow())
         cur = await self.conn.execute(
             """
             INSERT INTO invoices
@@ -1296,7 +1338,7 @@ class Database:
                  assigned_to, payment_deadline, status, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
             """,
-            (invoice_number, project_id, created_by, creator_role,
+            (invoice_number_normalized, project_id, created_by, creator_role,
              object_address, amount, supplier, description,
              assigned_to, payment_deadline, now, now),
         )
@@ -1312,7 +1354,13 @@ class Database:
 
     async def get_invoice_by_number(self, invoice_number: str) -> dict[str, Any] | None:
         cur = await self.conn.execute(
-            "SELECT * FROM invoices WHERE invoice_number = ?", (invoice_number,)
+            """
+            SELECT * FROM invoices
+            WHERE invoice_number = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            ((invoice_number or "").strip(),),
         )
         row = await cur.fetchone()
         return dict(row) if row else None
@@ -1347,9 +1395,10 @@ class Database:
     async def update_invoice_status(
         self, invoice_id: int, new_status: str
     ) -> None:
+        now = to_iso(utcnow())
         await self.conn.execute(
             "UPDATE invoices SET status = ?, updated_at = ? WHERE id = ?",
-            (new_status, utcnow(), invoice_id),
+            (new_status, now, invoice_id),
         )
         await self.conn.commit()
 
@@ -1359,7 +1408,7 @@ class Database:
         """Generic update: pass column=value pairs."""
         if not fields:
             return
-        fields["updated_at"] = utcnow()
+        fields["updated_at"] = to_iso(utcnow())
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [invoice_id]
         await self.conn.execute(
@@ -1373,7 +1422,7 @@ class Database:
     ) -> None:
         fields: dict[str, Any] = {"installer_ok": int(ok)}
         if ok:
-            fields["installer_ok_at"] = utcnow()
+            fields["installer_ok_at"] = to_iso(utcnow())
         await self.update_invoice(invoice_id, **fields)
 
     async def set_invoice_edo_signed(
@@ -1381,7 +1430,7 @@ class Database:
     ) -> None:
         fields: dict[str, Any] = {"edo_signed": int(signed)}
         if signed:
-            fields["edo_signed_at"] = utcnow()
+            fields["edo_signed_at"] = to_iso(utcnow())
         await self.update_invoice(invoice_id, **fields)
 
     async def set_invoice_no_debts(
@@ -1389,7 +1438,7 @@ class Database:
     ) -> None:
         fields: dict[str, Any] = {"no_debts": int(no_debts)}
         if no_debts:
-            fields["no_debts_at"] = utcnow()
+            fields["no_debts_at"] = to_iso(utcnow())
         await self.update_invoice(invoice_id, **fields)
 
     async def set_invoice_zp_status(
@@ -1446,7 +1495,7 @@ class Database:
         comment: str | None = None,
         task_id: int | None = None,
     ) -> int:
-        now = utcnow()
+        now = to_iso(utcnow())
         cur = await self.conn.execute(
             """
             INSERT INTO edo_requests
@@ -1501,7 +1550,7 @@ class Database:
     ) -> None:
         if not fields:
             return
-        fields["updated_at"] = utcnow()
+        fields["updated_at"] = to_iso(utcnow())
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [edo_id]
         await self.conn.execute(
@@ -1518,7 +1567,7 @@ class Database:
         response_comment: str | None = None,
         response_attachments_json: str | None = None,
     ) -> None:
-        now = utcnow()
+        now = to_iso(utcnow())
         # Use generic update — response columns added via migration
         await self.update_edo_request(
             edo_id,
@@ -1543,7 +1592,7 @@ class Database:
         task_id: int | None = None,
         project_id: int | None = None,
     ) -> int:
-        now = utcnow()
+        now = to_iso(utcnow())
         cur = await self.conn.execute(
             """
             INSERT INTO lead_tracking
@@ -1560,10 +1609,53 @@ class Database:
     async def update_lead_tracking_response(
         self, lead_id: int
     ) -> None:
-        now = utcnow()
+        now = to_iso(utcnow())
+        cur = await self.conn.execute(
+            "SELECT assigned_at, response_at FROM lead_tracking WHERE id = ?",
+            (lead_id,),
+        )
+        row = await cur.fetchone()
+        if not row or row["response_at"]:
+            return
+
+        processing_time_minutes: int | None = None
+        assigned_at = row["assigned_at"]
+        if assigned_at:
+            try:
+                assigned_dt = datetime.fromisoformat(str(assigned_at))
+                processing_time_minutes = max(
+                    0,
+                    int((utcnow() - assigned_dt).total_seconds() // 60),
+                )
+            except ValueError:
+                processing_time_minutes = None
+
         await self.conn.execute(
-            "UPDATE lead_tracking SET response_at = ? WHERE id = ?",
-            (now, lead_id),
+            "UPDATE lead_tracking SET response_at = ?, processing_time_minutes = ? WHERE id = ?",
+            (now, processing_time_minutes, lead_id),
+        )
+        await self.conn.commit()
+
+    async def link_lead_tracking(
+        self,
+        lead_id: int,
+        *,
+        task_id: int | None = None,
+        project_id: int | None = None,
+    ) -> None:
+        fields: dict[str, Any] = {}
+        if task_id is not None:
+            fields["task_id"] = task_id
+        if project_id is not None:
+            fields["project_id"] = project_id
+        if not fields:
+            return
+
+        set_clause = ", ".join(f"{key} = ?" for key in fields)
+        values = [*fields.values(), lead_id]
+        await self.conn.execute(
+            f"UPDATE lead_tracking SET {set_clause} WHERE id = ?",
+            tuple(values),
         )
         await self.conn.commit()
 
@@ -1593,9 +1685,21 @@ class Database:
     async def switch_user_role(
         self, telegram_id: int, new_role: str
     ) -> None:
-        """Overwrite user role in DB (for РП ↔ НПН switching)."""
+        """Switch active RP/NPN role without dropping unrelated roles."""
+        user = await self.get_user_optional(telegram_id)
+        if not user:
+            return
+
+        roles = parse_roles(user.role)
+        preserved_roles = [
+            role
+            for role in roles
+            if role not in {Role.RP, Role.MANAGER_NPN}
+        ]
+        preserved_roles.append(new_role)
+        role_value = roles_to_storage(preserved_roles)
         await self.conn.execute(
             "UPDATE users SET role = ?, updated_at = ? WHERE telegram_id = ?",
-            (new_role, utcnow(), telegram_id),
+            (role_value, to_iso(utcnow()), telegram_id),
         )
         await self.conn.commit()

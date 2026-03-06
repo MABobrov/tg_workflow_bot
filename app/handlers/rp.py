@@ -33,6 +33,21 @@ router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 
 
+async def _list_managers(db: Database, limit_per_role: int = 30) -> list[Any]:
+    managers_by_id: dict[int, Any] = {}
+    for role in (Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN):
+        for manager in await db.find_users_by_role(role, limit=limit_per_role):
+            managers_by_id.setdefault(manager.telegram_id, manager)
+    return sorted(
+        managers_by_id.values(),
+        key=lambda manager: (
+            (manager.full_name or "").strip().lower(),
+            (manager.username or "").strip().lower(),
+            manager.telegram_id,
+        ),
+    )
+
+
 # ==================== ВХОДЯЩИЕ ЗАДАЧИ ====================
 
 @router.message(F.text == "📥 Входящие задачи")
@@ -473,9 +488,9 @@ async def start_assign_lead(message: Message, state: FSMContext, db: Database) -
         return
     await state.clear()
 
-    managers = await db.find_users_by_role(Role.MANAGER, limit=30)
+    managers = await _list_managers(db, limit_per_role=30)
     if not managers:
-        await message.answer("Не найдено менеджеров с ролью manager.")
+        await message.answer("Не найдено менеджеров с активной ролью отдела продаж.")
         return
 
     b = InlineKeyboardBuilder()
@@ -823,7 +838,7 @@ async def start_invoice_create(message: Message, state: FSMContext, db: Database
 
 @router.callback_query(
     InvoiceCreateSG.project,
-    lambda cb: cb.data and cb.data.startswith("project:"),
+    lambda cb: cb.data and cb.data.startswith("proj:"),
 )
 async def invoice_pick_project(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """Pick project for invoice."""

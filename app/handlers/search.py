@@ -7,7 +7,6 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from ..config import Config
 from ..db import Database
 from ..enums import Role
 from ..keyboards import projects_kb
@@ -18,10 +17,25 @@ log = logging.getLogger(__name__)
 router = Router()
 router.message.filter(F.chat.type == "private")
 
+SEARCH_ALLOWED_ROLES = [
+    Role.MANAGER,
+    Role.MANAGER_KV,
+    Role.MANAGER_KIA,
+    Role.MANAGER_NPN,
+    Role.RP,
+    Role.TD,
+    Role.ACCOUNTING,
+    Role.INSTALLER,
+    Role.GD,
+    Role.DRIVER,
+    Role.TINTER,
+    Role.ZAMERY,
+]
+
 
 @router.message(Command("search"))
 async def cmd_search(message: Message, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.MANAGER, Role.RP, Role.TD, Role.ACCOUNTING, Role.INSTALLER, Role.GD, Role.DRIVER, Role.TINTER]):
+    if not await require_role_message(message, db, roles=SEARCH_ALLOWED_ROLES):
         return
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
@@ -38,7 +52,7 @@ async def cmd_search(message: Message, db: Database) -> None:
 @router.message(F.text == "📌 Поиск проекта")
 async def start_search(message: Message, state: FSMContext, db: Database) -> None:
     # доступно ролям, которые вообще работают с проектами
-    if not await require_role_message(message, db, roles=[Role.MANAGER, Role.RP, Role.TD, Role.ACCOUNTING, Role.INSTALLER, Role.GD, Role.DRIVER, Role.TINTER]):
+    if not await require_role_message(message, db, roles=SEARCH_ALLOWED_ROLES):
         return
     await state.clear()
     await state.set_state(SearchProjectSG.query)

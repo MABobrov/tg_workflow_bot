@@ -14,9 +14,7 @@ Covers:
 """
 from __future__ import annotations
 
-import json
 import logging
-from datetime import timedelta
 from typing import Any
 
 from aiogram import Router, F
@@ -27,7 +25,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from ..config import Config
 from ..db import Database
 from ..enums import (
-    MANAGER_ROLES,
     InvoiceStatus,
     Role,
     TaskStatus,
@@ -51,6 +48,7 @@ from ..keyboards import (
 )
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
+from ..services.menu_scope import get_active_menu_role, resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import (
     CheckKpSG,
@@ -61,7 +59,7 @@ from ..states import (
     IssueSG,
     ManagerChatProxySG,
 )
-from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
+from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -74,7 +72,12 @@ ALL_MANAGER_ROLES = [Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAG
 
 async def _current_role(db: Database, user_id: int) -> str | None:
     user = await db.get_user_optional(user_id)
-    return user.role if user else None
+    return resolve_active_menu_role(user_id, user.role if user else None)
+
+
+async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
+    user = await db.get_user_optional(user_id)
+    return resolve_menu_scope(user_id, user.role if user else None)
 
 
 def _cred_channel(role: str) -> str:
@@ -95,7 +98,6 @@ _CHAT_TARGET_MAP: dict[str, str] = {
     "zamery": Role.ZAMERY,
     "rp_to_manager_kv": Role.MANAGER_KV,
     "rp_to_manager_kia": Role.MANAGER_KIA,
-    "montazh": Role.INSTALLER,
 }
 
 _CHAT_CHANNEL_LABEL: dict[str, str] = {
@@ -195,9 +197,10 @@ async def check_kp_documents(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(documents=attachments)
-    await message.answer(
+    await answer_service(
+        message,
         f"📎 Принял. Файлов: <b>{len(attachments)}</b>.\n"
-        "Отправьте ещё файлы или напишите что-нибудь для перехода к комментарию."
+        "Отправьте ещё файлы или напишите что-нибудь для перехода к комментарию.",
     )
 
 
@@ -222,18 +225,6 @@ async def check_kp_comment(
     amount = data["amount"]
     documents = data.get("documents", [])
 
-    # Create invoice in DB
-    role = await _current_role(db, message.from_user.id)
-    inv_id = await db.create_invoice(
-        invoice_number=invoice_number,
-        project_id=None,
-        created_by=message.from_user.id,
-        creator_role=role or "manager",
-        object_address=address,
-        amount=amount,
-        description=comment,
-    )
-
     # Create task for RP
     rp_id = await resolve_default_assignee(db, config, Role.RP)
     if not rp_id:
@@ -242,6 +233,24 @@ async def check_kp_comment(
         return
 
     role = await _current_role(db, message.from_user.id)
+    try:
+        inv_id = await db.create_invoice(
+            invoice_number=invoice_number,
+            project_id=None,
+            created_by=message.from_user.id,
+            creator_role=role or "manager",
+            object_address=address,
+            amount=amount,
+            description=comment,
+        )
+    except ValueError:
+        await state.clear()
+        await message.answer(
+            f"⚠️ Счёт №{invoice_number} уже существует в базе.\n"
+            "Проверьте номер счёта или используйте существующую карточку."
+        )
+        return
+
     role_label = {"manager_kv": "Менеджер КВ", "manager_kia": "Менеджер КИА", "manager_npn": "Менеджер НПН"}.get(role or "", "Менеджер")
 
     task = await db.create_task(
@@ -294,13 +303,19 @@ async def check_kp_comment(
         await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
     await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
+    menu_role, isolated_role = await _current_menu(db, message.from_user.id)
     await state.clear()
     await message.answer(
         f"✅ КП отправлено РП на проверку.\n"
         f"Счёт №{invoice_number} создан в базе (статус: Новый).",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
+            main_menu(
+                menu_role,
+                is_admin=message.from_user.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(message.from_user.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )
 
@@ -324,6 +339,8 @@ async def start_invoice_start(message: Message, state: FSMContext, db: Database)
 
 @router.message(InvoiceStartSG.invoice_number)
 async def invoice_start_number(message: Message, state: FSMContext, db: Database) -> None:
+    if not message.from_user:
+        return
     text = (message.text or "").strip()
     if not text:
         await message.answer("Введите номер счёта:")
@@ -336,6 +353,10 @@ async def invoice_start_number(message: Message, state: FSMContext, db: Database
             f"❌ Счёт №{text} не найден в базе.\n"
             "Проверьте номер или сначала создайте счёт через «📋 Проверить КП/Счет»."
         )
+        return
+
+    if int(inv.get("created_by") or 0) != message.from_user.id:
+        await message.answer("⛔️ Можно отправить ГД только свой счёт.")
         return
 
     if inv["status"] not in (InvoiceStatus.NEW,):
@@ -388,7 +409,7 @@ async def invoice_start_attachments(message: Message, state: FSMContext) -> None
         return
 
     await state.update_data(attachments=attachments)
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
 
 
 @router.callback_query(F.data == "inv_start:send")
@@ -438,8 +459,10 @@ async def invoice_start_send(
             "invoice_number": invoice_number,
             "amount": inv_data.get("amount", 0),
             "address": inv_data.get("object_address", ""),
+            "supplier": inv_data.get("supplier", ""),
             "manager_role": role or "manager",
             "manager_id": u.id,
+            "sender_id": u.id,
         },
     )
 
@@ -481,12 +504,18 @@ async def invoice_start_send(
         reply_markup=b_edo.as_markup(),
     )
 
+    menu_role, isolated_role = await _current_menu(db, u.id)
     await state.clear()
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ Счёт №{invoice_number} отправлен ГД на оплату.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(
+                menu_role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )
 
@@ -687,7 +716,12 @@ async def _show_invoice_end_conditions(
         text += f"\n📁 Оригиналы закрывающих: у {'ГД' if closing_h == 'gd' else 'менеджера'}"
 
     # If conditions 1+2 met -> auto-ask GD about debts
-    if conditions["installer_ok"] and conditions["edo_signed"] and not conditions["no_debts"]:
+    if (
+        inv.get("status") != InvoiceStatus.CLOSING
+        and conditions["installer_ok"]
+        and conditions["edo_signed"]
+        and not conditions["no_debts"]
+    ):
         gd_id = await resolve_default_assignee(db, config, Role.GD)
         if gd_id:
             b = InlineKeyboardBuilder()
@@ -770,6 +804,8 @@ async def invoice_end_primary_originals(
     cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
 ) -> None:
     """Manager answers: who holds primary originals?"""
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
     await cb.answer()
     parts = cb.data.split(":")  # type: ignore[union-attr]
     holder = parts[1]  # gd or manager
@@ -808,6 +844,8 @@ async def invoice_end_closing_originals(
     cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
 ) -> None:
     """Manager answers: who holds closing originals?"""
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
     await cb.answer()
     parts = cb.data.split(":")  # type: ignore[union-attr]
     holder = parts[1]  # gd or manager
@@ -861,7 +899,7 @@ async def invoice_end_comment(
         await message.answer("⚠️ ГД не найден. Назначьте роль GD через админ-панель.")
         return
 
-    task = await db.create_task(
+    await db.create_task(
         project_id=None,
         type_=TaskType.INVOICE_END_REQUEST,
         status=TaskStatus.OPEN,
@@ -909,13 +947,18 @@ async def invoice_end_comment(
         await notifier.safe_send(int(rp_id), msg)
         await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
-    role = await _current_role(db, message.from_user.id)
+    menu_role, isolated_role = await _current_menu(db, message.from_user.id)
     await state.clear()
     await message.answer(
         f"✅ Запрос «Счет End» по счёту №{inv['invoice_number']} отправлен.",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
+            main_menu(
+                menu_role,
+                is_admin=message.from_user.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(message.from_user.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )
 
@@ -961,7 +1004,11 @@ async def invoice_end_gd_debt_response(
 
 @router.callback_query(F.data.startswith("invend_final:"))
 async def invoice_end_gd_final(
-    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier
+    cb: CallbackQuery,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
 ) -> None:
     """GD final decision: 'На проверке' or 'Счет End'."""
     if not await require_role_callback(cb, db, roles=[Role.GD]):
@@ -977,7 +1024,33 @@ async def invoice_end_gd_final(
         return
 
     if decision == "end":
+        conditions = await db.check_close_conditions(invoice_id)
+        missing_conditions = [
+            label
+            for key, label in (
+                ("installer_ok", "1. Монтажник — Счет ОК"),
+                ("edo_signed", "2. ЭДО — подписано"),
+                ("no_debts", "3. Долгов нет"),
+            )
+            if not conditions.get(key)
+        ]
+        if missing_conditions:
+            await cb.message.answer(  # type: ignore[union-attr]
+                "⛔️ Нельзя закрыть счёт, пока не выполнены обязательные условия:\n"
+                + "\n".join(f"• {item}" for item in missing_conditions)
+            )
+            return
         await db.update_invoice_status(invoice_id, InvoiceStatus.ENDED)
+        linked_tasks = await db.search_tasks_by_payload(
+            field="invoice_id",
+            value=str(invoice_id),
+            type_filter=[TaskType.INVOICE_END_REQUEST],
+            limit=20,
+        )
+        for linked_task in linked_tasks:
+            if linked_task.get("status") in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+                updated_task = await db.update_task_status(int(linked_task["id"]), TaskStatus.DONE)
+                await integrations.sync_task(updated_task, project_code="")
         msg = f"🏁 <b>Счёт №{inv['invoice_number']} — ЗАКРЫТ (Счет End)</b>"
 
         await cb.message.answer(msg)  # type: ignore[union-attr]
@@ -1101,7 +1174,7 @@ async def edo_attachments(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(attachments=attachments)
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
 
 
 @router.callback_query(F.data == "edo:create")
@@ -1199,13 +1272,18 @@ async def edo_finalize(
         await notifier.safe_send_media(int(acc_id), a["file_type"], a["file_id"], caption=a.get("caption"))
     await refresh_recipient_keyboard(notifier, db, config, int(acc_id))
 
-    role = await _current_role(db, u.id)
+    menu_role, isolated_role = await _current_menu(db, u.id)
     await state.clear()
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ Запрос ЭДО отправлен бухгалтеру ({type_label}).",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(
+                menu_role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )
 
@@ -1312,14 +1390,17 @@ async def start_manager_issue(message: Message, state: FSMContext, db: Database)
 # ПОИСК СЧЕТА
 # =====================================================================
 
-@router.message(F.text == MGR_BTN_SEARCH_INVOICE)
+@router.message(
+    lambda m: (m.text or "").strip() in {MGR_BTN_SEARCH_INVOICE, "🔍 Поиск Счета", "🔍 Найти Счет №"}
+    and get_active_menu_role(m.from_user.id if m.from_user else None) != Role.GD
+)
 async def search_invoice_start(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES + [Role.RP, Role.ACCOUNTING, Role.GD]):
+    if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES + [Role.RP, Role.ACCOUNTING]):
         return
     await state.clear()
     await state.set_state(InvoiceSearchSG.value)
     await message.answer(
-        "🔍 <b>Поиск Счета</b>\n\n"
+        "🔍 <b>Поиск счёта</b>\n\n"
         "Введите номер счёта или часть адреса для поиска:"
     )
 
@@ -1330,6 +1411,8 @@ async def search_invoice_query(
 ) -> None:
     """Process search query and show results."""
     if not message.from_user:
+        return
+    if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES + [Role.RP, Role.ACCOUNTING]):
         return
     query = (message.text or "").strip()
     if len(query) < 2:
@@ -1355,7 +1438,6 @@ async def search_invoice_query(
         b.button(text=label, callback_data=f"srch_inv:view:{inv['id']}")
     b.adjust(1)
 
-    role = await _current_role(db, message.from_user.id)
     await state.clear()
     await message.answer(
         f"🔍 Найдено: <b>{len(results)}</b>\n\n"
@@ -1367,6 +1449,12 @@ async def search_invoice_query(
 @router.callback_query(F.data.startswith("srch_inv:view:"))
 async def search_invoice_view(cb: CallbackQuery, db: Database) -> None:
     """Show detailed invoice card from search results."""
+    if not await require_role_callback(
+        cb,
+        db,
+        roles=ALL_MANAGER_ROLES + [Role.RP, Role.ACCOUNTING],
+    ):
+        return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     inv = await db.get_invoice(invoice_id)
@@ -1519,8 +1607,13 @@ async def mgr_chat_writing(
     )
 
     # Determine target by channel
-    target_role = _CHAT_TARGET_MAP.get(channel, Role.GD)
-    target_id = await resolve_default_assignee(db, config, target_role)
+    if channel == "montazh":
+        from .chat_proxy import resolve_channel_target
+
+        target_id = await resolve_channel_target(channel, db, config)
+    else:
+        target_role = _CHAT_TARGET_MAP.get(channel, Role.GD)
+        target_id = await resolve_default_assignee(db, config, target_role)
 
     if target_id:
         channel_label = _CHAT_CHANNEL_LABEL.get(channel, channel)
@@ -1552,16 +1645,23 @@ async def mgr_chat_writing(
 
 
 @router.message(ManagerChatProxySG.menu, F.text == "📋 Задачи")
-async def mgr_chat_tasks(message: Message, db: Database) -> None:
+async def mgr_chat_tasks(message: Message, state: FSMContext, db: Database) -> None:
     if not message.from_user:
         return
-    tasks = await db.list_tasks_for_user(message.from_user.id, limit=20)
-    if not tasks:
-        await message.answer("Задач нет ✅")
+    data = await state.get_data()
+    channel = data.get("channel", "")
+    tasks = await db.list_tasks_for_user(message.from_user.id, limit=50)
+    channel_tasks = [
+        task
+        for task in tasks
+        if try_json_loads(task.get("payload_json")).get("source") == f"chat_proxy:{channel}"
+    ]
+    if not channel_tasks:
+        await message.answer("Задач по этому каналу нет ✅")
         return
     await message.answer(
-        f"📋 Ваши задачи ({len(tasks)}):",
-        reply_markup=tasks_kb(tasks),
+        f"📋 Задачи канала ({len(channel_tasks)}):",
+        reply_markup=tasks_kb(channel_tasks),
     )
 
 
@@ -1577,7 +1677,7 @@ async def mgr_chat_report(message: Message, state: FSMContext, db: Database) -> 
     if entries:
         text += "\nПоследние операции:\n"
         for e in entries[:5]:
-            text += f"• {e.get('amount', 0):,.0f}₽ — {e.get('comment', '-')}\n"
+            text += f"• {e.get('amount', 0):,.0f}₽ — {e.get('description', '-')}\n"
 
     await message.answer(text)
 
@@ -1587,9 +1687,17 @@ async def mgr_chat_back(message: Message, state: FSMContext, db: Database, confi
     await state.clear()
     if not message.from_user:
         return
-    role = await _current_role(db, message.from_user.id)
+    menu_role, isolated_role = await _current_menu(db, message.from_user.id)
     is_admin = message.from_user.id in (config.admin_ids or set())
     await message.answer(
         "Выберите действие:",
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=await db.count_unread_tasks(message.from_user.id))),
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                menu_role,
+                is_admin=is_admin,
+                unread=await db.count_unread_tasks(message.from_user.id),
+                isolated_role=isolated_role,
+            ),
+        ),
     )

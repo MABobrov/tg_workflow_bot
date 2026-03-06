@@ -11,7 +11,6 @@ Covers:
 """
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -35,13 +34,14 @@ from ..keyboards import (
     tasks_kb,
 )
 from ..services.assignment import resolve_default_assignee
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import (
     InstallerDailyReportSG,
     InstallerInvoiceOkSG,
     InstallerOrderMaterialsSG,
 )
-from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, utcnow
+from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -52,7 +52,12 @@ router.callback_query.filter(F.message.chat.type == "private")
 
 async def _current_role(db: Database, user_id: int) -> str | None:
     user = await db.get_user_optional(user_id)
-    return user.role if user else None
+    return resolve_active_menu_role(user_id, user.role if user else None)
+
+
+async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
+    user = await db.get_user_optional(user_id)
+    return resolve_menu_scope(user_id, user.role if user else None)
 
 
 # =====================================================================
@@ -124,7 +129,7 @@ async def order_mat_attachments(message: Message, state: FSMContext) -> None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
     await state.update_data(attachments=attachments)
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
 
 
 @router.callback_query(F.data == "inst_order:create")
@@ -192,13 +197,18 @@ async def order_mat_finalize(
         await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
     await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
-    role = await _current_role(db, u.id)
+    role, isolated_role = await _current_menu(db, u.id)
     await state.clear()
     await cb.message.answer(  # type: ignore[union-attr]
         "✅ Заказ материалов отправлен РП.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(
+                role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )
 
@@ -302,7 +312,7 @@ async def invoice_ok_comment(
         return
 
     # Create task
-    task = await db.create_task(
+    await db.create_task(
         project_id=None,
         type_=TaskType.INSTALLER_INVOICE_OK,
         status=TaskStatus.DONE,
@@ -326,21 +336,28 @@ async def invoice_ok_comment(
     if comment:
         msg += f"💬 {comment}\n"
 
-    # Notify manager + RP
+    # Notify manager + RP (deduplicated to avoid double-sending when same person)
     manager_id = inv.get("created_by")
     rp_id = await resolve_default_assignee(db, config, Role.RP)
+    seen_targets: set[int] = set()
     for target in [manager_id, rp_id]:
-        if target:
+        if target and int(target) not in seen_targets:
+            seen_targets.add(int(target))
             await notifier.safe_send(int(target), msg)
             await refresh_recipient_keyboard(notifier, db, config, int(target))
 
-    role = await _current_role(db, message.from_user.id)
+    role, isolated_role = await _current_menu(db, message.from_user.id)
     await state.clear()
     await message.answer(
         f"✅ Подтверждение отправлено по счёту №{inv['invoice_number']}.",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
+            main_menu(
+                role,
+                is_admin=message.from_user.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(message.from_user.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )
 
@@ -446,7 +463,7 @@ async def daily_report_attachments(message: Message, state: FSMContext) -> None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
     await state.update_data(attachments=attachments)
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
 
 
 @router.callback_query(F.data == "inst_report:send")
@@ -496,13 +513,18 @@ async def daily_report_finalize(
         await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
     await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
-    role = await _current_role(db, u.id)
+    role, isolated_role = await _current_menu(db, u.id)
     await state.clear()
     await cb.message.answer(  # type: ignore[union-attr]
         "✅ Отчёт отправлен РП.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(
+                role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )
 

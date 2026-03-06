@@ -27,16 +27,16 @@ from ..enums import Role, TaskStatus, TaskType
 from ..keyboards import (
     gd_chat_submenu,
     gd_chat_submenu_finance,
+    gd_sales_submenu,
     main_menu,
     task_actions_kb,
     tasks_kb,
-    GD_BTN_BACK_HOME,
 )
 from ..services.notifier import Notifier
 from ..services.integration_hub import IntegrationHub
+from ..services.menu_scope import resolve_menu_scope
 from ..states import ChatProxySG, GdTaskCreateSG, ReplyToGDSG
-from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, utcnow, to_iso
-from .auth import require_role_message
+from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, utcnow, to_iso
 
 log = logging.getLogger(__name__)
 
@@ -52,59 +52,21 @@ async def resolve_channel_target(
     channel: str, db: Database, config: Config
 ) -> int | None:
     """Return the telegram_id (or chat_id for groups) for a given channel."""
-    if channel == "rp":
-        if config.default_rp_id:
-            return config.default_rp_id
-        if config.default_rp_username:
-            u = await db.find_user_by_username(config.default_rp_username)
-            return u.telegram_id if u else None
-        users = await db.find_users_by_role(Role.RP, limit=1)
-        return users[0].telegram_id if users else None
+    from ..services.assignment import get_work_chat_id, resolve_default_assignee
 
-    if channel == "zamery":
-        if config.default_zamery_id:
-            return config.default_zamery_id
-        if config.default_zamery_username:
-            u = await db.find_user_by_username(config.default_zamery_username)
-            return u.telegram_id if u else None
-        return None
-
-    if channel == "accounting":
-        if config.default_accounting_id:
-            return config.default_accounting_id
-        if config.default_accounting_username:
-            u = await db.find_user_by_username(config.default_accounting_username)
-            return u.telegram_id if u else None
-        users = await db.find_users_by_role(Role.ACCOUNTING, limit=1)
-        return users[0].telegram_id if users else None
-
+    role_by_channel = {
+        "rp": Role.RP,
+        "zamery": Role.ZAMERY,
+        "accounting": Role.ACCOUNTING,
+        "manager_kv": Role.MANAGER_KV,
+        "manager_kia": Role.MANAGER_KIA,
+        "manager_npn": Role.MANAGER_NPN,
+    }
     if channel == "montazh":
-        from ..services.assignment import get_work_chat_id
         return await get_work_chat_id(db, config)
-
-    if channel == "manager_kv":
-        if config.default_manager_kv_id:
-            return config.default_manager_kv_id
-        if config.default_manager_kv_username:
-            u = await db.find_user_by_username(config.default_manager_kv_username)
-            return u.telegram_id if u else None
-        return None
-
-    if channel == "manager_kia":
-        if config.default_manager_kia_id:
-            return config.default_manager_kia_id
-        if config.default_manager_kia_username:
-            u = await db.find_user_by_username(config.default_manager_kia_username)
-            return u.telegram_id if u else None
-        return None
-
-    if channel == "manager_npn":
-        if config.default_manager_npn_id:
-            return config.default_manager_npn_id
-        if config.default_manager_npn_username:
-            u = await db.find_user_by_username(config.default_manager_npn_username)
-            return u.telegram_id if u else None
-        return None
+    target_role = role_by_channel.get(channel)
+    if target_role:
+        return await resolve_default_assignee(db, config, target_role)
 
     return None
 
@@ -152,12 +114,22 @@ def parse_amount_from_text(text: str) -> float | None:
         matches = re.findall(pattern2, text)
     if not matches:
         return None
-    raw = matches[0].replace(" ", "").replace(".", "").replace(",", ".")
-    # If it ended with a dot after stripping, remove it
-    if raw.endswith("."):
-        raw = raw[:-1]
+    raw = matches[0].replace(" ", "")
+    # Detect whether the last separator (. or ,) is a decimal marker
+    # (followed by exactly 1-2 digits at the end), or a thousands separator.
+    decimal_match = re.search(r"[,.](\d{1,2})$", raw)
+    if decimal_match:
+        decimal_part = decimal_match.group(1)
+        integer_part = raw[: decimal_match.start()]
+        integer_clean = integer_part.replace(".", "").replace(",", "")
+        raw_clean = integer_clean + "." + decimal_part
+    else:
+        # No decimal part — strip all separators
+        raw_clean = raw.replace(".", "").replace(",", "")
+    if not raw_clean or raw_clean == ".":
+        return None
     try:
-        return float(raw)
+        return float(raw_clean)
     except ValueError:
         return None
 
@@ -168,6 +140,15 @@ FINANCE_CHANNELS = {"manager_kv", "manager_kia", "manager_npn"}
 COMPOSITE_CHANNELS = {
     "otd_prodazh": ["rp", "manager_kv", "manager_kia", "manager_npn"],
 }
+
+
+def gd_channel_menu(channel: str):
+    """Return the correct GD submenu keyboard for a channel."""
+    if channel == "otd_prodazh":
+        return gd_sales_submenu()
+    if channel in FINANCE_CHANNELS:
+        return gd_chat_submenu_finance()
+    return gd_chat_submenu()
 
 
 
@@ -186,13 +167,9 @@ async def enter_chat_menu(
     await state.update_data(channel=channel)
 
     label = channel_label(channel)
-    if channel in FINANCE_CHANNELS:
-        kb = gd_chat_submenu_finance(back_label="⬅️ Назад")
-    else:
-        kb = gd_chat_submenu(back_label="⬅️ Назад")
     await message.answer(
         f"💬 <b>{label}</b>\n\nВыберите действие:",
-        reply_markup=kb,
+        reply_markup=gd_channel_menu(channel),
     )
 
 
@@ -234,7 +211,7 @@ async def show_history(
         await message.answer(
             f"📖 <b>{label} — Переписка</b>\n\n"
             "Сообщений пока нет.",
-            reply_markup=gd_chat_submenu(),
+            reply_markup=gd_channel_menu(channel),
         )
         return
 
@@ -252,7 +229,7 @@ async def show_history(
     if len(text) > 3800:
         text = text[:3800] + "\n\n... (обрезано)"
 
-    await message.answer(text, reply_markup=gd_chat_submenu())
+    await message.answer(text, reply_markup=gd_channel_menu(channel))
 
 
 # ---------------------------------------------------------------------------
@@ -366,11 +343,14 @@ async def handle_writing(
 
     # Forward to recipient with reply button
     header = f"📩 <b>От ГД</b> ({label}):\n\n"
-    reply_b = InlineKeyboardBuilder()
-    reply_b.button(text="💬 Ответить ГД", callback_data=f"reply_to_gd:{channel}")
-    reply_b.adjust(1)
+    reply_markup = None
+    if not is_group_channel(channel):
+        reply_b = InlineKeyboardBuilder()
+        reply_b.button(text="💬 Ответить ГД", callback_data=f"reply_to_gd:{channel}")
+        reply_b.adjust(1)
+        reply_markup = reply_b.as_markup()
     if text:
-        await notifier.safe_send(target_id, header + text, reply_markup=reply_b.as_markup())
+        await notifier.safe_send(target_id, header + text, reply_markup=reply_markup)
     if file_info:
         await notifier.safe_send_media(
             target_id,
@@ -383,7 +363,7 @@ async def handle_writing(
 
     await message.answer(
         f"✅ Сообщение отправлено → {label}",
-        reply_markup=gd_chat_submenu(),
+        reply_markup=gd_channel_menu(channel),
     )
     await state.set_state(ChatProxySG.menu)
 
@@ -518,11 +498,7 @@ async def chat_menu_report(
     else:
         lines.append("Записей пока нет.")
 
-    if channel in FINANCE_CHANNELS:
-        kb = gd_chat_submenu_finance()
-    else:
-        kb = gd_chat_submenu()
-    await message.answer("\n".join(lines), reply_markup=kb)
+    await message.answer("\n".join(lines), reply_markup=gd_channel_menu(channel))
 
 
 @router.message(ChatProxySG.menu, F.text == "⬅️ Назад")
@@ -535,16 +511,28 @@ async def chat_menu_back(
     if not u:
         return
     user = await db.get_user_optional(u.id)
-    role = user.role if user else None
+    role, isolated_role = resolve_menu_scope(u.id, user.role if user else None)
     is_admin = u.id in (config.admin_ids or set())
     unread = await db.count_unread_tasks(u.id)
     uc = await db.count_unread_by_channel(u.id)
     from ..enums import Role as _Role
-    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and _Role.GD in role else None
-    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and _Role.GD in role else None
+    from ..utils import parse_roles as _parse_roles
+    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and _Role.GD in _parse_roles(role) else None
+    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and _Role.GD in _parse_roles(role) else None
     await message.answer(
         "Главное меню.",
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv)),
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                role,
+                is_admin=is_admin,
+                unread=unread,
+                unread_channels=uc,
+                gd_inbox_unread=gd_ur,
+                gd_invoice_unread=gd_inv,
+                isolated_role=isolated_role,
+            ),
+        ),
     )
 
 
@@ -589,12 +577,7 @@ async def gd_task_create_cancel(
     await state.set_state(ChatProxySG.menu)
     await state.update_data(channel=channel)
 
-    if channel in FINANCE_CHANNELS:
-        kb = gd_chat_submenu_finance()
-    else:
-        kb = gd_chat_submenu()
-
-    await message.answer("❌ Создание задачи отменено.", reply_markup=kb)
+    await message.answer("❌ Создание задачи отменено.", reply_markup=gd_channel_menu(channel))
 
 
 @router.message(GdTaskCreateSG.description)
@@ -710,7 +693,7 @@ async def gd_task_create_attach(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(task_attachments=attachments)
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
 
 
 @router.callback_query(F.data == "gd_task_cancel")
@@ -725,12 +708,10 @@ async def gd_task_cancel_cb(
     await state.set_state(ChatProxySG.menu)
     await state.update_data(channel=channel)
 
-    if channel in FINANCE_CHANNELS:
-        kb = gd_chat_submenu_finance()
-    else:
-        kb = gd_chat_submenu()
-
-    await cb.message.answer("❌ Создание задачи отменено.", reply_markup=kb)  # type: ignore[union-attr]
+    await cb.message.answer(  # type: ignore[union-attr]
+        "❌ Создание задачи отменено.",
+        reply_markup=gd_channel_menu(channel),
+    )
 
 
 @router.callback_query(F.data == "gd_task_finalize")
@@ -775,8 +756,6 @@ async def gd_task_create_finalize(
 
     label = channel_label(channel)
     initiator = await get_initiator_label(db, u.id)
-    from ..keyboards import task_actions_kb
-
     for sc, target_id in targets:
         task = await db.create_task(
             project_id=None,
@@ -819,19 +798,9 @@ async def gd_task_create_finalize(
     await state.set_state(ChatProxySG.menu)
     await state.update_data(channel=channel)
 
-    is_admin = u.id in (config.admin_ids or set())
-    if channel in FINANCE_CHANNELS:
-        from ..keyboards import gd_chat_submenu_finance
-        kb = gd_chat_submenu_finance()
-    elif channel == "otd_prodazh":
-        from ..keyboards import gd_sales_submenu
-        kb = gd_sales_submenu()
-    else:
-        kb = gd_chat_submenu()
-
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ Задача создана и отправлена → {label}.",
-        reply_markup=kb,
+        reply_markup=gd_channel_menu(channel),
     )
 
 # ---------------------------------------------------------------------------
@@ -923,4 +892,4 @@ async def reply_to_gd_send(
     await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
     await state.clear()
-    await message.answer("✅ Ответ отправлен ГД.")
+    await answer_service(message, "✅ Ответ отправлен ГД.")

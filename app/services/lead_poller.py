@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
 
-from aiogram import Bot
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..callbacks import LeadAssignCb, LeadCb
@@ -48,7 +47,15 @@ def _claim_kb(lead_id: int) -> Any:
 
 async def _build_assign_kb(db: Database, lead_id: int) -> Any:
     """Inline keyboard for RP/GD to assign lead to a specific manager."""
-    managers = await db.find_users_by_role(Role.MANAGER, limit=20)
+    manager_roles = [Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN]
+    seen_ids: set[int] = set()
+    managers = []
+    for role in manager_roles:
+        for user in await db.find_users_by_role(role, limit=20):
+            if user.telegram_id in seen_ids:
+                continue
+            seen_ids.add(user.telegram_id)
+            managers.append(user)
     b = InlineKeyboardBuilder()
     for m in managers:
         label = f"@{m.username}" if m.username else (m.full_name or str(m.telegram_id))

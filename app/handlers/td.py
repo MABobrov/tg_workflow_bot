@@ -1,24 +1,24 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 from typing import Any
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..callbacks import ProjectCb
 from ..config import Config
 from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
-from ..keyboards import GD_BTN_INVOICE_END_GD, main_menu, projects_kb, tasks_kb, task_actions_kb
+from ..keyboards import GD_BTN_INVOICE_END_GD, main_menu, projects_kb, tasks_kb
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
+from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import SupplierPaymentSG
-from ..utils import fmt_project_card, parse_amount, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
+from ..utils import answer_service, fmt_project_card, parse_amount, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ async def supplier_pay_attach(message: Message, state: FSMContext) -> None:
         await message.answer("Пришлите файл/фото или нажмите «✅ Отправить ПП».")
         return
     await state.update_data(attachments=attachments)
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
 
 
 @router.callback_query(F.data == "supplpay:create")
@@ -257,7 +257,7 @@ async def supplier_pay_finalize(
             log.exception("Failed to auto-close source order task id=%s", source_order_task_id)
 
     user_now = await db.get_user_optional(u.id)
-    role_now = user_now.role if user_now else Role.GD
+    role_now, isolated_role = resolve_menu_scope(u.id, user_now.role if user_now else Role.GD)
     await cb.message.answer(
         (
             f"✅ Оплата поставщику «{supplier}» зафиксирована. "
@@ -265,7 +265,15 @@ async def supplier_pay_finalize(
         ),
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id), unread_channels=await db.count_unread_by_channel(u.id), gd_inbox_unread=await db.count_gd_inbox_tasks(u.id), gd_invoice_unread=await db.count_gd_invoice_tasks(u.id)),
+            main_menu(
+                role_now,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                unread_channels=await db.count_unread_by_channel(u.id),
+                gd_inbox_unread=await db.count_gd_inbox_tasks(u.id),
+                gd_invoice_unread=await db.count_gd_invoice_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )  # type: ignore
     await state.clear()

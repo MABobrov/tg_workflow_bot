@@ -28,7 +28,6 @@ from ..config import Config
 from ..db import Database
 from ..enums import InvoiceStatus, Role, TaskStatus, TaskType
 from ..keyboards import (
-    RP_BTN_INBOX_SALES,
     RP_BTN_INVOICE_END,
     RP_BTN_INVOICE_START,
     RP_BTN_INVOICES_PAY,
@@ -41,6 +40,9 @@ from ..keyboards import (
     RP_BTN_ROLE_RP_INACTIVE,
     RP_BTN_ROLE_NPN,
     RP_BTN_ROLE_NPN_ACTIVE,
+    RP_SUBBTN_MGR_KIA,
+    RP_SUBBTN_MGR_KV,
+    RP_SUBBTN_MONTAZH,
     invoice_list_kb,
     lead_pick_manager_kb,
     main_menu,
@@ -48,13 +50,14 @@ from ..keyboards import (
     tasks_kb,
 )
 from ..services.assignment import resolve_default_assignee
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import (
     KpReviewResponseSG,
     LeadToProjectSG,
     ManagerChatProxySG,
 )
-from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, utcnow
+from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -65,7 +68,12 @@ router.callback_query.filter(F.message.chat.type == "private")
 
 async def _current_role(db: Database, user_id: int) -> str | None:
     user = await db.get_user_optional(user_id)
-    return user.role if user else None
+    return resolve_active_menu_role(user_id, user.role if user else None)
+
+
+async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
+    user = await db.get_user_optional(user_id)
+    return resolve_menu_scope(user_id, user.role if user else None)
 
 
 # =====================================================================
@@ -95,12 +103,20 @@ async def rp_inbox_sales(message: Message, db: Database) -> None:
 async def rp_invoice_start_monitor(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
-    invoices = await db.list_invoices(status=InvoiceStatus.IN_PROGRESS)
+    in_progress = await db.list_invoices(status=InvoiceStatus.IN_PROGRESS, limit=50)
+    paid = await db.list_invoices(status=InvoiceStatus.PAID, limit=50)
+    invoices = list(in_progress) + list(paid)
     if not invoices:
         await message.answer("💼 Нет счетов «В работе».")
         return
+    header_parts: list[str] = []
+    if in_progress:
+        header_parts.append(f"🔄 В работе: {len(in_progress)}")
+    if paid:
+        header_parts.append(f"✅ Оплачены: {len(paid)}")
     await message.answer(
-        f"💼 <b>Счета В Работе</b> ({len(invoices)}):\n\n"
+        f"💼 <b>Счета В Работе</b> ({len(invoices)}):\n"
+        f"{' | '.join(header_parts)}\n\n"
         "Нажмите для просмотра:",
         reply_markup=invoice_list_kb(invoices, action_prefix="rpinv"),
     )
@@ -223,7 +239,7 @@ async def rp_issue(message: Message, db: Database) -> None:
 # МЕНЕДЖЕР 1 (КВ) — chat-proxy
 # =====================================================================
 
-@router.message(F.text == RP_BTN_MGR_KV)
+@router.message(F.text.in_({RP_BTN_MGR_KV, RP_SUBBTN_MGR_KV}))
 async def rp_chat_mgr_kv(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
@@ -236,7 +252,7 @@ async def rp_chat_mgr_kv(message: Message, state: FSMContext, db: Database) -> N
     )
 
 
-@router.message(F.text == RP_BTN_MGR_KIA)
+@router.message(F.text.in_({RP_BTN_MGR_KIA, RP_SUBBTN_MGR_KIA}))
 async def rp_chat_mgr_kia(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
@@ -253,7 +269,7 @@ async def rp_chat_mgr_kia(message: Message, state: FSMContext, db: Database) -> 
 # МОНТАЖНАЯ ГР. — chat-proxy
 # =====================================================================
 
-@router.message(F.text == RP_BTN_MONTAZH)
+@router.message(F.text.in_({RP_BTN_MONTAZH, RP_SUBBTN_MONTAZH}))
 async def rp_chat_montazh(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
@@ -347,7 +363,7 @@ async def lead_attachments(message: Message, state: FSMContext) -> None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
     await state.update_data(attachments=attachments)
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
 
 
 @router.callback_query(F.data == "lead:create")
@@ -407,6 +423,7 @@ async def lead_finalize(
             "manager_role": manager_role,
         },
     )
+    await db.link_lead_tracking(lead_id, task_id=int(task["id"]))
 
     for a in attachments:
         await db.add_attachment(
@@ -437,13 +454,18 @@ async def lead_finalize(
         await notifier.safe_send_media(manager_id, a["file_type"], a["file_id"], caption=a.get("caption"))
     await refresh_recipient_keyboard(notifier, db, config, manager_id)
 
-    role = await _current_role(db, u.id)
+    menu_role, isolated_role = await _current_menu(db, u.id)
     await state.clear()
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ Лид отправлен {role_label}.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(
+                menu_role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )
 
@@ -497,6 +519,7 @@ async def role_switch_already_active(message: Message, db: Database, config: Con
         return
 
     role = await _current_role(db, u.id)
+    menu_role, isolated_role = await _current_menu(db, u.id)
     is_admin = u.id in (config.admin_ids or set())
     role_label_str = "РП" if role == Role.RP else "Менеджер НПН"
 
@@ -504,7 +527,12 @@ async def role_switch_already_active(message: Message, db: Database, config: Con
         f"Вы уже в роли <b>{role_label_str}</b>.",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=is_admin, unread=await db.count_unread_tasks(u.id)),
+            main_menu(
+                menu_role,
+                is_admin=is_admin,
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )
 
@@ -649,12 +677,17 @@ async def kp_review_comment(
             )
         await refresh_recipient_keyboard(notifier, db, config, int(manager_id))
 
-    role = await _current_role(db, message.from_user.id)
+    menu_role, isolated_role = await _current_menu(db, message.from_user.id)
     await state.clear()
     await message.answer(
         f"✅ Документы отправлены менеджеру по счёту №{invoice_number}.",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
+            main_menu(
+                menu_role,
+                is_admin=message.from_user.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(message.from_user.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )

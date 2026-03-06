@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery
 from ..callbacks import ProjectCb
 from ..config import Config
 from ..db import Database
-from ..enums import Role
+from ..enums import MANAGER_ROLES, Role
 from ..keyboards import manager_project_actions_kb
 from ..utils import fmt_project_card, parse_roles, task_status_label, task_type_label
 from .auth import require_role_callback
@@ -20,7 +20,24 @@ router.callback_query.filter(F.message.chat.type == "private")
 
 @router.callback_query(ProjectCb.filter(F.ctx == "view"))
 async def view_project(cb: CallbackQuery, callback_data: ProjectCb, db: Database, config: Config) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER, Role.RP, Role.TD, Role.ACCOUNTING, Role.INSTALLER, Role.GD, Role.DRIVER, Role.TINTER]):
+    if not await require_role_callback(
+        cb,
+        db,
+        roles=[
+            Role.MANAGER,
+            Role.MANAGER_KV,
+            Role.MANAGER_KIA,
+            Role.MANAGER_NPN,
+            Role.RP,
+            Role.TD,
+            Role.ACCOUNTING,
+            Role.INSTALLER,
+            Role.GD,
+            Role.DRIVER,
+            Role.TINTER,
+            Role.ZAMERY,
+        ],
+    ):
         return
     await cb.answer()
     project = await db.get_project(int(callback_data.project_id))
@@ -28,7 +45,7 @@ async def view_project(cb: CallbackQuery, callback_data: ProjectCb, db: Database
     if cb.from_user:
         user = await db.get_user_optional(cb.from_user.id)
         roles = set(parse_roles(user.role if user else None))
-        is_owner_manager = Role.MANAGER in roles and int(project.get("manager_id") or 0) == cb.from_user.id
+        is_owner_manager = bool(roles & (MANAGER_ROLES | {Role.MANAGER})) and int(project.get("manager_id") or 0) == cb.from_user.id
         if is_owner_manager:
             tasks = await db.list_tasks_for_project(int(project["id"]), limit=8)
             if tasks:

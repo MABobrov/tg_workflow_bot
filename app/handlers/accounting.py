@@ -39,6 +39,21 @@ def _manager_label(manager: Any) -> tuple[str, str]:
     return plain, html.quote(plain)
 
 
+async def _list_managers(db: Database, limit_per_role: int = 30) -> list[Any]:
+    managers_by_id: dict[int, Any] = {}
+    for role in (Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN):
+        for manager in await db.find_users_by_role(role, limit=limit_per_role):
+            managers_by_id.setdefault(manager.telegram_id, manager)
+    return sorted(
+        managers_by_id.values(),
+        key=lambda manager: (
+            (manager.full_name or "").strip().lower(),
+            (manager.username or "").strip().lower(),
+            manager.telegram_id,
+        ),
+    )
+
+
 @router.message(F.text == "📄 Закрывающие")
 async def closing_tasks(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.ACCOUNTING]):
@@ -60,9 +75,9 @@ async def start_manager_info_request(message: Message, state: FSMContext, db: Da
         return
     await state.clear()
 
-    managers = await db.find_users_by_role(Role.MANAGER, limit=30)
+    managers = await _list_managers(db, limit_per_role=30)
     if not managers:
-        await message.answer("Не найдено менеджеров с ролью manager.")
+        await message.answer("Не найдено менеджеров с активной ролью отдела продаж.")
         return
 
     b = InlineKeyboardBuilder()

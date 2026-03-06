@@ -89,7 +89,13 @@ async def _resolve_user_id_by_ref(db: Database, ref: str) -> tuple[int | None, s
     return user.telegram_id, label
 
 
-async def _push_menu_to_user(message: Message, user_id: int, role: str | None, is_admin: bool = False) -> bool:
+async def _push_menu_to_user(
+    message: Message,
+    db: Database,
+    user_id: int,
+    role: str | None,
+    is_admin: bool = False,
+) -> bool:
     text = (
         f"✅ Вам назначена роль: <b>{role_label(role)}</b>\n"
         "Меню обновлено."
@@ -97,10 +103,18 @@ async def _push_menu_to_user(message: Message, user_id: int, role: str | None, i
         else "ℹ️ Ваша роль снята. Доступно базовое меню."
     )
     try:
+        roles = set(parse_roles(role))
         await message.bot.send_message(
             chat_id=user_id,
             text=text,
-            reply_markup=main_menu(role, is_admin=is_admin, unread=await db.count_unread_tasks(user_id)),
+            reply_markup=main_menu(
+                role,
+                is_admin=is_admin,
+                unread=await db.count_unread_tasks(user_id),
+                unread_channels=await db.count_unread_by_channel(user_id),
+                gd_inbox_unread=await db.count_gd_inbox_tasks(user_id) if Role.GD in roles else None,
+                gd_invoice_unread=await db.count_gd_invoice_tasks(user_id) if Role.GD in roles else None,
+            ),
         )
         return True
     except TelegramForbiddenError:
@@ -163,10 +177,14 @@ def _employee_actions_kb(user_id: int, is_active: bool) -> InlineKeyboardBuilder
 def _employee_roles_kb(user_id: int, mode: str) -> InlineKeyboardBuilder:
     b = InlineKeyboardBuilder()
     roles = [
-        (Role.MANAGER, "Менеджер"),
+        (Role.MANAGER, "Менеджер (legacy)"),
+        (Role.MANAGER_KV, "Менеджер КВ"),
+        (Role.MANAGER_KIA, "Менеджер КИА"),
+        (Role.MANAGER_NPN, "Менеджер НПН"),
         (Role.RP, "РП"),
         (Role.ACCOUNTING, "Бухгалтерия"),
         (Role.INSTALLER, "Монтажник"),
+        (Role.ZAMERY, "Замерщик"),
         (Role.DRIVER, "Водитель"),
         (Role.LOADER, "Грузчик"),
         (Role.TINTER, "Тонировщик"),
@@ -178,7 +196,7 @@ def _employee_roles_kb(user_id: int, mode: str) -> InlineKeyboardBuilder:
     if mode == "set":
         b.button(text="🧹 Снять все роли", callback_data=AdminRoleCb(user_id=user_id, action="set", role="none").pack())
     b.button(text="⬅️ Назад к сотруднику", callback_data=AdminUserCb(user_id=user_id, action="view").pack())
-    b.adjust(2, 2, 2, 2, 1, 1)
+    b.adjust(2, 2, 2, 2, 2, 1, 1)
     return b
 
 
@@ -247,7 +265,7 @@ async def cmd_admin_help(message: Message, config: Config) -> None:
         "<b>1) Первичная настройка</b>\n"
         "• Все сотрудники пишут боту <code>/start</code>.\n"
         "• Назначьте роли командой <code>/setrole @username role[,role2]</code>.\n"
-        "• Доступные роли: manager, rp, td, accounting, installer, driver, loader, tinter, gd.\n"
+        "• Доступные роли: manager, manager_kv, manager_kia, manager_npn, rp, td, accounting, installer, zamery, driver, loader, tinter, gd.\n"
         "• Снять роль: <code>/setrole @username none</code>.\n\n"
         "• Добавить роль к существующим: <code>/addrole @username role</code>\n"
         "• Убрать одну роль: <code>/removerole @username role</code>\n\n"
@@ -296,8 +314,8 @@ async def cmd_setrole(message: Message, db: Database, config: Config) -> None:
         await message.answer(
             "Использование: /setrole @username_or_telegram_id role[,role2,...]\n"
             "Примеры:\n"
-            "• /setrole @ivan manager\n"
-            "• /setrole @ivan manager,rp\n"
+            "• /setrole @ivan manager_kv\n"
+            "• /setrole @ivan manager_kia,rp\n"
             "• /setrole @ivan none"
         )
         return
@@ -311,7 +329,7 @@ async def cmd_setrole(message: Message, db: Database, config: Config) -> None:
     role_raw = ",".join(p.strip() for p in parts[2:]).lower()
     if role_raw == "none":
         await db.set_user_role(tg_id, None)
-        pushed = await _push_menu_to_user(message, tg_id, None, is_admin=tg_id in (config.admin_ids or set()))
+        pushed = await _push_menu_to_user(message, db, tg_id, None, is_admin=tg_id in (config.admin_ids or set()))
         note = "" if pushed else "\n⚠️ Не смог отправить меню пользователю (пусть напишет боту /start)."
         await message.answer(f"Роль пользователю {label or tg_id} очищена.{note}")
         return
@@ -319,7 +337,8 @@ async def cmd_setrole(message: Message, db: Database, config: Config) -> None:
     roles = parse_roles(role_raw)
     if not roles:
         await message.answer(
-            "Неизвестная роль. Допустимо: manager,rp,td,accounting,installer,driver,loader,tinter,gd или none"
+            "Неизвестная роль. Допустимо: "
+            "manager,manager_kv,manager_kia,manager_npn,rp,td,accounting,installer,zamery,driver,loader,tinter,gd или none"
         )
         return
 
@@ -333,7 +352,7 @@ async def cmd_setrole(message: Message, db: Database, config: Config) -> None:
 
     await db.set_user_roles(tg_id, roles)
     role_storage = roles_to_storage(set(roles))
-    pushed = await _push_menu_to_user(message, tg_id, role_storage, is_admin=tg_id in (config.admin_ids or set()))
+    pushed = await _push_menu_to_user(message, db, tg_id, role_storage, is_admin=tg_id in (config.admin_ids or set()))
     note = "" if pushed else "\n⚠️ Не смог отправить меню пользователю (пусть напишет боту /start)."
     await message.answer(f"Роли пользователю {label or tg_id} установлены: <b>{role_label(role_storage)}</b>{note}")
 
@@ -370,7 +389,7 @@ async def cmd_addrole(message: Message, db: Database, config: Config) -> None:
     merged = current | add_roles
     await db.set_user_roles(tg_id, merged)
     stored = roles_to_storage(merged)
-    pushed = await _push_menu_to_user(message, tg_id, stored, is_admin=tg_id in (config.admin_ids or set()))
+    pushed = await _push_menu_to_user(message, db, tg_id, stored, is_admin=tg_id in (config.admin_ids or set()))
     note = "" if pushed else "\n⚠️ Не смог отправить меню пользователю."
     await message.answer(f"✅ Роли обновлены для {label or tg_id}: <b>{role_label(stored)}</b>{note}")
 
@@ -404,7 +423,7 @@ async def cmd_remove_role(message: Message, db: Database, config: Config) -> Non
     updated = current - remove_roles
     await db.set_user_roles(tg_id, updated)
     stored = roles_to_storage(updated)
-    pushed = await _push_menu_to_user(message, tg_id, stored, is_admin=tg_id in (config.admin_ids or set()))
+    pushed = await _push_menu_to_user(message, db, tg_id, stored, is_admin=tg_id in (config.admin_ids or set()))
     note = "" if pushed else "\n⚠️ Не смог отправить меню пользователю."
     if stored:
         text = f"✅ Роли обновлены для {label or tg_id}: <b>{role_label(stored)}</b>{note}"
@@ -435,9 +454,13 @@ async def cmd_users(message: Message, db: Database, config: Config) -> None:
     lines.append("По ролям:")
     role_order = [
         Role.MANAGER,
+        Role.MANAGER_KV,
+        Role.MANAGER_KIA,
+        Role.MANAGER_NPN,
         Role.RP,
         Role.ACCOUNTING,
         Role.INSTALLER,
+        Role.ZAMERY,
         Role.DRIVER,
         Role.LOADER,
         Role.TINTER,
@@ -552,7 +575,7 @@ async def admin_user_action(cb: CallbackQuery, callback_data: AdminUserCb, db: D
             return
 
         if is_active:
-            pushed = await _push_menu_to_user(cb.message, user_id, user.role, is_admin=user_id in (config.admin_ids or set()))  # type: ignore[arg-type]
+            pushed = await _push_menu_to_user(cb.message, db, user_id, user.role, is_admin=user_id in (config.admin_ids or set()))  # type: ignore[arg-type]
             if not pushed:
                 await cb.message.answer("⚠️ Не смог отправить пользователю обновлённое меню.")  # type: ignore[arg-type]
         else:
@@ -629,9 +652,13 @@ async def admin_role_action(cb: CallbackQuery, callback_data: AdminRoleCb, db: D
 
     allowed_roles = {
         Role.MANAGER.value,
+        Role.MANAGER_KV.value,
+        Role.MANAGER_KIA.value,
+        Role.MANAGER_NPN.value,
         Role.RP.value,
         Role.ACCOUNTING.value,
         Role.INSTALLER.value,
+        Role.ZAMERY.value,
         Role.DRIVER.value,
         Role.LOADER.value,
         Role.TINTER.value,
@@ -671,6 +698,7 @@ async def admin_role_action(cb: CallbackQuery, callback_data: AdminRoleCb, db: D
     if updated.is_active:
         pushed = await _push_menu_to_user(
             cb.message,  # type: ignore[arg-type]
+            db,
             user_id,
             updated.role,
             is_admin=user_id in (config.admin_ids or set()),
@@ -717,9 +745,13 @@ async def cmd_stats(message: Message, db: Database, config: Config) -> None:
     lines.append(f"• Всего сотрудников в базе: <b>{total_users}</b>")
     role_order = [
         Role.MANAGER,
+        Role.MANAGER_KV,
+        Role.MANAGER_KIA,
+        Role.MANAGER_NPN,
         Role.RP,
         Role.ACCOUNTING,
         Role.INSTALLER,
+        Role.ZAMERY,
         Role.DRIVER,
         Role.LOADER,
         Role.TINTER,
@@ -971,9 +1003,12 @@ async def cmd_setdefaults(message: Message, db: Database, config: Config) -> Non
         elif k in {"tinter", "tint"}:
             await db.set_setting("default_tinter_id", setting_value)
             changed.append(("default_tinter_id", value_label))
-        elif k == "gd":
+        elif k in {"gd", "td"}:
             await db.set_setting("default_gd_id", setting_value)
             changed.append(("default_gd_id", value_label))
+            if k == "td":
+                await db.set_setting("default_td_id", setting_value)
+                changed.append(("default_td_id", value_label))
 
     if not changed:
         await message.answer(

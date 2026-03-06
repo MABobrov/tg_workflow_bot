@@ -9,6 +9,8 @@ router = Router()
 router.message.filter(F.chat.type.in_({"group", "supergroup"}))
 router.callback_query.filter(F.message.chat.type.in_({"group", "supergroup"}))
 
+_ALLOWED_GROUP_CALLBACK_PREFIXES = ("lead:", "leadassign:")
+
 
 @router.message(F.text)
 async def cleanup_group_reply_keyboard(message: Message) -> None:
@@ -23,10 +25,12 @@ async def cleanup_group_reply_keyboard(message: Message) -> None:
 
 @router.callback_query()
 async def cleanup_group_inline_callbacks(cb: CallbackQuery) -> None:
+    data = cb.data or ""
+    if data.startswith(_ALLOWED_GROUP_CALLBACK_PREFIXES):
+        return
     await cb.answer("Кнопки работают только в личном чате с ботом.", show_alert=True)
     try:
         if cb.message:
             await cb.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-

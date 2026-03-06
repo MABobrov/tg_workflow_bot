@@ -27,11 +27,13 @@ from ..keyboards import (
     gd_sales_write_to_kb,
     GD_BTN_ACCOUNTING,
     GD_BTN_CHAT_RP,
-    GD_BTN_INBOX_GD,
     GD_BTN_INVOICES,
     GD_BTN_KIA_CRED,
     GD_BTN_NPN_CRED,
     GD_BTN_KV_CRED,
+    GD_SUBBTN_KIA_CRED,
+    GD_SUBBTN_NPN_CRED,
+    GD_SUBBTN_KV_CRED,
     GD_BTN_MONTAZH,
     GD_BTN_SALES,
     GD_BTN_SEARCH_INVOICE,
@@ -41,24 +43,77 @@ from ..keyboards import (
     tasks_kb,
 )
 from ..services.integration_hub import IntegrationHub
+from ..services.menu_scope import get_active_menu_role
 from ..services.notifier import Notifier
 from ..states import ChatProxySG, InvoiceSearchSG, SalesWriteSG
 from ..utils import (
     format_dt_iso,
     get_initiator_label,
+    parse_roles,
     private_only_reply_markup,
     project_status_label,
     refresh_recipient_keyboard,
     task_status_label,
     task_type_label,
+    try_json_loads,
 )
 from .auth import require_role_message
-from .chat_proxy import enter_chat_menu, resolve_channel_target, channel_label
+from .chat_proxy import enter_chat_menu
 
 log = logging.getLogger(__name__)
 
 router = Router()
 router.message.filter(F.chat.type == "private")
+
+SALES_SOURCE_ROLES = {Role.RP, Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN}
+
+
+async def _search_invoice_tasks_by_criteria(
+    db: Database,
+    criteria: str,
+    value: str,
+    *,
+    limit: int = 20,
+) -> list[dict[str, object]]:
+    fields = [criteria]
+    if criteria == "project":
+        fields = ["address", "object_address"]
+
+    found_by_id: dict[int, dict[str, object]] = {}
+    for field in fields:
+        rows = await db.search_tasks_by_payload(
+            field=field,
+            value=value,
+            type_filter=[TaskType.INVOICE_PAYMENT, TaskType.SUPPLIER_PAYMENT],
+            limit=limit,
+        )
+        for row in rows:
+            found_by_id[int(row["id"])] = row
+            if len(found_by_id) >= limit:
+                break
+        if len(found_by_id) >= limit:
+            break
+    return list(found_by_id.values())[:limit]
+
+
+async def _is_sales_not_urgent_task(db: Database, task: dict[str, object]) -> bool:
+    payload = try_json_loads(task.get("payload_json"))
+    sender_roles = set(parse_roles(str(payload.get("sender_role") or "")))
+    if sender_roles & SALES_SOURCE_ROLES:
+        return True
+
+    sender_id = payload.get("sender_id") or task.get("created_by")
+    try:
+        sender_id_int = int(sender_id) if sender_id is not None else None
+    except (TypeError, ValueError):
+        sender_id_int = None
+    if sender_id_int is None:
+        return False
+
+    sender = await db.get_user_optional(sender_id_int)
+    if not sender:
+        return False
+    return bool(set(parse_roles(sender.role)) & SALES_SOURCE_ROLES)
 
 
 # ---------------------------------------------------------------------------
@@ -151,10 +206,13 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
 
 
 # ---------------------------------------------------------------------------
-# "Поиск Счета" — search invoices by criteria
+# "Поиск счёта" — search invoices by criteria
 # ---------------------------------------------------------------------------
 
-@router.message(F.text == GD_BTN_SEARCH_INVOICE)
+@router.message(
+    lambda m: (m.text or "").strip() in {GD_BTN_SEARCH_INVOICE, "Поиск Счета"}
+    and get_active_menu_role(m.from_user.id if m.from_user else None) == Role.GD
+)
 async def gd_search_invoice_start(message: Message, state: FSMContext, db: Database) -> None:
     """Start invoice search flow."""
     if not await require_role_message(message, db, roles=[Role.GD]):
@@ -170,7 +228,7 @@ async def gd_search_invoice_start(message: Message, state: FSMContext, db: Datab
     b.button(text="По сумме", callback_data="inv_search:amount")
     b.adjust(2)
     await message.answer(
-        "<b>Поиск Счета</b>\n\nВыберите критерий поиска:",
+        "<b>Поиск счёта</b>\n\nВыберите критерий поиска:",
         reply_markup=b.as_markup(),
     )
 
@@ -208,13 +266,7 @@ async def gd_search_execute(message: Message, state: FSMContext, db: Database, c
         await message.answer("Введите значение для поиска:")
         return
 
-    # Search in tasks payload
-    results = await db.search_tasks_by_payload(
-        field=criteria,
-        value=value,
-        type_filter=[TaskType.INVOICE_PAYMENT, TaskType.SUPPLIER_PAYMENT],
-        limit=20,
-    )
+    results = await _search_invoice_tasks_by_criteria(db, criteria, value, limit=20)
 
     await state.clear()
 
@@ -279,21 +331,21 @@ async def gd_chat_sales(message: Message, state: FSMContext, db: Database) -> No
     )
 
 
-@router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_KV_CRED))
+@router.message(lambda m: (m.text or "").strip() in {GD_BTN_KV_CRED, GD_SUBBTN_KV_CRED})
 async def gd_chat_kv(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await enter_chat_menu(message, state, channel="manager_kv")
 
 
-@router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_KIA_CRED))
+@router.message(lambda m: (m.text or "").strip() in {GD_BTN_KIA_CRED, GD_SUBBTN_KIA_CRED})
 async def gd_chat_kia(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await enter_chat_menu(message, state, channel="manager_kia")
 
 
-@router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_NPN_CRED))
+@router.message(lambda m: (m.text or "").strip() in {GD_BTN_NPN_CRED, GD_SUBBTN_NPN_CRED})
 async def gd_chat_npn(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
@@ -323,14 +375,13 @@ async def sales_incoming(message: Message, state: FSMContext, db: Database, conf
         return
 
     user_id = message.from_user.id  # type: ignore[union-attr]
-    is_admin = user_id in (config.admin_ids or set())
-
     tasks = await db.list_tasks_for_user(
         assigned_to=user_id,
         statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
         type_filter=TaskType.NOT_URGENT_GD,
         limit=50,
     )
+    tasks = [task for task in tasks if await _is_sales_not_urgent_task(db, task)]
 
     if not tasks:
         await message.answer(
@@ -475,7 +526,10 @@ async def sales_send_message(
 # "Синхронизация данных" — Google Sheets resync from GD main menu
 # ---------------------------------------------------------------------------
 
-@router.message(F.text == GD_BTN_SYNC)
+@router.message(
+    lambda m: (m.text or "").strip() == GD_BTN_SYNC
+    and get_active_menu_role(m.from_user.id if m.from_user else None) == Role.GD
+)
 async def gd_sync_data(message: Message, db: Database, config: Config, integrations: IntegrationHub) -> None:
     """Trigger Google Sheets resync + show detailed task/project summary."""
     if not await require_role_message(message, db, roles=[Role.GD]):

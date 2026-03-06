@@ -1,31 +1,28 @@
-from __future__ import annotations
-
 """Handlers for lead claiming (managers) and lead assignment (RP/GD).
 
 Inline buttons are attached to messages published by the lead_poller service.
 """
 
-import logging
-from typing import Any
+from __future__ import annotations
 
-from aiogram import Bot, Router, F
+import logging
+
+from aiogram import F, Router
 from aiogram.types import CallbackQuery
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..callbacks import LeadAssignCb, LeadCb
 from ..config import Config
 from ..db import Database
-from ..enums import Role
+from ..enums import MANAGER_ROLES, Role
 from ..integrations.amocrm import AmoCRMService
-from ..keyboards import main_menu
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..utils import parse_roles
-from .auth import require_role_callback
 
 log = logging.getLogger(__name__)
 router = Router()
-router.callback_query.filter(F.message.chat.type == "private")
+
+LEAD_MANAGER_ROLES = {Role.MANAGER, *MANAGER_ROLES}
 
 
 # ==================== MANAGER: CLAIM LEAD ====================
@@ -53,7 +50,7 @@ async def lead_claim(
         await cb.answer("Ваш доступ к боту заблокирован.", show_alert=True)
         return
     user_roles = parse_roles(user_row.role)
-    if Role.MANAGER not in user_roles:
+    if not any(role in LEAD_MANAGER_ROLES for role in user_roles):
         await cb.answer("Только менеджер может взять лид.", show_alert=True)
         return
 

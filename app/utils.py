@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -9,9 +11,14 @@ from typing import TYPE_CHECKING, Any, Optional
 from zoneinfo import ZoneInfo
 
 from aiogram import html
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 if TYPE_CHECKING:
     from .db import Database
+
+
+log = logging.getLogger(__name__)
+SERVICE_MESSAGE_TTL_SECONDS = 120
 
 
 ROLE_LABELS: dict[str, str] = {
@@ -302,6 +309,43 @@ def private_only_reply_markup(event_message: Any, markup: Any | None) -> Any | N
     return None
 
 
+def schedule_message_cleanup(sent_message: Any, delay_seconds: int = SERVICE_MESSAGE_TTL_SECONDS) -> None:
+    """Delete a bot service message later to keep private chats clean."""
+    if not sent_message or delay_seconds <= 0:
+        return
+    chat = getattr(sent_message, "chat", None)
+    chat_id = getattr(chat, "id", None)
+    chat_type = getattr(chat, "type", None)
+    message_id = getattr(sent_message, "message_id", None)
+    bot = getattr(sent_message, "bot", None)
+    if not chat_id or not message_id or not bot or chat_type != "private":
+        return
+
+    async def _cleanup() -> None:
+        try:
+            await asyncio.sleep(delay_seconds)
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            return
+        except Exception:
+            log.exception("Failed to auto-delete service message chat_id=%s message_id=%s", chat_id, message_id)
+
+    asyncio.create_task(_cleanup())
+
+
+async def answer_service(
+    target_message: Any,
+    text: str,
+    *,
+    delay_seconds: int = SERVICE_MESSAGE_TTL_SECONDS,
+    **kwargs: Any,
+) -> Any:
+    """Send a transient bot-only service message and schedule its deletion."""
+    sent_message = await target_message.answer(text, **kwargs)
+    schedule_message_cleanup(sent_message, delay_seconds=delay_seconds)
+    return sent_message
+
+
 def encode_sa_json(value: str) -> dict[str, Any]:
     """Accept raw JSON or base64 JSON and return dict."""
     raw = value.strip()
@@ -360,8 +404,8 @@ async def refresh_recipient_keyboard(
     unread = await db.count_unread_tasks(user_id)
     uc = await db.count_unread_by_channel(user_id)
     is_admin = user_id in (config.admin_ids or set())
-    gd_unread = await db.count_gd_inbox_tasks(user_id) if user.role and Role.GD in user.role else None
-    gd_inv = await db.count_gd_invoice_tasks(user_id) if user.role and Role.GD in user.role else None
+    gd_unread = await db.count_gd_inbox_tasks(user_id) if user.role and Role.GD in parse_roles(user.role) else None
+    gd_inv = await db.count_gd_invoice_tasks(user_id) if user.role and Role.GD in parse_roles(user.role) else None
     kb = main_menu(user.role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_unread, gd_invoice_unread=gd_inv)
     text = f"📥 У вас {unread} активных задач." if unread else "📥 Нет активных задач."
     await notifier.safe_send(user_id, text, reply_markup=kb)

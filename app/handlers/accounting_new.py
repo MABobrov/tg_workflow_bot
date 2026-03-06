@@ -24,14 +24,14 @@ from ..db import Database
 from ..enums import InvoiceStatus, Role, TaskStatus
 from ..keyboards import (
     ACC_BTN_INVOICE_END,
-    ACC_BTN_SEARCH,
     invoice_list_kb,
     main_menu,
 )
 from ..services.assignment import resolve_default_assignee
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import EdoResponseSG
-from ..utils import get_initiator_label, private_only_reply_markup, utcnow
+from ..utils import answer_service, get_initiator_label, private_only_reply_markup
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -42,7 +42,12 @@ router.callback_query.filter(F.message.chat.type == "private")
 
 async def _current_role(db: Database, user_id: int) -> str | None:
     user = await db.get_user_optional(user_id)
-    return user.role if user else None
+    return resolve_active_menu_role(user_id, user.role if user else None)
+
+
+async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
+    user = await db.get_user_optional(user_id)
+    return resolve_menu_scope(user_id, user.role if user else None)
 
 
 # =====================================================================
@@ -175,7 +180,7 @@ async def edo_respond_attachments(message: Message, state: FSMContext) -> None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
     await state.update_data(attachments=attachments)
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
 
 
 @router.callback_query(F.data == "edo_respond:send")
@@ -247,26 +252,41 @@ async def edo_respond_finalize(
         for a in attachments:
             await notifier.safe_send_media(int(requester_id), a["file_type"], a["file_id"], caption=a.get("caption"))
 
-    # If SIGN_CLOSING and signed -> update close condition + notify
-    if edo_type == "sign_closing" and response_type == "signed" and invoice_number:
+    # Update invoice EDO flags so downstream close conditions and originals flow stay consistent.
+    if response_type == "signed" and invoice_number:
         inv = await db.get_invoice_by_number(invoice_number)
         if inv:
-            await db.set_invoice_edo_signed(inv["id"], True)
+            if edo_type == "sign_closing":
+                await db.set_invoice_edo_signed(inv["id"], True)
+            elif edo_type == "sign_invoice":
+                await db.update_invoice(inv["id"], docs_edo_signed=1)
 
-            # Notify GD, RP, Sales
-            notify_msg = f"✅ <b>Закрывающие по ЭДО подписаны</b>\n\nСчёт №: <code>{invoice_number}</code>"
-            gd_id = await resolve_default_assignee(db, config, Role.GD)
-            rp_id = await resolve_default_assignee(db, config, Role.RP)
-            for target in [gd_id, rp_id, requester_id]:
-                if target:
-                    await notifier.safe_send(int(target), notify_msg)
+            if edo_type in {"sign_closing", "sign_invoice"}:
+                signed_label = (
+                    "Закрывающие по ЭДО подписаны"
+                    if edo_type == "sign_closing"
+                    else "Первичные документы по ЭДО подписаны"
+                )
+                notify_msg = f"✅ <b>{signed_label}</b>\n\nСчёт №: <code>{invoice_number}</code>"
+                gd_id = await resolve_default_assignee(db, config, Role.GD)
+                rp_id = await resolve_default_assignee(db, config, Role.RP)
+                seen_targets: set[int] = set()
+                for target in [gd_id, rp_id, requester_id]:
+                    if target and int(target) not in seen_targets:
+                        seen_targets.add(int(target))
+                        await notifier.safe_send(int(target), notify_msg)
 
-    role = await _current_role(db, u.id)
+    role, isolated_role = await _current_menu(db, u.id)
     await state.clear()
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ Ответ отправлен ({resp_label}).",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(
+                role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )

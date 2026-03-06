@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 
 from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
@@ -11,6 +11,7 @@ from .utils import parse_roles, task_status_label, task_type_label
 
 
 BACK_TO_HOME = "⬅️ Назад в главное меню"
+BACK_TO_ROLE_SELECTOR = "⬅️ К выбору роли"
 OPEN_ACTIONS = "📂 Ещё действия"
 OPEN_HELP = "📚 Справка"
 OPEN_ADMIN_PANEL = "🛠 Админ-панель"
@@ -24,23 +25,26 @@ ADMIN_RESYNC_BUTTON = "🔄 Синхронизация Sheets"
 # --- GD-specific buttons ---
 GD_BTN_INBOX_GD = "📥 Входящие для ГД"
 GD_BTN_INVOICES = "Счета на Оплату"
-GD_BTN_URGENT = "Срочно для ГД"
-GD_BTN_SEARCH_INVOICE = "Поиск Счета"
+GD_BTN_SEARCH_INVOICE = "🔍 Поиск счёта"
 GD_BTN_CHAT_RP = "Чат с РП"
 GD_BTN_ZAMERY = "Замеры"
 GD_BTN_ACCOUNTING = "Бухгалтерия"
 GD_BTN_MONTAZH = "Монтажная гр."
 GD_BTN_SALES = "Отд.Продаж"
 GD_BTN_SYNC = "Синхронизация данных"
-GD_BTN_MORE = "Еще"
+GD_BTN_MORE = "📂 Ещё"
+GD_BTN_CRED = "💬 Кред"
 GD_BTN_CANCEL = "❌ Отмена"
 GD_BTN_ADMIN = "🛠 Админ-панель"
 GD_BTN_KV_CRED = "КВ Кред"
 GD_BTN_KIA_CRED = "КИА Кред"
 GD_BTN_NPN_CRED = "НПН Кред"
+GD_SUBBTN_KV_CRED = "КВ"
+GD_SUBBTN_KIA_CRED = "КИА"
+GD_SUBBTN_NPN_CRED = "НПН"
 GD_BTN_INVOICE_END_GD = "🏁 Счёт END"
 GD_BTN_SUPPLIER_PAY = "💸 Оплата поставщику"
-GD_BTN_BACK_HOME = "Назад в Гл.меню"
+GD_BTN_BACK_HOME = BACK_TO_HOME
 GD_BTN_REFRESH = "🔄 Обновить меню"
 GD_BTN_HELP = "📚 Справка"
 
@@ -53,16 +57,16 @@ MGR_BTN_ZAMERY = "📐 Замеры"
 MGR_BTN_EDO = "📄 Бухгалтерия (ЭДО)"
 MGR_BTN_CHECK_KP = "📋 Проверить КП/Счет"
 MGR_BTN_SYNC = "🔄 Синхронизация данных"
-MGR_BTN_MORE = "Еще"
+MGR_BTN_MORE = "📂 Ещё"
 MGR_BTN_CANCEL = "❌ Отмена"
 # --- Manager "Еще" submenu ---
 MGR_BTN_CRED = "💬 Менеджер (кред)"
 MGR_BTN_URGENT = "🚨 Срочно ГД"
 MGR_BTN_MY_INVOICES = "📑 Мои Счета"
 MGR_BTN_ISSUE = "🆘 Проблема/Вопрос"
-MGR_BTN_SEARCH_INVOICE = "🔍 Поиск Счета"
+MGR_BTN_SEARCH_INVOICE = "🔍 Поиск счёта"
 MGR_BTN_HELP = "📚 Справка"
-MGR_BTN_BACK_HOME = "Назад в Гл.меню"
+MGR_BTN_BACK_HOME = BACK_TO_HOME
 
 # --- RP-specific buttons ---
 RP_BTN_INBOX_SALES = "📥 Входящие Отд.Продаж"
@@ -74,27 +78,30 @@ RP_BTN_ISSUE = "🆘 Проблема/Вопрос"
 RP_BTN_MGR_KV = "👤 Менеджер 1 (КВ)"
 RP_BTN_MGR_KIA = "👤 Менеджер 2 (КИА)"
 RP_BTN_MONTAZH = "🔧 Монтажная гр."
+RP_BTN_TEAM = "👥 Команда"
+RP_SUBBTN_MGR_KV = "Менеджер КВ"
+RP_SUBBTN_MGR_KIA = "Менеджер КИА"
+RP_SUBBTN_MONTAZH = "Монтаж"
 RP_BTN_EDO = "📄 Бухгалтерия (ЭДО)"
-RP_BTN_MORE = "Еще"
+RP_BTN_MORE = "📂 Ещё"
 RP_BTN_CANCEL = "❌ Отмена"
 # --- RP "Еще" submenu ---
 RP_BTN_LEAD = "🎯 Лид в проект"
 RP_BTN_URGENT = "🚨 Срочно ГД"
-RP_BTN_ROLE_SWITCH = "🔄 Смена роли"
 # --- RP/NPN role-switching buttons (top row of main menu) ---
 RP_BTN_ROLE_RP = "✅ РП"
 RP_BTN_ROLE_NPN = "👤 Менеджер НПН"
 RP_BTN_ROLE_RP_INACTIVE = "📋 РП"
 RP_BTN_ROLE_NPN_ACTIVE = "✅ Менеджер НПН"
-RP_BTN_SEARCH_INVOICE = "🔍 Поиск Счета"
+RP_BTN_SEARCH_INVOICE = "🔍 Поиск счёта"
 RP_BTN_SYNC = "🔄 Синхронизация данных"
 RP_BTN_HELP = "📚 Справка"
-RP_BTN_BACK_HOME = "Назад в Гл.меню"
+RP_BTN_BACK_HOME = BACK_TO_HOME
 
 # --- Accounting buttons ---
 ACC_BTN_INBOX = "📥 Входящие задачи"
 ACC_BTN_NOT_URGENT = "📩 Не срочно ГД"
-ACC_BTN_SEARCH = "🔍 Найти Счет №"
+ACC_BTN_SEARCH = "🔍 Поиск счёта"
 ACC_BTN_INVOICE_END = "🏁 Закрытые Счета"
 ACC_BTN_SYNC = "🔄 Синхронизация данных"
 ACC_BTN_URGENT = "🚨 Срочно ГД"
@@ -117,6 +124,22 @@ ZAM_BTN_URGENT = "🚨 Срочно ГД"
 ZAM_BTN_NOT_URGENT = "📩 Не срочно ГД"
 ZAM_BTN_SYNC = "🔄 Синхронизация данных"
 
+ROLE_SELECTOR_PREFIX = "🎭 "
+ROLE_SELECTOR_LABELS: dict[str, str] = {
+    Role.MANAGER: f"{ROLE_SELECTOR_PREFIX}Менеджер",
+    Role.MANAGER_KV: f"{ROLE_SELECTOR_PREFIX}Менеджер КВ",
+    Role.MANAGER_KIA: f"{ROLE_SELECTOR_PREFIX}Менеджер КИА",
+    Role.MANAGER_NPN: f"{ROLE_SELECTOR_PREFIX}Менеджер НПН",
+    Role.RP: f"{ROLE_SELECTOR_PREFIX}РП",
+    Role.ACCOUNTING: f"{ROLE_SELECTOR_PREFIX}Бухгалтерия",
+    Role.INSTALLER: f"{ROLE_SELECTOR_PREFIX}Монтажник",
+    Role.ZAMERY: f"{ROLE_SELECTOR_PREFIX}Замерщик",
+    Role.GD: f"{ROLE_SELECTOR_PREFIX}ГД",
+    Role.DRIVER: f"{ROLE_SELECTOR_PREFIX}Водитель",
+    Role.LOADER: f"{ROLE_SELECTOR_PREFIX}Грузчик",
+    Role.TINTER: f"{ROLE_SELECTOR_PREFIX}Тонировщик",
+}
+
 
 def _build_reply_rows(rows: list[list[str]]) -> ReplyKeyboardMarkup:
     kb = ReplyKeyboardBuilder()
@@ -125,6 +148,26 @@ def _build_reply_rows(rows: list[list[str]]) -> ReplyKeyboardMarkup:
             kb.button(text=label)
     kb.adjust(*[len(row) for row in rows])
     return kb.as_markup(resize_keyboard=True)
+
+
+def role_selector_label(role: str) -> str:
+    return ROLE_SELECTOR_LABELS.get(role, f"{ROLE_SELECTOR_PREFIX}{role}")
+
+
+def role_selector_choices(role_value: str | None) -> dict[str, str]:
+    return {role_selector_label(role): role for role in parse_roles(role_value)}
+
+
+def role_selector_menu(role_value: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
+    rows: list[list[str]] = []
+    role_buttons = [role_selector_label(role) for role in parse_roles(role_value)]
+    for index in range(0, len(role_buttons), 2):
+        rows.append(role_buttons[index:index + 2])
+    rows.append([OPEN_HELP, "🔄 Обновить меню"])
+    if is_admin:
+        rows.append([OPEN_ADMIN_PANEL])
+    rows.append(["❌ Отмена"])
+    return _build_reply_rows(rows)
 
 
 def _role_primary_action_rows(role: str | None) -> list[list[str]]:
@@ -151,8 +194,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [RP_BTN_INBOX_SALES, RP_BTN_NOT_URGENT],
             [RP_BTN_INVOICE_START, RP_BTN_INVOICE_END],
             [RP_BTN_INVOICES_PAY, RP_BTN_ISSUE],
-            [RP_BTN_MGR_KV, RP_BTN_MGR_KIA],
-            [RP_BTN_MONTAZH, RP_BTN_EDO],
+            [RP_BTN_TEAM, RP_BTN_EDO],
             [RP_BTN_SYNC, RP_BTN_MORE],
             [RP_BTN_CANCEL],
         ]
@@ -164,7 +206,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
             [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
-            [GD_BTN_SYNC, GD_BTN_MORE],
+            [GD_BTN_SYNC, GD_BTN_CRED],
         ]
     if role == Role.ACCOUNTING:
         return [
@@ -187,7 +229,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
             [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
-            [GD_BTN_SYNC, GD_BTN_MORE],
+            [GD_BTN_SYNC, GD_BTN_CRED],
         ]
     if role == Role.DRIVER:
         return [
@@ -229,7 +271,8 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
     if role == Role.TD:
         # TD merged into GD — use GD submenu
         return [
-            [GD_BTN_KV_CRED, GD_BTN_KIA_CRED],
+            [GD_SUBBTN_KV_CRED, GD_SUBBTN_KIA_CRED],
+            [GD_SUBBTN_NPN_CRED],
         ]
     if role == Role.ACCOUNTING:
         return []  # Accounting has no submenu
@@ -237,7 +280,8 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
         return []  # Installer has no submenu (all buttons in primary)
     if role == Role.GD:
         return [
-            [GD_BTN_KV_CRED, GD_BTN_KIA_CRED],
+            [GD_SUBBTN_KV_CRED, GD_SUBBTN_KIA_CRED],
+            [GD_SUBBTN_NPN_CRED],
         ]
     if role == Role.DRIVER:
         return [
@@ -332,7 +376,12 @@ def main_menu(
     unread_channels: dict[str, int] | None = None,
     gd_inbox_unread: int | None = None,
     gd_invoice_unread: int | None = None,
+    isolated_role: bool = False,
 ) -> ReplyKeyboardMarkup:
+    parsed_roles = parse_roles(role)
+    if not isolated_role and len(parsed_roles) > 1:
+        return role_selector_menu(role, is_admin=is_admin)
+
     inbox_label = "📥 Входящие задачи"
     if unread > 0:
         inbox_label += f" 🔴{unread}"
@@ -359,17 +408,21 @@ def main_menu(
         "zamery": GD_BTN_ZAMERY,
         "montazh": GD_BTN_MONTAZH,
         "otd_prodazh": GD_BTN_SALES,
-        "manager_kv": GD_BTN_KV_CRED,
-        "manager_kia": GD_BTN_KIA_CRED,
-        "manager_npn": GD_BTN_NPN_CRED,
+        "cred": GD_BTN_CRED,
     }
     # Build labels with per-channel unread counts
     _uc = unread_channels or {}
     # For composite channel "otd_prodazh", sum manager sub-channels (without rp)
     _otd_sum = sum(_uc.get(sc, 0) for sc in ("manager_kv", "manager_kia", "manager_npn"))
+    _cred_sum = sum(_uc.get(sc, 0) for sc in ("manager_kv", "manager_kia", "manager_npn"))
     _chan_labels: dict[str, str] = {}
     for chan, base_btn in _CHAN_BTN.items():
-        cnt = _otd_sum if chan == "otd_prodazh" else _uc.get(chan, 0)
+        if chan == "otd_prodazh":
+            cnt = _otd_sum
+        elif chan == "cred":
+            cnt = _cred_sum
+        else:
+            cnt = _uc.get(chan, 0)
         _chan_labels[base_btn] = f"{base_btn} 🔴{cnt}" if cnt > 0 else base_btn
 
     def _patch_inbox(rows: list[list[str]]) -> None:
@@ -397,12 +450,14 @@ def main_menu(
         if is_admin:
             last_row.append(GD_BTN_ADMIN)
         rows.append(last_row)
+        if isolated_role:
+            rows.append([BACK_TO_ROLE_SELECTOR])
         _patch_inbox(rows)
         return _build_reply_rows(rows)
 
     # MANAGER_NPN (switched from RP) — role-switching row + NPN manager menu
     # Must be checked BEFORE generic _is_pure_manager to add role-switch buttons
-    if _is_pure_manager_npn(role):
+    if _is_pure_manager_npn(role) and not isolated_role:
         rows = [[RP_BTN_ROLE_RP_INACTIVE, RP_BTN_ROLE_NPN_ACTIVE]]
         rows.extend([list(row) for row in _role_primary_action_rows(Role.MANAGER_NPN)])
         if is_admin:
@@ -414,15 +469,25 @@ def main_menu(
     if _is_pure_manager(role):
         r = parse_roles(role)[0]
         rows = [list(row) for row in _role_primary_action_rows(r)]
+        if isolated_role:
+            rows.append([BACK_TO_ROLE_SELECTOR])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         _patch_inbox(rows)
         return _build_reply_rows(rows)
 
     # RP — custom layout with role-switching row + built-in "Еще" button
-    if _is_pure_rp(role):
+    if _is_pure_rp(role) and not isolated_role:
         rows: list[list[str]] = [[RP_BTN_ROLE_RP, RP_BTN_ROLE_NPN]]
         rows.extend([list(row) for row in _role_primary_action_rows(Role.RP)])
+        if is_admin:
+            rows.append([OPEN_ADMIN_PANEL])
+        _patch_inbox(rows)
+        return _build_reply_rows(rows)
+
+    if isolated_role and role == Role.RP:
+        rows = [list(row) for row in _role_primary_action_rows(Role.RP)]
+        rows.append([BACK_TO_ROLE_SELECTOR])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         _patch_inbox(rows)
@@ -432,6 +497,8 @@ def main_menu(
     if _is_pure_accounting(role):
         rows = [list(row) for row in _role_primary_action_rows(Role.ACCOUNTING)]
         rows.append(["❌ Отмена", OPEN_HELP])
+        if isolated_role:
+            rows.append([BACK_TO_ROLE_SELECTOR])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         _patch_inbox(rows)
@@ -441,6 +508,8 @@ def main_menu(
     if _is_pure_installer(role):
         rows = [list(row) for row in _role_primary_action_rows(Role.INSTALLER)]
         rows.append(["❌ Отмена", OPEN_HELP])
+        if isolated_role:
+            rows.append([BACK_TO_ROLE_SELECTOR])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         _patch_inbox(rows)
@@ -450,6 +519,8 @@ def main_menu(
     if _is_pure_zamery(role):
         rows = [list(row) for row in _role_primary_action_rows(Role.ZAMERY)]
         rows.append(["❌ Отмена", OPEN_HELP])
+        if isolated_role:
+            rows.append([BACK_TO_ROLE_SELECTOR])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         _patch_inbox(rows)
@@ -463,6 +534,8 @@ def main_menu(
     if secondary_rows:
         rows.append([OPEN_ACTIONS])
     rows.append([OPEN_HELP, "🔄 Обновить меню"])
+    if isolated_role:
+        rows.append([BACK_TO_ROLE_SELECTOR])
     if is_admin:
         rows.append([OPEN_ADMIN_PANEL])
     rows.append(["❌ Отмена"])
@@ -470,11 +543,18 @@ def main_menu(
     return _build_reply_rows(rows)
 
 
-def actions_menu(role: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
+def actions_menu(
+    role: str | None,
+    is_admin: bool = False,
+    show_role_selector_back: bool = False,
+) -> ReplyKeyboardMarkup:
     rows = _merge_rows_for_roles(role, _role_secondary_action_rows)
     if is_admin:
         rows.append([OPEN_ADMIN_PANEL])
-    rows.append([BACK_TO_HOME])
+    if show_role_selector_back:
+        rows.append([BACK_TO_HOME, BACK_TO_ROLE_SELECTOR])
+    else:
+        rows.append([BACK_TO_HOME])
     return _build_reply_rows(rows)
 
 
@@ -517,10 +597,12 @@ def task_actions_kb(task: dict[str, Any]) -> InlineKeyboardMarkup:
     if status == TaskStatus.OPEN and not task.get("accepted_at"):
         b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
 
-    # universal
-    if status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+    if status == TaskStatus.OPEN:
         b.button(text="✅ Завершить", callback_data=TaskCb(task_id=tid, action="done").pack())
         b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="take").pack())
+        b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
+    elif status == TaskStatus.IN_PROGRESS:
+        b.button(text="✅ Завершить", callback_data=TaskCb(task_id=tid, action="done").pack())
         b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
 
     # payment confirm special actions (TD)
@@ -561,14 +643,16 @@ def manager_project_actions_kb(project_id: int) -> InlineKeyboardMarkup:
 
 
 
-def gd_more_menu() -> ReplyKeyboardMarkup:
-    """Подменю 'Еще' для ГД."""
+def gd_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
+    """Подменю 'Кред' для ГД."""
     rows = [
-        [GD_BTN_KV_CRED, GD_BTN_KIA_CRED],
-        [GD_BTN_NPN_CRED],
+        [GD_SUBBTN_KV_CRED, GD_SUBBTN_KIA_CRED],
+        [GD_SUBBTN_NPN_CRED],
         [GD_BTN_BACK_HOME, GD_BTN_REFRESH],
-        [GD_BTN_CANCEL, GD_BTN_HELP],
     ]
+    if show_role_selector_back:
+        rows.append([BACK_TO_ROLE_SELECTOR])
+    rows.append([GD_BTN_CANCEL, GD_BTN_HELP])
     return _build_reply_rows(rows)
 
 
@@ -611,25 +695,40 @@ def gd_sales_write_to_kb() -> ReplyKeyboardMarkup:
     return _build_reply_rows(rows)
 
 
-def manager_more_menu() -> ReplyKeyboardMarkup:
+def manager_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
     """Подменю 'Еще' для менеджеров (КВ / КИА / НПН)."""
     rows = [
         [MGR_BTN_CRED, MGR_BTN_URGENT],
         [MGR_BTN_MY_INVOICES, MGR_BTN_ISSUE],
         [MGR_BTN_SEARCH_INVOICE, MGR_BTN_HELP],
-        [MGR_BTN_CANCEL, MGR_BTN_BACK_HOME],
     ]
+    if show_role_selector_back:
+        rows.append([BACK_TO_ROLE_SELECTOR])
+    rows.append([MGR_BTN_CANCEL, MGR_BTN_BACK_HOME])
     return _build_reply_rows(rows)
 
 
-def rp_more_menu() -> ReplyKeyboardMarkup:
+def rp_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
     """Подменю 'Еще' для РП."""
     rows = [
         [RP_BTN_LEAD, RP_BTN_URGENT],
-        [RP_BTN_SEARCH_INVOICE, RP_BTN_SYNC],
-        [RP_BTN_HELP],
-        [RP_BTN_CANCEL, RP_BTN_BACK_HOME],
+        [RP_BTN_SEARCH_INVOICE, RP_BTN_HELP],
     ]
+    if show_role_selector_back:
+        rows.append([BACK_TO_ROLE_SELECTOR])
+    rows.append([RP_BTN_CANCEL, RP_BTN_BACK_HOME])
+    return _build_reply_rows(rows)
+
+
+def rp_team_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
+    """Подменю 'Команда' для РП."""
+    rows = [
+        [RP_SUBBTN_MGR_KV, RP_SUBBTN_MGR_KIA],
+        [RP_SUBBTN_MONTAZH],
+    ]
+    if show_role_selector_back:
+        rows.append([BACK_TO_ROLE_SELECTOR])
+    rows.append([RP_BTN_CANCEL, RP_BTN_BACK_HOME])
     return _build_reply_rows(rows)
 
 

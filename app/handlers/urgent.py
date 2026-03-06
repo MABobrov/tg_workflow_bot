@@ -15,9 +15,10 @@ from ..enums import Role, TaskStatus, TaskType
 from ..keyboards import main_menu, task_actions_kb
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import NotUrgentGDSG, UrgentGDSG
-from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
+from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -44,7 +45,12 @@ ALLOWED_ROLES = [
 
 async def _current_role(db: Database, user_id: int) -> str | None:
     user = await db.get_user_optional(user_id)
-    return user.role if user else None
+    return resolve_active_menu_role(user_id, user.role if user else None)
+
+
+async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
+    user = await db.get_user_optional(user_id)
+    return resolve_menu_scope(user_id, user.role if user else None)
 
 
 @router.message(F.text == "🚨 Срочно ГД")
@@ -109,7 +115,7 @@ async def urgent_gd_attachments(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(attachments=attachments, description=data.get("description", ""))
-    await message.answer(f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>.")
 
 
 @router.callback_query(F.data == "urgentgd:create")
@@ -185,12 +191,17 @@ async def urgent_gd_finalize(
 
     await integrations.sync_task(task, project_code="")
 
-    role = await _current_role(db, u.id)
+    role, isolated_role = await _current_menu(db, u.id)
     await cb.message.answer(
         "✅ Срочный запрос отправлен ГД.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(
+                role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )  # type: ignore
     await state.clear()
@@ -262,7 +273,7 @@ async def not_urgent_gd_attachments(message: Message, state: FSMContext) -> None
         return
 
     await state.update_data(attachments=attachments, description=data.get("description", ""))
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
 
 
 @router.callback_query(F.data == "noturggd:create")
@@ -284,6 +295,7 @@ async def not_urgent_gd_finalize(
     data = await state.get_data()
     description = data.get("description") or ""
     attachments = data.get("attachments") or []
+    sender_role = await _current_role(db, u.id)
 
     gd_id = await resolve_default_assignee(db, config, Role.GD)
     if not gd_id:
@@ -307,6 +319,7 @@ async def not_urgent_gd_finalize(
             "source": "not_urgent_gd",
             "sender_id": u.id,
             "sender_username": u.username,
+            "sender_role": sender_role,
         },
     )
 
@@ -337,12 +350,17 @@ async def not_urgent_gd_finalize(
 
     await integrations.sync_task(task, project_code="")
 
-    role = await _current_role(db, u.id)
+    role, isolated_role = await _current_menu(db, u.id)
     await cb.message.answer(  # type: ignore[union-attr]
         "✅ Задача отправлена ГД (не срочно).",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(
+                role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )
     await state.clear()

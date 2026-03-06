@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import logging
-from datetime import timedelta
 from typing import Any
 
 from aiogram import Router, F
@@ -13,14 +11,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from ..callbacks import TaskCb
 from ..config import Config
 from ..db import Database
-from ..enums import ProjectStatus, Role, TaskStatus, TaskType
+from ..enums import InvoiceStatus, ProjectStatus, Role, TaskStatus, TaskType
 from ..keyboards import main_menu, manager_project_actions_kb, task_actions_kb
-from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import InvoicePaymentSG, SupplierPaymentSG, TaskCompleteSG
-from ..utils import fmt_task_card, get_initiator_label, private_only_reply_markup, to_iso, try_json_loads, utcnow
-from .auth import require_role_callback
+from ..utils import answer_service, fmt_task_card, get_initiator_label, private_only_reply_markup, task_type_label, try_json_loads
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -46,7 +43,83 @@ async def _can_manage_task(cb: CallbackQuery, db: Database, config: Config, task
 
 async def _current_role(db: Database, user_id: int) -> str | None:
     u = await db.get_user_optional(user_id)
-    return u.role if u else None
+    return resolve_active_menu_role(user_id, u.role if u else None)
+
+
+async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
+    user = await db.get_user_optional(user_id)
+    return resolve_menu_scope(user_id, user.role if user else None)
+
+
+async def _maybe_mark_lead_tracking_response(db: Database, task: dict[str, Any] | None) -> None:
+    if not task or task.get("type") != TaskType.LEAD_TO_PROJECT:
+        return
+    payload = try_json_loads(task.get("payload_json"))
+    lead_id = payload.get("lead_id")
+    try:
+        lead_tracking_id = int(lead_id)
+    except (TypeError, ValueError):
+        return
+    await db.update_lead_tracking_response(lead_tracking_id)
+
+
+def _invoice_task_sender_id(payload: dict[str, Any]) -> int | None:
+    sender_id = payload.get("sender_id") or payload.get("manager_id")
+    if sender_id is None:
+        return None
+    try:
+        return int(sender_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _invoice_task_details(payload: dict[str, Any]) -> tuple[int | None, str, str, str]:
+    invoice_id_raw = payload.get("invoice_id")
+    try:
+        invoice_id = int(invoice_id_raw) if invoice_id_raw is not None else None
+    except (TypeError, ValueError):
+        invoice_id = None
+
+    invoice_number = str(payload.get("invoice_number") or "")
+    supplier = str(payload.get("supplier") or "")
+    amount = str(payload.get("amount") or "")
+    return invoice_id, invoice_number, supplier, amount
+
+
+def _task_take_text(task: dict[str, Any], project: dict[str, Any] | None) -> str:
+    """Build a short human-readable confirmation for 'take in work'."""
+    task_id = task.get("id")
+    task_type = task.get("type")
+    payload = try_json_loads(task.get("payload_json"))
+
+    lines = [f"⏳ Взял в работу: #{task_id} — {task_type_label(task_type)}"]
+
+    if project:
+        code = str(project.get("code") or "").strip()
+        title = str(project.get("title") or "").strip()
+        project_label = " • ".join(part for part in (code, title) if part)
+        if project_label:
+            lines.append(f"📁 Проект: {project_label}")
+        return "\n".join(lines)
+
+    invoice_number = str(payload.get("invoice_number") or "").strip()
+    if invoice_number:
+        lines.append(f"📄 Счёт: {invoice_number}")
+
+    address = str(payload.get("address") or payload.get("object_address") or "").strip()
+    if address:
+        lines.append(f"📍 Адрес: {address}")
+
+    supplier = str(payload.get("supplier") or "").strip()
+    if supplier:
+        lines.append(f"🏢 Поставщик: {supplier}")
+
+    comment = str(payload.get("comment") or payload.get("description") or "").strip()
+    if comment:
+        preview = comment if len(comment) <= 120 else f"{comment[:117]}..."
+        lines.append(f"📝 {preview}")
+
+    return "\n".join(lines)
 
 
 @router.callback_query(TaskCb.filter())
@@ -62,17 +135,26 @@ async def task_actions(
     task_id = int(callback_data.task_id)
     action = callback_data.action
 
-    task = await db.get_task(task_id)
+    try:
+        task = await db.get_task(task_id)
+    except KeyError:
+        await cb.answer("Задача не найдена или была удалена.", show_alert=True)
+        return
+    active_statuses = {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}
 
     if not await _can_manage_task(cb, db, config, task):
         await cb.answer("Эта задача назначена другому человеку", show_alert=True)
         return
 
     if action == "accept":
+        if task.get("status") != TaskStatus.OPEN or task.get("accepted_at"):
+            await cb.answer("Эта задача уже подтверждена или закрыта.", show_alert=True)
+            return
         await db.accept_task(task_id)
         await cb.answer("✅ Принято")
         # Update the inline keyboard to remove the "Принято" button
         task = await db.get_task(task_id)
+        await _maybe_mark_lead_tracking_response(db, task)
         if task:
             try:
                 await cb.message.edit_reply_markup(reply_markup=task_actions_kb(task))
@@ -112,14 +194,33 @@ async def task_actions(
 
     # TAKE
     if action == "take":
+        status = task.get("status")
+        if status == TaskStatus.IN_PROGRESS:
+            await cb.answer("Эта задача уже взята в работу.", show_alert=True)
+            return
+        if status not in active_statuses:
+            await cb.answer("Эта задача уже закрыта.", show_alert=True)
+            return
         task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+        if not task.get("accepted_at"):
+            await db.accept_task(task_id)
+            task = await db.get_task(task_id)
+        await _maybe_mark_lead_tracking_response(db, task)
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
-        await cb.message.answer("⏳ Взял в работу.", reply_markup=task_actions_kb(task))  # type: ignore
+        try:
+            await cb.message.edit_reply_markup(reply_markup=task_actions_kb(task))  # type: ignore[union-attr]
+        except Exception:
+            pass
+        await answer_service(cb.message, _task_take_text(task, project))  # type: ignore[arg-type]
         return
 
     # REJECT
     if action == "reject":
+        if task.get("status") not in active_statuses:
+            await cb.answer("Эта задача уже закрыта.", show_alert=True)
+            return
         task = await db.update_task_status(task_id, TaskStatus.REJECTED)
+        await _maybe_mark_lead_tracking_response(db, task)
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await state.clear()
         _uid = cb.from_user.id if cb.from_user else 0
@@ -148,6 +249,9 @@ async def task_actions(
 
     # PAYMENT CONFIRM actions (TD)
     if action in {"pay_ok", "pay_need"} and task.get("type") == TaskType.PAYMENT_CONFIRM:
+        if task.get("status") not in active_statuses:
+            await cb.answer("Эта задача уже закрыта.", show_alert=True)
+            return
         if not project:
             await cb.message.answer("Проект не найден для этой задачи.")  # type: ignore
             return
@@ -231,6 +335,9 @@ async def task_actions(
 
     # INVOICE_PAYMENT actions (GD)
     if action == "inv_pay" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        if task.get("status") not in active_statuses:
+            await cb.answer("Этот счёт уже обработан.", show_alert=True)
+            return
         # GD wants to pay — ask for payment order attachment
         await state.clear()
         await state.set_state(InvoicePaymentSG.attaching_pp)
@@ -248,16 +355,25 @@ async def task_actions(
         return
 
     if action == "inv_hold" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        if task.get("status") not in active_statuses:
+            await cb.answer("Этот счёт уже обработан.", show_alert=True)
+            return
         # Mark as in_progress (on hold)
         task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
         payload = try_json_loads(task.get("payload_json"))
-        sender_id = payload.get("sender_id")
+        invoice_id, invoice_number, supplier, amount = _invoice_task_details(payload)
+        if invoice_id is not None:
+            await db.update_invoice_status(invoice_id, InvoiceStatus.ON_HOLD)
+        sender_id = _invoice_task_sender_id(payload)
         if sender_id:
             initiator = await get_initiator_label(db, cb.from_user.id)
             await notifier.safe_send(
                 int(sender_id),
-                f"⏸ Счёт #{task_id} отложен\n"
-                f"👤 От: {initiator}",
+                "⏸ <b>Счёт отложен</b>\n"
+                f"👤 От: {initiator}\n\n"
+                f"🔢 № счёта: {invoice_number or '—'}\n"
+                f"🏢 Поставщик: {supplier or '—'}\n"
+                f"💰 Сумма: {amount or '—'}",
             )
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await state.clear()
@@ -273,15 +389,24 @@ async def task_actions(
         return
 
     if action == "inv_reject" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        if task.get("status") not in active_statuses:
+            await cb.answer("Этот счёт уже обработан.", show_alert=True)
+            return
         task = await db.update_task_status(task_id, TaskStatus.REJECTED)
         payload = try_json_loads(task.get("payload_json"))
-        sender_id = payload.get("sender_id")
+        invoice_id, invoice_number, supplier, amount = _invoice_task_details(payload)
+        if invoice_id is not None:
+            await db.update_invoice_status(invoice_id, InvoiceStatus.REJECTED)
+        sender_id = _invoice_task_sender_id(payload)
         if sender_id:
             initiator = await get_initiator_label(db, cb.from_user.id)
             await notifier.safe_send(
                 int(sender_id),
-                f"❌ Счёт #{task_id} отклонён\n"
-                f"👤 От: {initiator}",
+                "❌ <b>Счёт отклонён</b>\n"
+                f"👤 От: {initiator}\n\n"
+                f"🔢 № счёта: {invoice_number or '—'}\n"
+                f"🏢 Поставщик: {supplier or '—'}\n"
+                f"💰 Сумма: {amount or '—'}",
             )
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await state.clear()
@@ -298,6 +423,9 @@ async def task_actions(
 
     # DONE (generic)
     if action == "done":
+        if task.get("status") not in active_statuses:
+            await cb.answer("Эта задача уже закрыта.", show_alert=True)
+            return
         # For request/closing tasks we can optionally collect and send attachments to manager
         if task.get("type") in {TaskType.DOCS_REQUEST, TaskType.QUOTE_REQUEST, TaskType.CLOSING_DOCS} and project:
             target_user_id = project.get("manager_id")
@@ -322,6 +450,7 @@ async def task_actions(
 
         # simple close
         task = await db.update_task_status(task_id, TaskStatus.DONE)
+        await _maybe_mark_lead_tracking_response(db, task)
 
         # project status transitions
         if project and task.get("type") == TaskType.ISSUE:
@@ -378,7 +507,7 @@ async def taskcomplete_collect(message: Message, state: FSMContext) -> None:
         await message.answer("Пришлите файл/фото или нажмите кнопку «✅ Отправить и закрыть».")
         return
     await state.update_data(attachments=attachments)
-    await message.answer(f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>.")
 
 @router.callback_query(F.data.in_({"taskcomplete:send", "taskcomplete:skip"}))
 async def taskcomplete_finalize(
@@ -397,7 +526,12 @@ async def taskcomplete_finalize(
         await state.clear()
         return
 
-    task = await db.get_task(int(task_id))
+    try:
+        task = await db.get_task(int(task_id))
+    except KeyError:
+        await cb.message.answer("Задача не найдена.")  # type: ignore
+        await state.clear()
+        return
     project = await db.get_project(int(task["project_id"])) if task.get("project_id") else None
     target_user_id = data.get("target_user_id")
 
@@ -433,6 +567,7 @@ async def taskcomplete_finalize(
 
     # Close task and update project status
     task = await db.update_task_status(int(task_id), TaskStatus.DONE)
+    await _maybe_mark_lead_tracking_response(db, task)
     if project and task.get("type") in {TaskType.DOCS_REQUEST, TaskType.QUOTE_REQUEST}:
         project = await db.update_project_status(int(project["id"]), ProjectStatus.INVOICE_SENT)
         await integrations.sync_project(project)
@@ -488,7 +623,7 @@ async def invoice_pp_collect(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(pp_files=pp_files)
-    await message.answer(f"📎 Принял. Файлов: <b>{len(pp_files)}</b>.")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(pp_files)}</b>.")
 
 
 @router.callback_query(F.data.startswith("inv_pp_done:"))
@@ -513,10 +648,27 @@ async def invoice_pp_finalize(
     if not task_id:
         await state.clear()
         return
+    if not pp_files:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "Сначала прикрепите платёжное поручение, потом отправляйте результат."
+        )
+        return
 
     task = await db.get_task(int(task_id))
+    if task.get("status") not in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        await state.clear()
+        await cb.message.answer("Этот счёт уже обработан.")  # type: ignore[union-attr]
+        return
     payload = try_json_loads(task.get("payload_json"))
-    sender_id = payload.get("sender_id")
+    sender_id = _invoice_task_sender_id(payload)
+    invoice_id, inv_num, supplier, amount = _invoice_task_details(payload)
+
+    if invoice_id is not None:
+        invoice_row = await db.get_invoice(invoice_id)
+        if not invoice_row:
+            await cb.message.answer("Не удалось найти счёт для обновления статуса.")  # type: ignore[union-attr]
+            return
+        await db.update_invoice_status(invoice_id, InvoiceStatus.PAID)
 
     # Mark task as done
     task = await db.update_task_status(int(task_id), TaskStatus.DONE)
@@ -540,9 +692,6 @@ async def invoice_pp_finalize(
 
     # Notify RP
     if sender_id:
-        inv_num = payload.get("invoice_number", "")
-        supplier = payload.get("supplier", "")
-        amount = payload.get("amount", "")
         initiator = await get_initiator_label(db, u.id)
         msg = (
             "✅ <b>Счёт оплачен</b>\n"
@@ -578,11 +727,16 @@ async def invoice_pp_cancel(cb: CallbackQuery, state: FSMContext, config: Config
     await state.clear()
     u = cb.from_user
     is_admin = bool(u and u.id in (config.admin_ids or set()))
-    role = (await _current_role(db, u.id)) if u else None
+    role, isolated_role = (await _current_menu(db, u.id)) if u else (None, False)
     await cb.message.answer(  # type: ignore[union-attr]
         "Отменено.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=is_admin, unread=await db.count_unread_tasks(u.id) if u else 0),
+            main_menu(
+                role,
+                is_admin=is_admin,
+                unread=await db.count_unread_tasks(u.id) if u else 0,
+                isolated_role=isolated_role,
+            ),
         ),
     )

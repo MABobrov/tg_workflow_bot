@@ -13,7 +13,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from ..callbacks import ManagerProjectCb, ProjectCb
 from ..config import Config
 from ..db import Database
-from ..enums import ProjectStatus, Role, TaskStatus, TaskType
+from ..enums import MANAGER_ROLES, ProjectStatus, Role, TaskStatus, TaskType
 from ..keyboards import manager_project_actions_kb, projects_kb, task_actions_kb
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
@@ -46,6 +46,12 @@ router = Router()
 router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 MANAGER_FLOW_START_BUTTON = "Проверить КП/Запросить документы"
+MANAGER_ACCESS_ROLES = (
+    Role.MANAGER,
+    Role.MANAGER_KV,
+    Role.MANAGER_KIA,
+    Role.MANAGER_NPN,
+)
 
 
 def _manager_can_access_project(project: dict[str, Any], user_id: int, config: Config) -> bool:
@@ -55,6 +61,10 @@ def _manager_can_access_project(project: dict[str, Any], user_id: int, config: C
     if manager_id == 0:
         return True
     return manager_id == user_id
+
+
+def _has_manager_access(role_value: str | None) -> bool:
+    return bool(set(parse_roles(role_value)) & (MANAGER_ROLES | {Role.MANAGER}))
 
 
 async def _project_thread_text(db: Database, project: dict[str, Any], config: Config, limit: int = 8) -> str:
@@ -161,7 +171,7 @@ async def _start_project_end_flow_for_project(target: Message, state: FSMContext
 
 @router.message(F.text == MANAGER_FLOW_START_BUTTON)
 async def start_manager_kp_docs_flow(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.MANAGER]):
+    if not await require_role_message(message, db, roles=MANAGER_ACCESS_ROLES):
         return
     # Unified flow: no extra branching for manager.
     await _start_docs_request_flow(message, state)
@@ -173,7 +183,7 @@ async def pick_manager_kp_docs_flow(
     state: FSMContext,
     db: Database,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
     if not cb.message:
@@ -190,7 +200,7 @@ async def open_manager_project_thread(
     db: Database,
     config: Config,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
     if not cb.from_user:
@@ -210,7 +220,7 @@ async def manager_project_action(
     db: Database,
     config: Config,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
     if not cb.from_user or not cb.message:
@@ -248,7 +258,7 @@ async def manager_project_action(
 @router.message(Command("invoice"))
 @router.message(F.text.regexp(r"^/(?:счет|счёт)(?:/|\b)"))
 async def start_docs_request(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.MANAGER]):
+    if not await require_role_message(message, db, roles=MANAGER_ACCESS_ROLES):
         return
     await _start_docs_request_flow(message, state)
 
@@ -385,7 +395,7 @@ async def docs_finalize(
     notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
 
@@ -501,7 +511,7 @@ async def docs_finalize(
 @router.message(Command("kp"))
 @router.message(F.text.regexp(r"^/(?:кп|kp)(?:/|\b)"))
 async def start_quote_request(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.MANAGER]):
+    if not await require_role_message(message, db, roles=MANAGER_ACCESS_ROLES):
         return
     await _start_quote_request_flow(message, state)
 
@@ -620,7 +630,7 @@ async def quote_finalize(
     notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
     u = cb.from_user
@@ -721,7 +731,7 @@ async def quote_finalize(
 
 @router.message(F.text == "💰 Оплата поступила")
 async def start_payment_report(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.MANAGER]):
+    if not await require_role_message(message, db, roles=MANAGER_ACCESS_ROLES):
         return
     await state.clear()
     projects = await db.list_projects_for_manager(message.from_user.id, limit=20)  # type: ignore
@@ -744,7 +754,7 @@ async def payment_pick_project(
     db: Database,
     config: Config,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
     if not cb.from_user:
@@ -886,7 +896,7 @@ async def payment_finalize(
     notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
 
@@ -982,7 +992,7 @@ async def payment_finalize(
 
 @router.message(F.text.in_({"📄 Док. / ЭДО", "📄 Закрывающие / ЭДО"}))
 async def start_closing_docs(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.MANAGER]):
+    if not await require_role_message(message, db, roles=MANAGER_ACCESS_ROLES):
         return
     await state.clear()
     projects = await db.list_projects_for_manager(message.from_user.id, limit=20)  # type: ignore
@@ -1005,7 +1015,7 @@ async def closing_pick_project(
     db: Database,
     config: Config,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
     if not cb.from_user:
@@ -1113,7 +1123,7 @@ async def closing_finalize(
     notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
     u = cb.from_user
@@ -1200,7 +1210,7 @@ async def closing_finalize(
 
 @router.message(F.text == "🏁 Счёт End")
 async def start_project_end(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.MANAGER]):
+    if not await require_role_message(message, db, roles=MANAGER_ACCESS_ROLES):
         return
     await state.clear()
     projects = await db.list_projects_for_manager(message.from_user.id, limit=20)  # type: ignore
@@ -1223,7 +1233,7 @@ async def project_end_pick_project(
     db: Database,
     config: Config,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
     if not cb.from_user:
@@ -1273,7 +1283,7 @@ async def project_end_finalize(
     notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
-    if not await require_role_message(message, db, roles=[Role.MANAGER]):
+    if not await require_role_message(message, db, roles=MANAGER_ACCESS_ROLES):
         return
     u = message.from_user
     if not u:
@@ -1346,7 +1356,7 @@ async def project_end_finalize(
 
 @router.message(F.text == "📌 Мои проекты")
 async def my_projects(message: Message, db: Database, config: Config) -> None:
-    if not await require_role_message(message, db, roles=[Role.MANAGER]):
+    if not await require_role_message(message, db, roles=MANAGER_ACCESS_ROLES):
         return
     projects = await db.list_projects_for_manager(message.from_user.id, limit=20)  # type: ignore
     if not projects:
@@ -1365,10 +1375,10 @@ async def start_issue(message: Message, state: FSMContext, db: Database) -> None
     if not message.from_user:
         return
     user = await db.get_user_optional(message.from_user.id)
-    if Role.MANAGER not in set(parse_roles(user.role if user else None)):
+    if not _has_manager_access(user.role if user else None):
         # Leave chance for other handlers with the same text (e.g. installer legacy button).
         return
-    if not await require_role_message(message, db, roles=[Role.MANAGER]):
+    if not await require_role_message(message, db, roles=MANAGER_ACCESS_ROLES):
         return
     await state.clear()
     projects = await db.list_projects_for_manager(message.from_user.id, limit=20)  # type: ignore
@@ -1391,7 +1401,7 @@ async def issue_pick_project(
     db: Database,
     config: Config,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
     if not cb.from_user:
@@ -1466,7 +1476,7 @@ async def issue_finalize(
     notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.MANAGER]):
+    if not await require_role_callback(cb, db, roles=MANAGER_ACCESS_ROLES):
         return
     await cb.answer()
     u = cb.from_user

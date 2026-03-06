@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import F, Router
+from aiogram import Router
 from aiogram import html
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -15,13 +15,20 @@ from ..db import Database
 from ..enums import Role
 from ..enums import MANAGER_ROLES
 from ..keyboards import (
-    BACK_TO_HOME, OPEN_ACTIONS, OPEN_HELP, actions_menu, main_menu,
-    gd_more_menu, GD_BTN_MORE, GD_BTN_BACK_HOME,
+    BACK_TO_HOME, BACK_TO_ROLE_SELECTOR, OPEN_ACTIONS, OPEN_HELP, actions_menu, main_menu,
+    gd_more_menu, GD_BTN_BACK_HOME, GD_BTN_CRED, GD_BTN_MORE,
     manager_more_menu, MGR_BTN_MORE, MGR_BTN_BACK_HOME, MGR_BTN_SYNC,
-    rp_more_menu, RP_BTN_MORE, RP_BTN_BACK_HOME,
+    role_selector_choices, ROLE_SELECTOR_PREFIX,
+    rp_more_menu, rp_team_menu, RP_BTN_MORE, RP_BTN_BACK_HOME, RP_BTN_TEAM,
     tasks_kb,
 )
 from ..services.integration_hub import IntegrationHub
+from ..services.menu_scope import (
+    clear_active_menu_role,
+    get_active_menu_role,
+    resolve_active_menu_role,
+    set_active_menu_role,
+)
 from ..utils import parse_roles, private_only_reply_markup, role_label
 
 log = logging.getLogger(__name__)
@@ -41,6 +48,36 @@ async def _guard_blocked_message(message: Message, db: Database) -> bool:
         await message.answer("⛔️ Ваш доступ к боту заблокирован. Обратитесь к администратору.")
         return False
     return True
+
+
+async def _menu_context(db: Database, user_id: int | None, role: str | None) -> dict[str, object]:
+    if not user_id:
+        return {
+            "unread": 0,
+            "unread_channels": {},
+            "gd_inbox_unread": None,
+            "gd_invoice_unread": None,
+        }
+
+    roles = set(parse_roles(role))
+    return {
+        "unread": await db.count_unread_tasks(user_id),
+        "unread_channels": await db.count_unread_by_channel(user_id),
+        "gd_inbox_unread": await db.count_gd_inbox_tasks(user_id) if Role.GD in roles else None,
+        "gd_invoice_unread": await db.count_gd_invoice_tasks(user_id) if Role.GD in roles else None,
+    }
+
+
+def _menu_scope(user_id: int | None, role_value: str | None) -> tuple[str | None, bool]:
+    active_role = resolve_active_menu_role(user_id, role_value)
+    isolated_role = bool(
+        user_id
+        and role_value
+        and active_role
+        and active_role != role_value
+        and len(parse_roles(role_value)) > 1
+    )
+    return active_role or role_value, isolated_role
 
 
 def _new_user_admin_kb(user_id: int) -> InlineKeyboardBuilder:
@@ -125,7 +162,7 @@ def _role_guide(role: str | None) -> str:
             "• «📐 Замеры» — запрос замерщику.\n"
             "• «📄 Бухгалтерия (ЭДО)» — запрос ЭДО в бухгалтерию.\n"
             "• «📩 Не срочно ГД» — задача ГД (пониженный приоритет).\n"
-            "• Подменю «Еще»: 💬 Менеджер (кред), 📑 Мои Счета, 🆘 Проблема/Вопрос, 🚨 Срочно ГД, 🔍 Поиск Счета.\n"
+            "• Подменю «Ещё»: 💬 Менеджер (кред), 📑 Мои Счета, 🆘 Проблема/Вопрос, 🚨 Срочно ГД, 🔍 Поиск счёта.\n"
         )
     if Role.RP in roles:
         sections.append(
@@ -135,17 +172,16 @@ def _role_guide(role: str | None) -> str:
             "• «🏁 Счет End» — входящие условия закрытия.\n"
             "• «💳 Счета на оплату» — счёт на оплату ГД.\n"
             "• «🆘 Проблема/Вопрос» — входящие от ГД, менеджеров, монтажников.\n"
-            "• «👤 Менеджер 1 (КВ)» / «👤 Менеджер 2 (КИА)» — чат-прокси с менеджерами.\n"
-            "• «🔧 Монтажная гр.» — чат с монтажной группой.\n"
+            "• «👥 Команда» — подменю чатов с менеджерами и монтажом.\n"
             "• «📄 Бухгалтерия (ЭДО)» — запрос ЭДО.\n"
-            "• Подменю «Еще»: 🎯 Лид в проект, 🔄 Смена роли, 🚨 Срочно ГД, 🔍 Поиск Счета.\n"
+            "• Подменю «Ещё»: 🎯 Лид в проект, 🚨 Срочно ГД, 🔍 Поиск счёта.\n"
         )
     if Role.ACCOUNTING in roles:
         sections.append(
             "\n<b>Ваши сценарии (Бухгалтерия)</b>\n"
             "• «📥 Входящие задачи» — запросы ЭДО от менеджеров и РП.\n"
             "• «📩 Не срочно ГД» — задача ГД (пониженный приоритет).\n"
-            "• «🔍 Найти Счет №» — поиск счетов по критериям.\n"
+            "• «🔍 Поиск счёта» — поиск счетов по критериям.\n"
             "• «🏁 Закрытые Счета» — список закрытых счетов.\n"
             "• «🚨 Срочно ГД» — срочный вопрос ГД.\n"
         )
@@ -172,13 +208,13 @@ def _role_guide(role: str | None) -> str:
             "\n<b>Ваши сценарии (ГД)</b>\n"
             "• «Счета на Оплату» — входящие счета от РП.\n"
             "• «Срочно для ГД» — срочные запросы + подтверждения оплат.\n"
-            "• «Поиск Счета» — поиск счетов по критериям.\n"
+            "• «🔍 Поиск счёта» — поиск счетов по критериям.\n"
             "• «✅ Подтверждение оплат» — задачи на подтверждение оплаты клиентов.\n"
             "• По оплате: «✅ Оплата подтверждена» или «⚠️ Нужна доплата».\n"
             "• «💸 Оплата поставщику» — зафиксировать оплату поставщику.\n"
             "• «Чат с РП», «Замеры», «Бухгалтерия», «Монтажная гр.», «Отд.Продаж» — чаты с сотрудниками.\n"
             "• «Синхронизация данных» — синхронизация с Google Sheets.\n"
-            "• «Еще» — КВ Кред, КИА Кред, НПН Кред.\n"
+            "• «💬 Кред» — КВ, КИА, НПН.\n"
         )
     if Role.DRIVER in roles:
         sections.append(
@@ -212,6 +248,12 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
     existed = await db.get_user_optional(u.id)
     user = await db.upsert_user(u.id, u.username, u.full_name)
     role = user.role
+    if len(parse_roles(role)) > 1:
+        clear_active_menu_role(u.id)
+        active_role = None
+    else:
+        set_active_menu_role(u.id, role)
+        active_role = role
 
     if not user.is_active:
         await message.answer("⛔️ Ваш доступ к боту заблокирован. Обратитесь к администратору.")
@@ -234,11 +276,22 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
     is_admin = u.id in (config.admin_ids or set())
     unread = await db.count_unread_tasks(u.id)
     uc = await db.count_unread_by_channel(u.id)
-    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and Role.GD in role else None
-    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and Role.GD in role else None
+    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and Role.GD in parse_roles(role) else None
+    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and Role.GD in parse_roles(role) else None
     await message.answer(
         text,
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv)),
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                active_role or role,
+                is_admin=is_admin,
+                unread=unread,
+                unread_channels=uc,
+                gd_inbox_unread=gd_ur,
+                gd_invoice_unread=gd_inv,
+                isolated_role=bool(active_role and active_role != role),
+            ),
+        ),
     )
     if existed is None and not role and not is_admin:
         await _notify_admins_new_user_without_role(message, config)
@@ -265,14 +318,25 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
         return
     user = await db.get_user_optional(u.id)
     role = user.role if user else None
+    if len(parse_roles(role)) > 1:
+        clear_active_menu_role(u.id)
+    else:
+        set_active_menu_role(u.id, role)
     is_admin = u.id in (config.admin_ids or set())
     unread = await db.count_unread_tasks(u.id)
     uc = await db.count_unread_by_channel(u.id)
-    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and Role.GD in role else None
-    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and Role.GD in role else None
+    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and Role.GD in parse_roles(role) else None
+    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and Role.GD in parse_roles(role) else None
+    if len(parse_roles(role)) > 1:
+        text = "🎭 <b>Выберите роль</b>\n\nСначала выберите, в каком контексте открыть меню."
+    else:
+        text = "✅ Меню обновлено."
     await message.answer(
-        "✅ Меню обновлено.",
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv)),
+        text,
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv),
+        ),
     )
 
 
@@ -286,16 +350,28 @@ async def cmd_help(message: Message, db: Database, config: Config) -> None:
         user = await db.get_user_optional(message.from_user.id)
         role = user.role if user else None
         is_admin = message.from_user.id in (config.admin_ids or set())
+    menu_role, isolated_role = _menu_scope(message.from_user.id if message.from_user else None, role)
     text = _role_guide(role)
     if is_admin:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
     unread = await db.count_unread_tasks(message.from_user.id) if message.from_user else 0
     uc = await db.count_unread_by_channel(message.from_user.id) if message.from_user else {}
-    gd_ur = await db.count_gd_inbox_tasks(message.from_user.id) if message.from_user and role and Role.GD in role else None
-    gd_inv = await db.count_gd_invoice_tasks(message.from_user.id) if message.from_user and role and Role.GD in role else None
+    gd_ur = await db.count_gd_inbox_tasks(message.from_user.id) if message.from_user and role and Role.GD in parse_roles(role) else None
+    gd_inv = await db.count_gd_invoice_tasks(message.from_user.id) if message.from_user and role and Role.GD in parse_roles(role) else None
     await message.answer(
         text,
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv)),
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                menu_role,
+                is_admin=is_admin,
+                unread=unread,
+                unread_channels=uc,
+                gd_inbox_unread=gd_ur,
+                gd_invoice_unread=gd_inv,
+                isolated_role=isolated_role,
+            ),
+        ),
     )
 
 
@@ -308,6 +384,7 @@ async def menu_actions(message: Message, db: Database, config: Config) -> None:
         return
     user = await db.get_user_optional(u.id)
     role = user.role if user else None
+    menu_role, isolated_role = _menu_scope(u.id, role)
     if not role:
         unread = await db.count_unread_tasks(u.id)
         uc = await db.count_unread_by_channel(u.id)
@@ -319,70 +396,187 @@ async def menu_actions(message: Message, db: Database, config: Config) -> None:
             ),
         )
         return
+    if len(parse_roles(role)) > 1 and not isolated_role:
+        await message.answer(
+            "🎭 <b>Выберите роль</b>\n\nСначала выберите роль, для которой хотите открыть действия:",
+            reply_markup=private_only_reply_markup(
+                message,
+                main_menu(role, is_admin=u.id in (config.admin_ids or set())),
+            ),
+        )
+        return
     is_admin = u.id in (config.admin_ids or set())
     await message.answer(
         "Выберите действие:",
-        reply_markup=private_only_reply_markup(message, actions_menu(role, is_admin=is_admin)),
+        reply_markup=private_only_reply_markup(
+            message,
+            actions_menu(
+                menu_role,
+                is_admin=is_admin,
+                show_role_selector_back=isolated_role,
+            ),
+        ),
+    )
+
+
+@router.message(lambda m: (m.text or "").strip().startswith(ROLE_SELECTOR_PREFIX))
+async def role_selector_pick(message: Message, db: Database, config: Config) -> None:
+    if not await _guard_blocked_message(message, db):
+        return
+    u = message.from_user
+    if not u:
+        return
+    user = await db.get_user_optional(u.id)
+    role_raw = user.role if user else None
+    selected_role = role_selector_choices(role_raw).get((message.text or "").strip())
+    if not selected_role:
+        return
+    set_active_menu_role(u.id, selected_role)
+
+    menu_context = await _menu_context(db, u.id, selected_role)
+    is_admin = u.id in (config.admin_ids or set())
+    await message.answer(
+        "🎭 <b>Выбрана роль</b>\n\nДоступны действия только этой роли.",
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                selected_role,
+                is_admin=is_admin,
+                isolated_role=True,
+                **menu_context,
+            ),
+        ),
     )
 
 
 @router.message(lambda m: (m.text or "").strip() == BACK_TO_HOME)
 async def back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    await cmd_menu(message, state, db, config)
-
-
-@router.message(lambda m: (m.text or "").strip() == GD_BTN_MORE)
-async def gd_menu_more(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    """GD: open 'Еще' submenu."""
     await state.clear()
     if not await _guard_blocked_message(message, db):
         return
+    u = message.from_user
+    if not u:
+        return
+    user = await db.get_user_optional(u.id)
+    role = user.role if user else None
+    menu_role, isolated_role = _menu_scope(u.id, role)
+    if isolated_role:
+        menu_context = await _menu_context(db, u.id, menu_role)
+        await message.answer(
+            "Главное меню выбранной роли.",
+            reply_markup=private_only_reply_markup(
+                message,
+                main_menu(
+                    menu_role,
+                    is_admin=u.id in (config.admin_ids or set()),
+                    isolated_role=True,
+                    **menu_context,
+                ),
+            ),
+        )
+        return
+    await cmd_menu(message, state, db, config)
+
+
+@router.message(lambda m: (m.text or "").strip() == BACK_TO_ROLE_SELECTOR)
+async def back_to_role_selector(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    await state.clear()
+    if not await _guard_blocked_message(message, db):
+        return
+    u = message.from_user
+    if not u:
+        return
+    user = await db.get_user_optional(u.id)
+    role = user.role if user else None
+    if len(parse_roles(role)) <= 1:
+        await cmd_menu(message, state, db, config)
+        return
+    clear_active_menu_role(u.id)
+    menu_context = await _menu_context(db, u.id, role)
     await message.answer(
-        "Выберите действие:",
-        reply_markup=private_only_reply_markup(message, gd_more_menu()),
+        "🎭 <b>Выберите роль</b>\n\nВыберите, в каком контексте продолжить работу.",
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                role,
+                is_admin=u.id in (config.admin_ids or set()),
+                **menu_context,
+            ),
+        ),
     )
 
 
-@router.message(lambda m: (m.text or "").strip() == GD_BTN_BACK_HOME)
+@router.message(lambda m: (m.text or "").strip() in {GD_BTN_CRED, GD_BTN_MORE, MGR_BTN_MORE, RP_BTN_MORE, "Еще"})
+async def menu_more_universal(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    """Unified 'More/Кред' handler — dispatches to correct submenu based on active role.
+
+    GD_BTN_MORE == MGR_BTN_MORE == RP_BTN_MORE == "📂 Ещё", so a single handler
+    is needed to avoid aiogram selecting whichever was registered first.
+    GD users arrive here via GD_BTN_CRED ("💬 Кред") which is unique to them.
+    """
+    await state.clear()
+    if not await _guard_blocked_message(message, db):
+        return
+    u = message.from_user
+    if not u:
+        return
+    user = await db.get_user_optional(u.id)
+    _, isolated_role = _menu_scope(u.id, user.role if user else None)
+
+    text = (message.text or "").strip()
+    active_role = get_active_menu_role(u.id)
+    if active_role is None and user and user.role:
+        roles = parse_roles(user.role)
+        active_role = roles[0] if roles else None
+
+    if text == GD_BTN_CRED or active_role == Role.GD:
+        await message.answer(
+            "Выберите действие:",
+            reply_markup=private_only_reply_markup(message, gd_more_menu(show_role_selector_back=isolated_role)),
+        )
+    elif active_role == Role.RP:
+        await message.answer(
+            "Выберите действие:",
+            reply_markup=private_only_reply_markup(message, rp_more_menu(show_role_selector_back=isolated_role)),
+        )
+    else:
+        # Manager roles (KV / KIA / NPN) and legacy Manager
+        await message.answer(
+            "Выберите действие:",
+            reply_markup=private_only_reply_markup(message, manager_more_menu(show_role_selector_back=isolated_role)),
+        )
+
+
+@router.message(lambda m: (m.text or "").strip() in {GD_BTN_BACK_HOME, "Назад в Гл.меню"})
 async def gd_back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     """GD: return from 'Еще' submenu to main menu."""
     await cmd_menu(message, state, db, config)
 
 
-@router.message(lambda m: (m.text or "").strip() == MGR_BTN_MORE)
-async def mgr_menu_more(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    """Manager: open 'Еще' submenu."""
-    await state.clear()
-    if not await _guard_blocked_message(message, db):
-        return
-    await message.answer(
-        "Выберите действие:",
-        reply_markup=private_only_reply_markup(message, manager_more_menu()),
-    )
-
-
-@router.message(lambda m: (m.text or "").strip() == MGR_BTN_BACK_HOME)
+@router.message(lambda m: (m.text or "").strip() in {MGR_BTN_BACK_HOME, "Назад в Гл.меню"})
 async def mgr_back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     """Manager: return from 'Еще' submenu."""
     await cmd_menu(message, state, db, config)
 
 
-@router.message(lambda m: (m.text or "").strip() == RP_BTN_MORE)
-async def rp_menu_more(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    """RP: open 'Еще' submenu."""
-    await state.clear()
-    if not await _guard_blocked_message(message, db):
-        return
-    await message.answer(
-        "Выберите действие:",
-        reply_markup=private_only_reply_markup(message, rp_more_menu()),
-    )
-
-
-@router.message(lambda m: (m.text or "").strip() == RP_BTN_BACK_HOME)
+@router.message(lambda m: (m.text or "").strip() in {RP_BTN_BACK_HOME, "Назад в Гл.меню"})
 async def rp_back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     """RP: return from 'Еще' submenu."""
     await cmd_menu(message, state, db, config)
+
+
+@router.message(lambda m: (m.text or "").strip() == RP_BTN_TEAM)
+async def rp_menu_team(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    """RP: open 'Команда' submenu."""
+    await state.clear()
+    if not await _guard_blocked_message(message, db):
+        return
+    user = await db.get_user_optional(message.from_user.id) if message.from_user else None
+    _, isolated_role = _menu_scope(message.from_user.id if message.from_user else None, user.role if user else None)
+    await message.answer(
+        "Выберите сотрудника:",
+        reply_markup=private_only_reply_markup(message, rp_team_menu(show_role_selector_back=isolated_role)),
+    )
 
 
 @router.message(lambda m: (m.text or "").strip() == OPEN_HELP)
@@ -402,16 +596,28 @@ async def menu_help(message: Message, db: Database, config: Config) -> None:
         user = await db.get_user_optional(message.from_user.id)
         role = user.role if user else None
         is_admin = message.from_user.id in (config.admin_ids or set())
+    menu_role, isolated_role = _menu_scope(message.from_user.id if message.from_user else None, role)
     text = _role_guide(role)
     if is_admin:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
     unread = await db.count_unread_tasks(message.from_user.id) if message.from_user else 0
     uc = await db.count_unread_by_channel(message.from_user.id) if message.from_user else {}
-    gd_ur = await db.count_gd_inbox_tasks(message.from_user.id) if message.from_user and role and Role.GD in role else None
-    gd_inv = await db.count_gd_invoice_tasks(message.from_user.id) if message.from_user and role and Role.GD in role else None
+    gd_ur = await db.count_gd_inbox_tasks(message.from_user.id) if message.from_user and role and Role.GD in parse_roles(role) else None
+    gd_inv = await db.count_gd_invoice_tasks(message.from_user.id) if message.from_user and role and Role.GD in parse_roles(role) else None
     await message.answer(
         text,
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv)),
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                menu_role,
+                is_admin=is_admin,
+                unread=unread,
+                unread_channels=uc,
+                gd_inbox_unread=gd_ur,
+                gd_invoice_unread=gd_inv,
+                isolated_role=isolated_role,
+            ),
+        ),
     )
 
 
@@ -441,7 +647,10 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
 # СИНХРОНИЗАЦИЯ ДАННЫХ (для менеджеров, РП, бухгалтерии)
 # =====================================================================
 
-@router.message(lambda m: (m.text or "").strip() == MGR_BTN_SYNC)
+@router.message(
+    lambda m: (m.text or "").strip() == MGR_BTN_SYNC
+    and get_active_menu_role(m.from_user.id if m.from_user else None) != Role.GD
+)
 async def sync_data_non_gd(
     message: Message, db: Database, config: Config, integrations: IntegrationHub,
 ) -> None:
@@ -453,16 +662,24 @@ async def sync_data_non_gd(
         return
 
     role = user.role
+    active_role = resolve_active_menu_role(message.from_user.id, role)
+    if active_role == Role.GD:
+        return
     is_admin = message.from_user.id in (config.admin_ids or set())
+    menu_context = await _menu_context(db, message.from_user.id, active_role or role)
 
     if not integrations.sheets:
-        unread = await db.count_unread_tasks(message.from_user.id)
-        uc = await db.count_unread_by_channel(message.from_user.id)
-        gd_ur = await db.count_gd_inbox_tasks(message.from_user.id) if role and Role.GD in role else None
-        gd_inv = await db.count_gd_invoice_tasks(message.from_user.id) if role and Role.GD in role else None
         await message.answer(
             "⚠️ Интеграция Google Sheets не настроена.",
-            reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv)),
+            reply_markup=private_only_reply_markup(
+                message,
+                main_menu(
+                    active_role or role,
+                    is_admin=is_admin,
+                    isolated_role=bool(active_role and active_role != role),
+                    **menu_context,
+                ),
+            ),
         )
         return
 
@@ -504,13 +721,20 @@ async def sync_data_non_gd(
         await integrations.sheets.upsert_task(t, project_code=project_code)
         tasks_ok += 1
 
-    unread = await db.count_unread_tasks(message.from_user.id)
-    uc = await db.count_unread_by_channel(message.from_user.id)
+    menu_context = await _menu_context(db, message.from_user.id, active_role or role)
     await message.answer(
         "✅ Синхронизация завершена.\n"
         f"Проектов: <b>{projects_ok}</b>\n"
         f"Задач: <b>{tasks_ok}</b>",
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv)),
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                active_role or role,
+                is_admin=is_admin,
+                isolated_role=bool(active_role and active_role != role),
+                **menu_context,
+            ),
+        ),
     )
 
 
@@ -525,11 +749,20 @@ async def cmd_cancel(message: Message, state: FSMContext, db: Database, config: 
     if u:
         user = await db.get_user_optional(u.id)
         role = user.role if user else None
+    active_role = resolve_active_menu_role(u.id if u else None, role)
     is_admin = bool(u and u.id in (config.admin_ids or set()))
-    unread = await db.count_unread_tasks(u.id) if u else 0
+    menu_context = await _menu_context(db, u.id if u else None, active_role or role)
     await message.answer(
         "Операция отменена. Выберите следующее действие в меню.",
-        reply_markup=private_only_reply_markup(message, main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv)),
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                active_role or role,
+                is_admin=is_admin,
+                isolated_role=bool(active_role and active_role != role),
+                **menu_context,
+            ),
+        ),
     )
 
 

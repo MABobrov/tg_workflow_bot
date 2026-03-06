@@ -19,7 +19,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
 from ..db import Database
-from ..enums import InvoiceStatus, Role, TaskStatus
+from ..enums import InvoiceStatus, Role
 from ..keyboards import (
     ZAM_BTN_MY_OBJECTS,
     ZAM_BTN_ZAMERY,
@@ -27,8 +27,9 @@ from ..keyboards import (
     tasks_kb,
 )
 from ..services.assignment import resolve_default_assignee
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import ZameryWorkSG, ZameryZpSG
+from ..states import ZameryZpSG
 from ..utils import get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
@@ -40,7 +41,12 @@ router.callback_query.filter(F.message.chat.type == "private")
 
 async def _current_role(db: Database, user_id: int) -> str | None:
     user = await db.get_user_optional(user_id)
-    return user.role if user else None
+    return resolve_active_menu_role(user_id, user.role if user else None)
+
+
+async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
+    user = await db.get_user_optional(user_id)
+    return resolve_menu_scope(user_id, user.role if user else None)
 
 
 # =====================================================================
@@ -275,14 +281,19 @@ async def zamery_zp_confirm_count(
         await notifier.safe_send(int(gd_id), summary, reply_markup=b.as_markup())
         await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
-    role = await _current_role(db, message.from_user.id)
+    role, isolated_role = await _current_menu(db, message.from_user.id)
     await state.clear()
     await message.answer(
         f"✅ Расчёт ЗП отправлен ГД.\n"
         f"Замеров: {count}, итого: {total:,.0f}₽",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
+            main_menu(
+                role,
+                is_admin=message.from_user.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(message.from_user.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )
 
@@ -347,14 +358,19 @@ async def zamery_zp_custom(
             await notifier.safe_send(int(gd_id), summary, reply_markup=b.as_markup())
             await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
-        role = await _current_role(db, message.from_user.id)
+        role, isolated_role = await _current_menu(db, message.from_user.id)
         await state.clear()
         await message.answer(
             f"✅ Расчёт ЗП отправлен ГД.\n"
             f"Замеров: {len(entries)}, итого: {total:,.0f}₽",
             reply_markup=private_only_reply_markup(
                 message,
-                main_menu(role, is_admin=message.from_user.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(message.from_user.id)),
+                main_menu(
+                    role,
+                    is_admin=message.from_user.id in (config.admin_ids or set()),
+                    unread=await db.count_unread_tasks(message.from_user.id),
+                    isolated_role=isolated_role,
+                ),
             ),
         )
         return

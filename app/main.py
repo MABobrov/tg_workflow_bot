@@ -77,7 +77,11 @@ async def main() -> None:
         token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    notifier = Notifier(bot, work_chat_id=work_chat_id, workchat_events_enabled=False)
+    notifier = Notifier(
+        bot,
+        work_chat_id=work_chat_id,
+        workchat_events_enabled=bool(work_chat_id),
+    )
 
     # Integrations
     sheets_service = None
@@ -182,8 +186,7 @@ async def main() -> None:
         )
 
     # 15-min acceptance reminders + 2h post-accept reminder
-    acceptance_task: asyncio.Task | None = None
-    acceptance_task = asyncio.create_task(
+    acceptance_task: asyncio.Task | None = asyncio.create_task(
         acceptance_reminders_loop(db=db, notifier=notifier, interval_seconds=60)
     )
 
@@ -224,6 +227,14 @@ async def main() -> None:
                 pass
             except Exception:
                 logging.exception("Reminder task terminated with error")
+        if acceptance_task:
+            acceptance_task.cancel()
+            try:
+                await acceptance_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logging.exception("Acceptance reminder task terminated with error")
         await integrations.stop()
         await db.close()
         await bot.session.close()

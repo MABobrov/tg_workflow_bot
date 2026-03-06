@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 from typing import Any
 
 from aiogram import Router, F
@@ -13,12 +12,13 @@ from ..callbacks import ProjectCb
 from ..config import Config
 from ..db import Database
 from ..enums import ProjectStatus, Role, TaskStatus, TaskType
-from ..keyboards import main_menu, projects_kb, task_actions_kb
+from ..keyboards import main_menu, projects_kb
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
+from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import DeliveryDoneSG
-from ..utils import fmt_project_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
+from ..utils import answer_service, fmt_project_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -35,6 +35,9 @@ async def start_delivery_done(message: Message, state: FSMContext, db: Database)
         return
     await state.clear()
     projects = await db.list_recent_projects(limit=20)
+    if not projects:
+        await message.answer("Нет доступных проектов. Используйте «📌 Поиск проекта» или обратитесь к администратору.")
+        return
     await state.set_state(DeliveryDoneSG.project)
     await message.answer(
         "✅ <b>Доставка выполнена</b>\n"
@@ -83,7 +86,7 @@ async def delivery_done_attach(message: Message, state: FSMContext) -> None:
         await message.answer("Пришлите фото или нажмите «✅ Подтвердить доставку».")
         return
     await state.update_data(attachments=attachments)
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
 
 
 @router.callback_query(F.data == "deliverydone:create")
@@ -181,13 +184,18 @@ async def delivery_done_finalize(
     await integrations.sync_task(task, project_code=project.get("code", ""))
 
     user_now = await db.get_user_optional(u.id)
-    role_now = user_now.role if user_now else Role.DRIVER
+    role_now, isolated_role = resolve_menu_scope(u.id, user_now.role if user_now else Role.DRIVER)
     await cb.message.answer(
         "✅ Доставка подтверждена. "
         + ("РП уведомлён." if rp_id else "⚠️ РП не назначен (role=rp), уведомление не отправлено."),
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(
+                role_now,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
         ),
     )  # type: ignore
     await state.clear()
