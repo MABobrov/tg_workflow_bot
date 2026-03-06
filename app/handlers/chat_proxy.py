@@ -743,54 +743,66 @@ async def gd_task_create_finalize(
     due_iso = data.get("task_due", to_iso(utcnow()))
     attachments = data.get("task_attachments", [])
 
-    target_id = await resolve_channel_target(channel, db, config)
-    if not target_id:
+    # Resolve target(s): composite channels → multiple recipients
+    sub_channels = COMPOSITE_CHANNELS.get(channel)
+    if sub_channels:
+        targets: list[tuple[str, int]] = []
+        for sc in sub_channels:
+            tid = await resolve_channel_target(sc, db, config)
+            if tid:
+                targets.append((sc, int(tid)))
+    else:
+        tid = await resolve_channel_target(channel, db, config)
+        targets = [(channel, int(tid))] if tid else []
+
+    if not targets:
         await cb.message.answer(  # type: ignore[union-attr]
             f"⚠️ Адресат для {channel_label(channel)} не настроен.",
         )
         await state.clear()
         return
 
-    task = await db.create_task(
-        project_id=None,
-        type_=TaskType.GD_TASK,
-        status=TaskStatus.OPEN,
-        created_by=u.id,
-        assigned_to=int(target_id),
-        due_at_iso=due_iso,
-        payload={
-            "comment": description,
-            "source": f"chat_proxy:{channel}",
-            "sender_id": u.id,
-            "sender_username": u.username,
-        },
-    )
-
-    for a in attachments:
-        await db.add_attachment(
-            task_id=int(task["id"]),
-            file_id=a["file_id"],
-            file_unique_id=a.get("file_unique_id"),
-            file_type=a["file_type"],
-            caption=a.get("caption"),
-        )
-
     label = channel_label(channel)
     initiator = await get_initiator_label(db, u.id)
-    msg = (
-        f"📝 <b>Новая задача от ГД</b>\n"
-        f"👤 От: {initiator}\n\n"
-        f"📋 {description}"
-    )
-
     from ..keyboards import task_actions_kb
-    await notifier.safe_send(int(target_id), msg, reply_markup=task_actions_kb(task))
 
-    for a in attachments:
-        await notifier.safe_send_media(int(target_id), a["file_type"], a["file_id"], caption=a.get("caption"))
-    await refresh_recipient_keyboard(notifier, db, config, int(target_id))
+    for sc, target_id in targets:
+        task = await db.create_task(
+            project_id=None,
+            type_=TaskType.GD_TASK,
+            status=TaskStatus.OPEN,
+            created_by=u.id,
+            assigned_to=target_id,
+            due_at_iso=due_iso,
+            payload={
+                "comment": description,
+                "source": f"chat_proxy:{channel}",
+                "sender_id": u.id,
+                "sender_username": u.username,
+            },
+        )
 
-    await integrations.sync_task(task, project_code="")
+        for a in attachments:
+            await db.add_attachment(
+                task_id=int(task["id"]),
+                file_id=a["file_id"],
+                file_unique_id=a.get("file_unique_id"),
+                file_type=a["file_type"],
+                caption=a.get("caption"),
+            )
+
+        msg = (
+            f"📝 <b>Новая задача от ГД</b>\n"
+            f"👤 От: {initiator}\n\n"
+            f"📋 {description}"
+        )
+        await notifier.safe_send(target_id, msg, reply_markup=task_actions_kb(task))
+
+        for a in attachments:
+            await notifier.safe_send_media(target_id, a["file_type"], a["file_id"], caption=a.get("caption"))
+        await refresh_recipient_keyboard(notifier, db, config, target_id)
+
+        await integrations.sync_task(task, project_code="")
     await state.clear()
 
     await state.set_state(ChatProxySG.menu)

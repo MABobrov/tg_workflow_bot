@@ -158,12 +158,13 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
     if role == Role.TD:
         # TD merged into GD — redirect to GD menu
         return [
-            [GD_BTN_INVOICES, GD_BTN_URGENT],
-            [GD_BTN_PAYMENT_CONFIRM, GD_BTN_SUPPLIER_PAY],
-            [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
-            [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
-            [GD_BTN_MONTAZH, GD_BTN_SALES],
-            [GD_BTN_SYNC, GD_BTN_MORE],
+            ["📥 Входящие задачи", GD_BTN_INVOICES],
+            [GD_BTN_URGENT, GD_BTN_PAYMENT_CONFIRM],
+            [GD_BTN_SUPPLIER_PAY, GD_BTN_SEARCH_INVOICE],
+            [GD_BTN_CHAT_RP, GD_BTN_ZAMERY],
+            [GD_BTN_ACCOUNTING, GD_BTN_MONTAZH],
+            [GD_BTN_SALES, GD_BTN_SYNC],
+            [GD_BTN_MORE],
         ]
     if role == Role.ACCOUNTING:
         return [
@@ -181,12 +182,13 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         ]
     if role == Role.GD:
         return [
-            [GD_BTN_INVOICES, GD_BTN_URGENT],
-            [GD_BTN_PAYMENT_CONFIRM, GD_BTN_SUPPLIER_PAY],
-            [GD_BTN_SEARCH_INVOICE, GD_BTN_CHAT_RP],
-            [GD_BTN_ZAMERY, GD_BTN_ACCOUNTING],
-            [GD_BTN_MONTAZH, GD_BTN_SALES],
-            [GD_BTN_SYNC, GD_BTN_MORE],
+            ["📥 Входящие задачи", GD_BTN_INVOICES],
+            [GD_BTN_URGENT, GD_BTN_PAYMENT_CONFIRM],
+            [GD_BTN_SUPPLIER_PAY, GD_BTN_SEARCH_INVOICE],
+            [GD_BTN_CHAT_RP, GD_BTN_ZAMERY],
+            [GD_BTN_ACCOUNTING, GD_BTN_MONTAZH],
+            [GD_BTN_SALES, GD_BTN_SYNC],
+            [GD_BTN_MORE],
         ]
     if role == Role.DRIVER:
         return [
