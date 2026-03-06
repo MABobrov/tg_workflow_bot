@@ -42,7 +42,7 @@ from ..keyboards import (
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import ChatProxySG, InvoiceSearchSG, SalesWriteSG
-from ..utils import private_only_reply_markup
+from ..utils import private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_message
 from .chat_proxy import enter_chat_menu, resolve_channel_target, channel_label
 
@@ -452,6 +452,8 @@ async def sales_send_message(
             await notifier.safe_send(target_id, header + text)
         if file_info:
             await notifier.safe_send_media(target_id, file_info["file_type"], file_info["file_id"], caption=message.caption)
+        if not is_group_channel(ch):
+            await refresh_recipient_keyboard(notifier, db, config, int(target_id))
         sent_count += 1
 
     await state.clear()

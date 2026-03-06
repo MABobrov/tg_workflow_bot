@@ -372,6 +372,8 @@ async def handle_writing(
             file_info["file_id"],
             caption=message.caption,
         )
+    if not is_group_channel(channel):
+        await refresh_recipient_keyboard(notifier, db, config, int(target_id))
 
     await message.answer(
         f"✅ Сообщение отправлено → {label}",
@@ -895,6 +897,7 @@ async def reply_to_gd_send(
         await notifier.safe_send_media(
             int(gd_id), file_info["file_type"], file_info["file_id"], caption=message.caption,
         )
+    await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
     await state.clear()
     await message.answer("✅ Ответ отправлен ГД.")

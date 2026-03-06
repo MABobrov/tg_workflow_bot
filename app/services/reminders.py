@@ -117,6 +117,7 @@ async def acceptance_reminders_loop(
                     int(assigned),
                     f"🔔 <b>Напоминание о задаче</b>\n\n"
                     f"Задача #{tid} ожидает выполнения.",
+                    reply_markup=task_actions_kb(task),
                 )
                 await db.mark_task_reminded_2h(tid)
 

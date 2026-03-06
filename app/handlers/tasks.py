@@ -122,13 +122,15 @@ async def task_actions(
         task = await db.update_task_status(task_id, TaskStatus.REJECTED)
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await state.clear()
+        _uid = cb.from_user.id if cb.from_user else 0
         await cb.message.answer(
             "❌ Задача отклонена.",
             reply_markup=private_only_reply_markup(
                 cb.message,
                 main_menu(
-                    (await _current_role(db, cb.from_user.id)) if cb.from_user else None,
-                    is_admin=bool(cb.from_user and cb.from_user.id in (config.admin_ids or set())),
+                    (await _current_role(db, _uid)) if cb.from_user else None,
+                    is_admin=bool(cb.from_user and _uid in (config.admin_ids or set())),
+                    unread=await db.count_unread_tasks(_uid),
                 ),
             ),
         )  # type: ignore
@@ -206,6 +208,7 @@ async def task_actions(
                 main_menu(
                     role_now,
                     is_admin=bool(cb.from_user and cb.from_user.id in (config.admin_ids or set())),
+                    unread=await db.count_unread_tasks(cb.from_user.id) if cb.from_user else 0,
                 ),
             ),
         )  # type: ignore
@@ -258,11 +261,13 @@ async def task_actions(
             )
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await state.clear()
+        _uid_hold = cb.from_user.id if cb.from_user else 0
         await cb.message.answer(  # type: ignore
             "⏸ Счёт отложен.",
             reply_markup=private_only_reply_markup(
                 cb.message,
-                main_menu(Role.GD, is_admin=bool(cb.from_user and cb.from_user.id in (config.admin_ids or set()))),
+                main_menu(Role.GD, is_admin=bool(cb.from_user and _uid_hold in (config.admin_ids or set())),
+                           unread=await db.count_unread_tasks(_uid_hold)),
             ),
         )
         return
@@ -280,11 +285,13 @@ async def task_actions(
             )
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await state.clear()
+        _uid_rej = cb.from_user.id if cb.from_user else 0
         await cb.message.answer(  # type: ignore
             "❌ Счёт отклонён. РП уведомлён.",
             reply_markup=private_only_reply_markup(
                 cb.message,
-                main_menu(Role.GD, is_admin=bool(cb.from_user and cb.from_user.id in (config.admin_ids or set()))),
+                main_menu(Role.GD, is_admin=bool(cb.from_user and _uid_rej in (config.admin_ids or set())),
+                           unread=await db.count_unread_tasks(_uid_rej)),
             ),
         )
         return
@@ -329,13 +336,15 @@ async def task_actions(
 
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await state.clear()
+        _uid_done = cb.from_user.id if cb.from_user else 0
         await cb.message.answer(
             "✅ Закрыл задачу.",
             reply_markup=private_only_reply_markup(
                 cb.message,
                 main_menu(
-                    (await _current_role(db, cb.from_user.id)) if cb.from_user else None,
-                    is_admin=bool(cb.from_user and cb.from_user.id in (config.admin_ids or set())),
+                    (await _current_role(db, _uid_done)) if cb.from_user else None,
+                    is_admin=bool(cb.from_user and _uid_done in (config.admin_ids or set())),
+                    unread=await db.count_unread_tasks(_uid_done),
                 ),
             ),
         )  # type: ignore
@@ -433,13 +442,15 @@ async def taskcomplete_finalize(
 
     await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
 
+    _uid_fin = cb.from_user.id if cb.from_user else 0
     await cb.message.answer(
         "✅ Готово.",
         reply_markup=private_only_reply_markup(
             cb.message,
             main_menu(
-                (await _current_role(db, cb.from_user.id)) if cb.from_user else None,
-                is_admin=bool(cb.from_user and cb.from_user.id in (config.admin_ids or set())),
+                (await _current_role(db, _uid_fin)) if cb.from_user else None,
+                is_admin=bool(cb.from_user and _uid_fin in (config.admin_ids or set())),
+                unread=await db.count_unread_tasks(_uid_fin),
             ),
         ),
     )  # type: ignore
@@ -555,7 +566,7 @@ async def invoice_pp_finalize(
         "✅ Счёт оплачен. Платёжка отправлена РП.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(Role.GD, is_admin=is_admin),
+            main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(u.id)),
         ),
     )
 
@@ -572,6 +583,6 @@ async def invoice_pp_cancel(cb: CallbackQuery, state: FSMContext, config: Config
         "Отменено.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role, is_admin=is_admin),
+            main_menu(role, is_admin=is_admin, unread=await db.count_unread_tasks(u.id) if u else 0),
         ),
     )

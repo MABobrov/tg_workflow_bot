@@ -18,7 +18,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import SupplierPaymentSG
-from ..utils import fmt_project_card, parse_amount, private_only_reply_markup, to_iso, utcnow
+from ..utils import fmt_project_card, parse_amount, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -225,6 +225,8 @@ async def supplier_pay_finalize(
         if rp_id:
             await notifier.safe_send_media(int(rp_id), a["file_type"], a["tg_file_id"], caption=a.get("caption"))
         await notifier.notify_workchat_media(a["file_type"], a["tg_file_id"], caption=a.get("caption"))
+    if rp_id:
+        await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
     await integrations.sync_task(task, project_code=project.get("code", ""))
 

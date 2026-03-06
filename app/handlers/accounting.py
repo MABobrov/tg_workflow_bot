@@ -16,7 +16,7 @@ from ..keyboards import main_menu, task_actions_kb, tasks_kb
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import ManagerInfoRequestSG
-from ..utils import private_only_reply_markup, to_iso, utcnow
+from ..utils import private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -225,6 +225,7 @@ async def manager_request_finalize(
     for a in attaches:
         await notifier.safe_send_media(int(manager_id), a["file_type"], a["tg_file_id"], caption=a.get("caption"))
         await notifier.notify_workchat_media(a["file_type"], a["tg_file_id"], caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, int(manager_id))
 
     await integrations.sync_task(task, project_code="")
     user_now = await db.get_user_optional(u.id)
