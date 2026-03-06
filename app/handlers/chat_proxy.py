@@ -553,7 +553,7 @@ async def gd_task_create_start(cb: CallbackQuery, state: FSMContext, db: Databas
     label = channel_label(channel)
     await cb.message.answer(  # type: ignore[union-attr]
         f"📝 <b>Новая задача → {label}</b>\n\n"
-        "Шаг 1/3: опишите задачу\n"
+        "Шаг 1/4: опишите задачу\n"
         "(«❌ Отмена» — отменить):",
     )
 
@@ -564,6 +564,7 @@ _CANCEL_TEXTS = {"❌ отмена", "отмена", "cancel", "/cancel", "❌о
 
 @router.message(GdTaskCreateSG.description, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.deadline, F.text.casefold().in_(_CANCEL_TEXTS))
+@router.message(GdTaskCreateSG.deadline_time, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.attachments, F.text.casefold().in_(_CANCEL_TEXTS))
 async def gd_task_create_cancel(
     message: Message, state: FSMContext, db: Database, config: Config,
@@ -592,7 +593,7 @@ async def gd_task_create_desc(message: Message, state: FSMContext) -> None:
     await state.update_data(task_description=text)
     await state.set_state(GdTaskCreateSG.deadline)
     await message.answer(
-        "Шаг 2/3: укажите срок — например <b>07 марта</b> или <b>15.03.2026</b>\n"
+        "Шаг 2/4: укажите срок — например <b>07 марта</b> или <b>15.03.2026</b>\n"
         "Напишите «-» без срока, «❌ Отмена» для отмены:",
     )
 
@@ -616,6 +617,48 @@ async def gd_task_create_deadline(message: Message, state: FSMContext, config: C
         due = parsed
 
     await state.update_data(task_due=to_iso(due))
+    await state.set_state(GdTaskCreateSG.deadline_time)
+    await message.answer(
+        "Укажите время дедлайна (например <b>14:00</b>)\n"
+        "или «-» — конец рабочего дня (18:00):",
+    )
+
+
+@router.message(GdTaskCreateSG.deadline_time)
+async def gd_task_create_time(message: Message, state: FSMContext, config: Config) -> None:
+    import re as _re
+    from ..utils import from_iso, tzinfo as _tzinfo
+
+    text = (message.text or "").strip()
+
+    if text == "-":
+        hour, minute = 18, 0
+    else:
+        m = _re.fullmatch(r"(\d{1,2})[:\.](\d{2})", text)
+        if not m:
+            m = _re.fullmatch(r"(\d{1,2})", text)
+            if m:
+                hour, minute = int(m.group(1)), 0
+            else:
+                await message.answer(
+                    "Не удалось распознать время.\n"
+                    "Укажите в формате <b>14:00</b> или просто <b>14</b>:"
+                )
+                return
+        else:
+            hour, minute = int(m.group(1)), int(m.group(2))
+
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        await message.answer("Некорректное время. Укажите от 00:00 до 23:59:")
+        return
+
+    data = await state.get_data()
+    due_iso = data.get("task_due", "")
+    if due_iso:
+        due_dt = from_iso(due_iso).astimezone(_tzinfo(config.timezone))
+        due_dt = due_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        await state.update_data(task_due=to_iso(due_dt))
+
     await state.set_state(GdTaskCreateSG.attachments)
 
     b = InlineKeyboardBuilder()
@@ -624,7 +667,7 @@ async def gd_task_create_deadline(message: Message, state: FSMContext, config: C
     b.button(text="❌ Отмена", callback_data="gd_task_cancel")
     b.adjust(1)
     await message.answer(
-        "Шаг 3/3: прикрепите файлы (по желанию). Когда готовы — нажмите кнопку:",
+        "Прикрепите файлы (по желанию). Когда готовы — нажмите кнопку:",
         reply_markup=b.as_markup(),
     )
 

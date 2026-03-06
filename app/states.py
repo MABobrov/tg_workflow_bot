@@ -170,6 +170,7 @@ class GdTaskCreateSG(StatesGroup):
     """Создание задачи от ГД из чат-прокси."""
     description = State()
     deadline = State()
+    deadline_time = State()
     attachments = State()
 
 
