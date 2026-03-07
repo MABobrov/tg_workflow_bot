@@ -396,7 +396,15 @@ async def rp_chat_mgr_kia(message: Message, state: FSMContext, db: Database) -> 
 
 
 # =====================================================================
-# МОНТАЖНАЯ ГР. — chat-proxy
+# МОНТАЖНАЯ ГР. — chat-proxy + В работу (Этап 9)
+#
+# Submenu: 💬 Чат / 🔧 В работу
+# - Чат → ManagerChatProxySG (standard chat-proxy with montazh channel)
+# - В работу → список активных счетов с монтажниками
+#
+# Callbacks:
+#   rp_montazh:work_view:\d+  — карточка счёта «В работу»
+#   rp_montazh:work_refresh   — обновить список «В работу»
 # =====================================================================
 
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_MONTAZH) or (m.text or "").strip().startswith(RP_SUBBTN_MONTAZH))
@@ -410,6 +418,180 @@ async def rp_chat_montazh(message: Message, state: FSMContext, db: Database) -> 
         "🔧 <b>Монтажная гр.</b>\n\nВыберите действие:",
         reply_markup=rp_montazh_submenu("⬅️ Назад"),
     )
+
+
+@router.message(ManagerChatProxySG.menu, F.text == "💬 Чат")
+async def rp_montazh_chat(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    """Монтажная гр. → Чат: переписка с монтажниками."""
+    data = await state.get_data()
+    channel = data.get("channel", "montazh")
+    if channel != "montazh":
+        return  # Only handle montazh context
+    limit = getattr(config, "chat_history_limit", 20)
+    messages_list = await db.list_chat_messages(channel, limit=limit)
+    if not messages_list:
+        await message.answer("💬 Пока нет сообщений в чате с монтажной группой.")
+        return
+    lines: list[str] = [f"💬 <b>Чат — Монтажная гр.</b> (последние {len(messages_list)}):\n"]
+    for m in messages_list:
+        sender_id = m.get("sender_id", 0)
+        sender_label = await get_initiator_label(db, int(sender_id)) if sender_id else "?"
+        text_msg = m.get("text", "")
+        ts = m.get("created_at", "")[:16]
+        direction = m.get("direction", "")
+        arrow = "→" if direction == "outgoing" else "←"
+        lines.append(f"<b>{sender_label}</b> {arrow} ({ts}):\n{text_msg}")
+    await message.answer("\n\n".join(lines[-12:]))
+
+
+@router.message(ManagerChatProxySG.menu, F.text == "🔧 В работу")
+async def rp_montazh_in_work(message: Message, state: FSMContext, db: Database) -> None:
+    """Монтажная гр. → В работу: список активных счетов монтажной группы."""
+    data = await state.get_data()
+    channel = data.get("channel", "montazh")
+    if channel != "montazh":
+        return  # Only handle montazh context
+
+    # Get invoices in active statuses (not ended/credit)
+    invoices = await db.list_invoices_in_work(limit=50)
+    if not invoices:
+        await message.answer(
+            "🔧 <b>Монтажная гр. — В работу</b>\n\n"
+            "Нет активных счетов ✅"
+        )
+        return
+
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        ok_emoji = "✅" if inv.get("installer_ok") else "⏳"
+        try:
+            amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+        except (ValueError, TypeError):
+            amount_str = f"{inv.get('amount', 0)}₽"
+        text = f"{ok_emoji} №{inv.get('invoice_number', '?')} — {amount_str}"
+        b.button(text=text[:60], callback_data=f"rp_montazh:work_view:{inv['id']}")
+    b.button(text="🔄 Обновить", callback_data="rp_montazh:work_refresh")
+    b.adjust(1)
+
+    n_ok = sum(1 for inv in invoices if inv.get("installer_ok"))
+    n_pending = len(invoices) - n_ok
+    stats = []
+    if n_ok:
+        stats.append(f"✅ Счет ОК: {n_ok}")
+    if n_pending:
+        stats.append(f"⏳ Ожидают: {n_pending}")
+
+    await message.answer(
+        f"🔧 <b>Монтажная гр. — В работу</b> ({len(invoices)})\n"
+        f"{' | '.join(stats)}\n\n"
+        "Нажмите для просмотра:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "rp_montazh:work_refresh")
+async def rp_montazh_work_refresh(cb: CallbackQuery, db: Database) -> None:
+    """Обновить список «В работу» монтажной группы."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer("🔄 Обновлено")
+
+    invoices = await db.list_invoices_in_work(limit=50)
+    if not invoices:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "🔧 Нет активных счетов ✅"
+        )
+        return
+
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        ok_emoji = "✅" if inv.get("installer_ok") else "⏳"
+        try:
+            amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+        except (ValueError, TypeError):
+            amount_str = f"{inv.get('amount', 0)}₽"
+        text = f"{ok_emoji} №{inv.get('invoice_number', '?')} — {amount_str}"
+        b.button(text=text[:60], callback_data=f"rp_montazh:work_view:{inv['id']}")
+    b.button(text="🔄 Обновить", callback_data="rp_montazh:work_refresh")
+    b.adjust(1)
+
+    n_ok = sum(1 for inv in invoices if inv.get("installer_ok"))
+    n_pending = len(invoices) - n_ok
+    stats = []
+    if n_ok:
+        stats.append(f"✅ Счет ОК: {n_ok}")
+    if n_pending:
+        stats.append(f"⏳ Ожидают: {n_pending}")
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"🔧 <b>В работу</b> ({len(invoices)})\n"
+        f"{' | '.join(stats)}\n\n"
+        "Нажмите для просмотра:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.regexp(r"^rp_montazh:work_view:\d+$"))
+async def rp_montazh_work_view(cb: CallbackQuery, db: Database) -> None:
+    """Карточка счёта «В работу» монтажной группы."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    status_label = {
+        "pending": "⏳ Ожидает оплаты", "in_progress": "🔄 В работе",
+        "paid": "✅ Оплачен",
+    }.get(inv["status"], inv["status"])
+
+    try:
+        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+    except (ValueError, TypeError):
+        amount_str = f"{inv.get('amount', 0)}₽"
+
+    text = (
+        f"🔧 <b>Счёт №{inv['invoice_number']}</b>\n\n"
+        f"📍 Адрес: {inv.get('object_address', '-')}\n"
+        f"💰 Сумма: {amount_str}\n"
+        f"📊 Статус: {status_label}\n"
+        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
+    )
+
+    # Installer OK status
+    if inv.get("installer_ok"):
+        ok_by = ""
+        if inv.get("installer_ok_by"):
+            ok_by = await get_initiator_label(db, int(inv["installer_ok_by"]))
+            ok_by = f" ({ok_by})"
+        ok_at = inv.get("installer_ok_at", "")[:10] if inv.get("installer_ok_at") else ""
+        text += f"\n✅ <b>Монтажник — Счет ОК</b>{ok_by} {ok_at}\n"
+    else:
+        text += "\n⏳ Монтажник — ожидание «Счет ОК»\n"
+
+    # ZP status
+    zp_label = {
+        "not_requested": "⏳ Не запрошен",
+        "requested": "📤 Отправлен ГД",
+        "approved": "✅ ЗП ОК",
+    }.get(inv.get("zp_status", "not_requested"), inv.get("zp_status", ""))
+    text += f"💵 Расчёт ЗП: {zp_label}\n"
+
+    # EDO status
+    if inv.get("edo_signed"):
+        text += "📄 ЭДО: ✅ Подписано\n"
+    else:
+        text += "📄 ЭДО: ⏳ Не подписано\n"
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Назад к списку", callback_data="rp_montazh:work_refresh")
+    b.adjust(1)
+
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 # =====================================================================
