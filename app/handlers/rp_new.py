@@ -186,21 +186,61 @@ async def rp_invoice_view(cb: CallbackQuery, db: Database) -> None:
 
 
 # =====================================================================
-# СЧЕТА НА ОПЛАТУ (💳 — мониторинг PENDING_PAYMENT + IN_PROGRESS)
+# СЧЕТА НА ОПЛАТУ (💳 — мониторинг + создание, Этап 7)
+#
+# Мониторинг: PENDING_PAYMENT + IN_PROGRESS
+# Создание: InvoiceCreateSG flow (handlers in legacy rp.py)
+#
+# Callbacks:
+#   rp_inv_pay:create — начать создание счёта на оплату (→ InvoiceCreateSG)
+#   rp_inv_pay:refresh — обновить список
 # =====================================================================
 
+
+def _invoices_pay_kb(
+    invoices: list[dict[str, Any]],
+) -> InlineKeyboardMarkup:
+    """Inline-кнопки для «Счета на оплату»: список + кнопка создания."""
+    from aiogram.types import InlineKeyboardMarkup
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        status_emoji = {
+            "pending": "⏳", "in_progress": "🔄",
+            "paid": "✅", "on_hold": "⏸",
+        }.get(inv.get("status", ""), "❓")
+        try:
+            amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+        except (ValueError, TypeError):
+            amount_str = f"{inv.get('amount', 0)}₽"
+        text = f"{status_emoji} №{inv.get('invoice_number', '?')} — {amount_str}"
+        b.button(text=text[:60], callback_data=f"rpinv:view:{inv['id']}")
+    b.button(text="➕ Создать счёт на оплату", callback_data="rp_inv_pay:create")
+    b.button(text="🔄 Обновить", callback_data="rp_inv_pay:refresh")
+    b.adjust(1)
+    return b.as_markup()
+
+
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_INVOICES_PAY))
-async def rp_invoices_pay(message: Message, db: Database) -> None:
-    """Show invoices pending payment and in-progress for RP monitoring."""
+async def rp_invoices_pay(message: Message, state: FSMContext, db: Database) -> None:
+    """Кнопка главного меню: Счета на оплату (мониторинг + создание)."""
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
+    await state.clear()
 
     pending = await db.list_invoices(status=InvoiceStatus.PENDING_PAYMENT, limit=30)
     in_progress = await db.list_invoices(status=InvoiceStatus.IN_PROGRESS, limit=30)
     all_inv = list(pending) + list(in_progress)
 
     if not all_inv:
-        await answer_service(message, "💳 Нет счетов, ожидающих оплаты.", delay_seconds=60)
+        b = InlineKeyboardBuilder()
+        b.button(text="➕ Создать счёт на оплату", callback_data="rp_inv_pay:create")
+        b.adjust(1)
+        await message.answer(
+            "💳 <b>Счета на оплату</b>\n\n"
+            "Нет счетов, ожидающих оплаты ✅\n\n"
+            "Нажмите для создания нового:",
+            reply_markup=b.as_markup(),
+        )
         return
 
     n_pending = len(pending)
@@ -213,10 +253,74 @@ async def rp_invoices_pay(message: Message, db: Database) -> None:
         header_parts.append(f"🔄 В работе: {n_progress}")
 
     await message.answer(
-        f"💳 <b>Счета на оплату</b>\n"
+        f"💳 <b>Счета на оплату</b> ({len(all_inv)})\n"
         f"{' | '.join(header_parts)}\n\n"
-        "Нажмите для просмотра:",
-        reply_markup=invoice_list_kb(all_inv, action_prefix="rpinv"),
+        "Нажмите для просмотра или создайте новый:",
+        reply_markup=_invoices_pay_kb(all_inv),
+    )
+
+
+@router.callback_query(F.data == "rp_inv_pay:refresh")
+async def rp_invoices_pay_refresh(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Обновить список «Счета на оплату»."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer("🔄 Обновлено")
+    await state.clear()
+
+    pending = await db.list_invoices(status=InvoiceStatus.PENDING_PAYMENT, limit=30)
+    in_progress = await db.list_invoices(status=InvoiceStatus.IN_PROGRESS, limit=30)
+    all_inv = list(pending) + list(in_progress)
+
+    if not all_inv:
+        b = InlineKeyboardBuilder()
+        b.button(text="➕ Создать счёт на оплату", callback_data="rp_inv_pay:create")
+        b.adjust(1)
+        await cb.message.answer(  # type: ignore[union-attr]
+            "💳 Нет счетов, ожидающих оплаты ✅",
+            reply_markup=b.as_markup(),
+        )
+        return
+
+    n_pending = len(pending)
+    n_progress = len(in_progress)
+    header_parts = []
+    if n_pending:
+        header_parts.append(f"⏳ Ожидают: {n_pending}")
+    if n_progress:
+        header_parts.append(f"🔄 В работе: {n_progress}")
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💳 <b>Счета на оплату</b> ({len(all_inv)})\n"
+        f"{' | '.join(header_parts)}\n\n"
+        "Нажмите для просмотра или создайте новый:",
+        reply_markup=_invoices_pay_kb(all_inv),
+    )
+
+
+@router.callback_query(F.data == "rp_inv_pay:create")
+async def rp_invoices_pay_create(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Начать создание счёта на оплату ГД (→ InvoiceCreateSG)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    from ..states import InvoiceCreateSG
+
+    projects = await db.list_recent_projects(limit=30)
+    if not projects:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "⚠️ Нет проектов. Сначала создайте проект."
+        )
+        return
+
+    from ..keyboards import projects_kb
+    await state.clear()
+    await state.set_state(InvoiceCreateSG.project)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "💳 <b>Счёт на оплату ГД</b>\n"
+        "Шаг 1/5: выберите проект:",
+        reply_markup=projects_kb(projects, ctx="invoice"),
     )
 
 
