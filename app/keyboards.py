@@ -7,7 +7,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from .callbacks import ManagerProjectCb, ProjectCb, TaskCb
 from .enums import MANAGER_ROLES, Role, TaskStatus, TaskType
-from .utils import parse_roles, task_status_label, task_type_label
+from .utils import parse_roles, task_status_label, task_type_label, try_json_loads
 
 
 BACK_TO_HOME = "⬅️ Назад в главное меню"
@@ -638,6 +638,17 @@ def task_actions_kb(task: dict[str, Any]) -> InlineKeyboardMarkup:
             b.button(text="⏸ Отложить", callback_data=TaskCb(task_id=tid, action="inv_hold").pack())
             b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="inv_reject").pack())
 
+    # Задачи монтажной группы — Да/Нет/Комментарий
+    if ttype == TaskType.GD_TASK and status == TaskStatus.OPEN:
+        _payload = try_json_loads(task.get("payload_json"))
+        if "montazh" in (_payload.get("source") or ""):
+            b = InlineKeyboardBuilder()
+            b.button(text="✅ Да", callback_data=TaskCb(task_id=tid, action="montazh_yes").pack())
+            b.button(text="❌ Нет", callback_data=TaskCb(task_id=tid, action="montazh_no").pack())
+            b.button(text="💬 Комментарий", callback_data=TaskCb(task_id=tid, action="montazh_comment").pack())
+            b.adjust(2, 1)
+            return b.as_markup()
+
     b.adjust(1)
     return b.as_markup()
 
@@ -655,11 +666,21 @@ def manager_project_actions_kb(project_id: int) -> InlineKeyboardMarkup:
 
 
 
-def gd_more_menu(is_admin: bool = False, show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
-    """Подменю 'Ещё' для ГД."""
+def gd_more_menu(
+    is_admin: bool = False,
+    show_role_selector_back: bool = False,
+    unread_channels: dict[str, int] | None = None,
+) -> ReplyKeyboardMarkup:
+    """Подменю 'Ещё' для ГД с бейджами непрочитанных."""
+    _uc = unread_channels or {}
+
+    def _badge(base: str, chan: str) -> str:
+        cnt = _uc.get(chan, 0)
+        return f"{base} 🔴{cnt}" if cnt > 0 else base
+
     rows = [
-        [GD_SUBBTN_KV_CRED, GD_SUBBTN_KIA_CRED],
-        [GD_SUBBTN_NPN_CRED, GD_BTN_ZAMERY],
+        [_badge(GD_SUBBTN_KV_CRED, "manager_kv"), _badge(GD_SUBBTN_KIA_CRED, "manager_kia")],
+        [_badge(GD_SUBBTN_NPN_CRED, "manager_npn"), _badge(GD_BTN_ZAMERY, "zamery")],
     ]
     if is_admin:
         rows.append([GD_BTN_ADMIN, GD_BTN_REFRESH])

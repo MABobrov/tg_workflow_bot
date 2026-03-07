@@ -16,8 +16,8 @@ from ..keyboards import main_menu, manager_project_actions_kb, task_actions_kb
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import InvoicePaymentSG, SupplierPaymentSG, TaskCompleteSG
-from ..utils import answer_service, fmt_task_card, get_initiator_label, private_only_reply_markup, task_type_label, try_json_loads
+from ..states import InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCompleteSG
+from ..utils import answer_service, fmt_task_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -465,6 +465,72 @@ async def task_actions(
         )
         return
 
+    # MONTAZH — подтверждение задачи (Да/Нет/Комментарий)
+    if action == "montazh_yes" and task.get("type") == TaskType.GD_TASK:
+        if task.get("status") not in active_statuses:
+            await cb.answer("Эта задача уже обработана.", show_alert=True)
+            return
+        task = await db.update_task_status(task_id, TaskStatus.DONE)
+        payload = try_json_loads(task.get("payload_json"))
+        comment_text = payload.get("comment", "")
+        gd_id = task.get("created_by")
+        user_label = await get_initiator_label(db, cb.from_user.id)
+        if gd_id:
+            await notifier.safe_send(
+                int(gd_id),
+                f"✅ <b>Задача подтверждена (Монтажная гр.)</b>\n"
+                f"👤 От: {user_label}\n\n"
+                f"📋 {comment_text}" if comment_text else
+                f"✅ <b>Задача подтверждена (Монтажная гр.)</b>\n"
+                f"👤 От: {user_label}",
+            )
+            await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+        await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await state.clear()
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            "✅ Задача подтверждена.",
+        )
+        return
+
+    if action == "montazh_no" and task.get("type") == TaskType.GD_TASK:
+        if task.get("status") not in active_statuses:
+            await cb.answer("Эта задача уже обработана.", show_alert=True)
+            return
+        task = await db.update_task_status(task_id, TaskStatus.REJECTED)
+        payload = try_json_loads(task.get("payload_json"))
+        comment_text = payload.get("comment", "")
+        gd_id = task.get("created_by")
+        user_label = await get_initiator_label(db, cb.from_user.id)
+        if gd_id:
+            await notifier.safe_send(
+                int(gd_id),
+                f"❌ <b>Задача отклонена (Монтажная гр.)</b>\n"
+                f"👤 От: {user_label}\n\n"
+                f"📋 {comment_text}" if comment_text else
+                f"❌ <b>Задача отклонена (Монтажная гр.)</b>\n"
+                f"👤 От: {user_label}",
+            )
+            await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+        await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await state.clear()
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            "❌ Задача отклонена.",
+        )
+        return
+
+    if action == "montazh_comment" and task.get("type") == TaskType.GD_TASK:
+        if task.get("status") not in active_statuses:
+            await cb.answer("Эта задача уже обработана.", show_alert=True)
+            return
+        await state.clear()
+        await state.set_state(MontazhCommentSG.text)
+        await state.update_data(montazh_task_id=task_id)
+        await cb.message.answer(  # type: ignore[union-attr]
+            "💬 Введите комментарий к задаче:",
+        )
+        await cb.answer()
+        return
+
     # DONE (generic)
     if action == "done":
         if task.get("status") not in active_statuses:
@@ -783,4 +849,61 @@ async def invoice_pp_cancel(cb: CallbackQuery, state: FSMContext, config: Config
                 isolated_role=isolated_role,
             ),
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Montazh — ввод комментария к задаче
+# ---------------------------------------------------------------------------
+
+@router.message(MontazhCommentSG.text, F.text)
+async def montazh_comment_text(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    """Получен комментарий к задаче монтажной группы."""
+    u = message.from_user
+    if not u:
+        return
+    data = await state.get_data()
+    task_id = data.get("montazh_task_id")
+    if not task_id:
+        await state.clear()
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Введите текст комментария:")
+        return
+
+    task = await db.get_task(task_id)
+    if not task:
+        await message.answer("Задача не найдена.")
+        await state.clear()
+        return
+
+    # Уведомить ГД о комментарии
+    gd_id = task.get("created_by")
+    user_label = await get_initiator_label(db, u.id)
+    payload = try_json_loads(task.get("payload_json"))
+    task_comment = payload.get("comment", "")
+
+    if gd_id:
+        await notifier.safe_send(
+            int(gd_id),
+            f"💬 <b>Комментарий к задаче (Монтажная гр.)</b>\n"
+            f"👤 От: {user_label}\n\n"
+            f"📋 Задача: {task_comment}\n\n"
+            f"💬 Комментарий: {text}",
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+
+    await state.clear()
+    await message.answer(
+        "✅ Комментарий отправлен ГД.",
+        reply_markup=task_actions_kb(task),
     )

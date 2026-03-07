@@ -341,14 +341,12 @@ async def handle_writing(
             caption=message.caption,
         )
 
-    # Forward to recipient with reply button
+    # Forward to recipient with reply button (для всех каналов, включая группу)
     header = f"📩 <b>От ГД</b> ({label}):\n\n"
-    reply_markup = None
-    if not is_group_channel(channel):
-        reply_b = InlineKeyboardBuilder()
-        reply_b.button(text="💬 Ответить ГД", callback_data=f"reply_to_gd:{channel}")
-        reply_b.adjust(1)
-        reply_markup = reply_b.as_markup()
+    reply_b = InlineKeyboardBuilder()
+    reply_b.button(text="💬 Ответить ГД", callback_data=f"reply_to_gd:{channel}")
+    reply_b.adjust(1)
+    reply_markup = reply_b.as_markup()
     if text:
         await notifier.safe_send(target_id, header + text, reply_markup=reply_markup)
     if file_info:
@@ -385,7 +383,15 @@ async def show_channel_tasks(
 
     all_tasks: list[dict[str, Any]] = []
 
-    if target_id and not is_group_channel(channel):
+    if is_group_channel(channel):
+        # Для группового канала — ищем задачи по source в payload
+        all_tasks = await db.list_tasks_by_source(
+            source=f"chat_proxy:{channel}",
+            statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
+            created_by=gd_user_id,
+            limit=20,
+        )
+    elif target_id:
         # Outgoing: GD created, assigned to target
         outgoing = await db.list_tasks_for_user(
             assigned_to=target_id,
@@ -550,10 +556,47 @@ async def gd_task_create_start(cb: CallbackQuery, state: FSMContext, db: Databas
     await cb.answer()
     channel = cb.data.split(":", 1)[1]  # type: ignore[union-attr]
     await state.clear()
-    await state.set_state(GdTaskCreateSG.description)
     await state.update_data(task_channel=channel, task_attachments=[])
 
     label = channel_label(channel)
+
+    # Для montazh — сначала выбрать конкретного монтажника
+    if channel == "montazh":
+        installers = await db.find_users_by_role("installer")
+        if not installers:
+            await cb.message.answer("⚠️ Нет активных монтажников.")  # type: ignore[union-attr]
+            return
+        b = InlineKeyboardBuilder()
+        for inst in installers:
+            name = inst.full_name or inst.username or str(inst.telegram_id)
+            b.button(text=name, callback_data=f"pick_installer:{inst.telegram_id}")
+        b.adjust(1)
+        await state.set_state(GdTaskCreateSG.pick_installer)
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"📝 <b>Новая задача → {label}</b>\n\n"
+            "👷 Выберите монтажника:",
+            reply_markup=b.as_markup(),
+        )
+        return
+
+    await state.set_state(GdTaskCreateSG.description)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📝 <b>Новая задача → {label}</b>\n\n"
+        "Шаг 1/4: опишите задачу\n"
+        "(«❌ Отмена» — отменить):",
+    )
+
+
+@router.callback_query(F.data.startswith("pick_installer:"), GdTaskCreateSG.pick_installer)
+async def gd_task_pick_installer(cb: CallbackQuery, state: FSMContext) -> None:
+    """GD picks a specific installer for montazh task."""
+    await cb.answer()
+    installer_id = int(cb.data.split(":", 1)[1])  # type: ignore[union-attr]
+    await state.update_data(montazh_target_id=installer_id)
+    await state.set_state(GdTaskCreateSG.description)
+
+    data = await state.get_data()
+    label = channel_label(data.get("task_channel", "montazh"))
     await cb.message.answer(  # type: ignore[union-attr]
         f"📝 <b>Новая задача → {label}</b>\n\n"
         "Шаг 1/4: опишите задачу\n"
@@ -565,6 +608,7 @@ async def gd_task_create_start(cb: CallbackQuery, state: FSMContext, db: Databas
 _CANCEL_TEXTS = {"❌ отмена", "отмена", "cancel", "/cancel", "❌отмена"}
 
 
+@router.message(GdTaskCreateSG.pick_installer, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.description, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.deadline, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.deadline_time, F.text.casefold().in_(_CANCEL_TEXTS))
@@ -738,16 +782,21 @@ async def gd_task_create_finalize(
     attachments = data.get("task_attachments", [])
 
     # Resolve target(s): composite channels → multiple recipients
-    sub_channels = COMPOSITE_CHANNELS.get(channel)
-    if sub_channels:
-        targets: list[tuple[str, int]] = []
-        for sc in sub_channels:
-            tid = await resolve_channel_target(sc, db, config)
-            if tid:
-                targets.append((sc, int(tid)))
+    # Для montazh — использовать выбранного монтажника
+    montazh_target = data.get("montazh_target_id")
+    if channel == "montazh" and montazh_target:
+        targets: list[tuple[str, int]] = [(channel, int(montazh_target))]
     else:
-        tid = await resolve_channel_target(channel, db, config)
-        targets = [(channel, int(tid))] if tid else []
+        sub_channels = COMPOSITE_CHANNELS.get(channel)
+        if sub_channels:
+            targets = []
+            for sc in sub_channels:
+                tid = await resolve_channel_target(sc, db, config)
+                if tid:
+                    targets.append((sc, int(tid)))
+        else:
+            tid = await resolve_channel_target(channel, db, config)
+            targets = [(channel, int(tid))] if tid else []
 
     if not targets:
         await cb.message.answer(  # type: ignore[union-attr]

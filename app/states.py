@@ -168,10 +168,16 @@ class BroadcastSG(StatesGroup):
 
 class GdTaskCreateSG(StatesGroup):
     """Создание задачи от ГД из чат-прокси."""
+    pick_installer = State()  # Выбор монтажника (для montazh)
     description = State()
     deadline = State()
     deadline_time = State()
     attachments = State()
+
+
+class MontazhCommentSG(StatesGroup):
+    """Комментарий к задаче монтажной группы."""
+    text = State()
 
 
 class InvoicePaymentSG(StatesGroup):

@@ -338,21 +338,21 @@ async def gd_chat_sales(message: Message, state: FSMContext, db: Database) -> No
     )
 
 
-@router.message(lambda m: (m.text or "").strip() in {GD_BTN_KV_CRED, GD_SUBBTN_KV_CRED})
+@router.message(lambda m: any((m.text or "").strip().startswith(b) for b in (GD_BTN_KV_CRED, GD_SUBBTN_KV_CRED)))
 async def gd_chat_kv(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await enter_chat_menu(message, state, channel="manager_kv")
 
 
-@router.message(lambda m: (m.text or "").strip() in {GD_BTN_KIA_CRED, GD_SUBBTN_KIA_CRED})
+@router.message(lambda m: any((m.text or "").strip().startswith(b) for b in (GD_BTN_KIA_CRED, GD_SUBBTN_KIA_CRED)))
 async def gd_chat_kia(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await enter_chat_menu(message, state, channel="manager_kia")
 
 
-@router.message(lambda m: (m.text or "").strip() in {GD_BTN_NPN_CRED, GD_SUBBTN_NPN_CRED})
+@router.message(lambda m: any((m.text or "").strip().startswith(b) for b in (GD_BTN_NPN_CRED, GD_SUBBTN_NPN_CRED)))
 async def gd_chat_npn(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return

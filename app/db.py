@@ -675,6 +675,36 @@ class Database:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def list_tasks_by_source(
+        self,
+        source: str,
+        statuses: Iterable[str] = ("open", "in_progress"),
+        created_by: int | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        """List tasks by source in payload_json (e.g. 'chat_proxy:montazh')."""
+        statuses = list(statuses)
+        placeholders = ",".join("?" for _ in statuses)
+        params: list[Any] = [*statuses, source]
+        where_creator = ""
+        if created_by is not None:
+            where_creator = " AND created_by = ?"
+            params.append(created_by)
+        params.append(limit)
+        cur = await self.conn.execute(
+            f"""
+            SELECT * FROM tasks
+            WHERE status IN ({placeholders})
+              AND json_extract(payload_json, '$.source') = ?
+              {where_creator}
+            ORDER BY COALESCE(due_at, created_at) ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     async def update_task_status(self, task_id: int, status: str) -> dict[str, Any]:
         now = to_iso(utcnow())
         await self.conn.execute(

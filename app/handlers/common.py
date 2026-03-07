@@ -550,11 +550,19 @@ async def menu_more_universal(message: Message, state: FSMContext, db: Database,
 
     if active_role == Role.GD:
         _is_adm = bool(u.id in (config.admin_ids or set()))
+        _uc = await db.count_unread_by_channel(u.id)
         await answer_service(
             message,
             "Выберите действие:",
             delay_seconds=60,
-            reply_markup=private_only_reply_markup(message, gd_more_menu(is_admin=_is_adm, show_role_selector_back=isolated_role)),
+            reply_markup=private_only_reply_markup(
+                message,
+                gd_more_menu(
+                    is_admin=_is_adm,
+                    unread_channels=_uc,
+                    show_role_selector_back=isolated_role,
+                ),
+            ),
         )
     elif active_role == Role.RP:
         await answer_service(
