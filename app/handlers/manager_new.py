@@ -98,6 +98,7 @@ _CHAT_TARGET_MAP: dict[str, str] = {
     "zamery": Role.ZAMERY,
     "rp_to_manager_kv": Role.MANAGER_KV,
     "rp_to_manager_kia": Role.MANAGER_KIA,
+    "rp_to_gd": Role.GD,
 }
 
 _CHAT_CHANNEL_LABEL: dict[str, str] = {
@@ -107,6 +108,7 @@ _CHAT_CHANNEL_LABEL: dict[str, str] = {
     "zamery": "Замеры",
     "rp_to_manager_kv": "РП → Менеджер КВ",
     "rp_to_manager_kia": "РП → Менеджер КИА",
+    "rp_to_gd": "РП → ГД",
     "montazh": "Монтажная гр.",
 }
 
@@ -1687,8 +1689,11 @@ async def mgr_chat_back(message: Message, state: FSMContext, db: Database, confi
     await state.clear()
     if not message.from_user:
         return
-    menu_role, isolated_role = await _current_menu(db, message.from_user.id)
-    is_admin = message.from_user.id in (config.admin_ids or set())
+    _uid_back = message.from_user.id
+    menu_role, isolated_role = await _current_menu(db, _uid_back)
+    is_admin = _uid_back in (config.admin_ids or set())
+    rp_t_back = await db.count_rp_role_tasks(_uid_back)
+    rp_m_back = await db.count_rp_role_messages(_uid_back)
     await message.answer(
         "Выберите действие:",
         reply_markup=private_only_reply_markup(
@@ -1696,8 +1701,10 @@ async def mgr_chat_back(message: Message, state: FSMContext, db: Database, confi
             main_menu(
                 menu_role,
                 is_admin=is_admin,
-                unread=await db.count_unread_tasks(message.from_user.id),
+                unread=await db.count_unread_tasks(_uid_back),
                 isolated_role=isolated_role,
+                rp_tasks=rp_t_back,
+                rp_messages=rp_m_back,
             ),
         ),
     )

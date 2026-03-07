@@ -232,6 +232,8 @@ async def task_actions(
                     (await _current_role(db, _uid)) if cb.from_user else None,
                     is_admin=bool(cb.from_user and _uid in (config.admin_ids or set())),
                     unread=await db.count_unread_tasks(_uid),
+                    rp_tasks=await db.count_rp_role_tasks(_uid),
+                    rp_messages=await db.count_rp_role_messages(_uid),
                 ),
             ),
         )  # type: ignore
@@ -305,14 +307,17 @@ async def task_actions(
         role_now = (await _current_role(db, cb.from_user.id)) if cb.from_user else Role.GD
 
         await state.clear()
+        _uid_done2 = cb.from_user.id if cb.from_user else 0
         await cb.message.answer(
             "Готово.",
             reply_markup=private_only_reply_markup(
                 cb.message,
                 main_menu(
                     role_now,
-                    is_admin=bool(cb.from_user and cb.from_user.id in (config.admin_ids or set())),
-                    unread=await db.count_unread_tasks(cb.from_user.id) if cb.from_user else 0,
+                    is_admin=bool(cb.from_user and _uid_done2 in (config.admin_ids or set())),
+                    unread=await db.count_unread_tasks(_uid_done2) if cb.from_user else 0,
+                    rp_tasks=await db.count_rp_role_tasks(_uid_done2),
+                    rp_messages=await db.count_rp_role_messages(_uid_done2),
                 ),
             ),
         )  # type: ignore
@@ -584,6 +589,8 @@ async def task_actions(
                     (await _current_role(db, _uid_done)) if cb.from_user else None,
                     is_admin=bool(cb.from_user and _uid_done in (config.admin_ids or set())),
                     unread=await db.count_unread_tasks(_uid_done),
+                    rp_tasks=await db.count_rp_role_tasks(_uid_done),
+                    rp_messages=await db.count_rp_role_messages(_uid_done),
                 ),
             ),
         )  # type: ignore
@@ -696,6 +703,8 @@ async def taskcomplete_finalize(
                 (await _current_role(db, _uid_fin)) if cb.from_user else None,
                 is_admin=bool(cb.from_user and _uid_fin in (config.admin_ids or set())),
                 unread=await db.count_unread_tasks(_uid_fin),
+                rp_tasks=await db.count_rp_role_tasks(_uid_fin),
+                rp_messages=await db.count_rp_role_messages(_uid_fin),
             ),
         ),
     )  # type: ignore
@@ -838,6 +847,7 @@ async def invoice_pp_cancel(cb: CallbackQuery, state: FSMContext, config: Config
     u = cb.from_user
     is_admin = bool(u and u.id in (config.admin_ids or set()))
     role, isolated_role = (await _current_menu(db, u.id)) if u else (None, False)
+    _uid_cancel = u.id if u else 0
     await cb.message.answer(  # type: ignore[union-attr]
         "Отменено.",
         reply_markup=private_only_reply_markup(
@@ -845,8 +855,10 @@ async def invoice_pp_cancel(cb: CallbackQuery, state: FSMContext, config: Config
             main_menu(
                 role,
                 is_admin=is_admin,
-                unread=await db.count_unread_tasks(u.id) if u else 0,
+                unread=await db.count_unread_tasks(_uid_cancel) if u else 0,
                 isolated_role=isolated_role,
+                rp_tasks=await db.count_rp_role_tasks(_uid_cancel) if u else 0,
+                rp_messages=await db.count_rp_role_messages(_uid_cancel) if u else 0,
             ),
         ),
     )

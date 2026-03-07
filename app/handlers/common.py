@@ -58,15 +58,20 @@ async def _menu_context(db: Database, user_id: int | None, role: str | None) -> 
             "gd_inbox_unread": None,
             "gd_invoice_unread": None,
             "gd_invoice_end_unread": None,
+            "rp_tasks": 0,
+            "rp_messages": 0,
         }
 
     roles = set(parse_roles(role))
+    _is_rp = Role.RP in roles or Role.MANAGER_NPN in roles
     return {
         "unread": await db.count_unread_tasks(user_id),
         "unread_channels": await db.count_unread_by_channel(user_id),
         "gd_inbox_unread": await db.count_gd_inbox_tasks(user_id) if Role.GD in roles else None,
         "gd_invoice_unread": await db.count_gd_invoice_tasks(user_id) if Role.GD in roles else None,
         "gd_invoice_end_unread": await db.count_gd_invoice_end_tasks(user_id) if Role.GD in roles else None,
+        "rp_tasks": await db.count_rp_role_tasks(user_id) if _is_rp else 0,
+        "rp_messages": await db.count_rp_role_messages(user_id) if _is_rp else 0,
     }
 
 
@@ -278,9 +283,13 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
     is_admin = u.id in (config.admin_ids or set())
     unread = await db.count_unread_tasks(u.id)
     uc = await db.count_unread_by_channel(u.id)
-    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and Role.GD in parse_roles(role) else None
-    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and Role.GD in parse_roles(role) else None
-    gd_ie = await db.count_gd_invoice_end_tasks(u.id) if role and Role.GD in parse_roles(role) else None
+    _parsed = parse_roles(role)
+    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and Role.GD in _parsed else None
+    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and Role.GD in _parsed else None
+    gd_ie = await db.count_gd_invoice_end_tasks(u.id) if role and Role.GD in _parsed else None
+    _is_rp = role and (Role.RP in _parsed or Role.MANAGER_NPN in _parsed)
+    rp_t = await db.count_rp_role_tasks(u.id) if _is_rp else 0
+    rp_m = await db.count_rp_role_messages(u.id) if _is_rp else 0
     await message.answer(
         text,
         reply_markup=private_only_reply_markup(
@@ -294,6 +303,8 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
                 gd_invoice_unread=gd_inv,
                 gd_invoice_end_unread=gd_ie,
                 isolated_role=bool(active_role and active_role != role),
+                rp_tasks=rp_t,
+                rp_messages=rp_m,
             ),
         ),
     )
@@ -329,10 +340,14 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
     is_admin = u.id in (config.admin_ids or set())
     unread = await db.count_unread_tasks(u.id)
     uc = await db.count_unread_by_channel(u.id)
-    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and Role.GD in parse_roles(role) else None
-    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and Role.GD in parse_roles(role) else None
-    gd_ie = await db.count_gd_invoice_end_tasks(u.id) if role and Role.GD in parse_roles(role) else None
-    if len(parse_roles(role)) > 1:
+    _parsed_menu = parse_roles(role)
+    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and Role.GD in _parsed_menu else None
+    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and Role.GD in _parsed_menu else None
+    gd_ie = await db.count_gd_invoice_end_tasks(u.id) if role and Role.GD in _parsed_menu else None
+    _is_rp_menu = role and (Role.RP in _parsed_menu or Role.MANAGER_NPN in _parsed_menu)
+    rp_t_menu = await db.count_rp_role_tasks(u.id) if _is_rp_menu else 0
+    rp_m_menu = await db.count_rp_role_messages(u.id) if _is_rp_menu else 0
+    if len(_parsed_menu) > 1:
         text = "🎭 <b>Выберите роль</b>\n\nСначала выберите, в каком контексте открыть меню."
     else:
         text = "✅ Меню обновлено."
@@ -342,7 +357,7 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
         delay_seconds=60,
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv, gd_invoice_end_unread=gd_ie),
+            main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv, gd_invoice_end_unread=gd_ie, rp_tasks=rp_t_menu, rp_messages=rp_m_menu),
         ),
     )
 
@@ -361,11 +376,16 @@ async def cmd_help(message: Message, db: Database, config: Config) -> None:
     text = _role_guide(role)
     if is_admin:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
-    unread = await db.count_unread_tasks(message.from_user.id) if message.from_user else 0
-    uc = await db.count_unread_by_channel(message.from_user.id) if message.from_user else {}
-    gd_ur = await db.count_gd_inbox_tasks(message.from_user.id) if message.from_user and role and Role.GD in parse_roles(role) else None
-    gd_inv = await db.count_gd_invoice_tasks(message.from_user.id) if message.from_user and role and Role.GD in parse_roles(role) else None
-    gd_ie = await db.count_gd_invoice_end_tasks(message.from_user.id) if message.from_user and role and Role.GD in parse_roles(role) else None
+    _uid_help = message.from_user.id if message.from_user else None
+    unread = await db.count_unread_tasks(_uid_help) if _uid_help else 0
+    uc = await db.count_unread_by_channel(_uid_help) if _uid_help else {}
+    _parsed_help = parse_roles(role) if role else []
+    gd_ur = await db.count_gd_inbox_tasks(_uid_help) if _uid_help and Role.GD in _parsed_help else None
+    gd_inv = await db.count_gd_invoice_tasks(_uid_help) if _uid_help and Role.GD in _parsed_help else None
+    gd_ie = await db.count_gd_invoice_end_tasks(_uid_help) if _uid_help and Role.GD in _parsed_help else None
+    _is_rp_help = _uid_help and (Role.RP in _parsed_help or Role.MANAGER_NPN in _parsed_help)
+    rp_t_help = await db.count_rp_role_tasks(_uid_help) if _is_rp_help else 0
+    rp_m_help = await db.count_rp_role_messages(_uid_help) if _is_rp_help else 0
     await message.answer(
         text,
         reply_markup=private_only_reply_markup(
@@ -379,6 +399,8 @@ async def cmd_help(message: Message, db: Database, config: Config) -> None:
                 gd_invoice_unread=gd_inv,
                 gd_invoice_end_unread=gd_ie,
                 isolated_role=isolated_role,
+                rp_tasks=rp_t_help,
+                rp_messages=rp_m_help,
             ),
         ),
     )
@@ -636,11 +658,16 @@ async def menu_help(message: Message, db: Database, config: Config) -> None:
     text = _role_guide(role)
     if is_admin:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
-    unread = await db.count_unread_tasks(message.from_user.id) if message.from_user else 0
-    uc = await db.count_unread_by_channel(message.from_user.id) if message.from_user else {}
-    gd_ur = await db.count_gd_inbox_tasks(message.from_user.id) if message.from_user and role and Role.GD in parse_roles(role) else None
-    gd_inv = await db.count_gd_invoice_tasks(message.from_user.id) if message.from_user and role and Role.GD in parse_roles(role) else None
-    gd_ie = await db.count_gd_invoice_end_tasks(message.from_user.id) if message.from_user and role and Role.GD in parse_roles(role) else None
+    _uid_info = message.from_user.id if message.from_user else None
+    unread = await db.count_unread_tasks(_uid_info) if _uid_info else 0
+    uc = await db.count_unread_by_channel(_uid_info) if _uid_info else {}
+    _parsed_info = parse_roles(role) if role else []
+    gd_ur = await db.count_gd_inbox_tasks(_uid_info) if _uid_info and Role.GD in _parsed_info else None
+    gd_inv = await db.count_gd_invoice_tasks(_uid_info) if _uid_info and Role.GD in _parsed_info else None
+    gd_ie = await db.count_gd_invoice_end_tasks(_uid_info) if _uid_info and Role.GD in _parsed_info else None
+    _is_rp_info = _uid_info and (Role.RP in _parsed_info or Role.MANAGER_NPN in _parsed_info)
+    rp_t_info = await db.count_rp_role_tasks(_uid_info) if _is_rp_info else 0
+    rp_m_info = await db.count_rp_role_messages(_uid_info) if _is_rp_info else 0
     await message.answer(
         text,
         reply_markup=private_only_reply_markup(
@@ -654,6 +681,8 @@ async def menu_help(message: Message, db: Database, config: Config) -> None:
                 gd_invoice_unread=gd_inv,
                 gd_invoice_end_unread=gd_ie,
                 isolated_role=isolated_role,
+                rp_tasks=rp_t_info,
+                rp_messages=rp_m_info,
             ),
         ),
     )

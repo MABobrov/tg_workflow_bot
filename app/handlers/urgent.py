@@ -201,6 +201,8 @@ async def urgent_gd_finalize(
                 is_admin=u.id in (config.admin_ids or set()),
                 unread=await db.count_unread_tasks(u.id),
                 isolated_role=isolated_role,
+                rp_tasks=await db.count_rp_role_tasks(u.id),
+                rp_messages=await db.count_rp_role_messages(u.id),
             ),
         ),
     )  # type: ignore
@@ -360,6 +362,8 @@ async def not_urgent_gd_finalize(
                 is_admin=u.id in (config.admin_ids or set()),
                 unread=await db.count_unread_tasks(u.id),
                 isolated_role=isolated_role,
+                rp_tasks=await db.count_rp_role_tasks(u.id),
+                rp_messages=await db.count_rp_role_messages(u.id),
             ),
         ),
     )

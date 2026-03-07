@@ -294,7 +294,7 @@ async def order_mat_finalize(
         ),
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id), rp_tasks=await db.count_rp_role_tasks(u.id), rp_messages=await db.count_rp_role_messages(u.id)),
         ),
     )  # type: ignore
     await state.clear()
@@ -474,7 +474,7 @@ async def delivery_req_finalize(
         "✅ Заявка на доставку создана." + (" Водитель уведомлён." if driver_id else " ⚠️ Водитель не назначен (role=driver)."),
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id), rp_tasks=await db.count_rp_role_tasks(u.id), rp_messages=await db.count_rp_role_messages(u.id)),
         ),
     )  # type: ignore
     await state.clear()
@@ -624,7 +624,7 @@ async def assign_lead_finalize(
         f"✅ Лид отправлен менеджеру ({manager_label}).",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id), rp_tasks=await db.count_rp_role_tasks(u.id), rp_messages=await db.count_rp_role_messages(u.id)),
         ),
     )  # type: ignore
     await state.clear()
@@ -805,7 +805,7 @@ async def tinting_req_finalize(
         "✅ Заявка на тонировку создана." + (" Тонировщик уведомлён." if tinter_id else " ⚠️ Тонировщик не назначен (role=tinter)."),
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id)),
+            main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id), rp_tasks=await db.count_rp_role_tasks(u.id), rp_messages=await db.count_rp_role_messages(u.id)),
         ),
     )  # type: ignore
     await state.clear()
@@ -1023,5 +1023,5 @@ async def invoice_finalize(
     is_admin = u.id in (config.admin_ids or set())
     await cb.message.answer(  # type: ignore[union-attr]
         "✅ Счёт на оплату отправлен ГД.",
-        reply_markup=main_menu(role_raw, is_admin=is_admin, unread=await db.count_unread_tasks(u.id)),
+        reply_markup=main_menu(role_raw, is_admin=is_admin, unread=await db.count_unread_tasks(u.id), rp_tasks=await db.count_rp_role_tasks(u.id), rp_messages=await db.count_rp_role_messages(u.id)),
     )

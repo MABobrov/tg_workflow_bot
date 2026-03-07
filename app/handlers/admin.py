@@ -104,6 +104,7 @@ async def _push_menu_to_user(
     )
     try:
         roles = set(parse_roles(role))
+        _is_rp_admin = Role.RP in roles or Role.MANAGER_NPN in roles
         await message.bot.send_message(
             chat_id=user_id,
             text=text,
@@ -114,6 +115,8 @@ async def _push_menu_to_user(
                 unread_channels=await db.count_unread_by_channel(user_id),
                 gd_inbox_unread=await db.count_gd_inbox_tasks(user_id) if Role.GD in roles else None,
                 gd_invoice_unread=await db.count_gd_invoice_tasks(user_id) if Role.GD in roles else None,
+                rp_tasks=await db.count_rp_role_tasks(user_id) if _is_rp_admin else 0,
+                rp_messages=await db.count_rp_role_messages(user_id) if _is_rp_admin else 0,
             ),
         )
         return True

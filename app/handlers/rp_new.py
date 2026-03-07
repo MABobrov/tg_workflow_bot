@@ -63,6 +63,7 @@ from ..keyboards import (
     invoice_list_kb,
     lead_pick_manager_kb,
     main_menu,
+    rp_chat_gd_submenu,
     rp_chat_submenu,
     rp_montazh_submenu,
     tasks_kb,
@@ -324,36 +325,27 @@ async def rp_check_kp(message: Message, state: FSMContext, db: Database, config:
                 is_admin=u.id in (config.admin_ids or set()),
                 unread=await db.count_unread_tasks(u.id),
                 isolated_role=isolated_role,
+                rp_tasks=await db.count_rp_role_tasks(u.id),
+                rp_messages=await db.count_rp_role_messages(u.id),
             ),
         ),
     )
 
 
 # =====================================================================
-# ЧАТ С ГД (placeholder)
+# ЧАТ С ГД — chat-proxy (RP ↔ GD)
 # =====================================================================
 
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_CHAT_GD))
-async def rp_chat_gd(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+async def rp_chat_gd(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
-    u = message.from_user
-    if not u:
-        return
-    menu_role, isolated_role = await _current_menu(db, u.id)
+    await state.set_state(ManagerChatProxySG.menu)
+    await state.update_data(channel="rp_to_gd")
     await message.answer(
-        "🚧 <b>В разработке</b>\n\n"
-        "Раздел «Чат с ГД» будет доступен в ближайшем обновлении.",
-        reply_markup=private_only_reply_markup(
-            message,
-            main_menu(
-                menu_role,
-                is_admin=u.id in (config.admin_ids or set()),
-                unread=await db.count_unread_tasks(u.id),
-                isolated_role=isolated_role,
-            ),
-        ),
+        "👤 <b>Чат с ГД</b>\n\nВыберите действие:",
+        reply_markup=rp_chat_gd_submenu("⬅️ Назад"),
     )
 
 
@@ -380,6 +372,8 @@ async def rp_invoices_work(message: Message, state: FSMContext, db: Database, co
                 is_admin=u.id in (config.admin_ids or set()),
                 unread=await db.count_unread_tasks(u.id),
                 isolated_role=isolated_role,
+                rp_tasks=await db.count_rp_role_tasks(u.id),
+                rp_messages=await db.count_rp_role_messages(u.id),
             ),
         ),
     )
@@ -425,6 +419,8 @@ async def rp_invoice_closed(message: Message, state: FSMContext, db: Database, c
                 is_admin=u.id in (config.admin_ids or set()),
                 unread=await db.count_unread_tasks(u.id),
                 isolated_role=isolated_role,
+                rp_tasks=await db.count_rp_role_tasks(u.id),
+                rp_messages=await db.count_rp_role_messages(u.id),
             ),
         ),
     )
@@ -613,6 +609,8 @@ async def lead_finalize(
                 is_admin=u.id in (config.admin_ids or set()),
                 unread=await db.count_unread_tasks(u.id),
                 isolated_role=isolated_role,
+                rp_tasks=await db.count_rp_role_tasks(u.id),
+                rp_messages=await db.count_rp_role_messages(u.id),
             ),
         ),
     )
@@ -651,7 +649,12 @@ async def role_switch_to_other(message: Message, state: FSMContext, db: Database
         f"✅ Роль изменена на: <b>{role_label_str}</b>",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(target_role, is_admin=is_admin, unread=await db.count_unread_tasks(u.id)),
+            main_menu(
+                target_role, is_admin=is_admin,
+                unread=await db.count_unread_tasks(u.id),
+                rp_tasks=await db.count_rp_role_tasks(u.id),
+                rp_messages=await db.count_rp_role_messages(u.id),
+            ),
         ),
     )
 
@@ -680,6 +683,8 @@ async def role_switch_already_active(message: Message, db: Database, config: Con
                 is_admin=is_admin,
                 unread=await db.count_unread_tasks(u.id),
                 isolated_role=isolated_role,
+                rp_tasks=await db.count_rp_role_tasks(u.id),
+                rp_messages=await db.count_rp_role_messages(u.id),
             ),
         ),
     )
@@ -836,6 +841,8 @@ async def kp_review_comment(
                 is_admin=message.from_user.id in (config.admin_ids or set()),
                 unread=await db.count_unread_tasks(message.from_user.id),
                 isolated_role=isolated_role,
+                rp_tasks=await db.count_rp_role_tasks(message.from_user.id),
+                rp_messages=await db.count_rp_role_messages(message.from_user.id),
             ),
         ),
     )
