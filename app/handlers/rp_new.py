@@ -61,6 +61,7 @@ from ..keyboards import (
     RP_SUBBTN_MONTAZH,
     edo_type_kb,
     invoice_list_kb,
+    invoices_work_list_kb,
     kp_issued_list_kb,
     kp_payment_type_kb,
     kp_response_kb,
@@ -375,33 +376,165 @@ async def rp_chat_gd(message: Message, state: FSMContext, db: Database) -> None:
 
 
 # =====================================================================
-# СЧЕТА В РАБОТЕ (placeholder — новая кнопка главного меню)
+# СЧЕТА В РАБОТЕ — дашборд (Этап 6)
+#
+# Показывает счета со статусами PENDING/IN_PROGRESS/PAID (исключая Кред)
+# с двойными индикаторами:
+#   💰 = оплата (⏳ ожидает / 🔄 в работе / ✅ оплачен)
+#   📄 = документы ЭДО (⏳ не подписано / ✅ подписано)
+#
+# Callbacks:
+#   rp_work:view:\d+  — карточка счёта
+#   rp_work:refresh   — обновить список
 # =====================================================================
 
+
+async def _show_invoices_work_dashboard(
+    target: Message | CallbackQuery,
+    db: Database,
+) -> None:
+    """Общий хелпер: показать дашборд «Счета в Работе»."""
+    invoices = await db.list_invoices_in_work(limit=50)
+
+    if not invoices:
+        text = (
+            "💼 <b>Счета в Работе</b>\n\n"
+            "Нет активных счетов ✅"
+        )
+        if isinstance(target, CallbackQuery):
+            await target.message.answer(text)  # type: ignore[union-attr]
+        else:
+            await target.answer(text)
+        return
+
+    # Statistics by status
+    n_pending = sum(1 for inv in invoices if inv.get("status") == "pending")
+    n_progress = sum(1 for inv in invoices if inv.get("status") == "in_progress")
+    n_paid = sum(1 for inv in invoices if inv.get("status") == "paid")
+
+    # EDO signing stats
+    n_edo_signed = sum(1 for inv in invoices if inv.get("edo_signed"))
+    n_edo_pending = len(invoices) - n_edo_signed
+
+    header_parts: list[str] = []
+    if n_pending:
+        header_parts.append(f"⏳ Ожидают оплаты: {n_pending}")
+    if n_progress:
+        header_parts.append(f"🔄 В работе: {n_progress}")
+    if n_paid:
+        header_parts.append(f"✅ Оплачены: {n_paid}")
+
+    edo_parts: list[str] = []
+    if n_edo_signed:
+        edo_parts.append(f"✅ Подписано: {n_edo_signed}")
+    if n_edo_pending:
+        edo_parts.append(f"⏳ Не подписано: {n_edo_pending}")
+
+    text = (
+        f"💼 <b>Счета в Работе</b> ({len(invoices)})\n\n"
+        f"<b>💰 Оплата:</b> {' | '.join(header_parts)}\n"
+        f"<b>📄 ЭДО:</b> {' | '.join(edo_parts)}\n\n"
+        "Нажмите на счёт для просмотра:"
+    )
+
+    if isinstance(target, CallbackQuery):
+        await target.message.answer(  # type: ignore[union-attr]
+            text,
+            reply_markup=invoices_work_list_kb(invoices),
+        )
+    else:
+        await target.answer(
+            text,
+            reply_markup=invoices_work_list_kb(invoices),
+        )
+
+
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_INVOICES_WORK))
-async def rp_invoices_work(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+async def rp_invoices_work(message: Message, state: FSMContext, db: Database) -> None:
+    """Кнопка главного меню: дашборд «Счета в Работе»."""
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
-    u = message.from_user
-    if not u:
+    await _show_invoices_work_dashboard(message, db)
+
+
+@router.callback_query(F.data == "rp_work:refresh")
+async def rp_invoices_work_refresh(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Обновить дашборд «Счета в Работе»."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
-    menu_role, isolated_role = await _current_menu(db, u.id)
-    await message.answer(
-        "🚧 <b>В разработке</b>\n\n"
-        "Раздел «Счета в Работе» будет доступен в ближайшем обновлении.",
-        reply_markup=private_only_reply_markup(
-            message,
-            main_menu(
-                menu_role,
-                is_admin=u.id in (config.admin_ids or set()),
-                unread=await db.count_unread_tasks(u.id),
-                isolated_role=isolated_role,
-                rp_tasks=await db.count_rp_role_tasks(u.id),
-                rp_messages=await db.count_rp_role_messages(u.id),
-            ),
-        ),
+    await cb.answer("🔄 Обновлено")
+    await _show_invoices_work_dashboard(cb, db)
+
+
+@router.callback_query(F.data.regexp(r"^rp_work:view:\d+$"))
+async def rp_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
+    """Карточка счёта из дашборда «Счета в Работе»."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    status_label = {
+        "new": "🆕 Новый", "pending": "⏳ Ожидает оплаты",
+        "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
+        "on_hold": "⏸ Отложен", "rejected": "❌ Отклонён",
+        "closing": "📌 Закрытие", "ended": "🏁 Счет End",
+        "credit": "🏦 Кредит",
+    }.get(inv["status"], inv["status"])
+
+    try:
+        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+    except (ValueError, TypeError):
+        amount_str = f"{inv.get('amount', 0)}₽"
+
+    # Creator info
+    creator_label = "—"
+    if inv.get("created_by"):
+        creator_label = await get_initiator_label(db, int(inv["created_by"]))
+    creator_role_label = {
+        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+    }.get(inv.get("creator_role", ""), inv.get("creator_role", ""))
+
+    text = (
+        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
+        f"📍 Адрес: {inv.get('object_address', '-')}\n"
+        f"💰 Сумма: {amount_str}\n"
+        f"📊 Статус: {status_label}\n"
+        f"👤 Создал: {creator_label} ({creator_role_label})\n"
+        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
     )
+
+    # Close conditions
+    conditions = await db.check_close_conditions(invoice_id)
+    c1 = "✅" if conditions["installer_ok"] else "⏳"
+    c2 = "✅" if conditions["edo_signed"] else "⏳"
+    c3 = "✅" if conditions["no_debts"] else "⏳"
+    c4 = "✅" if conditions["zp_approved"] else "⏳"
+    text += (
+        f"\n<b>Условия закрытия:</b>\n"
+        f"{c1} 1. Монтажник — Счет ОК\n"
+        f"{c2} 2. ЭДО — подписано\n"
+        f"{c3} 3. Долгов нет\n"
+        f"{c4} 4. ЗП — расчёт подтверждён\n"
+    )
+
+    # Payment file info
+    if inv.get("payment_file_id"):
+        text += "\n💸 Платёжка: прикреплена ✅\n"
+    if inv.get("payment_comment"):
+        text += f"💬 Коммент. к оплате: {inv['payment_comment']}\n"
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Назад к списку", callback_data="rp_work:refresh")
+    b.adjust(1)
+
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 # =====================================================================

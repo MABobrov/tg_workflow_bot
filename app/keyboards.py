@@ -974,6 +974,36 @@ def kp_issued_list_kb(
     return b.as_markup()
 
 
+def invoices_work_list_kb(
+    invoices: list[dict[str, Any]],
+) -> InlineKeyboardMarkup:
+    """Inline-кнопки «Счета в Работе» с двойными индикаторами 💰/📄.
+
+    💰 = статус оплаты: ⏳ ожидает / 🔄 в работе / ✅ оплачен
+    📄 = статус документов (ЭДО): ⏳ не подписано / ✅ подписано
+    """
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        # 💰 payment status indicator
+        pay_emoji = {
+            "pending": "⏳", "in_progress": "🔄", "paid": "✅",
+        }.get(inv.get("status", ""), "❓")
+
+        # 📄 document signing (EDO) indicator
+        doc_emoji = "✅" if inv.get("edo_signed") else "⏳"
+
+        try:
+            amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+        except (ValueError, TypeError):
+            amount_str = f"{inv.get('amount', 0)}₽"
+
+        text = f"💰{pay_emoji} 📄{doc_emoji} №{inv.get('invoice_number', '?')} — {amount_str}"
+        b.button(text=text[:60], callback_data=f"rp_work:view:{inv['id']}")
+    b.button(text="🔄 Обновить", callback_data="rp_work:refresh")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def finish_kb(action_cb_data: str, cancel_cb_data: str | None = None, finish_text: str = "✅ Создать") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text=finish_text, callback_data=action_cb_data)

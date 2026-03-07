@@ -953,6 +953,31 @@ class Database:
         row = await cur.fetchone()
         return row[0] if row else 0
 
+    async def list_invoices_in_work(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List invoices 'in work' (pending/in_progress/paid, excluding credit).
+
+        Used for RP «Счета в Работе» dashboard.
+        """
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices "
+            "WHERE status IN ('pending', 'in_progress', 'paid') "
+            "AND (is_credit = 0 OR is_credit IS NULL) "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def count_invoices_in_work(self) -> int:
+        """Count invoices 'in work' (pending/in_progress/paid, excluding credit)."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM invoices "
+            "WHERE status IN ('pending', 'in_progress', 'paid') "
+            "AND (is_credit = 0 OR is_credit IS NULL)"
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
     async def mark_messages_read(self, user_id: int, channel: str) -> int:
         """Mark all incoming messages for user in channel as read. Returns count."""
         cur = await self.conn.execute(
