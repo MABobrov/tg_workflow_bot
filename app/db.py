@@ -1741,6 +1741,23 @@ class Database:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def count_edo_requests_by_user(self, user_id: int) -> dict[str, int]:
+        """Count EDO requests created by user, grouped by status (open/done)."""
+        cur = await self.conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM edo_requests "
+            "WHERE requested_by = ? GROUP BY status",
+            (user_id,),
+        )
+        rows = await cur.fetchall()
+        result = {"open": 0, "done": 0}
+        for row in rows:
+            s = row["status"]
+            if s in result:
+                result[s] = row["cnt"]
+            else:
+                result[s] = row["cnt"]
+        return result
+
     async def update_edo_request(
         self, edo_id: int, **fields: Any
     ) -> None:

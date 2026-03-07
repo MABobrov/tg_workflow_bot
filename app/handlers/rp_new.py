@@ -642,20 +642,186 @@ async def rp_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
 
 
 # =====================================================================
-# БУХГАЛТЕРИЯ (УПД) — ЭДО-запрос от РП
+# БУХГАЛТЕРИЯ (УПД) — ЭДО-запрос от РП (Этап 8)
+#
+# Дашборд: список исходящих ЭДО-запросов + кнопка «Создать»
+# Создание запроса → EdoRequestSG flow (handlers in manager_new.py)
+# Просмотр карточки запроса с ответом бухгалтерии
+#
+# Callbacks:
+#   rp_edo:create — начать создание нового запроса
+#   rp_edo:view:\d+ — просмотр карточки запроса
+#   rp_edo:refresh — обновить дашборд
 # =====================================================================
+
+
+def _edo_requests_list_kb(
+    requests: list[dict[str, Any]],
+) -> InlineKeyboardMarkup:
+    """Inline-кнопки со списком ЭДО-запросов РП."""
+    b = InlineKeyboardBuilder()
+    for r in requests:
+        status_emoji = {"open": "⏳", "done": "✅"}.get(r.get("status", ""), "❓")
+        req_type_label = {
+            "sign_invoice": "Подпись счёт",
+            "sign_closing": "Закрывающие",
+            "sign_upd": "УПД поставщика",
+            "other": "Другое",
+        }.get(r.get("request_type", ""), r.get("request_type", ""))
+        inv_num = r.get("invoice_number") or ""
+        text = f"{status_emoji} {req_type_label}"
+        if inv_num:
+            text += f" №{inv_num}"
+        b.button(text=text[:60], callback_data=f"rp_edo:view:{r['id']}")
+    b.button(text="➕ Новый запрос ЭДО", callback_data="rp_edo:create")
+    b.button(text="🔄 Обновить", callback_data="rp_edo:refresh")
+    b.adjust(1)
+    return b.as_markup()
+
+
+async def _show_edo_dashboard(
+    target: Message | CallbackQuery,
+    db: Database,
+    user_id: int,
+) -> None:
+    """Показать дашборд «Бухгалтерия (УПД)» для РП."""
+    requests = await db.list_edo_requests(requested_by=user_id, limit=30)
+    counts = await db.count_edo_requests_by_user(user_id)
+
+    if not requests:
+        b = InlineKeyboardBuilder()
+        b.button(text="➕ Новый запрос ЭДО", callback_data="rp_edo:create")
+        b.adjust(1)
+        text = (
+            "📄 <b>Бухгалтерия (УПД)</b>\n\n"
+            "Нет ЭДО-запросов.\n\n"
+            "Нажмите для создания нового:"
+        )
+        if isinstance(target, CallbackQuery):
+            await target.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+        else:
+            await target.answer(text, reply_markup=b.as_markup())
+        return
+
+    stats_parts: list[str] = []
+    if counts.get("open", 0):
+        stats_parts.append(f"⏳ Ожидают: {counts['open']}")
+    if counts.get("done", 0):
+        stats_parts.append(f"✅ Выполнено: {counts['done']}")
+
+    text = (
+        f"📄 <b>Бухгалтерия (УПД)</b> ({len(requests)})\n"
+        f"{' | '.join(stats_parts)}\n\n"
+        "Ваши ЭДО-запросы:"
+    )
+
+    if isinstance(target, CallbackQuery):
+        await target.message.answer(text, reply_markup=_edo_requests_list_kb(requests))  # type: ignore[union-attr]
+    else:
+        await target.answer(text, reply_markup=_edo_requests_list_kb(requests))
+
 
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_EDO))
 async def rp_edo_request(message: Message, state: FSMContext, db: Database) -> None:
+    """Кнопка главного меню: дашборд «Бухгалтерия (УПД)»."""
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
+    u = message.from_user
+    if not u:
+        return
+    await _show_edo_dashboard(message, db, u.id)
+
+
+@router.callback_query(F.data == "rp_edo:create")
+async def rp_edo_create(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Начать создание нового ЭДО-запроса."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    await state.clear()
     await state.set_state(EdoRequestSG.request_type)
-    await message.answer(
-        "📄 <b>Бухгалтерия (УПД)</b>\n\n"
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📄 <b>Новый запрос ЭДО</b>\n\n"
         "Выберите тип запроса:",
         reply_markup=edo_type_kb(),
     )
+
+
+@router.callback_query(F.data == "rp_edo:refresh")
+async def rp_edo_refresh(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Обновить дашборд ЭДО-запросов."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer("🔄 Обновлено")
+    u = cb.from_user
+    if not u:
+        return
+    await _show_edo_dashboard(cb, db, u.id)
+
+
+@router.callback_query(F.data.regexp(r"^rp_edo:view:\d+$"))
+async def rp_edo_view(cb: CallbackQuery, db: Database) -> None:
+    """Карточка ЭДО-запроса с ответом бухгалтерии."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    edo_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req = await db.get_edo_request(edo_id)
+    if not req:
+        await cb.message.answer("❌ Запрос не найден.")  # type: ignore[union-attr]
+        return
+
+    req_type_label = {
+        "sign_invoice": "Подписать по ЭДО (счет)",
+        "sign_closing": "Закрывающие по ЭДО",
+        "sign_upd": "Подписать по ЭДО УПД поставщика",
+        "other": "Другое",
+    }.get(req.get("request_type", ""), req.get("request_type", ""))
+
+    status_label = {
+        "open": "⏳ Ожидает",
+        "done": "✅ Выполнено",
+    }.get(req.get("status", ""), req.get("status", ""))
+
+    text = (
+        f"📄 <b>ЭДО-запрос #{req['id']}</b>\n\n"
+        f"📋 Тип: {req_type_label}\n"
+    )
+    if req.get("invoice_number"):
+        text += f"🔢 Счёт №: {req['invoice_number']}\n"
+    if req.get("description"):
+        text += f"📝 Описание: {req['description']}\n"
+    if req.get("comment"):
+        text += f"💬 Комментарий: {req['comment']}\n"
+    text += (
+        f"📊 Статус: {status_label}\n"
+        f"📅 Создан: {req.get('created_at', '-')[:10]}\n"
+    )
+
+    # Response from accounting
+    if req.get("status") == "done":
+        resp_type = {
+            "signed": "✅ Подписано",
+            "ok": "✅ ОК",
+            "waiting": "⏳ Ожидание",
+            "need_docs": "📄 Запрос документов",
+        }.get(req.get("response_type", ""), req.get("response_type", ""))
+        text += (
+            f"\n<b>Ответ бухгалтерии:</b>\n"
+            f"📋 Результат: {resp_type}\n"
+        )
+        if req.get("response_comment"):
+            text += f"💬 Комментарий: {req['response_comment']}\n"
+        if req.get("completed_at"):
+            text += f"📅 Выполнено: {req['completed_at'][:10]}\n"
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Назад к списку", callback_data="rp_edo:refresh")
+    b.adjust(1)
+
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 # =====================================================================
