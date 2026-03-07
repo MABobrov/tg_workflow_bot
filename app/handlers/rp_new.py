@@ -1225,17 +1225,250 @@ async def rp_invoice_closed_search(cb: CallbackQuery, state: FSMContext, db: Dat
 
 
 # =====================================================================
-# ЛИД НА РАСЧЕТ (LeadToProjectSG)  — ранее «Лид в проект»
+# ЛИД НА РАСЧЕТ (Этап 11)
+#
+# Дашборд: список лидов + статистика + создание
+# Создание: менеджер → описание → источник (inline) → вложения
+# Источники: Свой клиент, Повторное обращение, Парсеры лидов, Другое
+#
+# Callbacks:
+#   rp_lead:create    — начать создание нового лида
+#   rp_lead:stats     — статистика конверсии
+#   rp_lead:refresh   — обновить дашборд
+#   rp_lead:view:\d+  — карточка лида
+#   lead_src:*        — выбор источника лида (inline)
 # =====================================================================
+
+_LEAD_SOURCES = [
+    ("Свой клиент", "own"),
+    ("Повторное обращение", "repeat"),
+    ("Парсеры лидов", "parsers"),
+    ("Другое", "other"),
+]
+
+
+def _lead_source_kb() -> InlineKeyboardMarkup:
+    """Inline-кнопки выбора источника лида."""
+    b = InlineKeyboardBuilder()
+    for label, key in _LEAD_SOURCES:
+        b.button(text=label, callback_data=f"lead_src:{key}")
+    b.adjust(2, 2)
+    return b.as_markup()
+
+
+def _leads_list_kb(
+    leads: list[dict[str, Any]],
+) -> InlineKeyboardMarkup:
+    """Inline-кнопки со списком лидов."""
+    b = InlineKeyboardBuilder()
+    for lead in leads:
+        mgr_role = lead.get("assigned_manager_role", "")
+        mgr_label = {
+            "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+        }.get(mgr_role, "Менеджер")
+        source = lead.get("lead_source", "—") or "—"
+        responded = "✅" if lead.get("response_at") else "⏳"
+        date_str = (lead.get("assigned_at") or lead.get("created_at", ""))[:10]
+        text = f"{responded} {mgr_label} | {source[:15]} ({date_str})"
+        b.button(text=text[:60], callback_data=f"rp_lead:view:{lead['id']}")
+    b.button(text="➕ Новый лид", callback_data="rp_lead:create")
+    b.button(text="📊 Статистика", callback_data="rp_lead:stats")
+    b.button(text="🔄 Обновить", callback_data="rp_lead:refresh")
+    b.adjust(1)
+    return b.as_markup()
+
 
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_LEAD))
 async def start_lead_to_project(message: Message, state: FSMContext, db: Database) -> None:
+    """Кнопка главного меню: дашборд «Лид на расчет»."""
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
-    await state.set_state(LeadToProjectSG.pick_manager)
+
+    leads = await db.list_leads(limit=20)
+    total = await db.count_leads_total()
+
+    if not leads:
+        b = InlineKeyboardBuilder()
+        b.button(text="➕ Новый лид", callback_data="rp_lead:create")
+        b.adjust(1)
+        await message.answer(
+            "🎯 <b>Лид на расчет</b>\n\n"
+            "Нет лидов.\n\n"
+            "Нажмите для создания нового:",
+            reply_markup=b.as_markup(),
+        )
+        return
+
+    # Count responded
+    n_responded = sum(1 for l in leads if l.get("response_at"))
+    n_pending = len(leads) - n_responded
+
+    stats = []
+    if n_responded:
+        stats.append(f"✅ Обработано: {n_responded}")
+    if n_pending:
+        stats.append(f"⏳ Ожидают: {n_pending}")
+
     await message.answer(
-        "🎯 <b>Лид в проект</b>\n\n"
+        f"🎯 <b>Лид на расчет</b> (всего: {total})\n"
+        f"{' | '.join(stats)}\n\n"
+        "Последние лиды:",
+        reply_markup=_leads_list_kb(leads),
+    )
+
+
+@router.callback_query(F.data == "rp_lead:refresh")
+async def lead_refresh(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Обновить дашборд лидов."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer("🔄 Обновлено")
+    await state.clear()
+
+    leads = await db.list_leads(limit=20)
+    total = await db.count_leads_total()
+
+    if not leads:
+        b = InlineKeyboardBuilder()
+        b.button(text="➕ Новый лид", callback_data="rp_lead:create")
+        b.adjust(1)
+        await cb.message.answer(  # type: ignore[union-attr]
+            "🎯 Нет лидов.",
+            reply_markup=b.as_markup(),
+        )
+        return
+
+    n_responded = sum(1 for l in leads if l.get("response_at"))
+    n_pending = len(leads) - n_responded
+    stats = []
+    if n_responded:
+        stats.append(f"✅ Обработано: {n_responded}")
+    if n_pending:
+        stats.append(f"⏳ Ожидают: {n_pending}")
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"🎯 <b>Лид на расчет</b> (всего: {total})\n"
+        f"{' | '.join(stats)}\n\n"
+        "Последние лиды:",
+        reply_markup=_leads_list_kb(leads),
+    )
+
+
+@router.callback_query(F.data.regexp(r"^rp_lead:view:\d+$"))
+async def lead_view(cb: CallbackQuery, db: Database) -> None:
+    """Карточка лида."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    lead_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    # Get lead from lead_tracking table
+    leads = await db.list_leads(limit=500)
+    lead = next((l for l in leads if l.get("id") == lead_id), None)
+    if not lead:
+        await cb.message.answer("❌ Лид не найден.")  # type: ignore[union-attr]
+        return
+
+    mgr_role = lead.get("assigned_manager_role", "")
+    mgr_label = {
+        "manager_kv": "Менеджер КВ", "manager_kia": "Менеджер КИА",
+        "manager_npn": "Менеджер НПН",
+    }.get(mgr_role, "Менеджер")
+
+    # Get manager name
+    mgr_name = mgr_label
+    if lead.get("assigned_manager_id"):
+        mgr_name = await get_initiator_label(db, int(lead["assigned_manager_id"]))
+        mgr_name = f"{mgr_name} ({mgr_label})"
+
+    responded_label = "✅ Обработан" if lead.get("response_at") else "⏳ Ожидает ответа"
+    proc_time = ""
+    if lead.get("processing_time_minutes"):
+        minutes = lead["processing_time_minutes"]
+        if minutes < 60:
+            proc_time = f"\n⏱ Время отклика: {minutes} мин"
+        else:
+            hours = minutes // 60
+            proc_time = f"\n⏱ Время отклика: {hours}ч {minutes % 60}мин"
+
+    text = (
+        f"🎯 <b>Лид #{lead['id']}</b>\n\n"
+        f"👤 Менеджер: {mgr_name}\n"
+        f"📌 Источник: {lead.get('lead_source', '—')}\n"
+        f"📊 Статус: {responded_label}\n"
+        f"📅 Назначен: {(lead.get('assigned_at') or '-')[:10]}\n"
+    )
+    if lead.get("response_at"):
+        text += f"📅 Ответ: {lead['response_at'][:10]}\n"
+    text += proc_time
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Назад к списку", callback_data="rp_lead:refresh")
+    b.adjust(1)
+
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "rp_lead:stats")
+async def lead_stats(cb: CallbackQuery, db: Database) -> None:
+    """Статистика конверсии лидов."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    stats = await db.get_lead_stats()
+    total = stats["total"]
+    responded = stats["responded"]
+
+    text = (
+        f"📊 <b>Статистика лидов</b>\n\n"
+        f"📋 Всего: <b>{total}</b>\n"
+        f"✅ Обработано: <b>{responded}</b>\n"
+        f"⏳ Ожидают: <b>{total - responded}</b>\n"
+    )
+
+    if stats["by_manager"]:
+        text += "\n<b>По менеджерам:</b>\n"
+        for entry in stats["by_manager"]:
+            mgr_label = {
+                "manager_kv": "КВ", "manager_kia": "КИА",
+                "manager_npn": "НПН",
+            }.get(entry.get("assigned_manager_role", ""), entry.get("assigned_manager_role", ""))
+            avg_time = entry.get("avg_time")
+            avg_str = ""
+            if avg_time and avg_time > 0:
+                if avg_time < 60:
+                    avg_str = f" (ср. отклик: {int(avg_time)}мин)"
+                else:
+                    avg_str = f" (ср. отклик: {int(avg_time // 60)}ч)"
+            text += f"  {mgr_label}: {entry['total']} лидов{avg_str}\n"
+
+    if stats["by_source"]:
+        text += "\n<b>По источникам:</b>\n"
+        for entry in stats["by_source"]:
+            source = entry.get("lead_source") or "—"
+            text += f"  {source}: {entry['total']}\n"
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Назад к лидам", callback_data="rp_lead:refresh")
+    b.adjust(1)
+
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+# ---------- Создание нового лида ----------
+
+@router.callback_query(F.data == "rp_lead:create")
+async def lead_create_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Начать создание нового лида (Шаг 1: менеджер)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    await state.clear()
+    await state.set_state(LeadToProjectSG.pick_manager)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "🎯 <b>Новый лид</b>\n\n"
         "Шаг 1/4: Выберите менеджера-получателя:",
         reply_markup=lead_pick_manager_kb(),
     )
@@ -1260,11 +1493,45 @@ async def lead_description(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(description=text)
     await state.set_state(LeadToProjectSG.source)
-    await message.answer("Шаг 3/4: Укажите <b>источник лида</b> (сайт / звонок / рекомендация / ...):")
+    await message.answer(
+        "Шаг 3/4: Выберите <b>источник лида</b>:",
+        reply_markup=_lead_source_kb(),
+    )
+
+
+@router.callback_query(F.data.startswith("lead_src:"))
+async def lead_source_pick(cb: CallbackQuery, state: FSMContext) -> None:
+    """Выбор источника лида из предустановленных."""
+    await cb.answer()
+    source_key = cb.data.split(":")[-1]  # type: ignore[union-attr]
+
+    source_labels = dict(_LEAD_SOURCES)
+    source_label = source_labels.get(source_key, source_key)
+
+    if source_key == "other":
+        await state.update_data(source_type="other")
+        await cb.message.answer(  # type: ignore[union-attr]
+            "Укажите <b>источник лида</b> вручную:"
+        )
+        return  # Stays in LeadToProjectSG.source, next text message will be handled
+
+    await state.update_data(source=source_label, attachments=[])
+    await state.set_state(LeadToProjectSG.attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Отправить", callback_data="lead:create")
+    b.button(text="⏭ Без вложений", callback_data="lead:create")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📌 Источник: <b>{source_label}</b>\n\n"
+        "Шаг 4/4: Прикрепите файлы/фото или нажмите «Отправить»:",
+        reply_markup=b.as_markup(),
+    )
 
 
 @router.message(LeadToProjectSG.source)
-async def lead_source(message: Message, state: FSMContext) -> None:
+async def lead_source_manual(message: Message, state: FSMContext) -> None:
+    """Ручной ввод источника лида (Другое)."""
     text = (message.text or "").strip()
     if not text:
         await message.answer("Укажите источник:")
@@ -1399,7 +1666,8 @@ async def lead_finalize(
     menu_role, isolated_role = await _current_menu(db, u.id)
     await state.clear()
     await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ Лид отправлен {role_label}.",
+        f"✅ Лид отправлен {role_label}.\n"
+        f"📌 Источник: {source}",
         reply_markup=private_only_reply_markup(
             cb.message,
             main_menu(

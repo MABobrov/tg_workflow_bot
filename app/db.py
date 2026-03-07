@@ -1929,6 +1929,46 @@ class Database:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def get_lead_stats(self) -> dict[str, Any]:
+        """Get lead conversion statistics grouped by manager and source."""
+        # By manager role
+        cur = await self.conn.execute(
+            "SELECT assigned_manager_role, COUNT(*) as total, "
+            "AVG(processing_time_minutes) as avg_time "
+            "FROM lead_tracking GROUP BY assigned_manager_role"
+        )
+        by_manager = [dict(r) for r in await cur.fetchall()]
+
+        # By source
+        cur = await self.conn.execute(
+            "SELECT lead_source, COUNT(*) as total "
+            "FROM lead_tracking GROUP BY lead_source ORDER BY total DESC LIMIT 10"
+        )
+        by_source = [dict(r) for r in await cur.fetchall()]
+
+        # Total count
+        cur = await self.conn.execute("SELECT COUNT(*) FROM lead_tracking")
+        total = (await cur.fetchone())[0]
+
+        # Responded count
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM lead_tracking WHERE response_at IS NOT NULL"
+        )
+        responded = (await cur.fetchone())[0]
+
+        return {
+            "total": total,
+            "responded": responded,
+            "by_manager": by_manager,
+            "by_source": by_source,
+        }
+
+    async def count_leads_total(self) -> int:
+        """Count all leads."""
+        cur = await self.conn.execute("SELECT COUNT(*) FROM lead_tracking")
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
     # =====================================================================
     # ROLE SWITCHING (РП ↔ НПН)
     # =====================================================================
