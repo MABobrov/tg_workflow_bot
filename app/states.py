@@ -233,9 +233,22 @@ class CheckKpSG(StatesGroup):
 
 
 class KpReviewResponseSG(StatesGroup):
-    """РП: ответ на запрос «Проверить КП» — формирует пакет документов."""
+    """РП: ответ на запрос «Проверить КП» — формирует пакет документов (legacy)."""
     documents = State()          # вложения (счёт, договор, приложение)
     comment = State()            # комментарий к проверке
+
+
+class KpReviewSG(StatesGroup):
+    """РП: полный flow ответа на CHECK_KP (Этап 5).
+
+    Flow:
+    - Да → payment_type → (б/н: documents → comment) / (Кред: comment)
+    - Нет → reject_comment
+    """
+    payment_type = State()       # выбор: б/н или Кред
+    documents = State()          # вложения (Счёт, Договор, Приложение) — только б/н
+    comment = State()            # комментарий (для «Да»)
+    reject_comment = State()     # комментарий (для «Нет»)
 
 
 class InvoiceStartSG(StatesGroup):

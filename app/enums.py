@@ -90,6 +90,7 @@ class InvoiceStatus(StrEnum):
     REJECTED = "rejected"           # отклонён ГД
     CLOSING = "closing"             # менеджер инициировал «Счет End», проверка условий
     ENDED = "ended"                 # «Счет End» — финально закрыт
+    CREDIT = "credit"               # кредитный счёт (не требует выставления документов от РП)
 
 
 class ZpStatus(StrEnum):

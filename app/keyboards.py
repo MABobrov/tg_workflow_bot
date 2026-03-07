@@ -901,6 +901,79 @@ def lead_pick_manager_kb() -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def kp_task_list_kb(
+    tasks: list[dict[str, Any]],
+    show_issued: bool = True,
+) -> InlineKeyboardMarkup:
+    """Inline-кнопки со списком входящих CHECK_KP задач для РП.
+
+    Каждая задача показывает: №счёта — сумма (Менеджер).
+    """
+    b = InlineKeyboardBuilder()
+    for t in tasks:
+        payload = try_json_loads(t.get("payload_json"))
+        inv_num = payload.get("invoice_number", "?")
+        amount = payload.get("amount", 0)
+        manager_role = payload.get("manager_role", "")
+        mgr_label = {
+            "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+        }.get(manager_role, "Менеджер")
+        try:
+            amount_str = f"{float(amount):,.0f}₽"
+        except (ValueError, TypeError):
+            amount_str = f"{amount}₽"
+        text = f"📋 №{inv_num} — {amount_str} ({mgr_label})"
+        b.button(text=text[:60], callback_data=f"kp_resp:view:{t['id']}")
+    if show_issued:
+        b.button(text="📑 Выставленные счета", callback_data="kp_resp:issued")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def kp_response_kb(task_id: int) -> InlineKeyboardMarkup:
+    """✅ Да / ❌ Нет — inline-кнопки ответа РП на CHECK_KP."""
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Да", callback_data=f"kp_resp:yes:{task_id}")
+    b.button(text="❌ Нет", callback_data=f"kp_resp:no:{task_id}")
+    b.button(text="⬅️ Назад к списку", callback_data="kp_resp:back")
+    b.adjust(2, 1)
+    return b.as_markup()
+
+
+def kp_payment_type_kb(task_id: int) -> InlineKeyboardMarkup:
+    """Выбор системы оплаты: б/н (безналичный) или Кред (кредит)."""
+    b = InlineKeyboardBuilder()
+    b.button(text="💳 б/н (безналичный)", callback_data=f"kp_resp:bn:{task_id}")
+    b.button(text="🏦 Кред (кредит)", callback_data=f"kp_resp:cred:{task_id}")
+    b.button(text="⬅️ Назад", callback_data=f"kp_resp:view:{task_id}")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def kp_issued_list_kb(
+    invoices: list[dict[str, Any]],
+) -> InlineKeyboardMarkup:
+    """Inline-кнопки «Выставленные счета» для РП."""
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        is_credit = inv.get("is_credit") or inv.get("status") == "credit"
+        status_emoji = {
+            "new": "🆕", "pending": "⏳", "in_progress": "🔄",
+            "paid": "✅", "on_hold": "⏸", "rejected": "❌",
+            "closing": "📌", "ended": "🏁", "credit": "🏦",
+        }.get(inv.get("status", ""), "❓")
+        credit_mark = " 🏦" if is_credit and inv.get("status") != "credit" else ""
+        try:
+            amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+        except (ValueError, TypeError):
+            amount_str = f"{inv.get('amount', 0)}₽"
+        text = f"{status_emoji} №{inv.get('invoice_number', '?')} — {amount_str}{credit_mark}"
+        b.button(text=text[:60], callback_data=f"kp_issued:view:{inv['id']}")
+    b.button(text="⬅️ Назад", callback_data="kp_resp:back")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def finish_kb(action_cb_data: str, cancel_cb_data: str | None = None, finish_text: str = "✅ Создать") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text=finish_text, callback_data=action_cb_data)

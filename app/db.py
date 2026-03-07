@@ -895,6 +895,64 @@ class Database:
         row = await cur.fetchone()
         return row[0] if row else 0
 
+    # -------------------- CHECK_KP task helpers (Этап 5) --------------------
+
+    async def list_check_kp_tasks(self, user_id: int, limit: int = 30) -> list[dict[str, Any]]:
+        """List CHECK_KP tasks assigned to user (OPEN/IN_PROGRESS)."""
+        cur = await self.conn.execute(
+            "SELECT * FROM tasks WHERE assigned_to = ? "
+            "AND type = 'check_kp' "
+            "AND status IN ('open', 'in_progress') "
+            "ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def count_check_kp_tasks(self, user_id: int) -> int:
+        """Count OPEN/IN_PROGRESS CHECK_KP tasks assigned to user."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE assigned_to = ? "
+            "AND type = 'check_kp' "
+            "AND status IN ('open', 'in_progress')",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def list_rp_issued_invoices(self, limit: int = 30) -> list[dict[str, Any]]:
+        """List invoices reviewed/processed by RP (status NOT 'new', NOT 'rejected').
+
+        These are the «Выставленные счета» — invoices where RP said «Да».
+        """
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices "
+            "WHERE status NOT IN ('new', 'rejected') "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def list_credit_invoices(self, limit: int = 30) -> list[dict[str, Any]]:
+        """List credit-based invoices (is_credit=1 OR status='credit')."""
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices "
+            "WHERE is_credit = 1 OR status = 'credit' "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def count_credit_invoices(self) -> int:
+        """Count credit-based invoices."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM invoices WHERE is_credit = 1 OR status = 'credit'"
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
     async def mark_messages_read(self, user_id: int, channel: str) -> int:
         """Mark all incoming messages for user in channel as read. Returns count."""
         cur = await self.conn.execute(

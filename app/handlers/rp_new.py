@@ -61,6 +61,10 @@ from ..keyboards import (
     RP_SUBBTN_MONTAZH,
     edo_type_kb,
     invoice_list_kb,
+    kp_issued_list_kb,
+    kp_payment_type_kb,
+    kp_response_kb,
+    kp_task_list_kb,
     lead_pick_manager_kb,
     main_menu,
     rp_chat_gd_submenu,
@@ -74,6 +78,7 @@ from ..services.notifier import Notifier
 from ..states import (
     EdoRequestSG,
     KpReviewResponseSG,
+    KpReviewSG,
     LeadToProjectSG,
     ManagerChatProxySG,
 )
@@ -303,32 +308,52 @@ async def rp_chat_montazh(message: Message, state: FSMContext, db: Database) -> 
 
 
 # =====================================================================
-# ПРОВЕРКА КП / ВЫСТАВЛЕНИЕ СЧЕТА (placeholder)
+# ПРОВЕРКА КП / ВЫСТАВЛЕНИЕ СЧЕТА — полный flow (Этап 5)
 # =====================================================================
 
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_CHECK_KP))
-async def rp_check_kp(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+async def rp_check_kp(message: Message, state: FSMContext, db: Database) -> None:
+    """Кнопка главного меню: показать входящие CHECK_KP задачи."""
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
     u = message.from_user
     if not u:
         return
-    menu_role, isolated_role = await _current_menu(db, u.id)
-    await message.answer(
-        "🚧 <b>В разработке</b>\n\n"
-        "Раздел «Проверка КП / Выставление Счета» будет доступен в ближайшем обновлении.",
-        reply_markup=private_only_reply_markup(
+
+    tasks = await db.list_check_kp_tasks(u.id)
+
+    if not tasks:
+        await answer_service(
             message,
-            main_menu(
-                menu_role,
-                is_admin=u.id in (config.admin_ids or set()),
-                unread=await db.count_unread_tasks(u.id),
-                isolated_role=isolated_role,
-                rp_tasks=await db.count_rp_role_tasks(u.id),
-                rp_messages=await db.count_rp_role_messages(u.id),
-            ),
-        ),
+            "📋 <b>Проверка КП / Выставление Счета</b>\n\n"
+            "Входящих запросов на проверку КП нет ✅\n\n"
+            "Используйте «📑 Выставленные счета» для просмотра обработанных.",
+            delay_seconds=60,
+        )
+        # Всё равно показываем кнопку «Выставленные счета»
+        b = InlineKeyboardBuilder()
+        b.button(text="📑 Выставленные счета", callback_data="kp_resp:issued")
+        b.adjust(1)
+        await message.answer("—", reply_markup=b.as_markup())
+        return
+
+    # Подсчёт по менеджерам
+    mgr_counts: dict[str, int] = {}
+    for t in tasks:
+        payload = json.loads(t.get("payload_json") or "{}")
+        mrole = payload.get("manager_role", "manager")
+        lbl = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}.get(mrole, "Менеджер")
+        mgr_counts[lbl] = mgr_counts.get(lbl, 0) + 1
+
+    summary_parts = [f"{lbl}: {cnt}" for lbl, cnt in mgr_counts.items()]
+
+    await message.answer(
+        f"📋 <b>Проверка КП / Выставление Счета</b>\n\n"
+        f"Входящих запросов: <b>{len(tasks)}</b>\n"
+        f"По менеджерам: {', '.join(summary_parts)}\n\n"
+        "Нажмите на задачу для просмотра:",
+        reply_markup=kp_task_list_kb(tasks, show_issued=True),
     )
 
 
@@ -696,33 +721,202 @@ async def role_switch_already_active(message: Message, db: Database, config: Con
 
 
 # =====================================================================
-# ОТВЕТ НА КП ОТ МЕНЕДЖЕРА (KpReviewResponseSG)
+# ОТВЕТ НА КП ОТ МЕНЕДЖЕРА — полный flow (Этап 5)
+#
+# Callback prefixes:
+#   kp_review:\d+     — inline-кнопка из уведомления менеджера (открывает карточку)
+#   kp_resp:view:\d+  — просмотр карточки задачи
+#   kp_resp:yes:\d+   — Да → выбор типа оплаты
+#   kp_resp:no:\d+    — Нет → FSM reject_comment
+#   kp_resp:bn:\d+    — б/н → FSM documents
+#   kp_resp:cred:\d+  — Кред → FSM comment (без документов)
+#   kp_resp:back      — назад к списку CHECK_KP задач
+#   kp_resp:issued    — Выставленные счета
+#   kp_issued:view:\d+ — просмотр выставленного счёта
 # =====================================================================
+
+
+async def _show_kp_task_card(
+    target: CallbackQuery,
+    db: Database,
+    task_id: int,
+) -> None:
+    """Показать карточку CHECK_KP задачи с кнопками Да/Нет."""
+    task = await db.get_task(task_id)
+    if not task:
+        await target.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
+        return
+
+    payload = json.loads(task.get("payload_json") or "{}")
+    invoice_number = payload.get("invoice_number", "?")
+    address = payload.get("address", "—")
+    amount = payload.get("amount", 0)
+    comment = payload.get("comment", "")
+    manager_role = payload.get("manager_role", "manager")
+    manager_id = payload.get("manager_id")
+
+    mgr_label = {
+        "manager_kv": "Менеджер КВ",
+        "manager_kia": "Менеджер КИА",
+        "manager_npn": "Менеджер НПН",
+    }.get(manager_role, "Менеджер")
+
+    # Get manager name
+    mgr_name = mgr_label
+    if manager_id:
+        mgr_name = await get_initiator_label(db, int(manager_id))
+        mgr_name = f"{mgr_name} ({mgr_label})"
+
+    try:
+        amount_str = f"{float(amount):,.0f}₽"
+    except (ValueError, TypeError):
+        amount_str = f"{amount}₽"
+
+    text = (
+        f"📋 <b>Проверка КП — карточка</b>\n\n"
+        f"📄 Счёт №: <code>{invoice_number}</code>\n"
+        f"📍 Адрес: {address}\n"
+        f"💰 Сумма: {amount_str}\n"
+        f"👤 От: {mgr_name}\n"
+    )
+    if comment:
+        text += f"💬 Комментарий: {comment}\n"
+
+    text += (
+        f"\n📅 Создан: {task.get('created_at', '-')[:10]}\n"
+        f"\n<b>Ваше решение:</b>"
+    )
+
+    await target.message.answer(  # type: ignore[union-attr]
+        text,
+        reply_markup=kp_response_kb(task_id),
+    )
+
+    # Show attached КП documents
+    attachments = await db.list_attachments(int(task["id"]))
+    if attachments:
+        from ..services.notifier import Notifier
+        # Show docs inline (just list them, user sees them in notification)
+        att_text = f"📎 Вложения КП ({len(attachments)} файл(ов))"
+        await target.message.answer(att_text)  # type: ignore[union-attr]
+
 
 @router.callback_query(F.data.regexp(r"^kp_review:\d+$"))
 async def kp_review_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """RP initiates response to a CHECK_KP task."""
+    """Inline-кнопка из уведомления менеджера → показать карточку задачи."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    await state.clear()
+
+    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await _show_kp_task_card(cb, db, task_id)
+
+
+@router.callback_query(F.data.regexp(r"^kp_resp:view:\d+$"))
+async def kp_view_task(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Просмотр карточки CHECK_KP задачи из списка."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    await state.clear()
+
+    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await _show_kp_task_card(cb, db, task_id)
+
+
+@router.callback_query(F.data == "kp_resp:back")
+async def kp_back_to_list(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Назад к списку входящих CHECK_KP задач."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    await state.clear()
+
+    u = cb.from_user
+    if not u:
+        return
+
+    tasks = await db.list_check_kp_tasks(u.id)
+    if not tasks:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "📋 Входящих запросов на проверку КП нет ✅",
+        )
+        return
+
+    mgr_counts: dict[str, int] = {}
+    for t in tasks:
+        payload = json.loads(t.get("payload_json") or "{}")
+        mrole = payload.get("manager_role", "manager")
+        lbl = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}.get(mrole, "Менеджер")
+        mgr_counts[lbl] = mgr_counts.get(lbl, 0) + 1
+    summary_parts = [f"{lbl}: {cnt}" for lbl, cnt in mgr_counts.items()]
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📋 <b>Проверка КП / Выставление Счета</b>\n\n"
+        f"Входящих запросов: <b>{len(tasks)}</b>\n"
+        f"По менеджерам: {', '.join(summary_parts)}\n\n"
+        "Нажмите на задачу для просмотра:",
+        reply_markup=kp_task_list_kb(tasks, show_issued=True),
+    )
+
+
+# ---------- ДА → Выбор типа оплаты ----------
+
+@router.callback_query(F.data.regexp(r"^kp_resp:yes:\d+$"))
+async def kp_resp_yes(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """РП нажал Да → выбор системы оплаты (б/н или Кред)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    task = await db.get_task(task_id)
+    if not task:
+        await cb.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
+        return
+
+    payload = json.loads(task.get("payload_json") or "{}")
+    invoice_number = payload.get("invoice_number", "?")
+    try:
+        amount_str = f"{float(payload.get('amount', 0)):,.0f}₽"
+    except (ValueError, TypeError):
+        amount_str = f"{payload.get('amount', 0)}₽"
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📋 <b>Счёт №{invoice_number}</b> — {amount_str}\n\n"
+        "Выберите <b>систему оплаты</b>:",
+        reply_markup=kp_payment_type_kb(task_id),
+    )
+
+
+# ---------- б/н (безналичный) → Документы → Комментарий ----------
+
+@router.callback_query(F.data.regexp(r"^kp_resp:bn:\d+$"))
+async def kp_resp_bn(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """б/н выбран → FSM: сбор документов (Счёт, Договор, Приложение)."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
 
     task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     await state.clear()
-    await state.set_state(KpReviewResponseSG.documents)
-    await state.update_data(task_id=task_id, documents=[])
+    await state.set_state(KpReviewSG.documents)
+    await state.update_data(task_id=task_id, payment_type="bn", documents=[])
 
     await cb.message.answer(  # type: ignore[union-attr]
-        "📋 <b>Ответ на КП</b>\n\n"
+        "📋 <b>Ответ на КП (б/н)</b>\n\n"
         "Прикрепите готовые документы:\n"
         "• Счёт\n"
         "• Договор\n"
         "• Приложение к договору\n\n"
-        "Отправляйте файлы по одному."
+        "Отправляйте файлы по одному.",
     )
 
 
-@router.message(KpReviewResponseSG.documents)
+@router.message(KpReviewSG.documents)
 async def kp_review_documents(message: Message, state: FSMContext) -> None:
+    """Сбор документов для б/н ответа на КП."""
     data = await state.get_data()
     documents: list[dict[str, Any]] = data.get("documents", [])
 
@@ -743,9 +937,9 @@ async def kp_review_documents(message: Message, state: FSMContext) -> None:
         })
     else:
         if documents:
-            # Text = move to comment step
+            # Текстовое сообщение = переход к комментарию
             await state.update_data(documents=documents)
-            await state.set_state(KpReviewResponseSG.comment)
+            await state.set_state(KpReviewSG.comment)
             await message.answer("Добавьте <b>комментарий</b> (или «—» для пропуска):")
             return
         await message.answer("Пришлите файл или фото:")
@@ -765,14 +959,38 @@ async def kp_review_documents(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "kp_review:next")
 async def kp_review_next(cb: CallbackQuery, state: FSMContext) -> None:
+    """Кнопка 'Далее' → переход к комментарию."""
     await cb.answer()
-    await state.set_state(KpReviewResponseSG.comment)
+    await state.set_state(KpReviewSG.comment)
     await cb.message.answer(  # type: ignore[union-attr]
         "Добавьте <b>комментарий</b> (или «—» для пропуска):"
     )
 
 
-@router.message(KpReviewResponseSG.comment)
+# ---------- Кред (кредит) → Комментарий (без документов) ----------
+
+@router.callback_query(F.data.regexp(r"^kp_resp:cred:\d+$"))
+async def kp_resp_cred(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Кред выбран → FSM: комментарий (документы не требуются)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await state.clear()
+    await state.set_state(KpReviewSG.comment)
+    await state.update_data(task_id=task_id, payment_type="cred", documents=[])
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        "🏦 <b>Ответ на КП (Кред)</b>\n\n"
+        "Документы не требуются (банк оформляет самостоятельно).\n\n"
+        "Добавьте <b>комментарий</b> (или «—» для пропуска):",
+    )
+
+
+# ---------- Комментарий (Да — б/н или Кред) → Финализация ----------
+
+@router.message(KpReviewSG.comment)
 async def kp_review_comment(
     message: Message,
     state: FSMContext,
@@ -780,6 +998,7 @@ async def kp_review_comment(
     config: Config,
     notifier: Notifier,
 ) -> None:
+    """Финализация ответа «Да» (б/н или Кред)."""
     if not message.from_user:
         return
     comment = (message.text or "").strip()
@@ -788,6 +1007,7 @@ async def kp_review_comment(
 
     data = await state.get_data()
     task_id = data["task_id"]
+    payment_type = data.get("payment_type", "bn")  # "bn" or "cred"
     documents = data.get("documents", [])
 
     task = await db.get_task(task_id)
@@ -796,44 +1016,75 @@ async def kp_review_comment(
         await state.clear()
         return
 
-    payload = json.loads(task.get("payload_json", "{}"))
+    payload = json.loads(task.get("payload_json") or "{}")
     manager_id = payload.get("manager_id")
     invoice_number = payload.get("invoice_number", "?")
+    invoice_id = payload.get("invoice_id")
 
     # Mark task as done
     await db.update_task_status(task_id, TaskStatus.DONE)
 
-    # Update invoice documents
-    invoice_id = payload.get("invoice_id")
-    if invoice_id:
-        await db.update_invoice(
-            invoice_id,
-            documents_json=json.dumps(documents, ensure_ascii=False) if documents else None,
-        )
+    # Update invoice based on payment type
+    is_credit = payment_type == "cred"
 
-    # Send documents to manager
+    if invoice_id:
+        if is_credit:
+            # Кред: is_credit=1, status=credit, документы не нужны
+            await db.update_invoice(
+                invoice_id,
+                is_credit=1,
+                status=InvoiceStatus.CREDIT,
+            )
+        else:
+            # б/н: обычный flow, документы прикреплены, status=pending_payment
+            await db.update_invoice(
+                invoice_id,
+                is_credit=0,
+                status=InvoiceStatus.PENDING_PAYMENT,
+                documents_json=json.dumps(documents, ensure_ascii=False) if documents else None,
+            )
+
+    # Notify manager
     if manager_id:
         initiator = await get_initiator_label(db, message.from_user.id)
-        msg = (
-            f"📋 <b>Документы по счёту №{invoice_number}</b>\n"
-            f"👤 От: {initiator}\n\n"
-            f"РП проверил КП и подготовил:\n"
-            f"• Счёт, Договор, Приложение\n"
-        )
+
+        if is_credit:
+            msg = (
+                f"🏦 <b>Счёт №{invoice_number} — Кред</b>\n"
+                f"👤 От: {initiator}\n\n"
+                f"РП одобрил КП.\n"
+                f"Система оплаты: <b>Кредит</b>\n"
+                f"Документы оформляет банк.\n"
+            )
+        else:
+            msg = (
+                f"📋 <b>Документы по счёту №{invoice_number}</b>\n"
+                f"👤 От: {initiator}\n\n"
+                f"РП проверил КП и подготовил:\n"
+                f"• Счёт, Договор, Приложение\n"
+                f"Система оплаты: <b>б/н</b>\n"
+            )
+
         if comment:
             msg += f"\n💬 Комментарий РП: {comment}"
 
         await notifier.safe_send(int(manager_id), msg)
-        for doc in documents:
-            await notifier.safe_send_media(
-                int(manager_id), doc["file_type"], doc["file_id"], caption=doc.get("caption")
-            )
+
+        # Send attached documents (only for б/н)
+        if not is_credit:
+            for doc in documents:
+                await notifier.safe_send_media(
+                    int(manager_id), doc["file_type"], doc["file_id"],
+                    caption=doc.get("caption"),
+                )
+
         await refresh_recipient_keyboard(notifier, db, config, int(manager_id))
 
+    credit_label = " (Кред)" if is_credit else ""
     menu_role, isolated_role = await _current_menu(db, message.from_user.id)
     await state.clear()
     await message.answer(
-        f"✅ Документы отправлены менеджеру по счёту №{invoice_number}.",
+        f"✅ Ответ отправлен менеджеру по счёту №{invoice_number}{credit_label}.",
         reply_markup=private_only_reply_markup(
             message,
             main_menu(
@@ -846,3 +1097,178 @@ async def kp_review_comment(
             ),
         ),
     )
+
+
+# ---------- НЕТ → Комментарий → Отклонение ----------
+
+@router.callback_query(F.data.regexp(r"^kp_resp:no:\d+$"))
+async def kp_resp_no(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """РП нажал Нет → FSM: ввод комментария к отклонению."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await state.clear()
+    await state.set_state(KpReviewSG.reject_comment)
+    await state.update_data(task_id=task_id)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        "❌ <b>Отклонение КП</b>\n\n"
+        "Укажите <b>причину отклонения</b> (комментарий):",
+    )
+
+
+@router.message(KpReviewSG.reject_comment)
+async def kp_reject_comment(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+) -> None:
+    """Финализация отклонения (Нет)."""
+    if not message.from_user:
+        return
+    comment = (message.text or "").strip()
+    if not comment:
+        await message.answer("Напишите причину отклонения:")
+        return
+
+    data = await state.get_data()
+    task_id = data["task_id"]
+
+    task = await db.get_task(task_id)
+    if not task:
+        await message.answer("❌ Задача не найдена.")
+        await state.clear()
+        return
+
+    payload = json.loads(task.get("payload_json") or "{}")
+    manager_id = payload.get("manager_id")
+    invoice_number = payload.get("invoice_number", "?")
+    invoice_id = payload.get("invoice_id")
+
+    # Mark task as rejected
+    await db.update_task_status(task_id, TaskStatus.REJECTED)
+
+    # Update invoice status
+    if invoice_id:
+        await db.update_invoice(invoice_id, status=InvoiceStatus.REJECTED)
+
+    # Notify manager
+    if manager_id:
+        initiator = await get_initiator_label(db, message.from_user.id)
+        msg = (
+            f"❌ <b>КП по счёту №{invoice_number} отклонён</b>\n"
+            f"👤 От: {initiator}\n\n"
+            f"💬 Причина: {comment}\n"
+        )
+        await notifier.safe_send(int(manager_id), msg)
+        await refresh_recipient_keyboard(notifier, db, config, int(manager_id))
+
+    menu_role, isolated_role = await _current_menu(db, message.from_user.id)
+    await state.clear()
+    await message.answer(
+        f"❌ КП по счёту №{invoice_number} отклонён. Менеджер уведомлён.",
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                menu_role,
+                is_admin=message.from_user.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(message.from_user.id),
+                isolated_role=isolated_role,
+                rp_tasks=await db.count_rp_role_tasks(message.from_user.id),
+                rp_messages=await db.count_rp_role_messages(message.from_user.id),
+            ),
+        ),
+    )
+
+
+# ---------- ВЫСТАВЛЕННЫЕ СЧЕТА ----------
+
+@router.callback_query(F.data == "kp_resp:issued")
+async def kp_issued_list(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Показать «Выставленные счета» — обработанные РП."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoices = await db.list_rp_issued_invoices(limit=30)
+    if not invoices:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "📑 <b>Выставленные счета</b>\n\nСписок пуст.",
+        )
+        return
+
+    # Count by type
+    n_bn = sum(1 for inv in invoices if not inv.get("is_credit"))
+    n_cred = sum(1 for inv in invoices if inv.get("is_credit") or inv.get("status") == "credit")
+
+    header = f"📑 <b>Выставленные счета</b> ({len(invoices)})\n"
+    if n_bn > 0:
+        header += f"💳 б/н: {n_bn}"
+    if n_cred > 0:
+        header += f"  🏦 Кред: {n_cred}"
+    header += "\n\nНажмите для просмотра:"
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        header,
+        reply_markup=kp_issued_list_kb(invoices),
+    )
+
+
+@router.callback_query(F.data.regexp(r"^kp_issued:view:\d+$"))
+async def kp_issued_view(cb: CallbackQuery, db: Database) -> None:
+    """Просмотр карточки выставленного счёта."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    is_credit = inv.get("is_credit") or inv.get("status") == "credit"
+    payment_label = "🏦 Кред (кредит)" if is_credit else "💳 б/н (безналичный)"
+
+    status_label = {
+        "new": "🆕 Новый", "pending": "⏳ Ожидает оплаты",
+        "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
+        "on_hold": "⏸ Отложен", "rejected": "❌ Отклонён",
+        "closing": "📌 Закрытие", "ended": "🏁 Счет End",
+        "credit": "🏦 Кредит",
+    }.get(inv["status"], inv["status"])
+
+    try:
+        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+    except (ValueError, TypeError):
+        amount_str = f"{inv.get('amount', 0)}₽"
+
+    text = (
+        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
+        f"📍 Адрес: {inv.get('object_address', '-')}\n"
+        f"💰 Сумма: {amount_str}\n"
+        f"💳 Оплата: {payment_label}\n"
+        f"📊 Статус: {status_label}\n"
+        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
+    )
+
+    if not is_credit:
+        conditions = await db.check_close_conditions(invoice_id)
+        c1 = "✅" if conditions["installer_ok"] else "⏳"
+        c2 = "✅" if conditions["edo_signed"] else "⏳"
+        c3 = "✅" if conditions["no_debts"] else "⏳"
+        text += (
+            f"\n<b>Условия закрытия:</b>\n"
+            f"{c1} 1. Монтажник — Счет ОК\n"
+            f"{c2} 2. ЭДО — подписано\n"
+            f"{c3} 3. Долгов нет\n"
+        )
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Назад к списку", callback_data="kp_resp:issued")
+    b.adjust(1)
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
