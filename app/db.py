@@ -835,6 +835,66 @@ class Database:
         rows = await cur.fetchall()
         return {row[0]: row[1] for row in rows}
 
+    # -------------------- RP role badge counters --------------------
+
+    _RP_TASK_TYPES = (
+        "check_kp",
+        "invoice_payment",
+        "gd_task",
+        "urgent_gd",
+        "not_urgent_gd",
+        "lead_to_project",
+        "order_materials",
+        "order_profile",
+        "order_glass",
+        "delivery_request",
+        "tinting_request",
+        "issue",
+    )
+
+    _RP_CHANNELS = (
+        "rp",
+    )
+
+    async def count_rp_role_tasks(self, user_id: int) -> int:
+        """Count OPEN/IN_PROGRESS tasks assigned to user with RP-relevant types.
+
+        RP task types: CHECK_KP, INVOICE_PAYMENT, GD_TASK, URGENT_GD,
+        NOT_URGENT_GD, LEAD_TO_PROJECT, ORDER_MATERIALS, ORDER_PROFILE,
+        ORDER_GLASS, DELIVERY_REQUEST, TINTING_REQUEST, ISSUE.
+
+        Returns the total count (for the red-circle badge on role buttons).
+        """
+        placeholders = ",".join("?" for _ in self._RP_TASK_TYPES)
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM tasks "
+            "WHERE assigned_to = ? "
+            "AND status IN ('open', 'in_progress') "
+            f"AND type IN ({placeholders})",
+            (user_id, *self._RP_TASK_TYPES),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def count_rp_role_messages(self, user_id: int) -> int:
+        """Count unread incoming chat messages for user in RP-relevant channels.
+
+        RP channels: 'rp' (messages directed to RP from GD and others).
+
+        Returns the total count (for the speech-bubble badge on role buttons).
+        """
+        placeholders = ",".join("?" for _ in self._RP_CHANNELS)
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM chat_messages "
+            "WHERE receiver_id = ? "
+            "AND direction = 'incoming' "
+            "AND is_read = 0 "
+            f"AND channel IN ({placeholders})",
+            (user_id, *self._RP_CHANNELS),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
     async def mark_messages_read(self, user_id: int, channel: str) -> int:
         """Mark all incoming messages for user in channel as read. Returns count."""
         cur = await self.conn.execute(

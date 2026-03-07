@@ -1,16 +1,27 @@
 """
 New handlers for RP (Руководитель проектов) role.
 
-Covers:
+Main menu (March 2026 layout):
+- Проверка КП / Выставление Счета   (placeholder)
+- Чат с ГД                          (placeholder)
+- Счета в Работе                    (placeholder)
+- Менеджер 1 (КВ) — chat-proxy
+- Счета на оплату — мониторинг
+- Менеджер 2 (КИА) — chat-proxy
+- Бухгалтерия (УПД) — ЭДО запрос
+- Монтажная гр. — submenu (Чат / В работу)
+- Счет закрыт                       (placeholder)
+- Лид на расчет (LeadToProjectSG)
+
+Legacy (still handled for backward compat):
 - Входящие Отд.Продаж
-- Счета в Работу (мониторинг)
-- Счет End (входящие условия)
-- Проблема / Вопрос
-- Менеджер 1 (КВ) / Менеджер 2 (КИА) — chat-proxy
-- Монтажная гр. — chat-proxy
-- Лид в проект (LeadToProjectSG)
-- Смена роли (RoleSwitchSG)
-- Поиск Счета
+- Счета в Работу (мониторинг, legacy)
+- Счет End (входящие условия, legacy)
+- Проблема / Вопрос (legacy)
+
+Other:
+- Смена роли РП ↔ НПН
+- Поиск Счета (в manager_new.py)
 - Ответ на КП от менеджера (KpReviewResponseSG)
 """
 from __future__ import annotations
@@ -28,9 +39,14 @@ from ..config import Config
 from ..db import Database
 from ..enums import InvoiceStatus, Role, TaskStatus, TaskType
 from ..keyboards import (
+    RP_BTN_CHECK_KP,
+    RP_BTN_CHAT_GD,
+    RP_BTN_EDO,
+    RP_BTN_INVOICE_CLOSED,
     RP_BTN_INVOICE_END,
     RP_BTN_INVOICE_START,
     RP_BTN_INVOICES_PAY,
+    RP_BTN_INVOICES_WORK,
     RP_BTN_ISSUE,
     RP_BTN_LEAD,
     RP_BTN_MGR_KIA,
@@ -43,16 +59,19 @@ from ..keyboards import (
     RP_SUBBTN_MGR_KIA,
     RP_SUBBTN_MGR_KV,
     RP_SUBBTN_MONTAZH,
+    edo_type_kb,
     invoice_list_kb,
     lead_pick_manager_kb,
     main_menu,
     rp_chat_submenu,
+    rp_montazh_submenu,
     tasks_kb,
 )
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import (
+    EdoRequestSG,
     KpReviewResponseSG,
     LeadToProjectSG,
     ManagerChatProxySG,
@@ -99,7 +118,7 @@ async def rp_inbox_sales(message: Message, db: Database) -> None:
 # СЧЕТ В РАБОТУ (мониторинг для РП)
 # =====================================================================
 
-@router.message(F.text == RP_BTN_INVOICE_START)
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_INVOICE_START))
 async def rp_invoice_start_monitor(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
@@ -163,7 +182,7 @@ async def rp_invoice_view(cb: CallbackQuery, db: Database) -> None:
 # СЧЕТА НА ОПЛАТУ (💳 — мониторинг PENDING_PAYMENT + IN_PROGRESS)
 # =====================================================================
 
-@router.message(F.text == RP_BTN_INVOICES_PAY)
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_INVOICES_PAY))
 async def rp_invoices_pay(message: Message, db: Database) -> None:
     """Show invoices pending payment and in-progress for RP monitoring."""
     if not await require_role_message(message, db, roles=[Role.RP]):
@@ -198,7 +217,7 @@ async def rp_invoices_pay(message: Message, db: Database) -> None:
 # СЧЕТ END (входящие для РП)
 # =====================================================================
 
-@router.message(F.text == RP_BTN_INVOICE_END)
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_INVOICE_END))
 async def rp_invoice_end(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
@@ -220,7 +239,7 @@ async def rp_invoice_end(message: Message, db: Database) -> None:
 # ПРОБЛЕМА / ВОПРОС
 # =====================================================================
 
-@router.message(F.text == RP_BTN_ISSUE)
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_ISSUE))
 async def rp_issue(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
@@ -239,7 +258,7 @@ async def rp_issue(message: Message, db: Database) -> None:
 # МЕНЕДЖЕР 1 (КВ) — chat-proxy
 # =====================================================================
 
-@router.message(F.text.in_({RP_BTN_MGR_KV, RP_SUBBTN_MGR_KV}))
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_MGR_KV) or (m.text or "").strip().startswith(RP_SUBBTN_MGR_KV))
 async def rp_chat_mgr_kv(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
@@ -252,7 +271,7 @@ async def rp_chat_mgr_kv(message: Message, state: FSMContext, db: Database) -> N
     )
 
 
-@router.message(F.text.in_({RP_BTN_MGR_KIA, RP_SUBBTN_MGR_KIA}))
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_MGR_KIA) or (m.text or "").strip().startswith(RP_SUBBTN_MGR_KIA))
 async def rp_chat_mgr_kia(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
@@ -269,7 +288,7 @@ async def rp_chat_mgr_kia(message: Message, state: FSMContext, db: Database) -> 
 # МОНТАЖНАЯ ГР. — chat-proxy
 # =====================================================================
 
-@router.message(F.text.in_({RP_BTN_MONTAZH, RP_SUBBTN_MONTAZH}))
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_MONTAZH) or (m.text or "").strip().startswith(RP_SUBBTN_MONTAZH))
 async def rp_chat_montazh(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
@@ -278,15 +297,144 @@ async def rp_chat_montazh(message: Message, state: FSMContext, db: Database) -> 
     await state.update_data(channel="montazh")
     await message.answer(
         "🔧 <b>Монтажная гр.</b>\n\nВыберите действие:",
-        reply_markup=rp_chat_submenu("⬅️ Назад"),
+        reply_markup=rp_montazh_submenu("⬅️ Назад"),
     )
 
 
 # =====================================================================
-# ЛИД В ПРОЕКТ (LeadToProjectSG)
+# ПРОВЕРКА КП / ВЫСТАВЛЕНИЕ СЧЕТА (placeholder)
 # =====================================================================
 
-@router.message(F.text == RP_BTN_LEAD)
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_CHECK_KP))
+async def rp_check_kp(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    await state.clear()
+    u = message.from_user
+    if not u:
+        return
+    menu_role, isolated_role = await _current_menu(db, u.id)
+    await message.answer(
+        "🚧 <b>В разработке</b>\n\n"
+        "Раздел «Проверка КП / Выставление Счета» будет доступен в ближайшем обновлении.",
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                menu_role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
+        ),
+    )
+
+
+# =====================================================================
+# ЧАТ С ГД (placeholder)
+# =====================================================================
+
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_CHAT_GD))
+async def rp_chat_gd(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    await state.clear()
+    u = message.from_user
+    if not u:
+        return
+    menu_role, isolated_role = await _current_menu(db, u.id)
+    await message.answer(
+        "🚧 <b>В разработке</b>\n\n"
+        "Раздел «Чат с ГД» будет доступен в ближайшем обновлении.",
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                menu_role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
+        ),
+    )
+
+
+# =====================================================================
+# СЧЕТА В РАБОТЕ (placeholder — новая кнопка главного меню)
+# =====================================================================
+
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_INVOICES_WORK))
+async def rp_invoices_work(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    await state.clear()
+    u = message.from_user
+    if not u:
+        return
+    menu_role, isolated_role = await _current_menu(db, u.id)
+    await message.answer(
+        "🚧 <b>В разработке</b>\n\n"
+        "Раздел «Счета в Работе» будет доступен в ближайшем обновлении.",
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                menu_role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
+        ),
+    )
+
+
+# =====================================================================
+# БУХГАЛТЕРИЯ (УПД) — ЭДО-запрос от РП
+# =====================================================================
+
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_EDO))
+async def rp_edo_request(message: Message, state: FSMContext, db: Database) -> None:
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    await state.clear()
+    await state.set_state(EdoRequestSG.request_type)
+    await message.answer(
+        "📄 <b>Бухгалтерия (УПД)</b>\n\n"
+        "Выберите тип запроса:",
+        reply_markup=edo_type_kb(),
+    )
+
+
+# =====================================================================
+# СЧЕТ ЗАКРЫТ (placeholder)
+# =====================================================================
+
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_INVOICE_CLOSED))
+async def rp_invoice_closed(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    await state.clear()
+    u = message.from_user
+    if not u:
+        return
+    menu_role, isolated_role = await _current_menu(db, u.id)
+    await message.answer(
+        "🚧 <b>В разработке</b>\n\n"
+        "Раздел «Счет закрыт» будет доступен в ближайшем обновлении.",
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                menu_role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
+        ),
+    )
+
+
+# =====================================================================
+# ЛИД НА РАСЧЕТ (LeadToProjectSG)  — ранее «Лид в проект»
+# =====================================================================
+
+@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_LEAD))
 async def start_lead_to_project(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
