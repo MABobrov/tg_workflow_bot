@@ -978,6 +978,44 @@ class Database:
         row = await cur.fetchone()
         return row[0] if row else 0
 
+    async def list_ended_invoices(
+        self,
+        month_start: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List ENDED invoices. If month_start given, filter by updated_at >= month_start."""
+        if month_start:
+            cur = await self.conn.execute(
+                "SELECT * FROM invoices "
+                "WHERE status = 'ended' AND updated_at >= ? "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (month_start, limit),
+            )
+        else:
+            cur = await self.conn.execute(
+                "SELECT * FROM invoices "
+                "WHERE status = 'ended' "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def count_ended_invoices(self, month_start: str | None = None) -> int:
+        """Count ENDED invoices. If month_start given, count only current month."""
+        if month_start:
+            cur = await self.conn.execute(
+                "SELECT COUNT(*) FROM invoices "
+                "WHERE status = 'ended' AND updated_at >= ?",
+                (month_start,),
+            )
+        else:
+            cur = await self.conn.execute(
+                "SELECT COUNT(*) FROM invoices WHERE status = 'ended'"
+            )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
     async def mark_messages_read(self, user_id: int, channel: str) -> int:
         """Mark all incoming messages for user in channel as read. Returns count."""
         cur = await self.conn.execute(

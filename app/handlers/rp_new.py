@@ -1007,32 +1007,220 @@ async def rp_edo_view(cb: CallbackQuery, db: Database) -> None:
 
 
 # =====================================================================
-# СЧЕТ ЗАКРЫТ (placeholder)
+# СЧЕТ ЗАКРЫТ — дашборд (Этап 10)
+#
+# Показывает ENDED счета, сгруппированные по месяцам.
+# Счётчик на кнопке: кол-во закрытых за текущий месяц.
+# Поиск по номеру счёта / адресу.
+#
+# Callbacks:
+#   rp_closed:view:\d+   — карточка закрытого счёта
+#   rp_closed:refresh    — обновить список
+#   rp_closed:all        — показать все (не только текущий месяц)
+#   rp_closed:search     — поиск по номеру/адресу (inline → FSM)
 # =====================================================================
 
+
+def _ended_invoices_kb(
+    invoices: list[dict[str, Any]],
+    show_all: bool = False,
+) -> InlineKeyboardMarkup:
+    """Inline-кнопки со списком закрытых счетов."""
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        try:
+            amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+        except (ValueError, TypeError):
+            amount_str = f"{inv.get('amount', 0)}₽"
+        closed_date = (inv.get("updated_at") or inv.get("created_at", ""))[:10]
+        text = f"🏁 №{inv.get('invoice_number', '?')} — {amount_str} ({closed_date})"
+        b.button(text=text[:60], callback_data=f"rp_closed:view:{inv['id']}")
+    if not show_all:
+        b.button(text="📋 Все закрытые счета", callback_data="rp_closed:all")
+    b.button(text="🔍 Поиск", callback_data="rp_closed:search")
+    b.button(text="🔄 Обновить", callback_data="rp_closed:refresh")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def _current_month_start() -> str:
+    """Return ISO date string for the 1st day of the current month."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_INVOICE_CLOSED))
-async def rp_invoice_closed(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+async def rp_invoice_closed(message: Message, state: FSMContext, db: Database) -> None:
+    """Кнопка главного меню: дашборд «Счет закрыт»."""
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
-    u = message.from_user
-    if not u:
+
+    month_start = _current_month_start()
+    invoices = await db.list_ended_invoices(month_start=month_start, limit=30)
+    total_this_month = await db.count_ended_invoices(month_start=month_start)
+    total_all = await db.count_ended_invoices()
+
+    if not invoices and total_all == 0:
+        b = InlineKeyboardBuilder()
+        b.button(text="🔍 Поиск", callback_data="rp_closed:search")
+        b.adjust(1)
+        await message.answer(
+            "🏁 <b>Счет закрыт</b>\n\n"
+            "Нет закрытых счетов.",
+            reply_markup=b.as_markup(),
+        )
         return
-    menu_role, isolated_role = await _current_menu(db, u.id)
+
+    if not invoices:
+        # No invoices this month but there are older ones
+        b = InlineKeyboardBuilder()
+        b.button(text="📋 Все закрытые счета", callback_data="rp_closed:all")
+        b.button(text="🔍 Поиск", callback_data="rp_closed:search")
+        b.adjust(1)
+        await message.answer(
+            f"🏁 <b>Счет закрыт</b>\n\n"
+            f"За текущий месяц: <b>0</b>\n"
+            f"Всего: <b>{total_all}</b>\n\n"
+            "Нажмите «Все» для просмотра:",
+            reply_markup=b.as_markup(),
+        )
+        return
+
     await message.answer(
-        "🚧 <b>В разработке</b>\n\n"
-        "Раздел «Счет закрыт» будет доступен в ближайшем обновлении.",
-        reply_markup=private_only_reply_markup(
-            message,
-            main_menu(
-                menu_role,
-                is_admin=u.id in (config.admin_ids or set()),
-                unread=await db.count_unread_tasks(u.id),
-                isolated_role=isolated_role,
-                rp_tasks=await db.count_rp_role_tasks(u.id),
-                rp_messages=await db.count_rp_role_messages(u.id),
-            ),
-        ),
+        f"🏁 <b>Счет закрыт</b>\n\n"
+        f"За текущий месяц: <b>{total_this_month}</b>\n"
+        f"Всего: <b>{total_all}</b>\n\n"
+        "Закрытые счета (текущий месяц):",
+        reply_markup=_ended_invoices_kb(invoices),
+    )
+
+
+@router.callback_query(F.data == "rp_closed:refresh")
+async def rp_invoice_closed_refresh(cb: CallbackQuery, db: Database) -> None:
+    """Обновить список «Счет закрыт»."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer("🔄 Обновлено")
+
+    month_start = _current_month_start()
+    invoices = await db.list_ended_invoices(month_start=month_start, limit=30)
+    total_this_month = await db.count_ended_invoices(month_start=month_start)
+    total_all = await db.count_ended_invoices()
+
+    if not invoices:
+        b = InlineKeyboardBuilder()
+        b.button(text="📋 Все закрытые счета", callback_data="rp_closed:all")
+        b.button(text="🔍 Поиск", callback_data="rp_closed:search")
+        b.adjust(1)
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"🏁 За текущий месяц: <b>0</b> | Всего: <b>{total_all}</b>",
+            reply_markup=b.as_markup(),
+        )
+        return
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"🏁 <b>Счет закрыт</b>\n\n"
+        f"За месяц: <b>{total_this_month}</b> | Всего: <b>{total_all}</b>\n\n"
+        "Закрытые счета (текущий месяц):",
+        reply_markup=_ended_invoices_kb(invoices),
+    )
+
+
+@router.callback_query(F.data == "rp_closed:all")
+async def rp_invoice_closed_all(cb: CallbackQuery, db: Database) -> None:
+    """Показать все закрытые счета (не только текущий месяц)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoices = await db.list_ended_invoices(limit=50)
+    if not invoices:
+        await cb.message.answer("🏁 Нет закрытых счетов.")  # type: ignore[union-attr]
+        return
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"🏁 <b>Все закрытые счета</b> ({len(invoices)})\n\n"
+        "Нажмите для просмотра:",
+        reply_markup=_ended_invoices_kb(invoices, show_all=True),
+    )
+
+
+@router.callback_query(F.data.regexp(r"^rp_closed:view:\d+$"))
+async def rp_invoice_closed_view(cb: CallbackQuery, db: Database) -> None:
+    """Карточка закрытого счёта."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    try:
+        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+    except (ValueError, TypeError):
+        amount_str = f"{inv.get('amount', 0)}₽"
+
+    is_credit = inv.get("is_credit") or inv.get("status") == "credit"
+    payment_label = "🏦 Кред (кредит)" if is_credit else "💳 б/н (безналичный)"
+
+    # Creator info
+    creator_label = "—"
+    if inv.get("created_by"):
+        creator_label = await get_initiator_label(db, int(inv["created_by"]))
+
+    text = (
+        f"🏁 <b>Счёт №{inv['invoice_number']} — ЗАКРЫТ</b>\n\n"
+        f"📍 Адрес: {inv.get('object_address', '-')}\n"
+        f"💰 Сумма: {amount_str}\n"
+        f"💳 Оплата: {payment_label}\n"
+        f"👤 Создал: {creator_label}\n"
+        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
+        f"📅 Закрыт: {(inv.get('updated_at') or '-')[:10]}\n"
+    )
+
+    # Close conditions summary
+    conditions = await db.check_close_conditions(invoice_id)
+    c1 = "✅" if conditions["installer_ok"] else "⏳"
+    c2 = "✅" if conditions["edo_signed"] else "⏳"
+    c3 = "✅" if conditions["no_debts"] else "⏳"
+    c4 = "✅" if conditions["zp_approved"] else "⏳"
+    text += (
+        f"\n<b>Условия:</b>\n"
+        f"{c1} 1. Монтажник — Счет ОК\n"
+        f"{c2} 2. ЭДО — подписано\n"
+        f"{c3} 3. Долгов нет\n"
+        f"{c4} 4. ЗП — расчёт ОК\n"
+    )
+
+    if inv.get("close_comment"):
+        text += f"\n💬 Комментарий: {inv['close_comment']}\n"
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Назад к списку", callback_data="rp_closed:refresh")
+    b.adjust(1)
+
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "rp_closed:search")
+async def rp_invoice_closed_search(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Поиск закрытого счёта → переход в FSM поиска."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    from ..states import InvoiceSearchSG
+    await state.clear()
+    await state.set_state(InvoiceSearchSG.value)
+    await state.update_data(search_context="closed")
+    await cb.message.answer(  # type: ignore[union-attr]
+        "🔍 <b>Поиск счёта</b>\n\n"
+        "Введите номер счёта или адрес для поиска:",
     )
 
 
