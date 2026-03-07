@@ -141,6 +141,24 @@ COMPOSITE_CHANNELS = {
     "otd_prodazh": ["rp", "manager_kv", "manager_kia", "manager_npn"],
 }
 
+# Write targets: who can be written to in each GD channel
+# Format: list of (channel_key, button_label)
+CHANNEL_WRITE_TARGETS: dict[str, list[tuple[str, str]]] = {
+    "rp": [("rp", "➡️ РП (НПН)")],
+    "zamery": [("zamery", "➡️ Замерщик")],
+    "accounting": [("accounting", "➡️ Бухгалтерия")],
+    "montazh": [("montazh", "➡️ Монтажная гр.")],
+    "otd_prodazh": [
+        ("rp", "➡️ РП (НПН)"),
+        ("manager_kv", "➡️ Менеджер КВ"),
+        ("manager_kia", "➡️ Менеджер КИА"),
+        ("manager_npn", "➡️ Менеджер НПН"),
+    ],
+    "manager_kv": [("manager_kv", "➡️ Менеджер КВ")],
+    "manager_kia": [("manager_kia", "➡️ Менеджер КИА")],
+    "manager_npn": [("manager_npn", "➡️ Менеджер НПН")],
+}
+
 
 def gd_channel_menu(channel: str):
     """Return the correct GD submenu keyboard for a channel."""

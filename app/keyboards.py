@@ -731,6 +731,24 @@ def gd_sales_write_to_kb() -> ReplyKeyboardMarkup:
     return _build_reply_rows(rows)
 
 
+def gd_chat_write_to_kb_universal(
+    targets: list[tuple[str, str]],
+) -> ReplyKeyboardMarkup:
+    """'Кому писать?' — универсальное подменю для всех каналов ГД.
+
+    targets: список (channel_key, button_label).
+    """
+    rows: list[list[str]] = []
+    # Размещаем адресатов по 2 в строку
+    for i in range(0, len(targets), 2):
+        row = [targets[i][1]]
+        if i + 1 < len(targets):
+            row.append(targets[i + 1][1])
+        rows.append(row)
+    rows.append(["➡️ Написать всем", "⬅️ Назад"])
+    return _build_reply_rows(rows)
+
+
 def manager_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
     """Подменю 'Еще' для менеджеров (КВ / КИА / НПН)."""
     rows = [

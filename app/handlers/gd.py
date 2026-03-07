@@ -25,6 +25,7 @@ from ..enums import Role, TaskStatus, TaskType
 from ..keyboards import (
     gd_sales_submenu,
     gd_sales_write_to_kb,
+    gd_chat_write_to_kb_universal,
     GD_BTN_ACCOUNTING,
     GD_BTN_CHAT_RP,
     GD_BTN_INVOICES,
@@ -365,14 +366,6 @@ async def gd_chat_npn(message: Message, state: FSMContext, db: Database) -> None
 # Отд.Продаж — composite handlers
 # ---------------------------------------------------------------------------
 
-SALES_TARGET_MAP = {
-    "➡️ РП (НПН)": "rp",
-    "➡️ Менеджер КВ": "manager_kv",
-    "➡️ Менеджер КИА": "manager_kia",
-    "➡️ Менеджер НПН": "manager_npn",
-}
-
-
 @router.message(ChatProxySG.menu, F.text == "📨 Входящие")
 async def sales_incoming(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     """Show NOT_URGENT_GD tasks from RP/managers."""
@@ -406,74 +399,98 @@ async def sales_incoming(message: Message, state: FSMContext, db: Database, conf
 
 
 @router.message(ChatProxySG.menu, F.text == "✏️ Написать")
-async def sales_or_regular_write(message: Message, state: FSMContext) -> None:
-    """Override 'Написать' for otd_prodazh — show 'Кому?' submenu."""
+async def gd_write_pick_target(message: Message, state: FSMContext) -> None:
+    """Show 'Кому?' target picker for ALL GD channels."""
     data = await state.get_data()
     channel = data.get("channel", "")
 
-    if channel == "otd_prodazh":
+    from .chat_proxy import CHANNEL_WRITE_TARGETS, channel_label as _ch_label
+
+    targets = CHANNEL_WRITE_TARGETS.get(channel, [])
+    if targets:
         await state.set_state(SalesWriteSG.pick_target)
+        await state.update_data(write_channel=channel)
+        label = _ch_label(channel)
         await message.answer(
-            "✏️ <b>Написать → Отд.Продаж</b>\n\nВыберите адресата:",
-            reply_markup=gd_sales_write_to_kb(),
+            f"✏️ <b>Написать → {label}</b>\n\nВыберите адресата:",
+            reply_markup=gd_chat_write_to_kb_universal(targets),
         )
     else:
-        # Default — delegate to chat_proxy enter_writing
+        # Fallback — direct writing (no known targets)
         from .chat_proxy import enter_writing
         await enter_writing(message, state, channel)
 
 
 @router.message(SalesWriteSG.pick_target)
-async def sales_pick_target(message: Message, state: FSMContext) -> None:
-    """User picked a target from the sales write submenu."""
+async def gd_write_target_picked(message: Message, state: FSMContext) -> None:
+    """User picked a target from the universal write submenu."""
     text = (message.text or "").strip()
+    data = await state.get_data()
+    channel = data.get("write_channel", data.get("channel", ""))
 
+    from .chat_proxy import CHANNEL_WRITE_TARGETS, channel_label as _ch_label, gd_channel_menu
+
+    targets = CHANNEL_WRITE_TARGETS.get(channel, [])
+
+    # --- Назад ---
     if text == "⬅️ Назад":
         await state.set_state(ChatProxySG.menu)
-        await state.update_data(channel="otd_prodazh")
+        await state.update_data(channel=channel)
+        label = _ch_label(channel)
         await message.answer(
-            "💬 <b>Отд.Продаж</b>\n\nВыберите действие:",
-            reply_markup=gd_sales_submenu(),
+            f"💬 <b>{label}</b>\n\nВыберите действие:",
+            reply_markup=gd_channel_menu(channel),
         )
         return
 
-    if text == "➡️ Всем в отдел":
+    # --- Написать всем ---
+    if text == "➡️ Написать всем":
+        all_channels = [t[0] for t in targets]
         await state.set_state(SalesWriteSG.writing)
-        await state.update_data(sales_targets=["rp", "manager_kv", "manager_kia", "manager_npn"])
+        await state.update_data(sales_targets=all_channels, write_channel=channel)
+        label = _ch_label(channel)
         await message.answer(
-            "✏️ <b>Написать → Всем в Отд.Продаж</b>\n\n"
+            f"✏️ <b>Написать → Всем в {label}</b>\n\n"
             "Введите текст сообщения.\n"
+            "Можно прикрепить файлы/фото.\n"
             "Для отмены: /cancel",
         )
         return
 
-    target_channel = SALES_TARGET_MAP.get(text)
+    # --- Конкретный адресат ---
+    target_channel = None
+    for ch, btn_label in targets:
+        if btn_label == text:
+            target_channel = ch
+            break
+
     if not target_channel:
         await message.answer("Выберите адресата из кнопок.")
         return
 
     await state.set_state(SalesWriteSG.writing)
-    await state.update_data(sales_targets=[target_channel])
-    from .chat_proxy import channel_label
-    label = channel_label(target_channel)
+    await state.update_data(sales_targets=[target_channel], write_channel=channel)
+    label = _ch_label(target_channel)
     await message.answer(
         f"✏️ <b>Написать → {label}</b>\n\n"
         "Введите текст сообщения.\n"
+        "Можно прикрепить файлы/фото.\n"
         "Для отмены: /cancel",
     )
 
 
 @router.message(SalesWriteSG.writing)
-async def sales_send_message(
+async def gd_write_send_message(
     message: Message,
     state: FSMContext,
     db: Database,
     config: Config,
     notifier: Notifier,
 ) -> None:
-    """Send message to selected sales targets."""
+    """Send message to selected targets (universal for all GD channels)."""
     data = await state.get_data()
     targets = data.get("sales_targets", [])
+    channel = data.get("write_channel", "otd_prodazh")
     u = message.from_user
     if not u:
         return
@@ -491,7 +508,7 @@ async def sales_send_message(
         await message.answer("Введите текст или прикрепите файл.")
         return
 
-    from .chat_proxy import resolve_channel_target, channel_label, is_group_channel
+    from .chat_proxy import resolve_channel_target, channel_label as _ch_label, is_group_channel, gd_channel_menu
 
     sent_count = 0
     for ch in targets:
@@ -511,7 +528,7 @@ async def sales_send_message(
             has_attachment=bool(file_info),
         )
 
-        label = channel_label(ch)
+        label = _ch_label(ch)
         header = f"📩 <b>От ГД</b> ({label}):\n\n"
         if text:
             await notifier.safe_send(target_id, header + text)
@@ -523,10 +540,10 @@ async def sales_send_message(
 
     await state.clear()
     await state.set_state(ChatProxySG.menu)
-    await state.update_data(channel="otd_prodazh")
+    await state.update_data(channel=channel)
     await message.answer(
         f"✅ Отправлено {sent_count} адресатам.",
-        reply_markup=gd_sales_submenu(),
+        reply_markup=gd_channel_menu(channel),
     )
 
 
