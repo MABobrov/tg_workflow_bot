@@ -1359,8 +1359,8 @@ async def my_invoice_view(cb: CallbackQuery, db: Database) -> None:
         f"📊 Статус: {status_label}\n"
         f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
     )
-    if inv.get("comment"):
-        text += f"💬 Комментарий: {inv['comment']}\n"
+    if inv.get("description"):
+        text += f"💬 Комментарий: {inv['description']}\n"
 
     # Show close conditions if relevant
     if inv["status"] in (InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID, InvoiceStatus.CLOSING):
@@ -1518,8 +1518,8 @@ async def search_invoice_view(cb: CallbackQuery, db: Database) -> None:
         f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
     )
 
-    if inv.get("comment"):
-        text += f"💬 Комментарий: {inv['comment']}\n"
+    if inv.get("description"):
+        text += f"💬 Комментарий: {inv['description']}\n"
 
     # Originals info
     primary_h = inv.get("docs_originals_holder")
@@ -1766,7 +1766,9 @@ async def manager_zp_start(message: Message, state: FSMContext, db: Database) ->
         "SELECT * FROM invoices "
         "WHERE status = 'ended' "
         "  AND (zp_manager_status IS NULL OR zp_manager_status = 'not_requested') "
+        "  AND created_by = ? "
         "ORDER BY id DESC LIMIT 20",
+        (user_id,),
     )
     rows = await cur.fetchall()
     invoices = [dict(r) for r in rows]
@@ -1776,7 +1778,7 @@ async def manager_zp_start(message: Message, state: FSMContext, db: Database) ->
         return
     b = InlineKeyboardBuilder()
     for inv in invoices:
-        label = f"№{inv['invoice_number'] or '—'} / {(inv.get('address') or '—')[:30]}"
+        label = f"№{inv['invoice_number'] or '—'} / {(inv.get('object_address') or '—')[:30]}"
         b.button(text=label, callback_data=f"mgrzp:pick:{inv['id']}")
     b.adjust(1)
     await state.set_state(ManagerZpSG.select_invoice)
@@ -1800,7 +1802,7 @@ async def manager_zp_pick(cb: CallbackQuery, state: FSMContext, db: Database) ->
     await state.set_state(ManagerZpSG.amount)
     await cb.message.answer(  # type: ignore[union-attr]
         f"💰 Счёт: <b>№{inv['invoice_number']}</b>\n"
-        f"📍 Адрес: {inv.get('address') or '—'}\n\n"
+        f"📍 Адрес: {inv.get('object_address') or '—'}\n\n"
         "Введите сумму ЗП (число):",
     )
 
@@ -1884,7 +1886,7 @@ async def manager_zp_confirm(
             f"💰 <b>Запрос ЗП отд.продаж</b>\n\n"
             f"👤 От: {initiator}\n"
             f"🔢 Счёт: №{inv_number}\n"
-            f"📍 Адрес: {inv.get('address') or '—' if inv else '—'}\n"
+            f"📍 Адрес: {inv.get('object_address') or '—' if inv else '—'}\n"
             f"💵 Сумма: {amount:,.0f}₽",
             reply_markup=b.as_markup(),
         )

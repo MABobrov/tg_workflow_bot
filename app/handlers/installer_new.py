@@ -677,7 +677,9 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
         "SELECT * FROM invoices "
         "WHERE installer_ok = 1 "
         "  AND (zp_installer_status IS NULL OR zp_installer_status = 'not_requested') "
+        "  AND assigned_to = ? "
         "ORDER BY id DESC LIMIT 20",
+        (user_id,),
     )
     rows = await cur.fetchall()
     invoices = [dict(r) for r in rows]
@@ -686,7 +688,7 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
         return
     b = InlineKeyboardBuilder()
     for inv in invoices:
-        label = f"№{inv['invoice_number'] or '—'} / {(inv.get('address') or '—')[:30]}"
+        label = f"№{inv['invoice_number'] or '—'} / {(inv.get('object_address') or '—')[:30]}"
         b.button(text=label, callback_data=f"instzp:pick:{inv['id']}")
     b.adjust(1)
     await state.set_state(InstallerZpSG.select_invoice)
@@ -709,7 +711,7 @@ async def installer_zp_pick(cb: CallbackQuery, state: FSMContext, db: Database) 
     await state.set_state(InstallerZpSG.amount)
     await cb.message.answer(  # type: ignore[union-attr]
         f"💰 Счёт: <b>№{inv['invoice_number']}</b>\n"
-        f"📍 Адрес: {inv.get('address') or '—'}\n\n"
+        f"📍 Адрес: {inv.get('object_address') or '—'}\n\n"
         "Введите сумму ЗП (число):",
     )
 
@@ -776,6 +778,7 @@ async def installer_zp_confirm(
             status=TaskStatus.OPEN,
             created_by=u.id,
             assigned_to=int(gd_id),
+            due_at_iso=None,
             payload={
                 "invoice_id": invoice_id,
                 "invoice_number": inv_number,
@@ -793,7 +796,7 @@ async def installer_zp_confirm(
             f"💰 <b>Запрос ЗП монтажника</b>\n\n"
             f"👤 От: {initiator}\n"
             f"🔢 Счёт: №{inv_number}\n"
-            f"📍 Адрес: {inv.get('address') or '—' if inv else '—'}\n"
+            f"📍 Адрес: {inv.get('object_address') or '—' if inv else '—'}\n"
             f"💵 Сумма: {amount:,.0f}₽",
             reply_markup=b.as_markup(),
         )

@@ -1488,8 +1488,7 @@ async def lead_view(cb: CallbackQuery, db: Database) -> None:
 
     lead_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     # Get lead from lead_tracking table
-    leads = await db.list_leads(limit=500)
-    lead = next((l for l in leads if l.get("id") == lead_id), None)
+    lead = await db.get_lead(lead_id)
     if not lead:
         await cb.message.answer("❌ Лид не найден.")  # type: ignore[union-attr]
         return
@@ -1629,7 +1628,7 @@ async def lead_source_pick(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
     source_key = cb.data.split(":")[-1]  # type: ignore[union-attr]
 
-    source_labels = dict(_LEAD_SOURCES)
+    source_labels = {key: label for label, key in _LEAD_SOURCES}
     source_label = source_labels.get(source_key, source_key)
 
     if source_key == "other":

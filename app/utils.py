@@ -167,7 +167,7 @@ def parse_date(text: str, tz_name: str) -> Optional[datetime]:
     if m:
         y, mo, d = map(int, m.groups())
         try:
-            return datetime(y, mo, d, 12, 0, tzinfo(tzinfo(tz_name)))
+            return datetime(y, mo, d, 12, 0, tzinfo=tzinfo(tz_name))
         except ValueError:
             return None
 
@@ -184,7 +184,7 @@ def parse_date(text: str, tz_name: str) -> Optional[datetime]:
         else:
             y = now_local.year
         try:
-            return datetime(y, mo, d, 12, 0, tzinfo(tzinfo(tz_name)))
+            return datetime(y, mo, d, 12, 0, tzinfo=tzinfo(tz_name))
         except ValueError:
             return None
 

@@ -195,7 +195,7 @@ async def gd_zp_installer_view(cb: CallbackQuery, db: Database) -> None:
     await cb.message.answer(  # type: ignore[union-attr]
         f"🔧 <b>ЗП монтажника</b>\n\n"
         f"🔢 Счёт: №{inv['invoice_number']}\n"
-        f"📍 Адрес: {inv.get('address') or '—'}\n"
+        f"📍 Адрес: {inv.get('object_address') or '—'}\n"
         f"💵 Сумма: {amt:,.0f}₽",
         reply_markup=b.as_markup(),
     )
@@ -274,7 +274,7 @@ async def gd_zp_zamery_view(cb: CallbackQuery, db: Database) -> None:
     await cb.message.answer(  # type: ignore[union-attr]
         f"📐 <b>ЗП замерщика</b>\n\n"
         f"🔢 Счёт: №{inv['invoice_number']}\n"
-        f"📍 Адрес: {inv.get('address') or '—'}\n"
+        f"📍 Адрес: {inv.get('object_address') or '—'}\n"
         f"💵 Сумма: {amt:,.0f}₽",
         reply_markup=b.as_markup(),
     )
@@ -297,7 +297,7 @@ async def gd_zp_manager_view(cb: CallbackQuery, db: Database) -> None:
     await cb.message.answer(  # type: ignore[union-attr]
         f"💼 <b>ЗП отд.продаж</b>\n\n"
         f"🔢 Счёт: №{inv['invoice_number']}\n"
-        f"📍 Адрес: {inv.get('address') or '—'}\n"
+        f"📍 Адрес: {inv.get('object_address') or '—'}\n"
         f"💵 Сумма: {amt:,.0f}₽",
         reply_markup=b.as_markup(),
     )
