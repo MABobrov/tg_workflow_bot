@@ -712,7 +712,7 @@ def format_estimated_summary(inv: dict[str, Any]) -> str:
     est_load = float(inv.get("estimated_loaders") or 0)
     est_log = float(inv.get("estimated_logistics") or 0)
     est_total = est_mat + est_inst + est_load + est_log
-    est_vat = amount * 20 / 120 if amount > 0 else 0
+    est_vat = amount * 22 / 122 if amount > 0 else 0
     est_profit = amount - est_total - est_vat
     est_pct = (est_profit / amount * 100) if amount > 0 else 0
 

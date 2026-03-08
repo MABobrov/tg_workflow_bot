@@ -480,7 +480,7 @@ async def invoice_start_est_logistics(message: Message, state: FSMContext) -> No
     est_load = data.get("estimated_loaders", 0)
     est_log = val
     est_total = est_mat + est_inst + est_load + est_log
-    est_vat = amount * 20 / 120 if amount > 0 else 0
+    est_vat = amount * 22 / 122 if amount > 0 else 0
     est_profit = amount - est_total - est_vat
     est_pct = (est_profit / amount * 100) if amount > 0 else 0
 
@@ -629,7 +629,7 @@ async def invoice_start_send(
     initiator = await get_initiator_label(db, u.id)
     amount = float(inv_data.get("amount", 0))
     est_total = est_mat + est_inst + est_load + est_log
-    est_vat = amount * 20 / 120 if amount > 0 else 0
+    est_vat = amount * 22 / 122 if amount > 0 else 0
     est_profit = amount - est_total - est_vat
     est_pct = (est_profit / amount * 100) if amount > 0 else 0
 

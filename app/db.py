@@ -1169,7 +1169,7 @@ class Database:
         Карточка «План / Факт» для сравнения расчётных и фактических данных.
         Расчётные данные вводятся менеджером при запуске счёта в работу.
         Фактические берутся из get_full_invoice_cost_card().
-        НДС рассчитывается автоматически: amount * 20 / 120.
+        НДС рассчитывается автоматически: amount * 22 / 122.
 
         Распределение прибыли:
           1) ЗП РП = 8% от прибыли
@@ -1199,7 +1199,7 @@ class Database:
         est_load = float(inv.get("estimated_loaders") or 0)
         est_log = float(inv.get("estimated_logistics") or 0)
         est_total = est_mat + est_inst + est_load + est_log
-        est_vat = amount * 20 / 120 if amount > 0 else 0.0
+        est_vat = amount * 22 / 122 if amount > 0 else 0.0
         est_profit = amount - est_total - est_vat
         est_pct = (est_profit / amount * 100) if amount > 0 else 0.0
 
