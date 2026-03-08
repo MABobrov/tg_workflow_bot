@@ -61,7 +61,7 @@ from ..states import (
     ManagerChatProxySG,
     ManagerZpSG,
 )
-from ..utils import answer_service, format_cost_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
+from ..utils import answer_service, format_materials_list, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -1074,12 +1074,18 @@ async def invoice_end_gd_final(
         # Set ZP status to requested
         await db.set_invoice_zp_status(invoice_id, "requested")
 
-        # --- Себестоимость при закрытии ---
+        # --- Себестоимость при закрытии (ГД) ---
+        from ..utils import format_cost_card
         cost_data = await db.get_full_invoice_cost_card(invoice_id)
         cost_msg = format_cost_card(inv, cost_data)
         await cb.message.answer(cost_msg)  # type: ignore[union-attr]
+
+        # --- Список материалов менеджеру (без сумм) ---
         if manager_id:
-            await notifier.safe_send(int(manager_id), cost_msg)
+            children = await db.list_child_invoices(invoice_id)
+            sp_list = cost_data.get("supplier_payments_list", [])
+            mat_msg = format_materials_list(inv, children, sp_list)
+            await notifier.safe_send(int(manager_id), mat_msg)
     else:
         await cb.message.answer(  # type: ignore[union-attr]
             f"📌 Счёт №{inv['invoice_number']} — на проверке."
@@ -1371,27 +1377,28 @@ async def my_invoice_view(cb: CallbackQuery, db: Database) -> None:
             f"{c4} 4. ЗП — утверждено\n"
         )
 
-    # Кнопка "Себестоимость" для закрытых счетов
+    # Кнопка "Материалы" для закрытых счетов
     if inv["status"] == InvoiceStatus.ENDED:
         b = InlineKeyboardBuilder()
-        b.button(text="📊 Себестоимость", callback_data=f"mgr_cost:{invoice_id}")
+        b.button(text="📦 Материалы", callback_data=f"mgr_mat:{invoice_id}")
         b.adjust(1)
         await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
     else:
         await cb.message.answer(text)  # type: ignore[union-attr]
 
 
-@router.callback_query(F.data.regexp(r"^mgr_cost:\d+$"))
-async def manager_invoice_cost(cb: CallbackQuery, db: Database) -> None:
-    """Менеджер: карточка себестоимости по закрытому счёту."""
+@router.callback_query(F.data.regexp(r"^mgr_mat:\d+$"))
+async def manager_invoice_materials(cb: CallbackQuery, db: Database) -> None:
+    """Менеджер: список купленных материалов по закрытому счёту."""
     await cb.answer()
     inv_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
     inv = await db.get_invoice(inv_id)
     if not inv:
         await cb.message.answer("⚠️ Счёт не найден.")  # type: ignore[union-attr]
         return
-    cost = await db.get_full_invoice_cost_card(inv_id)
-    await cb.message.answer(format_cost_card(inv, cost))  # type: ignore[union-attr]
+    children = await db.list_child_invoices(inv_id)
+    sp_list = await db.list_supplier_payments_for_invoice(inv_id)
+    await cb.message.answer(format_materials_list(inv, children, sp_list))  # type: ignore[union-attr]
 
 
 # =====================================================================

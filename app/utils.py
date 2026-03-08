@@ -422,6 +422,59 @@ async def refresh_recipient_keyboard(
     await notifier.safe_send(user_id, text, reply_markup=kb)
 
 
+def format_materials_list(
+    inv: dict[str, Any],
+    children: list[dict[str, Any]],
+    supplier_payments: list[dict[str, Any]],
+) -> str:
+    """Список купленных материалов для менеджера (без сумм)."""
+    from .enums import MATERIAL_TYPE_LABELS
+
+    num = html.quote(str(inv.get("invoice_number") or f"#{inv.get('id')}"))
+    addr = html.quote(str(inv.get("object_address") or inv.get("address") or "—"))
+
+    lines: list[str] = [
+        f"📦 <b>Материалы — Счёт №{num}</b>",
+        f"📍 {addr}",
+    ]
+
+    if not children and not supplier_payments:
+        lines.append("\nНет записей о закупках.")
+        return "\n".join(lines)
+
+    # Дочерние счета (материалы от РП)
+    if children:
+        lines.append("")
+        lines.append("<b>Закупки (дочерние счета):</b>")
+        for ch in children:
+            mat = ch.get("material_type") or "other"
+            label = MATERIAL_TYPE_LABELS.get(mat, mat)
+            supplier = html.quote(ch.get("supplier") or "—")
+            desc = html.quote((ch.get("description") or "")[:40])
+            line = f"  • {label}"
+            if supplier and supplier != "—":
+                line += f" — {supplier}"
+            if desc:
+                line += f" ({desc})"
+            lines.append(line)
+
+    # Оплаты поставщикам (от ГД)
+    if supplier_payments:
+        lines.append("")
+        lines.append("<b>Оплаты поставщикам:</b>")
+        for sp in supplier_payments:
+            supplier = html.quote(sp.get("supplier", "—") or "—")
+            mat = sp.get("material_type", "")
+            mat_label = MATERIAL_TYPE_LABELS.get(mat, mat) if mat else ""
+            line = f"  • {supplier}"
+            if mat_label:
+                line += f" ({mat_label})"
+            lines.append(line)
+
+    lines.append(f"\nВсего позиций: {len(children) + len(supplier_payments)}")
+    return "\n".join(lines)
+
+
 def format_cost_card(inv: dict[str, Any], cost: dict[str, Any]) -> str:
     """HTML-карточка себестоимости для Telegram."""
     from .enums import MATERIAL_TYPE_LABELS
