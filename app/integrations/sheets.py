@@ -63,35 +63,74 @@ TASKS_HEADER = [
 ]
 
 INVOICES_HEADER = [
-    "ID",
-    "№ Счёта",
-    "Адрес",
-    "Сумма",
-    "Статус",
-    "Тип (б/н/кред)",
-    "Менеджер",
-    "Роль менеджера",
-    "Поставщик",
-    "Тип материала",
-    "Родит. счёт ID",
-    "Этап монтажа",
-    "Монтажник ОК",
-    "ЭДО подписано",
-    "Долгов нет",
-    "ЗП Замерщик",
-    "ЗП Замерщик сумма",
-    "ЗП Монтажник",
-    "ЗП Монтажник сумма",
-    "ЗП Менеджер",
-    "ЗП Менеджер сумма",
-    "Материалы итого",
-    "Оплаты пост. итого",
-    "Расходы итого",
-    "Маржа",
-    "Маржа %",
-    "Создан",
-    "Обновлён",
+    # — Отдел продаж structure (0-45) —
+    "№",            # 0
+    "В работу",     # 1  manual
+    "Менеджер",     # 2
+    "Бухг.ЭДО",    # 3
+    "Контрагент",   # 4
+    "Ист.трафика",  # 5  manual
+    "Б.Н./Кред",    # 6
+    "Свой/Атм",     # 7  manual
+    "Номер счета",  # 8
+    "Адрес",        # 9
+    "Дата пост.",   # 10
+    "Сроки",        # 11 manual
+    "Дата оконч.",  # 12 FORMULA
+    "Дата Факт",    # 13
+    "Сумма",        # 14
+    "Сумма 1пл",    # 15
+    "Расч.мат.",    # 16
+    "Установка",    # 17
+    "Грузчики",     # 18 manual
+    "Логистика",    # 19 manual
+    "Прибыль",      # 20
+    "НДС",          # 21 manual
+    "Нал.приб.",    # 22 manual
+    "Рент-ть расч", # 23
+    "Рент-ть факт", # 24 manual
+    "Сумма допл",   # 25 manual
+    "Допл подтв",   # 26 manual
+    "Дата допл",    # 27 manual
+    "Оконч допл",   # 28 manual
+    "Дата оконч",   # 29 manual
+    "Долг",         # 30
+    "Договор",      # 31 manual
+    "Закр.док",     # 32
+    "Пояснения",    # 33 manual
+    "Агентское",    # 34 manual
+    "Мен.ЗП",       # 35
+    "Запрос",       # 36
+    "тех",          # 37 manual
+    "Выпл.Агент",   # 38 manual
+    "Выпл.МенЗП",   # 39 manual
+    "Дата выпл",    # 40 manual
+    "НПН 10%",      # 41 manual
+    "Запрос НПН",   # 42 manual
+    "Выдано НПН",   # 43 manual
+    "Дата НПН",     # 44 manual
+    "Месяц",        # 45 FORMULA
+    # — Бот-специфичные (46-60) —
+    "Статус",               # 46
+    "Роль менеджера",       # 47
+    "Поставщик",            # 48
+    "Тип материала",        # 49
+    "Родит. счёт ID",       # 50
+    "Этап монтажа",         # 51
+    "Монтажник ОК",         # 52
+    "Долгов нет",           # 53
+    "ЗП Замерщик",          # 54
+    "ЗП Замерщик сумма",    # 55
+    "ЗП Монтажник статус",  # 56
+    "Оплаты пост. итого",   # 57
+    "Расходы итого",        # 58
+    "Создан",               # 59
+    "Обновлён",             # 60
 ]
+
+# Column indices the bot NEVER overwrites (manual-only + formula)
+_MANUAL_COLS = frozenset([1, 5, 7, 11, 12, 18, 19, 21, 22, 24, 25, 26, 27, 28, 29,
+                          31, 33, 34, 37, 38, 39, 40, 41, 42, 43, 44, 45])
 
 
 @dataclass
@@ -267,6 +306,17 @@ class GoogleSheetsService:
         else:
             ws.append_row(row_values, value_input_option="USER_ENTERED")
 
+    @staticmethod
+    def _col_letter(idx: int) -> str:
+        """0-based index → A1 column letter (0=A, 25=Z, 26=AA, ...)."""
+        result = ""
+        while True:
+            result = chr(65 + idx % 26) + result
+            idx = idx // 26 - 1
+            if idx < 0:
+                break
+        return result
+
     def upsert_invoice_sync(
         self,
         invoice: dict[str, Any],
@@ -279,53 +329,83 @@ class GoogleSheetsService:
         if not inv_id:
             return
 
-        _c = cost or {}
-        is_credit = "Кредит" if invoice.get("is_credit") else "б/н"
-
         _ROLE_LABELS = {
             "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
         }
+        _c = cost or {}
 
-        row_values = [
-            inv_id,
-            invoice.get("invoice_number") or "",
-            invoice.get("object_address") or "",
-            self._fmt_amount(invoice.get("amount")),
-            invoice.get("status") or "",
-            is_credit,
-            manager_label,
-            _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
-            invoice.get("supplier") or "",
-            invoice.get("material_type") or "",
-            invoice.get("parent_invoice_id") or "",
-            invoice.get("montazh_stage") or "",
-            "Да" if invoice.get("installer_ok") else "",
-            "Да" if invoice.get("edo_signed") else "",
-            "Да" if invoice.get("no_debts") else "",
-            invoice.get("zp_status") or "",
-            self._fmt_amount(invoice.get("zp_zamery_total")),
-            invoice.get("zp_installer_status") or "",
-            self._fmt_amount(invoice.get("zp_installer_amount")),
-            invoice.get("zp_manager_status") or "",
-            self._fmt_amount(invoice.get("zp_manager_amount")),
-            self._fmt_amount(_c.get("materials_total")) if _c else "",
-            self._fmt_amount(_c.get("supplier_payments_total")) if _c else "",
-            self._fmt_amount(_c.get("total_cost")) if _c else "",
-            self._fmt_amount(_c.get("margin")) if _c else "",
-            f"{_c.get('margin_pct', 0):.1f}%" if _c and _c.get("margin_pct") is not None else "",
-            format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),
-            format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
-        ]
+        # Build bot-managed cells: {col_index: value}
+        cells: dict[int, Any] = {
+            0: inv_id,                                                              # №
+            2: manager_label,                                                        # Менеджер
+            3: "Да" if invoice.get("edo_signed") else "",                           # Бухг.ЭДО
+            6: "0" if invoice.get("is_credit") else "1",                            # Б.Н./Кред
+            8: invoice.get("invoice_number") or "",                                  # Номер счета
+            9: invoice.get("object_address") or "",                                  # Адрес
+            14: self._fmt_amount(invoice.get("amount")),                             # Сумма
+            30: self._fmt_amount(invoice.get("outstanding_debt")),                   # Долг
+            32: invoice.get("closing_docs_status") or "",                            # Закр.док
+            35: self._fmt_amount(invoice.get("zp_manager_amount")),                  # Мен.ЗП
+            36: invoice.get("zp_manager_status") or "",                              # Запрос
+            # Bot-specific (46+)
+            46: invoice.get("status") or "",                                         # Статус
+            47: _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
+            48: invoice.get("supplier") or "",                                       # Поставщик
+            49: invoice.get("material_type") or "",                                  # Тип материала
+            50: invoice.get("parent_invoice_id") or "",                              # Родит. счёт
+            51: invoice.get("montazh_stage") or "",                                  # Этап монтажа
+            52: "Да" if invoice.get("installer_ok") else "",                         # Монтажник ОК
+            53: "Да" if invoice.get("no_debts") else "",                             # Долгов нет
+            54: invoice.get("zp_status") or "",                                      # ЗП Замерщик
+            55: self._fmt_amount(invoice.get("zp_zamery_total")),                    # ЗП Замерщик сумма
+            56: invoice.get("zp_installer_status") or "",                            # ЗП Монтажник статус
+            59: format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),    # Создан
+            60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),    # Обновлён
+        }
 
+        # Conditional: write only if DB has a value
+        if invoice.get("client_name"):
+            cells[4] = invoice["client_name"]
+        if invoice.get("receipt_date"):
+            cells[10] = format_date_iso(invoice["receipt_date"], self.cfg.timezone_name)
+        if invoice.get("actual_completion_date"):
+            cells[13] = format_date_iso(invoice["actual_completion_date"], self.cfg.timezone_name)
+        if invoice.get("first_payment_amount") is not None:
+            cells[15] = self._fmt_amount(invoice["first_payment_amount"])
+
+        # Cost columns (GD only)
+        if _c:
+            cells[16] = self._fmt_amount(_c.get("materials_total"))                  # Расч.мат.
+            cells[17] = self._fmt_amount(invoice.get("zp_installer_amount"))          # Установка
+            cells[20] = self._fmt_amount(_c.get("margin"))                            # Прибыль
+            cells[23] = f"{_c.get('margin_pct', 0):.1f}%" if _c.get("margin_pct") is not None else ""
+            cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))           # Оплаты пост.
+            cells[58] = self._fmt_amount(_c.get("total_cost"))                        # Расходы итого
+
+        # Find or create row
         try:
             cell = ws.find(str(inv_id), in_column=1)
-        except gspread.CellNotFound:
-            cell = None
-        if cell:
             row = cell.row
-            ws.update([row_values], f"A{row}")
-        else:
-            ws.append_row(row_values, value_input_option="USER_ENTERED")
+            is_new = False
+        except gspread.CellNotFound:
+            row = len(ws.get_all_values()) + 1
+            is_new = True
+
+        # Set formulas for new rows only
+        if is_new:
+            cells[12] = f'=IF(K{row}="","",K{row}+L{row})'
+            cells[45] = f'=IF(K{row}="","",TEXT(K{row},"MMMM"))'
+
+        # Build batch update with A1 notation
+        batch_data = []
+        for col_idx, value in cells.items():
+            col_letter = self._col_letter(col_idx)
+            batch_data.append({
+                "range": f"{col_letter}{row}",
+                "values": [[value]],
+            })
+
+        ws.batch_update(batch_data, value_input_option="USER_ENTERED")
 
     # ---------- async wrappers ----------
 

@@ -341,6 +341,17 @@ class Database:
             ("invoices", "zp_installer_requested_by", "INTEGER"),
             ("invoices", "zp_installer_requested_at", "TEXT"),
             ("invoices", "zp_installer_approved_at", "TEXT"),
+            # --- Объединение с Отдел продаж ---
+            ("invoices", "client_name", "TEXT"),
+            ("invoices", "traffic_source", "TEXT"),
+            ("invoices", "receipt_date", "TEXT"),
+            ("invoices", "deadline_days", "INTEGER"),
+            ("invoices", "actual_completion_date", "TEXT"),
+            ("invoices", "first_payment_amount", "REAL"),
+            ("invoices", "outstanding_debt", "REAL"),
+            ("invoices", "contract_type", "TEXT"),
+            ("invoices", "closing_docs_status", "TEXT"),
+            ("invoices", "payment_terms", "TEXT"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -1807,6 +1818,88 @@ class Database:
             (invoice_number_normalized, project_id, created_by, creator_role,
              object_address, amount, supplier, description,
              assigned_to, payment_deadline, now, now),
+        )
+        await self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def import_invoice_from_sheet(
+        self,
+        invoice_number: str,
+        created_by: int,
+        creator_role: str,
+        status: str,
+        *,
+        object_address: str = "",
+        amount: float = 0.0,
+        is_credit: bool = False,
+        client_name: str | None = None,
+        traffic_source: str | None = None,
+        receipt_date: str | None = None,
+        deadline_days: int | None = None,
+        actual_completion_date: str | None = None,
+        first_payment_amount: float | None = None,
+        outstanding_debt: float | None = None,
+        contract_type: str | None = None,
+        closing_docs_status: str | None = None,
+        payment_terms: str | None = None,
+        description: str | None = None,
+    ) -> int:
+        """Import invoice from external sheet (arbitrary status, new fields)."""
+        inv_num = (invoice_number or "").strip()
+        if not inv_num:
+            raise ValueError("invoice_number is required")
+        existing = await self.get_invoice_by_number(inv_num)
+        if existing:
+            # update new fields only
+            updates: dict[str, Any] = {}
+            if client_name:
+                updates["client_name"] = client_name
+            if traffic_source:
+                updates["traffic_source"] = traffic_source
+            if receipt_date:
+                updates["receipt_date"] = receipt_date
+            if deadline_days is not None:
+                updates["deadline_days"] = deadline_days
+            if actual_completion_date:
+                updates["actual_completion_date"] = actual_completion_date
+            if first_payment_amount is not None:
+                updates["first_payment_amount"] = first_payment_amount
+            if outstanding_debt is not None:
+                updates["outstanding_debt"] = outstanding_debt
+            if contract_type:
+                updates["contract_type"] = contract_type
+            if closing_docs_status:
+                updates["closing_docs_status"] = closing_docs_status
+            if payment_terms:
+                updates["payment_terms"] = payment_terms
+            if updates:
+                sets = ", ".join(f"{k} = ?" for k in updates)
+                vals = list(updates.values())
+                vals.append(existing["id"])
+                await self.conn.execute(
+                    f"UPDATE invoices SET {sets} WHERE id = ?", vals,
+                )
+                await self.conn.commit()
+            return int(existing["id"])
+
+        now = to_iso(utcnow())
+        cur = await self.conn.execute(
+            """
+            INSERT INTO invoices
+                (invoice_number, created_by, creator_role, status, is_credit,
+                 object_address, amount, description,
+                 client_name, traffic_source, receipt_date, deadline_days,
+                 actual_completion_date, first_payment_amount,
+                 outstanding_debt, contract_type, closing_docs_status,
+                 payment_terms, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (inv_num, created_by, creator_role, status, int(is_credit),
+             object_address, amount, description,
+             client_name, traffic_source, receipt_date, deadline_days,
+             actual_completion_date, first_payment_amount,
+             outstanding_debt, contract_type, closing_docs_status,
+             payment_terms, now, now),
         )
         await self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
