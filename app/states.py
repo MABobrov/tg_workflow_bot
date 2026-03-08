@@ -360,3 +360,17 @@ class ZameryZpSG(StatesGroup):
     all_same_price = State()     # все замеры по одной цене? (да/нет)
     custom_prices = State()      # ввод разных цен
     confirm = State()            # подтверждение + отправка ГД
+
+
+class InstallerZpSG(StatesGroup):
+    """Монтажник: Расчёт ЗП — запрос выплаты после Счет ОК."""
+    select_invoice = State()     # выбор счёта с installer_ok=True
+    amount = State()             # ввод суммы ЗП
+    confirm = State()            # подтверждение
+
+
+class ManagerZpSG(StatesGroup):
+    """Менеджер: Расчёт ЗП — запрос выплаты после Счет End."""
+    select_invoice = State()     # выбор счёта со статусом 'ended'
+    amount = State()             # ввод суммы ЗП
+    confirm = State()            # подтверждение

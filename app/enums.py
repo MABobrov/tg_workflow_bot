@@ -71,6 +71,9 @@ class TaskType(StrEnum):
     LEAD_TO_PROJECT = "lead_to_project"    # лид в проект (РП → менеджер)
     INVOICE_END_REQUEST = "invoice_end"    # запрос "Счет End"
     CHECK_KP = "check_kp"                 # проверить КП / Счет (менеджер → РП)
+    # --- ЗП сотрудников ---
+    ZP_MANAGER = "zp_manager"            # ЗП отд.продаж (менеджер → ГД)
+    ZP_INSTALLER = "zp_installer"        # ЗП монтажника (монтажник → ГД)
 
 
 class TaskStatus(StrEnum):

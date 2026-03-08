@@ -40,6 +40,7 @@ from ..keyboards import (
     MGR_BTN_MY_INVOICES,
     MGR_BTN_SEARCH_INVOICE,
     MGR_BTN_ZAMERY,
+    MGR_BTN_ZP,
     edo_type_kb,
     invoice_list_kb,
     main_menu,
@@ -58,6 +59,7 @@ from ..states import (
     InvoiceStartSG,
     IssueSG,
     ManagerChatProxySG,
+    ManagerZpSG,
 )
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
 from .auth import require_role_callback, require_role_message
@@ -1710,4 +1712,152 @@ async def mgr_chat_back(message: Message, state: FSMContext, db: Database, confi
                 rp_messages=rp_m_back,
             ),
         ),
+    )
+
+
+# =====================================================================
+# ЗАПРОС ЗП МЕНЕДЖЕРА (ManagerZpSG)
+# =====================================================================
+
+_MGR_ROLES = [Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN]
+
+
+@router.message(F.text == MGR_BTN_ZP)
+async def manager_zp_start(message: Message, state: FSMContext, db: Database) -> None:
+    """Show ended invoices eligible for manager ZP request."""
+    if not await require_role_message(message, db, roles=_MGR_ROLES):
+        return
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    cur = await db.conn.execute(
+        "SELECT * FROM invoices "
+        "WHERE status = 'ended' "
+        "  AND (zp_manager_status IS NULL OR zp_manager_status = 'not_requested') "
+        "ORDER BY id DESC LIMIT 20",
+    )
+    rows = await cur.fetchall()
+    invoices = [dict(r) for r in rows]
+    if not invoices:
+        await message.answer("✅ Нет счетов, по которым можно запросить ЗП.\n"
+                             "(Счёт должен иметь статус «Счёт End»)")
+        return
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        label = f"№{inv['invoice_number'] or '—'} / {(inv.get('address') or '—')[:30]}"
+        b.button(text=label, callback_data=f"mgrzp:pick:{inv['id']}")
+    b.adjust(1)
+    await state.set_state(ManagerZpSG.select_invoice)
+    await message.answer(
+        "💰 <b>Запрос ЗП</b>\n\n"
+        "Выберите счёт (статус «Счёт End»):",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("mgrzp:pick:"), ManagerZpSG.select_invoice)
+async def manager_zp_pick(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+    await state.update_data(zp_invoice_id=invoice_id)
+    await state.set_state(ManagerZpSG.amount)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💰 Счёт: <b>№{inv['invoice_number']}</b>\n"
+        f"📍 Адрес: {inv.get('address') or '—'}\n\n"
+        "Введите сумму ЗП (число):",
+    )
+
+
+@router.message(ManagerZpSG.amount)
+async def manager_zp_amount(message: Message, state: FSMContext, db: Database) -> None:
+    text = (message.text or "").strip().replace(",", ".").replace(" ", "")
+    try:
+        amount = float(text)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("⚠️ Введите корректную сумму (положительное число):")
+        return
+    data = await state.get_data()
+    invoice_id = data["zp_invoice_id"]
+    inv = await db.get_invoice(invoice_id)
+    await state.update_data(zp_amount=amount)
+    await state.set_state(ManagerZpSG.confirm)
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Отправить", callback_data="mgrzp:confirm")
+    b.button(text="❌ Отмена", callback_data="mgrzp:cancel")
+    b.adjust(2)
+    await message.answer(
+        f"💰 <b>Подтверждение запроса ЗП</b>\n\n"
+        f"🔢 Счёт: №{inv['invoice_number'] if inv else '—'}\n"
+        f"💵 Сумма: {amount:,.0f}₽\n\n"
+        "Отправить запрос ГД?",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "mgrzp:cancel")
+async def manager_zp_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer("Отменено")
+    await state.clear()
+    await cb.message.answer("❌ Запрос ЗП отменён.")  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "mgrzp:confirm", ManagerZpSG.confirm)
+async def manager_zp_confirm(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+    data = await state.get_data()
+    invoice_id = data["zp_invoice_id"]
+    amount = data["zp_amount"]
+
+    # Update invoice
+    await db.set_invoice_zp_manager_status(invoice_id, "requested", amount=amount, requested_by=u.id)
+
+    inv = await db.get_invoice(invoice_id)
+    inv_number = inv["invoice_number"] if inv else "—"
+
+    # Create task for GD
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
+    if gd_id:
+        task = await db.create_task(
+            project_id=None,
+            type_=TaskType.ZP_MANAGER,
+            status=TaskStatus.OPEN,
+            created_by=u.id,
+            assigned_to=int(gd_id),
+            payload={
+                "invoice_id": invoice_id,
+                "invoice_number": inv_number,
+                "amount": amount,
+                "source": "manager_zp",
+            },
+        )
+        initiator = await get_initiator_label(db, u.id)
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ ЗП ОК", callback_data=f"gdzp_mgr:ok:{invoice_id}")
+        b.button(text="❌ Отклонить", callback_data=f"gdzp_mgr:no:{invoice_id}")
+        b.adjust(2)
+        await notifier.safe_send(
+            int(gd_id),
+            f"💰 <b>Запрос ЗП отд.продаж</b>\n\n"
+            f"👤 От: {initiator}\n"
+            f"🔢 Счёт: №{inv_number}\n"
+            f"📍 Адрес: {inv.get('address') or '—' if inv else '—'}\n"
+            f"💵 Сумма: {amount:,.0f}₽",
+            reply_markup=b.as_markup(),
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+
+    await state.clear()
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Запрос ЗП отправлен ГД.\n"
+        f"Счёт: №{inv_number}, сумма: {amount:,.0f}₽",
     )

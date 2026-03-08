@@ -12,7 +12,7 @@ from ..callbacks import ProjectCb
 from ..config import Config
 from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
-from ..keyboards import GD_BTN_INVOICE_END_GD, main_menu, projects_kb, tasks_kb
+from ..keyboards import GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY, main_menu, projects_kb, tasks_kb
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
@@ -123,16 +123,270 @@ async def gd_lead_stats_handler(cb: CallbackQuery, db: Database) -> None:
     await cb.message.answer("\n".join(lines))  # type: ignore
 
 
-# ==================== ОПЛАТА ПОСТАВЩИКУ (ТД/Сергей -> поставщик) ====================
+# ==================== ОПЛАТА ПОСТАВЩИКУ — ДАШБОРД + ЗП ====================
 
-@router.message(F.text == "💸 Оплата поставщику")
-async def start_supplier_payment(message: Message, state: FSMContext, db: Database) -> None:
+@router.message(F.text.startswith(GD_BTN_SUPPLIER_PAY))
+async def gd_supplier_pay_dashboard(message: Message, state: FSMContext, db: Database) -> None:
+    """Dashboard: incoming ZP requests (priority) + outgoing supplier payment."""
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await state.clear()
+
+    zp_installer = await db.list_pending_zp_requests("installer")
+    zp_zamery = await db.list_pending_zp_requests("zamery")
+    zp_manager = await db.list_pending_zp_requests("manager")
+
+    total_zp = len(zp_installer) + len(zp_zamery) + len(zp_manager)
+
+    lines = ["💸 <b>Оплата поставщику</b>\n"]
+    if total_zp:
+        lines.append(f"📋 <b>Входящие ЗП: {total_zp}</b>")
+        if zp_installer:
+            lines.append(f"  🔧 Монтажник: {len(zp_installer)}")
+        if zp_zamery:
+            lines.append(f"  📐 Замерщик: {len(zp_zamery)}")
+        if zp_manager:
+            lines.append(f"  💼 Отд.Продаж: {len(zp_manager)}")
+    else:
+        lines.append("✅ Нет входящих запросов ЗП")
+
+    b = InlineKeyboardBuilder()
+    # Priority: installer → zamery → manager
+    for inv in zp_installer:
+        amt = inv.get("zp_installer_amount") or 0
+        b.button(
+            text=f"🔧 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
+            callback_data=f"gdzp_inst:view:{inv['id']}",
+        )
+    for inv in zp_zamery:
+        amt = inv.get("zp_zamery_total") or 0
+        b.button(
+            text=f"📐 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
+            callback_data=f"gdzp_zam:view:{inv['id']}",
+        )
+    for inv in zp_manager:
+        amt = inv.get("zp_manager_amount") or 0
+        b.button(
+            text=f"💼 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
+            callback_data=f"gdzp_mgr:view:{inv['id']}",
+        )
+    b.button(text="💸 Новая оплата поставщику", callback_data="supplier_pay_start")
+    b.adjust(1)
+
+    await message.answer("\n".join(lines), reply_markup=b.as_markup())
+
+
+# --- GD ZP view + approve/reject handlers ---
+
+@router.callback_query(F.data.startswith("gdzp_inst:view:"))
+async def gd_zp_installer_view(cb: CallbackQuery, db: Database) -> None:
+    """View installer ZP request card."""
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    amt = inv.get("zp_installer_amount") or 0
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
+    b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
+    b.adjust(2)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"🔧 <b>ЗП монтажника</b>\n\n"
+        f"🔢 Счёт: №{inv['invoice_number']}\n"
+        f"📍 Адрес: {inv.get('address') or '—'}\n"
+        f"💵 Сумма: {amt:,.0f}₽",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("gdzp_inst:ok:"))
+async def gd_zp_installer_approve(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    await db.set_invoice_zp_installer_status(invoice_id, "approved")
+    amt = inv.get("zp_installer_amount") or 0
+    # Close related task
+    await _close_zp_tasks(db, invoice_id, TaskType.ZP_INSTALLER)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ ЗП монтажника утверждена.\n"
+        f"Счёт №{inv['invoice_number']}, сумма: {amt:,.0f}₽",
+    )
+    # Notify installer
+    requested_by = inv.get("zp_installer_requested_by")
+    if requested_by:
+        await notifier.safe_send(
+            int(requested_by),
+            f"✅ <b>ЗП утверждена</b>\n\n"
+            f"Счёт №: <code>{inv['invoice_number']}</code>\n"
+            f"Сумма: {amt:,.0f}₽",
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(requested_by))
+    if cb.from_user:
+        await refresh_recipient_keyboard(notifier, db, config, cb.from_user.id)
+
+
+@router.callback_query(F.data.startswith("gdzp_inst:no:"))
+async def gd_zp_installer_reject(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    await db.set_invoice_zp_installer_status(invoice_id, "not_requested")
+    await _close_zp_tasks(db, invoice_id, TaskType.ZP_INSTALLER)
+    await cb.message.answer(f"❌ ЗП монтажника по счёту №{inv['invoice_number']} отклонена.")  # type: ignore[union-attr]
+    requested_by = inv.get("zp_installer_requested_by")
+    if requested_by:
+        await notifier.safe_send(
+            int(requested_by),
+            f"❌ <b>ЗП отклонена</b>\n\n"
+            f"Счёт №: <code>{inv['invoice_number']}</code>\n"
+            "Свяжитесь с ГД для уточнения.",
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(requested_by))
+
+
+@router.callback_query(F.data.startswith("gdzp_zam:view:"))
+async def gd_zp_zamery_view(cb: CallbackQuery, db: Database) -> None:
+    """View zamery ZP request card."""
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    amt = inv.get("zp_zamery_total") or 0
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ ЗП ОК", callback_data=f"zamzp_approve:yes:{invoice_id}")
+    b.button(text="❌ Отклонить", callback_data=f"zamzp_approve:no:{invoice_id}")
+    b.adjust(2)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📐 <b>ЗП замерщика</b>\n\n"
+        f"🔢 Счёт: №{inv['invoice_number']}\n"
+        f"📍 Адрес: {inv.get('address') or '—'}\n"
+        f"💵 Сумма: {amt:,.0f}₽",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("gdzp_mgr:view:"))
+async def gd_zp_manager_view(cb: CallbackQuery, db: Database) -> None:
+    """View manager ZP request card."""
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    amt = inv.get("zp_manager_amount") or 0
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ ЗП ОК", callback_data=f"gdzp_mgr:ok:{invoice_id}")
+    b.button(text="❌ Отклонить", callback_data=f"gdzp_mgr:no:{invoice_id}")
+    b.adjust(2)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💼 <b>ЗП отд.продаж</b>\n\n"
+        f"🔢 Счёт: №{inv['invoice_number']}\n"
+        f"📍 Адрес: {inv.get('address') or '—'}\n"
+        f"💵 Сумма: {amt:,.0f}₽",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("gdzp_mgr:ok:"))
+async def gd_zp_manager_approve(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    await db.set_invoice_zp_manager_status(invoice_id, "approved")
+    amt = inv.get("zp_manager_amount") or 0
+    await _close_zp_tasks(db, invoice_id, TaskType.ZP_MANAGER)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ ЗП отд.продаж утверждена.\n"
+        f"Счёт №{inv['invoice_number']}, сумма: {amt:,.0f}₽",
+    )
+    requested_by = inv.get("zp_manager_requested_by")
+    if requested_by:
+        await notifier.safe_send(
+            int(requested_by),
+            f"✅ <b>ЗП утверждена</b>\n\n"
+            f"Счёт №: <code>{inv['invoice_number']}</code>\n"
+            f"Сумма: {amt:,.0f}₽",
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(requested_by))
+    if cb.from_user:
+        await refresh_recipient_keyboard(notifier, db, config, cb.from_user.id)
+
+
+@router.callback_query(F.data.startswith("gdzp_mgr:no:"))
+async def gd_zp_manager_reject(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    await db.set_invoice_zp_manager_status(invoice_id, "not_requested")
+    await _close_zp_tasks(db, invoice_id, TaskType.ZP_MANAGER)
+    await cb.message.answer(f"❌ ЗП отд.продаж по счёту №{inv['invoice_number']} отклонена.")  # type: ignore[union-attr]
+    requested_by = inv.get("zp_manager_requested_by")
+    if requested_by:
+        await notifier.safe_send(
+            int(requested_by),
+            f"❌ <b>ЗП отклонена</b>\n\n"
+            f"Счёт №: <code>{inv['invoice_number']}</code>\n"
+            "Свяжитесь с ГД для уточнения.",
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(requested_by))
+
+
+async def _close_zp_tasks(db: Database, invoice_id: int, task_type: str) -> None:
+    """Close all open ZP tasks related to this invoice."""
+    import json
+    cur = await db.conn.execute(
+        "SELECT id, payload_json FROM tasks "
+        "WHERE type = ? AND status IN ('open', 'in_progress')",
+        (task_type,),
+    )
+    rows = await cur.fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        if payload.get("invoice_id") == invoice_id:
+            await db.update_task_status(int(row["id"]), TaskStatus.DONE)
+
+
+# --- Outgoing supplier payment flow (via callback from dashboard) ---
+
+@router.callback_query(F.data == "supplier_pay_start")
+async def start_supplier_payment(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Start existing 8-step supplier payment flow from dashboard button."""
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
+        return
+    await cb.answer()
+    await state.clear()
     projects = await db.list_recent_projects(limit=20)
     await state.set_state(SupplierPaymentSG.project)
-    await message.answer(
+    await cb.message.answer(  # type: ignore[union-attr]
         "💸 <b>Оплата поставщику</b>\n"
         "Шаг 1/8: выберите проект.\n"
         "Для отмены: <code>/cancel</code>.",

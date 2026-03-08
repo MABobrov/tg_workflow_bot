@@ -329,6 +329,18 @@ class Database:
             ("invoices", "material_type", "TEXT"),
             ("invoices", "montazh_stage", "TEXT DEFAULT 'none'"),
             ("chat_messages", "invoice_id", "INTEGER REFERENCES invoices(id)"),
+            # --- ЗП менеджера (Отд.Продаж) ---
+            ("invoices", "zp_manager_status", "TEXT DEFAULT 'not_requested'"),
+            ("invoices", "zp_manager_amount", "REAL"),
+            ("invoices", "zp_manager_requested_by", "INTEGER"),
+            ("invoices", "zp_manager_requested_at", "TEXT"),
+            ("invoices", "zp_manager_approved_at", "TEXT"),
+            # --- ЗП монтажника ---
+            ("invoices", "zp_installer_status", "TEXT DEFAULT 'not_requested'"),
+            ("invoices", "zp_installer_amount", "REAL"),
+            ("invoices", "zp_installer_requested_by", "INTEGER"),
+            ("invoices", "zp_installer_requested_at", "TEXT"),
+            ("invoices", "zp_installer_approved_at", "TEXT"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -834,6 +846,17 @@ class Database:
             "AND status IN ('open', 'in_progress') "
             "AND type IN ('payment_confirm', 'invoice_end')",
             (user_id,),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def count_gd_supplier_pay_tasks(self, user_id: int) -> int:
+        """Count pending ZP requests (zamery/manager/installer) for 'Оплата поставщику' badge."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM invoices "
+            "WHERE zp_status = 'requested' "
+            "   OR zp_manager_status = 'requested' "
+            "   OR zp_installer_status = 'requested'",
         )
         row = await cur.fetchone()
         return row[0] if row else 0
@@ -1767,8 +1790,68 @@ class Database:
     ) -> None:
         await self.update_invoice(invoice_id, zp_status=zp_status)
 
+    async def set_invoice_zp_manager_status(
+        self,
+        invoice_id: int,
+        status: str,
+        amount: float | None = None,
+        requested_by: int | None = None,
+    ) -> None:
+        """Update manager (Отд.Продаж) ZP status on invoice."""
+        fields: dict[str, Any] = {"zp_manager_status": status}
+        if amount is not None:
+            fields["zp_manager_amount"] = amount
+        if requested_by is not None:
+            fields["zp_manager_requested_by"] = requested_by
+        if status == "requested":
+            fields["zp_manager_requested_at"] = to_iso(utcnow())
+        elif status == "approved":
+            fields["zp_manager_approved_at"] = to_iso(utcnow())
+        await self.update_invoice(invoice_id, **fields)
+
+    async def set_invoice_zp_installer_status(
+        self,
+        invoice_id: int,
+        status: str,
+        amount: float | None = None,
+        requested_by: int | None = None,
+    ) -> None:
+        """Update installer ZP status on invoice."""
+        fields: dict[str, Any] = {"zp_installer_status": status}
+        if amount is not None:
+            fields["zp_installer_amount"] = amount
+        if requested_by is not None:
+            fields["zp_installer_requested_by"] = requested_by
+        if status == "requested":
+            fields["zp_installer_requested_at"] = to_iso(utcnow())
+        elif status == "approved":
+            fields["zp_installer_approved_at"] = to_iso(utcnow())
+        await self.update_invoice(invoice_id, **fields)
+
+    async def list_pending_zp_requests(
+        self, zp_type: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return invoices with pending ZP requests.
+
+        zp_type: 'zamery' | 'manager' | 'installer' | None (all).
+        """
+        conditions = {
+            "zamery": "zp_status = 'requested'",
+            "manager": "zp_manager_status = 'requested'",
+            "installer": "zp_installer_status = 'requested'",
+        }
+        if zp_type and zp_type in conditions:
+            where = conditions[zp_type]
+        else:
+            where = " OR ".join(conditions.values())
+        cur = await self.conn.execute(
+            f"SELECT * FROM invoices WHERE {where} ORDER BY id DESC",
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     async def check_close_conditions(self, invoice_id: int) -> dict[str, bool]:
-        """Return dict with 4 close-condition flags."""
+        """Return dict with close-condition flags."""
         inv = await self.get_invoice(invoice_id)
         if not inv:
             return {

@@ -65,6 +65,7 @@ MGR_BTN_URGENT = "🚨 Срочно ГД"
 MGR_BTN_MY_INVOICES = "📑 Мои Счета"
 MGR_BTN_ISSUE = "🆘 Проблема/Вопрос"
 MGR_BTN_SEARCH_INVOICE = "🔍 Поиск счёта"
+MGR_BTN_ZP = "💰 Запрос ЗП"
 MGR_BTN_HELP = "📚 Справка"
 MGR_BTN_BACK_HOME = BACK_TO_HOME
 
@@ -120,6 +121,7 @@ INST_BTN_DAILY_REPORT = "📝 Отчёт за день"
 INST_BTN_IN_WORK = "🔨 В Работу"
 INST_BTN_NOT_URGENT = "📩 Не срочно ГД"
 INST_BTN_URGENT = "🚨 Срочно ГД"
+INST_BTN_ZP = "💰 Запрос ЗП"
 INST_BTN_SYNC = "🔄 Синхронизация данных"
 
 # --- Zamery buttons ---
@@ -224,8 +226,8 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             ["📥 Входящие задачи", INST_BTN_ORDER_MAT],
             [INST_BTN_INVOICE_OK, INST_BTN_RAZMERY_OK],
             [INST_BTN_ORDER_EXTRA, INST_BTN_MY_OBJECTS],
-            [INST_BTN_DAILY_REPORT, INST_BTN_IN_WORK],
-            [INST_BTN_NOT_URGENT, INST_BTN_URGENT],
+            [INST_BTN_DAILY_REPORT, INST_BTN_ZP],
+            [INST_BTN_IN_WORK, INST_BTN_NOT_URGENT],
             [INST_BTN_SYNC],
         ]
     if role == Role.GD:
@@ -401,6 +403,7 @@ def main_menu(
     gd_inbox_unread: int | None = None,
     gd_invoice_unread: int | None = None,
     gd_invoice_end_unread: int | None = None,
+    gd_supplier_pay_unread: int | None = None,
     isolated_role: bool = False,
     rp_tasks: int = 0,
     rp_messages: int = 0,
@@ -434,6 +437,11 @@ def main_menu(
     gd_invoice_end_label = GD_BTN_INVOICE_END_GD
     if gd_invoice_end_unread and gd_invoice_end_unread > 0:
         gd_invoice_end_label += f" 🔴{gd_invoice_end_unread}"
+
+    # GD "Оплата поставщику" badge (pending ZP requests)
+    gd_supplier_pay_label = GD_BTN_SUPPLIER_PAY
+    if gd_supplier_pay_unread and gd_supplier_pay_unread > 0:
+        gd_supplier_pay_label += f" 🔴{gd_supplier_pay_unread}"
 
     # Map channel names to chat button constants (for per-channel badge)
     _CHAN_BTN: dict[str, str] = {
@@ -476,6 +484,9 @@ def main_menu(
                 # GD "Счёт END" badge
                 if btn == GD_BTN_INVOICE_END_GD:
                     row[i] = gd_invoice_end_label
+                # GD "Оплата поставщику" badge
+                if btn == GD_BTN_SUPPLIER_PAY:
+                    row[i] = gd_supplier_pay_label
                 # Per-channel chat badges
                 if btn in _chan_labels:
                     row[i] = _chan_labels[btn]
@@ -661,7 +672,7 @@ def task_actions_kb(task: dict[str, Any]) -> InlineKeyboardMarkup:
         if status == TaskStatus.OPEN:
             # Первый шаг — подтвердить получение
             b = InlineKeyboardBuilder()
-            b.button(text="✅ Получено", callback_data=TaskCb(task_id=tid, action="inv_received").pack())
+            b.button(text="✅ Подтвердить получение", callback_data=TaskCb(task_id=tid, action="inv_received").pack())
             b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="inv_reject").pack())
         elif status == TaskStatus.IN_PROGRESS:
             # После подтверждения — действия по оплате
@@ -785,8 +796,9 @@ def manager_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMar
     """Подменю 'Еще' для менеджеров (КВ / КИА / НПН)."""
     rows = [
         [MGR_BTN_CRED, MGR_BTN_URGENT],
-        [MGR_BTN_MY_INVOICES, MGR_BTN_ISSUE],
-        [MGR_BTN_SEARCH_INVOICE, MGR_BTN_HELP],
+        [MGR_BTN_MY_INVOICES, MGR_BTN_ZP],
+        [MGR_BTN_SEARCH_INVOICE, MGR_BTN_ISSUE],
+        [MGR_BTN_HELP],
     ]
     if show_role_selector_back:
         rows.append([BACK_TO_ROLE_SELECTOR])

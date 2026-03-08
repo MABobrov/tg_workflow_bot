@@ -379,8 +379,8 @@ async def task_actions(
         await state.clear()
         # Показать обновлённую карточку с новыми кнопками (Оплатить/Отложить/Отклонить)
         _uid_rcv = cb.from_user.id if cb.from_user else 0
-        card_text = fmt_task_card(task, project)
-        kb = task_actions_kb(task_id, TaskType.INVOICE_PAYMENT, TaskStatus.IN_PROGRESS)
+        card_text = fmt_task_card(task, project, config.timezone)
+        kb = task_actions_kb(task)
         await cb.message.answer(  # type: ignore
             f"✅ Получение подтверждено.\n\n{card_text}",
             reply_markup=kb,
@@ -391,7 +391,7 @@ async def task_actions(
             reply_markup=private_only_reply_markup(
                 cb.message,
                 main_menu(Role.GD, is_admin=bool(cb.from_user and _uid_rcv in (config.admin_ids or set())),
-                           unread=await db.count_unread_tasks(_uid_rcv), unread_channels=await db.count_unread_by_channel(_uid_rcv), gd_inbox_unread=await db.count_gd_inbox_tasks(_uid_rcv), gd_invoice_unread=await db.count_gd_invoice_tasks(_uid_rcv), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(_uid_rcv)),
+                           unread=await db.count_unread_tasks(_uid_rcv), unread_channels=await db.count_unread_by_channel(_uid_rcv), gd_inbox_unread=await db.count_gd_inbox_tasks(_uid_rcv), gd_invoice_unread=await db.count_gd_invoice_tasks(_uid_rcv), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(_uid_rcv), gd_supplier_pay_unread=await db.count_gd_supplier_pay_tasks(_uid_rcv)),
             ),
         )
         return
@@ -446,7 +446,7 @@ async def task_actions(
             reply_markup=private_only_reply_markup(
                 cb.message,
                 main_menu(Role.GD, is_admin=bool(cb.from_user and _uid_hold in (config.admin_ids or set())),
-                           unread=await db.count_unread_tasks(_uid_hold), unread_channels=await db.count_unread_by_channel(_uid_hold), gd_inbox_unread=await db.count_gd_inbox_tasks(_uid_hold), gd_invoice_unread=await db.count_gd_invoice_tasks(_uid_hold), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(_uid_hold)),
+                           unread=await db.count_unread_tasks(_uid_hold), unread_channels=await db.count_unread_by_channel(_uid_hold), gd_inbox_unread=await db.count_gd_inbox_tasks(_uid_hold), gd_invoice_unread=await db.count_gd_invoice_tasks(_uid_hold), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(_uid_hold), gd_supplier_pay_unread=await db.count_gd_supplier_pay_tasks(_uid_hold)),
             ),
         )
         return
@@ -479,7 +479,7 @@ async def task_actions(
             reply_markup=private_only_reply_markup(
                 cb.message,
                 main_menu(Role.GD, is_admin=bool(cb.from_user and _uid_rej in (config.admin_ids or set())),
-                           unread=await db.count_unread_tasks(_uid_rej), unread_channels=await db.count_unread_by_channel(_uid_rej), gd_inbox_unread=await db.count_gd_inbox_tasks(_uid_rej), gd_invoice_unread=await db.count_gd_invoice_tasks(_uid_rej), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(_uid_rej)),
+                           unread=await db.count_unread_tasks(_uid_rej), unread_channels=await db.count_unread_by_channel(_uid_rej), gd_inbox_unread=await db.count_gd_inbox_tasks(_uid_rej), gd_invoice_unread=await db.count_gd_invoice_tasks(_uid_rej), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(_uid_rej), gd_supplier_pay_unread=await db.count_gd_supplier_pay_tasks(_uid_rej)),
             ),
         )
         return
@@ -848,7 +848,7 @@ async def invoice_pp_finalize(
         "✅ Счёт оплачен. Платёжка отправлена РП.",
         reply_markup=private_only_reply_markup(
             cb.message,
-            main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(u.id), unread_channels=await db.count_unread_by_channel(u.id), gd_inbox_unread=await db.count_gd_inbox_tasks(u.id), gd_invoice_unread=await db.count_gd_invoice_tasks(u.id), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(u.id)),
+            main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(u.id), unread_channels=await db.count_unread_by_channel(u.id), gd_inbox_unread=await db.count_gd_inbox_tasks(u.id), gd_invoice_unread=await db.count_gd_invoice_tasks(u.id), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(u.id), gd_supplier_pay_unread=await db.count_gd_supplier_pay_tasks(u.id)),
         ),
     )
 
