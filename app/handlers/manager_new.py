@@ -61,7 +61,7 @@ from ..states import (
     ManagerChatProxySG,
     ManagerZpSG,
 )
-from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
+from ..utils import answer_service, format_cost_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -1073,6 +1073,13 @@ async def invoice_end_gd_final(
 
         # Set ZP status to requested
         await db.set_invoice_zp_status(invoice_id, "requested")
+
+        # --- Себестоимость при закрытии ---
+        cost_data = await db.get_full_invoice_cost_card(invoice_id)
+        cost_msg = format_cost_card(inv, cost_data)
+        await cb.message.answer(cost_msg)  # type: ignore[union-attr]
+        if manager_id:
+            await notifier.safe_send(int(manager_id), cost_msg)
     else:
         await cb.message.answer(  # type: ignore[union-attr]
             f"📌 Счёт №{inv['invoice_number']} — на проверке."
@@ -1364,7 +1371,27 @@ async def my_invoice_view(cb: CallbackQuery, db: Database) -> None:
             f"{c4} 4. ЗП — утверждено\n"
         )
 
-    await cb.message.answer(text)  # type: ignore[union-attr]
+    # Кнопка "Себестоимость" для закрытых счетов
+    if inv["status"] == InvoiceStatus.ENDED:
+        b = InlineKeyboardBuilder()
+        b.button(text="📊 Себестоимость", callback_data=f"mgr_cost:{invoice_id}")
+        b.adjust(1)
+        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    else:
+        await cb.message.answer(text)  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.regexp(r"^mgr_cost:\d+$"))
+async def manager_invoice_cost(cb: CallbackQuery, db: Database) -> None:
+    """Менеджер: карточка себестоимости по закрытому счёту."""
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        await cb.message.answer("⚠️ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    cost = await db.get_full_invoice_cost_card(inv_id)
+    await cb.message.answer(format_cost_card(inv, cost))  # type: ignore[union-attr]
 
 
 # =====================================================================

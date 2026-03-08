@@ -1067,6 +1067,97 @@ class Database:
 
         return summary
 
+    async def list_supplier_payments_for_invoice(
+        self, invoice_id: int,
+    ) -> list[dict[str, Any]]:
+        """SUPPLIER_PAYMENT tasks, привязанные к parent_invoice_id в payload."""
+        rows = await self.search_tasks_by_payload(
+            field="parent_invoice_id",
+            value=str(invoice_id),
+            type_filter=["supplier_payment"],
+            limit=50,
+        )
+        result: list[dict[str, Any]] = []
+        for r in rows:
+            if r.get("status") != "done":
+                continue
+            payload = json.loads(r.get("payload_json") or "{}")
+            # Точная проверка parent_invoice_id (LIKE может дать ложные совпадения)
+            if payload.get("parent_invoice_id") != invoice_id:
+                continue
+            result.append({
+                "supplier": payload.get("supplier", ""),
+                "amount": float(payload.get("amount") or 0),
+                "material_type": payload.get("material_type", ""),
+                "invoice_number": payload.get("invoice_number", ""),
+                "task_id": r["id"],
+            })
+        return result
+
+    async def get_full_invoice_cost_card(self, invoice_id: int) -> dict[str, Any]:
+        """
+        Полная карточка себестоимости по родительскому счёту.
+        Агрегирует:
+          1) Дочерние счета (по material_type)
+          2) Оплаты поставщикам (SUPPLIER_PAYMENT tasks)
+          3) ЗП Замерщик / Менеджер / Монтажник
+        """
+        inv = await self.get_invoice(invoice_id)
+        if not inv:
+            return {
+                "invoice_amount": 0, "materials_total": 0, "materials_by_type": {},
+                "supplier_payments_total": 0, "supplier_payments_list": [],
+                "zp_zamery": 0, "zp_manager": 0, "zp_installer": 0, "zp_total": 0,
+                "total_cost": 0, "margin": 0, "margin_pct": 0,
+            }
+
+        invoice_amount = float(inv.get("amount") or 0)
+
+        # 1) Дочерние счета (материалы)
+        mat_summary = await self.get_invoice_cost_summary(invoice_id)
+        materials_total = mat_summary["total"]
+        materials_by_type = mat_summary["by_material"]
+
+        # 2) Оплаты поставщикам
+        sp_list = await self.list_supplier_payments_for_invoice(invoice_id)
+        supplier_payments_total = sum(s["amount"] for s in sp_list)
+
+        # 3) ЗП (только approved)
+        zp_zamery = float(inv.get("zp_zamery_total") or 0) if inv.get("zp_status") == "approved" else 0.0
+        zp_manager = float(inv.get("zp_manager_amount") or 0) if inv.get("zp_manager_status") == "approved" else 0.0
+        zp_installer = float(inv.get("zp_installer_amount") or 0) if inv.get("zp_installer_status") == "approved" else 0.0
+        zp_total = zp_zamery + zp_manager + zp_installer
+
+        total_cost = materials_total + supplier_payments_total + zp_total
+        margin = invoice_amount - total_cost
+        margin_pct = (margin / invoice_amount * 100) if invoice_amount > 0 else 0.0
+
+        return {
+            "invoice_amount": invoice_amount,
+            "materials_total": materials_total,
+            "materials_by_type": materials_by_type,
+            "supplier_payments_total": supplier_payments_total,
+            "supplier_payments_list": sp_list,
+            "zp_zamery": zp_zamery,
+            "zp_manager": zp_manager,
+            "zp_installer": zp_installer,
+            "zp_total": zp_total,
+            "total_cost": total_cost,
+            "margin": margin,
+            "margin_pct": margin_pct,
+        }
+
+    async def list_invoices_for_installer(self, user_id: int) -> list[dict[str, Any]]:
+        """Счета, назначенные монтажнику (installer_id = user_id), в работе."""
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices WHERE installer_id = ? "
+            "AND status IN ('in_progress', 'paid') "
+            "AND parent_invoice_id IS NULL "
+            "ORDER BY created_at DESC LIMIT 15",
+            (user_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
     async def list_chat_messages_by_invoice(
         self, invoice_id: int, limit: int = 50,
     ) -> list[dict[str, Any]]:

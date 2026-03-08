@@ -328,6 +328,7 @@ class InstallerWorkAcceptSG(StatesGroup):
 
 class InstallerOrderMaterialsSG(StatesGroup):
     """Монтажник: Заказ материалов / Заказ доп.материалов → РП."""
+    invoice_pick = State()       # выбор счёта для привязки
     description = State()        # описание: что нужно
     comment = State()            # комментарий
     attachments = State()        # фото/документы с размерами

@@ -91,7 +91,26 @@ async def acc_invoice_view(cb: CallbackQuery, db: Database) -> None:
         f"📊 Статус: 🏁 Закрытые Счета\n"
         f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
     )
-    await cb.message.answer(text)  # type: ignore[union-attr]
+    b = InlineKeyboardBuilder()
+    b.button(text="📊 Себестоимость", callback_data=f"acc_cost:{invoice_id}")
+    b.adjust(1)
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.regexp(r"^acc_cost:\d+$"))
+async def acc_invoice_cost(cb: CallbackQuery, db: Database) -> None:
+    """Бухгалтерия: карточка себестоимости по закрытому счёту."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        await cb.message.answer("⚠️ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    cost = await db.get_full_invoice_cost_card(inv_id)
+    from ..utils import format_cost_card
+    await cb.message.answer(format_cost_card(inv, cost))  # type: ignore[union-attr]
 
 
 # =====================================================================

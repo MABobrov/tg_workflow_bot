@@ -72,11 +72,38 @@ async def start_order_materials(message: Message, state: FSMContext, db: Databas
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    await state.set_state(InstallerOrderMaterialsSG.description)
+    invoices = await db.list_invoices_for_installer(message.from_user.id)
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:25]
+        b.button(
+            text=f"№{num} — {addr}",
+            callback_data=f"inst_order_inv:{inv['id']}",
+        )
+    b.button(text="⏩ Без привязки", callback_data="inst_order_inv:skip")
+    b.adjust(1)
+    await state.set_state(InstallerOrderMaterialsSG.invoice_pick)
     await message.answer(
         "📦 <b>Заказ материалов</b>\n\n"
-        "Шаг 1/3: Опишите, какие материалы нужны (объект, размеры и т.д.).\n"
-        "Для отмены: <code>/cancel</code>."
+        "Выберите счёт для привязки заказа или пропустите:\n"
+        "Для отмены: <code>/cancel</code>.",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(
+    InstallerOrderMaterialsSG.invoice_pick,
+    lambda cb: cb.data and cb.data.startswith("inst_order_inv:"),
+)
+async def order_mat_pick_invoice(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    val = (cb.data or "").split(":", 1)[1]
+    invoice_id = None if val == "skip" else int(val)
+    await state.update_data(invoice_id=invoice_id)
+    await state.set_state(InstallerOrderMaterialsSG.description)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "Шаг 1/3: Опишите, какие материалы нужны (объект, размеры и т.д.)."
     )
 
 
@@ -173,6 +200,7 @@ async def order_mat_finalize(
             "comment": comment,
             "source": "installer",
             "sender_id": u.id,
+            "invoice_id": data.get("invoice_id"),
         },
     )
 

@@ -422,6 +422,80 @@ async def refresh_recipient_keyboard(
     await notifier.safe_send(user_id, text, reply_markup=kb)
 
 
+def format_cost_card(inv: dict[str, Any], cost: dict[str, Any]) -> str:
+    """HTML-карточка себестоимости для Telegram."""
+    from .enums import MATERIAL_TYPE_LABELS
+
+    num = html.quote(str(inv.get("invoice_number") or f"#{inv.get('id')}"))
+    addr = html.quote(str(inv.get("object_address") or inv.get("address") or "—"))
+
+    inv_amount = cost.get("invoice_amount", 0)
+    inv_amount_s = f"{inv_amount:,.0f}".replace(",", " ")
+
+    lines: list[str] = [
+        f"📊 <b>Себестоимость — Счёт №{num}</b>",
+        f"📍 {addr}",
+        "",
+        f"💰 Сумма счёта: <b>{inv_amount_s}</b> руб.",
+    ]
+
+    # --- Материалы (дочерние счета) ---
+    materials_by_type: dict[str, float] = cost.get("materials_by_type", {})
+    materials_total = cost.get("materials_total", 0)
+    if materials_by_type:
+        lines.append("")
+        lines.append("📦 <b>Материалы (дочерние счета):</b>")
+        items = sorted(materials_by_type.items(), key=lambda x: -x[1])
+        for idx, (mat, amt) in enumerate(items):
+            label = MATERIAL_TYPE_LABELS.get(mat, mat)
+            prefix = "  └" if idx == len(items) - 1 else "  ├"
+            lines.append(f"{prefix} {label}: {amt:,.0f} руб.")
+        lines.append(f"Итого материалов: <b>{materials_total:,.0f}</b> руб.")
+
+    # --- Оплаты поставщикам ---
+    sp_list: list[dict[str, Any]] = cost.get("supplier_payments_list", [])
+    sp_total = cost.get("supplier_payments_total", 0)
+    if sp_list:
+        lines.append("")
+        lines.append("💸 <b>Оплаты поставщикам:</b>")
+        for idx, sp in enumerate(sp_list):
+            supplier = html.quote(sp.get("supplier", "—") or "—")
+            prefix = "  └" if idx == len(sp_list) - 1 else "  ├"
+            lines.append(f"{prefix} {supplier}: {sp['amount']:,.0f} руб.")
+        lines.append(f"Итого оплат: <b>{sp_total:,.0f}</b> руб.")
+
+    # --- Зарплаты ---
+    zp_zamery = cost.get("zp_zamery", 0)
+    zp_manager = cost.get("zp_manager", 0)
+    zp_installer = cost.get("zp_installer", 0)
+    zp_total = cost.get("zp_total", 0)
+    if zp_total > 0:
+        lines.append("")
+        lines.append("💰 <b>Зарплаты:</b>")
+        zp_items = [
+            ("Замерщик", zp_zamery),
+            ("Монтажник", zp_installer),
+            ("Отд.Продаж", zp_manager),
+        ]
+        zp_items = [(n, v) for n, v in zp_items if v > 0]
+        for idx, (name, val) in enumerate(zp_items):
+            prefix = "  └" if idx == len(zp_items) - 1 else "  ├"
+            lines.append(f"{prefix} {name}: {val:,.0f} руб.")
+        lines.append(f"Итого ЗП: <b>{zp_total:,.0f}</b> руб.")
+
+    # --- Итого ---
+    total_cost = cost.get("total_cost", 0)
+    margin = cost.get("margin", 0)
+    margin_pct = cost.get("margin_pct", 0)
+    lines.append("")
+    lines.append("═══════════════════")
+    lines.append(f"📊 <b>ИТОГО РАСХОДЫ:</b> {total_cost:,.0f} руб.")
+    if inv_amount > 0:
+        lines.append(f"📈 <b>МАРЖА:</b> {margin:,.0f} руб. ({margin_pct:.1f}%)")
+
+    return "\n".join(lines)
+
+
 def fmt_project_card(project: dict[str, Any], tz_name: str) -> str:
     """Pretty HTML card for a project dict."""
     code = html.quote(project.get("code") or f"#{project.get('id')}")

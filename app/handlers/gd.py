@@ -789,7 +789,7 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
 
 @router.callback_query(F.data.regexp(r"^inv_stats:\d+$"))
 async def gd_invoice_stats(cb: CallbackQuery, db: Database) -> None:
-    """Статистика себестоимости по родительскому счёту."""
+    """Полная карточка себестоимости по родительскому счёту."""
     await cb.answer()
     parent_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
     inv = await db.get_invoice(parent_id)
@@ -797,40 +797,9 @@ async def gd_invoice_stats(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("⚠️ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    summary = await db.get_invoice_cost_summary(parent_id)
-    from ..enums import MATERIAL_TYPE_LABELS
-
-    num = inv.get("invoice_number") or f"#{parent_id}"
-    addr = inv.get("object_address") or "—"
-    total = summary["total"]
-    count = summary["count"]
-
-    lines = [
-        f"📊 <b>Статистика — Счёт №{html.escape(str(num))}</b>",
-        f"📍 Адрес: {html.escape(addr)}",
-        "",
-        f"💰 Итого расходов: <b>{total:,.0f}</b> руб. ({count} счетов)",
-    ]
-
-    # By material type
-    if summary["by_material"]:
-        for mat, amt in sorted(summary["by_material"].items(), key=lambda x: -x[1]):
-            label = MATERIAL_TYPE_LABELS.get(mat, mat)
-            lines.append(f"  ├ {label}: {amt:,.0f} руб.")
-
-    # Credit breakdown
-    if summary["credit_total"] > 0:
-        lines.append("")
-        lines.append(f"🏦 В т.ч. Кредит: <b>{summary['credit_total']:,.0f}</b> руб.")
-        for mat, amt in sorted(summary["credit_by_material"].items(), key=lambda x: -x[1]):
-            label = MATERIAL_TYPE_LABELS.get(mat, mat)
-            lines.append(f"  └ {label}: {amt:,.0f} руб.")
-
-    if summary["non_credit_total"] > 0 and summary["credit_total"] > 0:
-        lines.append("")
-        lines.append(f"💵 Без кредита: <b>{summary['non_credit_total']:,.0f}</b> руб.")
-
-    await cb.message.answer("\n".join(lines))  # type: ignore[union-attr]
+    cost = await db.get_full_invoice_cost_card(parent_id)
+    from ..utils import format_cost_card
+    await cb.message.answer(format_cost_card(inv, cost))  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data.regexp(r"^inv_msgs:\d+$"))
