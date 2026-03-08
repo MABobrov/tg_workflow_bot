@@ -372,12 +372,33 @@ async def invoice_start_number(message: Message, state: FSMContext, db: Database
         return
 
     await state.update_data(invoice_id=inv["id"], invoice_number=text, invoice_data=dict(inv))
-    await state.set_state(InvoiceStartSG.estimated_materials)
+    await state.set_state(InvoiceStartSG.client_source)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="👤 Мой клиент (50/50)", callback_data="inv_src:own")
+    b.button(text="📋 Лид от ГД (75/25)", callback_data="inv_src:gd_lead")
+    b.adjust(1)
 
     await message.answer(
         f"Счёт №{text} найден.\n"
         f"📍 Адрес: {inv.get('object_address', '-')}\n"
         f"💰 Сумма: {inv.get('amount', 0):,.0f}₽\n\n"
+        "❓ <b>Источник клиента</b> (влияет на распределение прибыли):",
+        reply_markup=b.as_markup(),
+    )
+
+
+# ---------- Источник клиента ----------
+
+@router.callback_query(F.data.startswith("inv_src:"), InvoiceStartSG.client_source)
+async def invoice_start_client_source(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    source = cb.data.split(":")[1]  # type: ignore[union-attr]
+    await state.update_data(client_source=source)
+    await state.set_state(InvoiceStartSG.estimated_materials)
+    label = "👤 Мой клиент (50/50)" if source == "own" else "📋 Лид от ГД (75/25)"
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"Источник: {label}\n\n"
         "📊 <b>Расчётные данные</b> (шаг 1/4)\n"
         "Введите <b>расчётную стоимость материалов</b> (Расч.мат.) в ₽:\n"
         "<i>Введите 0, если материалов нет.</i>",
@@ -463,6 +484,17 @@ async def invoice_start_est_logistics(message: Message, state: FSMContext) -> No
     est_profit = amount - est_total - est_vat
     est_pct = (est_profit / amount * 100) if amount > 0 else 0
 
+    # Profit split
+    client_source = data.get("client_source", "own")
+    rp_zp = est_profit * 0.08 if est_profit > 0 else 0
+    remaining = est_profit - rp_zp
+    if client_source == "gd_lead":
+        mgr_share = remaining * 0.25
+        split_label = "Лид ГД (75/25)"
+    else:
+        mgr_share = remaining * 0.50
+        split_label = "Мой клиент (50/50)"
+
     b = InlineKeyboardBuilder()
     b.button(text="✅ Отправить ГД", callback_data="inv_start:send")
     b.button(text="⏭ Без вложений", callback_data="inv_start:send")
@@ -478,6 +510,9 @@ async def invoice_start_est_logistics(message: Message, state: FSMContext) -> No
         f"  ─────────────\n"
         f"  Расч.себестоимость: {est_total:,.0f}₽\n"
         f"  Расч.прибыль: {est_profit:,.0f}₽ ({est_pct:.1f}%)\n\n"
+        f"💰 <b>Распределение ({split_label}):</b>\n"
+        f"  ЗП РП (8%): {rp_zp:,.0f}₽\n"
+        f"  Ваша доля: {mgr_share:,.0f}₽\n\n"
         "📎 Прикрепите документы (счёт, договор, приложение)\n"
         "или нажмите «Отправить ГД».",
         reply_markup=b.as_markup(),
@@ -540,17 +575,19 @@ async def invoice_start_send(
         await state.clear()
         return
 
-    # Save estimated data to DB
+    # Save estimated data + client source to DB
     est_mat = data.get("estimated_materials", 0)
     est_inst = data.get("estimated_installation", 0)
     est_load = data.get("estimated_loaders", 0)
     est_log = data.get("estimated_logistics", 0)
+    client_source = data.get("client_source", "own")
     await db.update_invoice(
         invoice_id,
         estimated_materials=est_mat,
         estimated_installation=est_inst,
         estimated_loaders=est_load,
         estimated_logistics=est_log,
+        client_source=client_source,
     )
 
     # Update invoice status
@@ -596,12 +633,25 @@ async def invoice_start_send(
     est_profit = amount - est_total - est_vat
     est_pct = (est_profit / amount * 100) if amount > 0 else 0
 
+    # Profit split
+    rp_zp = est_profit * 0.08 if est_profit > 0 else 0
+    remaining = est_profit - rp_zp
+    if client_source == "gd_lead":
+        mgr_share = remaining * 0.25
+        gd_share = remaining * 0.75
+        src_label = "📋 Лид от ГД (75/25)"
+    else:
+        mgr_share = remaining * 0.50
+        gd_share = remaining * 0.50
+        src_label = "👤 Клиент менеджера (50/50)"
+
     msg_text = (
         f"💼 <b>Новый счёт на оплату от {role_label}</b>\n"
         f"👤 От: {initiator}\n\n"
         f"📄 Счёт №: <code>{invoice_number}</code>\n"
         f"📍 Адрес: {inv_data.get('object_address', '-')}\n"
-        f"💰 Сумма: {amount:,.0f}₽\n\n"
+        f"💰 Сумма: {amount:,.0f}₽\n"
+        f"🔗 Источник: {src_label}\n\n"
         f"📊 <b>Расчётные данные:</b>\n"
         f"  Материалы: {est_mat:,.0f}₽\n"
         f"  Установка: {est_inst:,.0f}₽\n"
@@ -609,7 +659,11 @@ async def invoice_start_send(
         f"  Логистика: {est_log:,.0f}₽\n"
         f"  НДС (авто): {est_vat:,.0f}₽\n"
         f"  Расч.себест-ть: {est_total:,.0f}₽\n"
-        f"  Расч.прибыль: {est_profit:,.0f}₽ ({est_pct:.1f}%)\n"
+        f"  Расч.прибыль: {est_profit:,.0f}₽ ({est_pct:.1f}%)\n\n"
+        f"💰 <b>Распределение:</b>\n"
+        f"  ЗП РП (8%): {rp_zp:,.0f}₽\n"
+        f"  ЗП менеджер: {mgr_share:,.0f}₽\n"
+        f"  Доля ГД: {gd_share:,.0f}₽\n"
     )
 
     from ..keyboards import task_actions_kb
@@ -1973,13 +2027,37 @@ async def manager_zp_pick(cb: CallbackQuery, state: FSMContext, db: Database) ->
         await state.clear()
         return
 
-    await state.update_data(zp_invoice_id=invoice_id)
-    await state.set_state(ManagerZpSG.amount)
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"💰 Счёт: <b>№{inv['invoice_number']}</b>\n"
-        f"📍 Адрес: {inv.get('object_address') or '—'}\n\n"
-        "Введите сумму ЗП (число):",
-    )
+    # Auto-calculate ZP from estimated profit split
+    if pf["has_estimated"] and pf["manager_zp"] > 0:
+        auto_amount = pf["manager_zp"]
+        src = pf.get("client_source", "own")
+        src_label = "Лид ГД (75/25)" if src == "gd_lead" else "Мой клиент (50/50)"
+        await state.update_data(zp_invoice_id=invoice_id, zp_amount=auto_amount)
+        await state.set_state(ManagerZpSG.confirm)
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ Отправить", callback_data="mgrzp:confirm")
+        b.button(text="❌ Отмена", callback_data="mgrzp:cancel")
+        b.adjust(2)
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"💰 <b>ЗП рассчитана автоматически</b>\n\n"
+            f"🔢 Счёт: №{inv['invoice_number']}\n"
+            f"📍 Адрес: {inv.get('object_address') or '—'}\n"
+            f"🔗 Источник: {src_label}\n\n"
+            f"📊 Расч.прибыль: {pf['estimated_profit']:,.0f}₽\n"
+            f"  ЗП РП (8%): {pf['rp_zp']:,.0f}₽\n"
+            f"  <b>Ваша доля: {auto_amount:,.0f}₽</b>\n\n"
+            "Отправить запрос ГД?",
+            reply_markup=b.as_markup(),
+        )
+    else:
+        # Legacy: no estimated data — manual entry
+        await state.update_data(zp_invoice_id=invoice_id)
+        await state.set_state(ManagerZpSG.amount)
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"💰 Счёт: <b>№{inv['invoice_number']}</b>\n"
+            f"📍 Адрес: {inv.get('object_address') or '—'}\n\n"
+            "Введите сумму ЗП (число):",
+        )
 
 
 @router.message(ManagerZpSG.amount)

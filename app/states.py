@@ -260,6 +260,8 @@ class KpReviewSG(StatesGroup):
 class InvoiceStartSG(StatesGroup):
     """Менеджер: Счет в Работу — отправка счёта ГД на оплату."""
     invoice_number = State()     # номер счёта (поиск в БД)
+    # Источник клиента (для распределения прибыли)
+    client_source = State()      # own (50/50) | gd_lead (75/25 в пользу ГД)
     # Расчётные данные (План/Факт)
     estimated_materials = State()     # расч. стоимость материалов
     estimated_installation = State()  # расч. стоимость установки

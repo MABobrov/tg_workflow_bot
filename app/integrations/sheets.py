@@ -129,8 +129,8 @@ INVOICES_HEADER = [
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
-# Removed 18 (Грузчики), 19 (Логистика), 21 (НДС), 24 (Рент-ть факт) — now bot-managed (Plan/Fact)
-_MANUAL_COLS = frozenset([1, 5, 7, 11, 12, 22, 25, 26, 27, 28, 29,
+# Removed 7 (Свой/Атм→client_source), 18,19,21,24 — now bot-managed (Plan/Fact)
+_MANUAL_COLS = frozenset([1, 5, 11, 12, 22, 25, 26, 27, 28, 29,
                           31, 33, 34, 37, 38, 39, 40, 41, 42, 43, 44, 45])
 
 
@@ -341,6 +341,7 @@ class GoogleSheetsService:
             2: manager_label,                                                        # Менеджер
             3: "Да" if invoice.get("edo_signed") else "",                           # Бухг.ЭДО
             6: "0" if invoice.get("is_credit") else "1",                            # Б.Н./Кред
+            7: {"own": "Свой", "gd_lead": "Атм"}.get(invoice.get("client_source", ""), ""),  # Свой/Атм
             8: invoice.get("invoice_number") or "",                                  # Номер счета
             9: invoice.get("object_address") or "",                                  # Адрес
             14: self._fmt_amount(invoice.get("amount")),                             # Сумма

@@ -357,6 +357,7 @@ class Database:
             ("invoices", "estimated_installation", "REAL"),
             ("invoices", "estimated_loaders", "REAL"),
             ("invoices", "estimated_logistics", "REAL"),
+            ("invoices", "client_source", "TEXT"),  # 'own' | 'gd_lead'
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -1169,6 +1170,10 @@ class Database:
         Расчётные данные вводятся менеджером при запуске счёта в работу.
         Фактические берутся из get_full_invoice_cost_card().
         НДС рассчитывается автоматически: amount * 20 / 120.
+
+        Распределение прибыли:
+          1) ЗП РП = 8% от прибыли
+          2) Остаток: клиент менеджера → 50/50, лид от ГД → 75(ГД)/25(менеджер)
         """
         inv = await self.get_invoice(invoice_id)
         if not inv:
@@ -1181,6 +1186,8 @@ class Database:
                 "actual_total_cost": 0, "actual_profit": 0,
                 "actual_profitability": 0, "cost_delta": 0,
                 "zp_allowed": False, "cost_card": {},
+                "client_source": "own",
+                "rp_zp": 0, "manager_zp": 0, "gd_profit": 0,
             }
 
         cost = await self.get_full_invoice_cost_card(invoice_id)
@@ -1202,6 +1209,19 @@ class Database:
         fact_total = cost["total_cost"]
         fact_profit = cost["margin"]
 
+        # Распределение расчётной прибыли
+        client_source = inv.get("client_source") or "own"
+        rp_zp = est_profit * 0.08 if est_profit > 0 else 0.0
+        remaining = est_profit - rp_zp
+        if client_source == "gd_lead":
+            # Лид от ГД: 75% ГД / 25% менеджер
+            manager_zp = remaining * 0.25
+            gd_profit = remaining * 0.75
+        else:
+            # Клиент менеджера: 50/50
+            manager_zp = remaining * 0.50
+            gd_profit = remaining * 0.50
+
         return {
             "has_estimated": has_estimated,
             "amount": amount,
@@ -1219,6 +1239,11 @@ class Database:
             "cost_delta": fact_total - est_total,
             "zp_allowed": fact_total <= est_total,
             "cost_card": cost,
+            # Распределение прибыли
+            "client_source": client_source,
+            "rp_zp": rp_zp,
+            "manager_zp": manager_zp,
+            "gd_profit": gd_profit,
         }
 
     async def list_invoices_for_installer(self, user_id: int) -> list[dict[str, Any]]:

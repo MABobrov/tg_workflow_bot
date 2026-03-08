@@ -672,14 +672,30 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any]) -> str:
         "</pre>",
     ]
 
+    # Profit split
+    client_source = pf.get("client_source", "own")
+    rp_zp = pf.get("rp_zp", 0)
+    mgr_zp = pf.get("manager_zp", 0)
+    gd_pr = pf.get("gd_profit", 0)
+    src_label = "📋 Лид ГД (75/25)" if client_source == "gd_lead" else "👤 Клиент менеджера (50/50)"
+
+    if pf.get("has_estimated") and est_profit > 0:
+        lines.append(f"\n🔗 {src_label}")
+        lines.append(
+            f"💰 <b>Распределение прибыли:</b>\n"
+            f"  ЗП РП (8%): {rp_zp:,.0f}₽\n"
+            f"  ЗП менеджер: {mgr_zp:,.0f}₽\n"
+            f"  Доля ГД: {gd_pr:,.0f}₽"
+        )
+
     # ZP status
     if pf.get("has_estimated"):
         if pf.get("zp_allowed"):
-            lines.append("\n💰 ЗП менеджера: ✅ <b>Разрешена</b> (факт ≤ план)")
+            lines.append("\n✅ ЗП менеджера: <b>Разрешена</b> (факт ≤ план)")
         else:
             delta = pf.get("cost_delta", 0)
             lines.append(
-                f"\n💰 ЗП менеджера: ❌ <b>Заблокирована</b>\n"
+                f"\n❌ ЗП менеджера: <b>Заблокирована</b>\n"
                 f"    Перерасход: {delta:+,.0f}₽"
             )
     else:
