@@ -18,7 +18,7 @@ from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import SupplierPaymentSG
-from ..utils import answer_service, fmt_project_card, parse_amount, private_only_reply_markup, refresh_recipient_keyboard
+from ..utils import answer_service, fmt_project_card, format_plan_fact_card, parse_amount, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -282,7 +282,7 @@ async def gd_zp_zamery_view(cb: CallbackQuery, db: Database) -> None:
 
 @router.callback_query(F.data.startswith("gdzp_mgr:view:"))
 async def gd_zp_manager_view(cb: CallbackQuery, db: Database) -> None:
-    """View manager ZP request card."""
+    """View manager ZP request card with Plan/Fact comparison."""
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     inv = await db.get_invoice(invoice_id)
@@ -290,6 +290,13 @@ async def gd_zp_manager_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
     amt = inv.get("zp_manager_amount") or 0
+
+    # Plan/Fact card
+    pf = await db.get_plan_fact_card(invoice_id)
+    pf_text = ""
+    if pf.get("has_estimated"):
+        pf_text = "\n\n" + format_plan_fact_card(inv, pf)
+
     b = InlineKeyboardBuilder()
     b.button(text="✅ ЗП ОК", callback_data=f"gdzp_mgr:ok:{invoice_id}")
     b.button(text="❌ Отклонить", callback_data=f"gdzp_mgr:no:{invoice_id}")
@@ -298,7 +305,8 @@ async def gd_zp_manager_view(cb: CallbackQuery, db: Database) -> None:
         f"💼 <b>ЗП отд.продаж</b>\n\n"
         f"🔢 Счёт: №{inv['invoice_number']}\n"
         f"📍 Адрес: {inv.get('object_address') or '—'}\n"
-        f"💵 Сумма: {amt:,.0f}₽",
+        f"💵 Запрос ЗП: {amt:,.0f}₽"
+        f"{pf_text}",
         reply_markup=b.as_markup(),
     )
 

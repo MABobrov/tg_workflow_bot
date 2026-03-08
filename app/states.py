@@ -260,6 +260,11 @@ class KpReviewSG(StatesGroup):
 class InvoiceStartSG(StatesGroup):
     """Менеджер: Счет в Работу — отправка счёта ГД на оплату."""
     invoice_number = State()     # номер счёта (поиск в БД)
+    # Расчётные данные (План/Факт)
+    estimated_materials = State()     # расч. стоимость материалов
+    estimated_installation = State()  # расч. стоимость установки
+    estimated_loaders = State()       # расч. стоимость грузчиков
+    estimated_logistics = State()     # расч. стоимость логистики
     attachments = State()        # счёт, договор, приложение
     # Дополнение 1: проверка ЭДО / бумажных подписей
     edo_check = State()          # ГД: документы подписаны в ЭДО? (да/нет)

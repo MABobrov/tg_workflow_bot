@@ -372,7 +372,96 @@ async def invoice_start_number(message: Message, state: FSMContext, db: Database
         return
 
     await state.update_data(invoice_id=inv["id"], invoice_number=text, invoice_data=dict(inv))
+    await state.set_state(InvoiceStartSG.estimated_materials)
+
+    await message.answer(
+        f"Счёт №{text} найден.\n"
+        f"📍 Адрес: {inv.get('object_address', '-')}\n"
+        f"💰 Сумма: {inv.get('amount', 0):,.0f}₽\n\n"
+        "📊 <b>Расчётные данные</b> (шаг 1/4)\n"
+        "Введите <b>расчётную стоимость материалов</b> (Расч.мат.) в ₽:\n"
+        "<i>Введите 0, если материалов нет.</i>",
+    )
+
+
+# ---------- Расчётные данные (4 шага) ----------
+
+def _parse_est_value(text: str) -> float | None:
+    """Parse estimated value from user input. Returns None if invalid."""
+    t = (text or "").strip().replace(",", ".").replace(" ", "").replace("\u00a0", "")
+    try:
+        val = float(t)
+        return val if val >= 0 else None
+    except ValueError:
+        return None
+
+
+@router.message(InvoiceStartSG.estimated_materials)
+async def invoice_start_est_materials(message: Message, state: FSMContext) -> None:
+    val = _parse_est_value(message.text or "")
+    if val is None:
+        await message.answer("⚠️ Введите корректное число ≥ 0:")
+        return
+    await state.update_data(estimated_materials=val)
+    await state.set_state(InvoiceStartSG.estimated_installation)
+    await message.answer(
+        "📊 <b>Расчётные данные</b> (шаг 2/4)\n"
+        "Введите <b>расчётную стоимость установки</b> в ₽:\n"
+        "<i>Введите 0, если установки нет.</i>",
+    )
+
+
+@router.message(InvoiceStartSG.estimated_installation)
+async def invoice_start_est_installation(message: Message, state: FSMContext) -> None:
+    val = _parse_est_value(message.text or "")
+    if val is None:
+        await message.answer("⚠️ Введите корректное число ≥ 0:")
+        return
+    await state.update_data(estimated_installation=val)
+    await state.set_state(InvoiceStartSG.estimated_loaders)
+    await message.answer(
+        "📊 <b>Расчётные данные</b> (шаг 3/4)\n"
+        "Введите <b>расчётную стоимость грузчиков</b> в ₽:\n"
+        "<i>Введите 0, если грузчиков нет.</i>",
+    )
+
+
+@router.message(InvoiceStartSG.estimated_loaders)
+async def invoice_start_est_loaders(message: Message, state: FSMContext) -> None:
+    val = _parse_est_value(message.text or "")
+    if val is None:
+        await message.answer("⚠️ Введите корректное число ≥ 0:")
+        return
+    await state.update_data(estimated_loaders=val)
+    await state.set_state(InvoiceStartSG.estimated_logistics)
+    await message.answer(
+        "📊 <b>Расчётные данные</b> (шаг 4/4)\n"
+        "Введите <b>расчётную стоимость логистики</b> в ₽:\n"
+        "<i>Введите 0, если логистики нет.</i>",
+    )
+
+
+@router.message(InvoiceStartSG.estimated_logistics)
+async def invoice_start_est_logistics(message: Message, state: FSMContext) -> None:
+    val = _parse_est_value(message.text or "")
+    if val is None:
+        await message.answer("⚠️ Введите корректное число ≥ 0:")
+        return
+    await state.update_data(estimated_logistics=val)
     await state.set_state(InvoiceStartSG.attachments)
+
+    # Показать сводку расчётных данных и перейти к вложениям
+    data = await state.get_data()
+    inv_data = data.get("invoice_data", {})
+    amount = float(inv_data.get("amount", 0))
+    est_mat = data.get("estimated_materials", 0)
+    est_inst = data.get("estimated_installation", 0)
+    est_load = data.get("estimated_loaders", 0)
+    est_log = val
+    est_total = est_mat + est_inst + est_load + est_log
+    est_vat = amount * 20 / 120 if amount > 0 else 0
+    est_profit = amount - est_total - est_vat
+    est_pct = (est_profit / amount * 100) if amount > 0 else 0
 
     b = InlineKeyboardBuilder()
     b.button(text="✅ Отправить ГД", callback_data="inv_start:send")
@@ -380,10 +469,17 @@ async def invoice_start_number(message: Message, state: FSMContext, db: Database
     b.adjust(1)
 
     await message.answer(
-        f"Счёт №{text} найден.\n"
-        f"📍 Адрес: {inv.get('object_address', '-')}\n"
-        f"💰 Сумма: {inv.get('amount', 0):,.0f}₽\n\n"
-        "Прикрепите документы (счёт, договор, приложение) или нажмите «Отправить ГД».",
+        f"📊 <b>Расчётные данные введены:</b>\n"
+        f"  Материалы: {est_mat:,.0f}₽\n"
+        f"  Установка: {est_inst:,.0f}₽\n"
+        f"  Грузчики: {est_load:,.0f}₽\n"
+        f"  Логистика: {est_log:,.0f}₽\n"
+        f"  НДС (авто): {est_vat:,.0f}₽\n"
+        f"  ─────────────\n"
+        f"  Расч.себестоимость: {est_total:,.0f}₽\n"
+        f"  Расч.прибыль: {est_profit:,.0f}₽ ({est_pct:.1f}%)\n\n"
+        "📎 Прикрепите документы (счёт, договор, приложение)\n"
+        "или нажмите «Отправить ГД».",
         reply_markup=b.as_markup(),
     )
 
@@ -444,6 +540,19 @@ async def invoice_start_send(
         await state.clear()
         return
 
+    # Save estimated data to DB
+    est_mat = data.get("estimated_materials", 0)
+    est_inst = data.get("estimated_installation", 0)
+    est_load = data.get("estimated_loaders", 0)
+    est_log = data.get("estimated_logistics", 0)
+    await db.update_invoice(
+        invoice_id,
+        estimated_materials=est_mat,
+        estimated_installation=est_inst,
+        estimated_loaders=est_load,
+        estimated_logistics=est_log,
+    )
+
     # Update invoice status
     await db.update_invoice_status(invoice_id, InvoiceStatus.PENDING_PAYMENT)
 
@@ -481,12 +590,26 @@ async def invoice_start_send(
 
     # Notify GD
     initiator = await get_initiator_label(db, u.id)
+    amount = float(inv_data.get("amount", 0))
+    est_total = est_mat + est_inst + est_load + est_log
+    est_vat = amount * 20 / 120 if amount > 0 else 0
+    est_profit = amount - est_total - est_vat
+    est_pct = (est_profit / amount * 100) if amount > 0 else 0
+
     msg_text = (
         f"💼 <b>Новый счёт на оплату от {role_label}</b>\n"
         f"👤 От: {initiator}\n\n"
         f"📄 Счёт №: <code>{invoice_number}</code>\n"
         f"📍 Адрес: {inv_data.get('object_address', '-')}\n"
-        f"💰 Сумма: {inv_data.get('amount', 0):,.0f}₽\n"
+        f"💰 Сумма: {amount:,.0f}₽\n\n"
+        f"📊 <b>Расчётные данные:</b>\n"
+        f"  Материалы: {est_mat:,.0f}₽\n"
+        f"  Установка: {est_inst:,.0f}₽\n"
+        f"  Грузчики: {est_load:,.0f}₽\n"
+        f"  Логистика: {est_log:,.0f}₽\n"
+        f"  НДС (авто): {est_vat:,.0f}₽\n"
+        f"  Расч.себест-ть: {est_total:,.0f}₽\n"
+        f"  Расч.прибыль: {est_profit:,.0f}₽ ({est_pct:.1f}%)\n"
     )
 
     from ..keyboards import task_actions_kb
@@ -1776,16 +1899,55 @@ async def manager_zp_start(message: Message, state: FSMContext, db: Database) ->
         await message.answer("✅ Нет счетов, по которым можно запросить ЗП.\n"
                              "(Счёт должен иметь статус «Счёт End»)")
         return
-    b = InlineKeyboardBuilder()
+
+    # Check plan/fact for each invoice — filter out those where fact > plan
+    eligible: list[dict] = []
+    blocked: list[dict] = []
     for inv in invoices:
+        pf = await db.get_plan_fact_card(inv["id"])
+        if not pf["has_estimated"]:
+            # No estimated data — allow (legacy invoices)
+            eligible.append(inv)
+        elif pf["zp_allowed"]:
+            eligible.append(inv)
+        else:
+            blocked.append(inv)
+
+    if not eligible and not blocked:
+        await message.answer("✅ Нет счетов, по которым можно запросить ЗП.\n"
+                             "(Счёт должен иметь статус «Счёт End»)")
+        return
+
+    b = InlineKeyboardBuilder()
+    for inv in eligible:
         label = f"№{inv['invoice_number'] or '—'} / {(inv.get('object_address') or '—')[:30]}"
         b.button(text=label, callback_data=f"mgrzp:pick:{inv['id']}")
     b.adjust(1)
-    await state.set_state(ManagerZpSG.select_invoice)
+
+    text_parts = ["💰 <b>Запрос ЗП</b>\n"]
+    if eligible:
+        text_parts.append("Выберите счёт (статус «Счёт End»):")
+    else:
+        text_parts.append("⚠️ Нет счетов, доступных для запроса ЗП.")
+
+    if blocked:
+        text_parts.append(
+            f"\n❌ <b>Заблокировано ({len(blocked)}):</b> "
+            "фактическая себестоимость превышает расчётную:"
+        )
+        for inv in blocked:
+            pf = await db.get_plan_fact_card(inv["id"])
+            text_parts.append(
+                f"  • №{inv['invoice_number']} — "
+                f"план {pf['estimated_total_cost']:,.0f}₽, "
+                f"факт {pf['actual_total_cost']:,.0f}₽"
+            )
+
+    if eligible:
+        await state.set_state(ManagerZpSG.select_invoice)
     await message.answer(
-        "💰 <b>Запрос ЗП</b>\n\n"
-        "Выберите счёт (статус «Счёт End»):",
-        reply_markup=b.as_markup(),
+        "\n".join(text_parts),
+        reply_markup=b.as_markup() if eligible else None,
     )
 
 
@@ -1798,6 +1960,19 @@ async def manager_zp_pick(cb: CallbackQuery, state: FSMContext, db: Database) ->
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         await state.clear()
         return
+    # Double-check plan/fact condition
+    pf = await db.get_plan_fact_card(invoice_id)
+    if pf["has_estimated"] and not pf["zp_allowed"]:
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"❌ <b>ЗП заблокирована</b>\n\n"
+            f"Счёт №{inv['invoice_number']}\n"
+            f"Фактическая себестоимость ({pf['actual_total_cost']:,.0f}₽) "
+            f"превышает расчётную ({pf['estimated_total_cost']:,.0f}₽).\n\n"
+            "Обратитесь к ГД.",
+        )
+        await state.clear()
+        return
+
     await state.update_data(zp_invoice_id=invoice_id)
     await state.set_state(ManagerZpSG.amount)
     await cb.message.answer(  # type: ignore[union-attr]

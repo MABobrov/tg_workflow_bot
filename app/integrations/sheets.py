@@ -129,7 +129,8 @@ INVOICES_HEADER = [
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
-_MANUAL_COLS = frozenset([1, 5, 7, 11, 12, 18, 19, 21, 22, 24, 25, 26, 27, 28, 29,
+# Removed 18 (Грузчики), 19 (Логистика), 21 (НДС), 24 (Рент-ть факт) — now bot-managed (Plan/Fact)
+_MANUAL_COLS = frozenset([1, 5, 7, 11, 12, 22, 25, 26, 27, 28, 29,
                           31, 33, 34, 37, 38, 39, 40, 41, 42, 43, 44, 45])
 
 
@@ -373,12 +374,30 @@ class GoogleSheetsService:
         if invoice.get("first_payment_amount") is not None:
             cells[15] = self._fmt_amount(invoice["first_payment_amount"])
 
-        # Cost columns (GD only)
+        # Estimated (plan) columns — from manager input
+        amount = float(invoice.get("amount") or 0)
+        est_mat = float(invoice.get("estimated_materials") or 0)
+        est_inst = float(invoice.get("estimated_installation") or 0)
+        est_load = float(invoice.get("estimated_loaders") or 0)
+        est_log = float(invoice.get("estimated_logistics") or 0)
+        est_total = est_mat + est_inst + est_load + est_log
+        est_vat = amount * 20 / 120 if amount > 0 else 0
+        est_profit = amount - est_total - est_vat
+        est_pct = (est_profit / amount * 100) if amount > 0 else 0
+
+        if any([est_mat, est_inst, est_load, est_log]):
+            cells[16] = self._fmt_amount(est_mat)                                    # Расч.мат.
+            cells[17] = self._fmt_amount(est_inst)                                   # Установка
+            cells[18] = self._fmt_amount(est_load)                                   # Грузчики
+            cells[19] = self._fmt_amount(est_log)                                    # Логистика
+            cells[20] = self._fmt_amount(est_profit)                                 # Прибыль
+            cells[21] = self._fmt_amount(est_vat)                                    # НДС (авто)
+            cells[23] = f"{est_pct:.1f}%"                                            # Рент-ть расч
+
+        # Actual (fact) columns
         if _c:
-            cells[16] = self._fmt_amount(_c.get("materials_total"))                  # Расч.мат.
-            cells[17] = self._fmt_amount(invoice.get("zp_installer_amount"))          # Установка
-            cells[20] = self._fmt_amount(_c.get("margin"))                            # Прибыль
-            cells[23] = f"{_c.get('margin_pct', 0):.1f}%" if _c.get("margin_pct") is not None else ""
+            fact_pct = _c.get("margin_pct", 0)
+            cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""                       # Рент-ть факт
             cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))           # Оплаты пост.
             cells[58] = self._fmt_amount(_c.get("total_cost"))                        # Расходы итого
 

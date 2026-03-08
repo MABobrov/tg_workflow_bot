@@ -819,7 +819,35 @@ async def gd_invoice_stats(cb: CallbackQuery, db: Database) -> None:
 
     cost = await db.get_full_invoice_cost_card(parent_id)
     from ..utils import format_cost_card
-    await cb.message.answer(format_cost_card(inv, cost))  # type: ignore[union-attr]
+    # Add Plan/Fact button if estimated data exists
+    pf = await db.get_plan_fact_card(parent_id)
+    b = InlineKeyboardBuilder()
+    if pf.get("has_estimated"):
+        b.button(text="📊 План/Факт", callback_data=f"inv_planfact:{parent_id}")
+        b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        format_cost_card(inv, cost),
+        reply_markup=b.as_markup() if pf.get("has_estimated") else None,
+    )
+
+
+@router.callback_query(F.data.regexp(r"^inv_planfact:\d+$"))
+async def gd_invoice_plan_fact(cb: CallbackQuery, db: Database) -> None:
+    """Карточка План/Факт для ГД."""
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("⚠️ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    pf = await db.get_plan_fact_card(invoice_id)
+    if not pf.get("has_estimated"):
+        await cb.message.answer("⚠️ Расчётные данные не заполнены для этого счёта.")  # type: ignore[union-attr]
+        return
+
+    from ..utils import format_plan_fact_card
+    await cb.message.answer(format_plan_fact_card(inv, pf))  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data.regexp(r"^inv_msgs:\d+$"))

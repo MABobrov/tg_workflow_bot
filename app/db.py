@@ -352,6 +352,11 @@ class Database:
             ("invoices", "contract_type", "TEXT"),
             ("invoices", "closing_docs_status", "TEXT"),
             ("invoices", "payment_terms", "TEXT"),
+            # --- Расчётные данные менеджера (План/Факт) ---
+            ("invoices", "estimated_materials", "REAL"),
+            ("invoices", "estimated_installation", "REAL"),
+            ("invoices", "estimated_loaders", "REAL"),
+            ("invoices", "estimated_logistics", "REAL"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -1156,6 +1161,64 @@ class Database:
             "total_cost": total_cost,
             "margin": margin,
             "margin_pct": margin_pct,
+        }
+
+    async def get_plan_fact_card(self, invoice_id: int) -> dict[str, Any]:
+        """
+        Карточка «План / Факт» для сравнения расчётных и фактических данных.
+        Расчётные данные вводятся менеджером при запуске счёта в работу.
+        Фактические берутся из get_full_invoice_cost_card().
+        НДС рассчитывается автоматически: amount * 20 / 120.
+        """
+        inv = await self.get_invoice(invoice_id)
+        if not inv:
+            return {
+                "has_estimated": False,
+                "estimated_materials": 0, "estimated_installation": 0,
+                "estimated_loaders": 0, "estimated_logistics": 0,
+                "estimated_vat": 0, "estimated_total_cost": 0,
+                "estimated_profit": 0, "estimated_profitability": 0,
+                "actual_total_cost": 0, "actual_profit": 0,
+                "actual_profitability": 0, "cost_delta": 0,
+                "zp_allowed": False, "cost_card": {},
+            }
+
+        cost = await self.get_full_invoice_cost_card(invoice_id)
+        amount = float(inv.get("amount") or 0)
+
+        # План (расчётные данные менеджера)
+        est_mat = float(inv.get("estimated_materials") or 0)
+        est_inst = float(inv.get("estimated_installation") or 0)
+        est_load = float(inv.get("estimated_loaders") or 0)
+        est_log = float(inv.get("estimated_logistics") or 0)
+        est_total = est_mat + est_inst + est_load + est_log
+        est_vat = amount * 20 / 120 if amount > 0 else 0.0
+        est_profit = amount - est_total - est_vat
+        est_pct = (est_profit / amount * 100) if amount > 0 else 0.0
+
+        has_estimated = any([est_mat, est_inst, est_load, est_log])
+
+        # Факт (из cost card)
+        fact_total = cost["total_cost"]
+        fact_profit = cost["margin"]
+
+        return {
+            "has_estimated": has_estimated,
+            "amount": amount,
+            "estimated_materials": est_mat,
+            "estimated_installation": est_inst,
+            "estimated_loaders": est_load,
+            "estimated_logistics": est_log,
+            "estimated_vat": est_vat,
+            "estimated_total_cost": est_total,
+            "estimated_profit": est_profit,
+            "estimated_profitability": est_pct,
+            "actual_total_cost": fact_total,
+            "actual_profit": fact_profit,
+            "actual_profitability": cost["margin_pct"],
+            "cost_delta": fact_total - est_total,
+            "zp_allowed": fact_total <= est_total,
+            "cost_card": cost,
         }
 
     async def list_invoices_for_installer(self, user_id: int) -> list[dict[str, Any]]:

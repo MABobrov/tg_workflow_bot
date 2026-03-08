@@ -624,6 +624,97 @@ def format_cost_card(inv: dict[str, Any], cost: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any]) -> str:
+    """HTML-карточка «План / Факт» для ГД — сравнение расчётных и фактических данных."""
+    inv_number = inv.get("invoice_number") or "—"
+    amount = float(inv.get("amount") or 0)
+
+    est_mat = pf.get("estimated_materials", 0)
+    est_inst = pf.get("estimated_installation", 0)
+    est_load = pf.get("estimated_loaders", 0)
+    est_log = pf.get("estimated_logistics", 0)
+    est_total = pf.get("estimated_total_cost", 0)
+    est_vat = pf.get("estimated_vat", 0)
+    est_profit = pf.get("estimated_profit", 0)
+    est_pct = pf.get("estimated_profitability", 0)
+
+    cost = pf.get("cost_card", {})
+    fact_mat = cost.get("materials_total", 0) + cost.get("supplier_payments_total", 0)
+    fact_inst = float(cost.get("zp_installer", 0))
+    fact_total = pf.get("actual_total_cost", 0)
+    fact_profit = pf.get("actual_profit", 0)
+    fact_pct = pf.get("actual_profitability", 0)
+
+    def _delta(plan: float, fact: float, invert: bool = False) -> str:
+        d = fact - plan
+        if abs(d) < 0.5:
+            return "     0 ✅"
+        sign = "+" if d > 0 else ""
+        ok = (d <= 0) if not invert else (d >= 0)
+        icon = "✅" if ok else "⚠️"
+        return f"{sign}{d:,.0f} {icon}"
+
+    lines = [
+        f"📊 <b>План / Факт</b> — Счёт №{inv_number}",
+        f"💰 Сумма: {amount:,.0f}₽\n",
+        "<pre>",
+        f"{'':14s} {'План':>10s} {'Факт':>10s} {'Δ':>12s}",
+        f"{'Материалы':14s} {est_mat:>10,.0f} {fact_mat:>10,.0f} {_delta(est_mat, fact_mat):>12s}",
+        f"{'Установка':14s} {est_inst:>10,.0f} {fact_inst:>10,.0f} {_delta(est_inst, fact_inst):>12s}",
+        f"{'Грузчики':14s} {est_load:>10,.0f} {'—':>10s} {'':>12s}",
+        f"{'Логистика':14s} {est_log:>10,.0f} {'—':>10s} {'':>12s}",
+        f"{'─' * 50}",
+        f"{'Себест-ть':14s} {est_total:>10,.0f} {fact_total:>10,.0f} {_delta(est_total, fact_total):>12s}",
+        f"{'НДС (авто)':14s} {est_vat:>10,.0f} {'':>10s} {'':>12s}",
+        f"{'─' * 50}",
+        f"{'Прибыль':14s} {est_profit:>10,.0f} {fact_profit:>10,.0f} {_delta(est_profit, fact_profit, invert=True):>12s}",
+        f"{'Рент-ть':14s} {est_pct:>9.1f}% {fact_pct:>9.1f}%",
+        "</pre>",
+    ]
+
+    # ZP status
+    if pf.get("has_estimated"):
+        if pf.get("zp_allowed"):
+            lines.append("\n💰 ЗП менеджера: ✅ <b>Разрешена</b> (факт ≤ план)")
+        else:
+            delta = pf.get("cost_delta", 0)
+            lines.append(
+                f"\n💰 ЗП менеджера: ❌ <b>Заблокирована</b>\n"
+                f"    Перерасход: {delta:+,.0f}₽"
+            )
+    else:
+        lines.append("\n⚠️ Расчётные данные не заполнены")
+
+    return "\n".join(lines)
+
+
+def format_estimated_summary(inv: dict[str, Any]) -> str:
+    """Краткая сводка расчётных данных для менеджера."""
+    amount = float(inv.get("amount") or 0)
+    est_mat = float(inv.get("estimated_materials") or 0)
+    est_inst = float(inv.get("estimated_installation") or 0)
+    est_load = float(inv.get("estimated_loaders") or 0)
+    est_log = float(inv.get("estimated_logistics") or 0)
+    est_total = est_mat + est_inst + est_load + est_log
+    est_vat = amount * 20 / 120 if amount > 0 else 0
+    est_profit = amount - est_total - est_vat
+    est_pct = (est_profit / amount * 100) if amount > 0 else 0
+
+    if not any([est_mat, est_inst, est_load, est_log]):
+        return "📊 Расчётные данные: <i>не заполнены</i>"
+
+    return (
+        f"📊 <b>Расчётные данные:</b>\n"
+        f"  Материалы: {est_mat:,.0f}₽\n"
+        f"  Установка: {est_inst:,.0f}₽\n"
+        f"  Грузчики: {est_load:,.0f}₽\n"
+        f"  Логистика: {est_log:,.0f}₽\n"
+        f"  НДС (авто): {est_vat:,.0f}₽\n"
+        f"  Расч.себест-ть: {est_total:,.0f}₽\n"
+        f"  Расч.прибыль: {est_profit:,.0f}₽ ({est_pct:.1f}%)"
+    )
+
+
 def fmt_project_card(project: dict[str, Any], tz_name: str) -> str:
     """Pretty HTML card for a project dict."""
     code = html.quote(project.get("code") or f"#{project.get('id')}")
