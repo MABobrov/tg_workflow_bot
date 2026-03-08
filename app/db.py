@@ -997,10 +997,10 @@ class Database:
     # ------------------------------------------------------------------
 
     async def list_invoices_for_selection(self, limit: int = 30) -> list[dict[str, Any]]:
-        """Счета «в работе» для inline-пикера (pending/in_progress/paid, NOT credit)."""
+        """Счета «в работе» + «Счёт End» для inline-пикера (NOT credit)."""
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
-            "WHERE status IN ('pending', 'in_progress', 'paid') "
+            "WHERE status IN ('pending', 'in_progress', 'paid', 'ended') "
             "AND (is_credit = 0 OR is_credit IS NULL) "
             "ORDER BY updated_at DESC LIMIT ?",
             (limit,),

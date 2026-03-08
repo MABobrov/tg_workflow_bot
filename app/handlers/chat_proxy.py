@@ -28,6 +28,7 @@ from ..keyboards import (
     gd_chat_submenu,
     gd_chat_submenu_finance,
     gd_sales_submenu,
+    invoice_select_kb,
     main_menu,
     task_actions_kb,
     tasks_kb,
@@ -574,6 +575,61 @@ async def chat_menu_back(
 # GD Task creation from chat-proxy
 # ---------------------------------------------------------------------------
 
+_GDTASK_INV_PREFIX = "gdtask_inv"
+
+
+async def _show_task_invoice_picker_or_desc(
+    source: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    label: str,
+) -> None:
+    """Показать invoice picker перед описанием задачи, или пропустить."""
+    invoices = await db.list_invoices_for_selection(limit=15)
+    msg_target = source.message
+    if invoices:
+        await state.set_state(GdTaskCreateSG.invoice_pick)
+        await msg_target.answer(  # type: ignore[union-attr]
+            f"📝 <b>Новая задача → {label}</b>\n\n"
+            "По какому счёту задача?\n"
+            "Для отмены: «❌ Отмена».",
+            reply_markup=invoice_select_kb(invoices, prefix=_GDTASK_INV_PREFIX),
+        )
+    else:
+        await state.update_data(linked_invoice_id=None)
+        await state.set_state(GdTaskCreateSG.description)
+        await msg_target.answer(  # type: ignore[union-attr]
+            f"📝 <b>Новая задача → {label}</b>\n\n"
+            "Шаг 1/4: опишите задачу\n"
+            "(«❌ Отмена» — отменить):",
+        )
+
+
+@router.callback_query(F.data.startswith(f"{_GDTASK_INV_PREFIX}:"))
+async def gd_task_pick_invoice(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """GD выбрал счёт для привязки к задаче."""
+    await cb.answer()
+    val = (cb.data or "").split(":", 1)[1]
+    linked = None if val == "skip" else int(val)
+    await state.update_data(linked_invoice_id=linked)
+    await state.set_state(GdTaskCreateSG.description)
+
+    data = await state.get_data()
+    label = channel_label(data.get("task_channel", ""))
+
+    inv_label = ""
+    if linked:
+        inv = await db.get_invoice(linked)
+        if inv:
+            inv_label = f"\n📋 Счёт: №{inv.get('invoice_number', '?')}"
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📝 <b>Новая задача → {label}</b>{inv_label}\n\n"
+        "Шаг 1/4: опишите задачу\n"
+        "(«❌ Отмена» — отменить):",
+    )
+
+
 @router.callback_query(F.data.startswith("gd_task_create:"))
 async def gd_task_create_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """GD starts creating a task for channel target."""
@@ -603,29 +659,20 @@ async def gd_task_create_start(cb: CallbackQuery, state: FSMContext, db: Databas
         )
         return
 
-    await state.set_state(GdTaskCreateSG.description)
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"📝 <b>Новая задача → {label}</b>\n\n"
-        "Шаг 1/4: опишите задачу\n"
-        "(«❌ Отмена» — отменить):",
-    )
+    # Для остальных каналов — показать invoice picker
+    await _show_task_invoice_picker_or_desc(cb, state, db, label)
 
 
 @router.callback_query(F.data.startswith("pick_installer:"), GdTaskCreateSG.pick_installer)
-async def gd_task_pick_installer(cb: CallbackQuery, state: FSMContext) -> None:
+async def gd_task_pick_installer(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """GD picks a specific installer for montazh task."""
     await cb.answer()
     installer_id = int(cb.data.split(":", 1)[1])  # type: ignore[union-attr]
     await state.update_data(montazh_target_id=installer_id)
-    await state.set_state(GdTaskCreateSG.description)
 
     data = await state.get_data()
     label = channel_label(data.get("task_channel", "montazh"))
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"📝 <b>Новая задача → {label}</b>\n\n"
-        "Шаг 1/4: опишите задачу\n"
-        "(«❌ Отмена» — отменить):",
-    )
+    await _show_task_invoice_picker_or_desc(cb, state, db, label)
 
 
 # --- Cancel task creation at any step ---
@@ -633,6 +680,7 @@ _CANCEL_TEXTS = {"❌ отмена", "отмена", "cancel", "/cancel", "❌о
 
 
 @router.message(GdTaskCreateSG.pick_installer, F.text.casefold().in_(_CANCEL_TEXTS))
+@router.message(GdTaskCreateSG.invoice_pick, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.description, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.deadline, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.deadline_time, F.text.casefold().in_(_CANCEL_TEXTS))
@@ -831,6 +879,18 @@ async def gd_task_create_finalize(
 
     label = channel_label(channel)
     initiator = await get_initiator_label(db, u.id)
+
+    # Invoice label for notification
+    linked_inv_id = data.get("linked_invoice_id")
+    inv_label = ""
+    if linked_inv_id:
+        inv_row = await db.fetchone(
+            "SELECT invoice_number, address FROM invoices WHERE id = ?",
+            (linked_inv_id,),
+        )
+        if inv_row:
+            inv_label = f"\n🧾 Счёт: {inv_row['invoice_number'] or '—'} / {inv_row['address'] or '—'}"
+
     for sc, target_id in targets:
         task = await db.create_task(
             project_id=None,
@@ -844,6 +904,7 @@ async def gd_task_create_finalize(
                 "source": f"chat_proxy:{channel}",
                 "sender_id": u.id,
                 "sender_username": u.username,
+                "linked_invoice_id": data.get("linked_invoice_id"),
             },
         )
 
@@ -858,7 +919,7 @@ async def gd_task_create_finalize(
 
         msg = (
             f"📝 <b>Новая задача от ГД</b>\n"
-            f"👤 От: {initiator}\n\n"
+            f"👤 От: {initiator}{inv_label}\n\n"
             f"📋 {description}"
         )
         await notifier.safe_send(target_id, msg, reply_markup=task_actions_kb(task))

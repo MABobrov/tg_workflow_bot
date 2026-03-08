@@ -171,6 +171,7 @@ class BroadcastSG(StatesGroup):
 class GdTaskCreateSG(StatesGroup):
     """Создание задачи от ГД из чат-прокси."""
     pick_installer = State()  # Выбор монтажника (для montazh)
+    invoice_pick = State()    # Выбор счёта для привязки
     description = State()
     deadline = State()
     deadline_time = State()
@@ -215,6 +216,7 @@ class NotUrgentGDSG(StatesGroup):
 class SalesWriteSG(StatesGroup):
     """Отд.Продаж — выбор адресата и написание сообщения."""
     pick_target = State()
+    invoice_pick = State()    # Выбор счёта для привязки
     writing = State()
 
 

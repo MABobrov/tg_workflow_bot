@@ -26,6 +26,7 @@ from ..keyboards import (
     gd_sales_submenu,
     gd_sales_write_to_kb,
     gd_chat_write_to_kb_universal,
+    invoice_select_kb,
     GD_BTN_ACCOUNTING,
     GD_BTN_CHAT_RP,
     GD_BTN_INVOICES,
@@ -398,6 +399,70 @@ async def sales_incoming(message: Message, state: FSMContext, db: Database, conf
     )
 
 
+_SALES_INV_PREFIX = "saleswrite_inv"
+
+
+async def _show_sales_invoice_picker_or_write(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    *,
+    label: str,
+) -> None:
+    """Показать invoice picker перед вводом сообщения, или сразу перейти к writing."""
+    invoices = await db.list_invoices_for_selection(limit=15)
+    if invoices:
+        await state.set_state(SalesWriteSG.invoice_pick)
+        await message.answer(
+            f"✏️ <b>Написать → {label}</b>\n"
+            "По какому счёту вопрос?\n"
+            "Для отмены: <code>/cancel</code>.",
+            reply_markup=invoice_select_kb(invoices, prefix=_SALES_INV_PREFIX),
+        )
+    else:
+        await state.update_data(linked_invoice_id=None)
+        await state.set_state(SalesWriteSG.writing)
+        await message.answer(
+            f"✏️ <b>Написать → {label}</b>\n\n"
+            "Введите текст сообщения.\n"
+            "Можно прикрепить файлы/фото.\n"
+            "Для отмены: /cancel",
+        )
+
+
+@router.callback_query(F.data.startswith(f"{_SALES_INV_PREFIX}:"))
+async def gd_write_pick_invoice(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """GD выбрал счёт (или 'Без привязки') перед написанием сообщения."""
+    await cb.answer()
+    val = (cb.data or "").split(":", 1)[1]
+    linked = None if val == "skip" else int(val)
+    await state.update_data(linked_invoice_id=linked)
+    await state.set_state(SalesWriteSG.writing)
+
+    data = await state.get_data()
+    targets = data.get("sales_targets", [])
+    channel = data.get("write_channel", "")
+
+    from .chat_proxy import channel_label as _ch_label
+    if len(targets) > 1:
+        label = f"Всем в {_ch_label(channel)}"
+    else:
+        label = _ch_label(targets[0]) if targets else _ch_label(channel)
+
+    inv_label = ""
+    if linked:
+        inv = await db.get_invoice(linked)
+        if inv:
+            inv_label = f"\n📋 Счёт: №{inv.get('invoice_number', '?')}"
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✏️ <b>Написать → {label}</b>{inv_label}\n\n"
+        "Введите текст сообщения.\n"
+        "Можно прикрепить файлы/фото.\n"
+        "Для отмены: /cancel",
+    )
+
+
 @router.message(ChatProxySG.menu, F.text == "✏️ Написать")
 async def gd_write_pick_target(message: Message, state: FSMContext) -> None:
     """Show 'Кому?' target picker for ALL GD channels."""
@@ -422,7 +487,7 @@ async def gd_write_pick_target(message: Message, state: FSMContext) -> None:
 
 
 @router.message(SalesWriteSG.pick_target)
-async def gd_write_target_picked(message: Message, state: FSMContext) -> None:
+async def gd_write_target_picked(message: Message, state: FSMContext, db: Database) -> None:
     """User picked a target from the universal write submenu."""
     text = (message.text or "").strip()
     data = await state.get_data()
@@ -446,15 +511,9 @@ async def gd_write_target_picked(message: Message, state: FSMContext) -> None:
     # --- Написать всем ---
     if text == "➡️ Написать всем":
         all_channels = [t[0] for t in targets]
-        await state.set_state(SalesWriteSG.writing)
         await state.update_data(sales_targets=all_channels, write_channel=channel)
-        label = _ch_label(channel)
-        await message.answer(
-            f"✏️ <b>Написать → Всем в {label}</b>\n\n"
-            "Введите текст сообщения.\n"
-            "Можно прикрепить файлы/фото.\n"
-            "Для отмены: /cancel",
-        )
+        label = f"Всем в {_ch_label(channel)}"
+        await _show_sales_invoice_picker_or_write(message, state, db, label=label)
         return
 
     # --- Конкретный адресат ---
@@ -468,15 +527,9 @@ async def gd_write_target_picked(message: Message, state: FSMContext) -> None:
         await message.answer("Выберите адресата из кнопок.")
         return
 
-    await state.set_state(SalesWriteSG.writing)
     await state.update_data(sales_targets=[target_channel], write_channel=channel)
     label = _ch_label(target_channel)
-    await message.answer(
-        f"✏️ <b>Написать → {label}</b>\n\n"
-        "Введите текст сообщения.\n"
-        "Можно прикрепить файлы/фото.\n"
-        "Для отмены: /cancel",
-    )
+    await _show_sales_invoice_picker_or_write(message, state, db, label=label)
 
 
 @router.message(SalesWriteSG.writing)
