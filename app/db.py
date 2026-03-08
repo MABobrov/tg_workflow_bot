@@ -324,6 +324,11 @@ class Database:
             ("tasks", "reminder_2h_sent", "INTEGER DEFAULT 0"),
             # Отслеживание прочтения входящих сообщений
             ("chat_messages", "is_read", "INTEGER DEFAULT 0"),
+            # --- Фаза расширения ГД: иерархия счетов, материалы, монтаж ---
+            ("invoices", "parent_invoice_id", "INTEGER REFERENCES invoices(id)"),
+            ("invoices", "material_type", "TEXT"),
+            ("invoices", "montazh_stage", "TEXT DEFAULT 'none'"),
+            ("chat_messages", "invoice_id", "INTEGER REFERENCES invoices(id)"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -358,6 +363,15 @@ class Database:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_number_unique ON invoices(invoice_number)"
             )
             await self.conn.commit()
+
+        # --- Indexes for invoice hierarchy & chat-invoice linking ---
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_invoices_parent ON invoices(parent_invoice_id)"
+        )
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_messages_invoice ON chat_messages(invoice_id)"
+        )
+        await self.conn.commit()
 
         # --- Auto-migration: TD -> GD (role merge) ---
         await self.conn.execute(
@@ -978,6 +992,77 @@ class Database:
         row = await cur.fetchone()
         return row[0] if row else 0
 
+    # ------------------------------------------------------------------
+    # Invoice hierarchy & cost statistics
+    # ------------------------------------------------------------------
+
+    async def list_invoices_for_selection(self, limit: int = 30) -> list[dict[str, Any]]:
+        """Счета «в работе» для inline-пикера (pending/in_progress/paid, NOT credit)."""
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices "
+            "WHERE status IN ('pending', 'in_progress', 'paid') "
+            "AND (is_credit = 0 OR is_credit IS NULL) "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def list_child_invoices(self, parent_invoice_id: int) -> list[dict[str, Any]]:
+        """Список дочерних счетов поставщиков, привязанных к родительскому."""
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices WHERE parent_invoice_id = ? ORDER BY created_at DESC",
+            (parent_invoice_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_invoice_cost_summary(self, parent_invoice_id: int) -> dict[str, Any]:
+        """Агрегация расходов по родительскому счёту: итого, по material_type, credit/non-credit."""
+        children = await self.list_child_invoices(parent_invoice_id)
+        summary: dict[str, Any] = {
+            "total": 0.0,
+            "by_material": {},
+            "credit_total": 0.0,
+            "credit_by_material": {},
+            "non_credit_total": 0.0,
+            "non_credit_by_material": {},
+            "count": len(children),
+        }
+        for ch in children:
+            amt = float(ch.get("amount") or 0)
+            mat = ch.get("material_type") or "other"
+            is_credit = bool(ch.get("is_credit"))
+
+            summary["total"] += amt
+            summary["by_material"][mat] = summary["by_material"].get(mat, 0.0) + amt
+
+            if is_credit:
+                summary["credit_total"] += amt
+                summary["credit_by_material"][mat] = summary["credit_by_material"].get(mat, 0.0) + amt
+            else:
+                summary["non_credit_total"] += amt
+                summary["non_credit_by_material"][mat] = summary["non_credit_by_material"].get(mat, 0.0) + amt
+
+        return summary
+
+    async def list_chat_messages_by_invoice(
+        self, invoice_id: int, limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Все сообщения из ВСЕХ каналов, привязанные к конкретному счёту."""
+        cur = await self.conn.execute(
+            "SELECT * FROM chat_messages WHERE invoice_id = ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (invoice_id, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def update_montazh_stage(self, invoice_id: int, stage: str) -> None:
+        """Обновить этап монтажа по счёту."""
+        await self.conn.execute(
+            "UPDATE invoices SET montazh_stage = ?, updated_at = ? WHERE id = ?",
+            (stage, to_iso(utcnow()), invoice_id),
+        )
+        await self.conn.commit()
+
     async def list_ended_invoices(
         self,
         month_start: str | None = None,
@@ -1386,14 +1471,15 @@ class Database:
         tg_message_id: int | None = None,
         forwarded_message_id: int | None = None,
         has_attachment: bool = False,
+        invoice_id: int | None = None,
     ) -> dict[str, Any]:
         now = to_iso(utcnow())
         cur = await self.conn.execute(
             """
             INSERT INTO chat_messages
                 (channel, sender_id, receiver_id, receiver_chat_id, direction, text,
-                 tg_message_id, forwarded_message_id, has_attachment, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 tg_message_id, forwarded_message_id, has_attachment, invoice_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 channel,
@@ -1405,6 +1491,7 @@ class Database:
                 tg_message_id,
                 forwarded_message_id,
                 int(has_attachment),
+                invoice_id,
                 now,
             ),
         )

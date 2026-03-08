@@ -491,6 +491,7 @@ async def gd_write_send_message(
     data = await state.get_data()
     targets = data.get("sales_targets", [])
     channel = data.get("write_channel", "otd_prodazh")
+    linked_invoice_id = data.get("linked_invoice_id")
     u = message.from_user
     if not u:
         return
@@ -526,6 +527,7 @@ async def gd_write_send_message(
             receiver_chat_id=target_id if is_group_channel(ch) else None,
             tg_message_id=message.message_id,
             has_attachment=bool(file_info),
+            invoice_id=linked_invoice_id,
         )
 
         label = _ch_label(ch)
@@ -726,3 +728,87 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
         delay_seconds=300,
         reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id), gd_invoice_unread=await db.count_gd_invoice_tasks(user_id), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(user_id))),
     )
+
+
+# ---------------------------------------------------------------------------
+# Invoice cost statistics + all messages per invoice
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.regexp(r"^inv_stats:\d+$"))
+async def gd_invoice_stats(cb: CallbackQuery, db: Database) -> None:
+    """Статистика себестоимости по родительскому счёту."""
+    await cb.answer()
+    parent_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(parent_id)
+    if not inv:
+        await cb.message.answer("⚠️ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    summary = await db.get_invoice_cost_summary(parent_id)
+    from ..enums import MATERIAL_TYPE_LABELS
+
+    num = inv.get("invoice_number") or f"#{parent_id}"
+    addr = inv.get("object_address") or "—"
+    total = summary["total"]
+    count = summary["count"]
+
+    lines = [
+        f"📊 <b>Статистика — Счёт №{html.escape(str(num))}</b>",
+        f"📍 Адрес: {html.escape(addr)}",
+        "",
+        f"💰 Итого расходов: <b>{total:,.0f}</b> руб. ({count} счетов)",
+    ]
+
+    # By material type
+    if summary["by_material"]:
+        for mat, amt in sorted(summary["by_material"].items(), key=lambda x: -x[1]):
+            label = MATERIAL_TYPE_LABELS.get(mat, mat)
+            lines.append(f"  ├ {label}: {amt:,.0f} руб.")
+
+    # Credit breakdown
+    if summary["credit_total"] > 0:
+        lines.append("")
+        lines.append(f"🏦 В т.ч. Кредит: <b>{summary['credit_total']:,.0f}</b> руб.")
+        for mat, amt in sorted(summary["credit_by_material"].items(), key=lambda x: -x[1]):
+            label = MATERIAL_TYPE_LABELS.get(mat, mat)
+            lines.append(f"  └ {label}: {amt:,.0f} руб.")
+
+    if summary["non_credit_total"] > 0 and summary["credit_total"] > 0:
+        lines.append("")
+        lines.append(f"💵 Без кредита: <b>{summary['non_credit_total']:,.0f}</b> руб.")
+
+    await cb.message.answer("\n".join(lines))  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.regexp(r"^inv_msgs:\d+$"))
+async def gd_invoice_messages(cb: CallbackQuery, db: Database) -> None:
+    """Все сообщения из всех каналов, привязанные к конкретному счёту."""
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("⚠️ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    messages = await db.list_chat_messages_by_invoice(invoice_id, limit=30)
+    num = inv.get("invoice_number") or f"#{invoice_id}"
+
+    if not messages:
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"💬 <b>Переписка — Счёт №{html.escape(str(num))}</b>\n\n"
+            "Нет привязанных сообщений."
+        )
+        return
+
+    lines = [f"💬 <b>Переписка — Счёт №{html.escape(str(num))}</b>\n"]
+    for m in reversed(messages):
+        direction = "➡️" if m.get("direction") == "outgoing" else "⬅️"
+        ts = (m.get("created_at") or "")[:16].replace("T", " ")
+        channel = m.get("channel") or "?"
+        text_preview = (m.get("text") or "📎 [вложение]")[:60]
+        lines.append(f"{direction} {ts} [{channel}] {html.escape(text_preview)}")
+
+    result = "\n".join(lines)
+    if len(result) > 4000:
+        result = result[:4000] + "\n..."
+    await cb.message.answer(result)  # type: ignore[union-attr]

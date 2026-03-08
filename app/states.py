@@ -105,6 +105,8 @@ class OrderMaterialSG(StatesGroup):
 class SupplierPaymentSG(StatesGroup):
     """Оплата поставщику (ТД/Сергей)"""
     project = State()
+    parent_invoice = State()   # привязка к родительскому счёту «в работе»
+    material_type = State()    # тип материала/услуги
     supplier = State()
     amount = State()
     invoice_number = State()
@@ -195,6 +197,8 @@ class InvoiceSearchSG(StatesGroup):
 class InvoiceCreateSG(StatesGroup):
     """Создание счёта на оплату (РП -> ГД)."""
     project = State()
+    parent_invoice = State()   # привязка к родительскому счёту «в работе»
+    material_type = State()    # тип материала/услуги
     supplier = State()
     amount = State()
     invoice_number = State()

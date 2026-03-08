@@ -100,6 +100,53 @@ class ZpStatus(StrEnum):
     APPROVED = "approved"           # ГД подтвердил: «ЗП ок»
 
 
+class MaterialType(StrEnum):
+    """Типы материалов / услуг для категоризации счетов на оплату."""
+    PROFILE = "profile"       # Профиль
+    GLASS = "glass"           # Стекло
+    LDSP = "ldsp"             # ЛДСП
+    GKL = "gkl"               # ГКЛ
+    SANDWICH = "sandwich"     # Сэндвич
+    SERVICE = "service"       # Услуга
+    OTHER = "other"           # Прочее
+
+
+MATERIAL_TYPE_LABELS: dict[str, str] = {
+    MaterialType.PROFILE: "Профиль",
+    MaterialType.GLASS: "Стекло",
+    MaterialType.LDSP: "ЛДСП",
+    MaterialType.GKL: "ГКЛ",
+    MaterialType.SANDWICH: "Сэндвич",
+    MaterialType.SERVICE: "Услуга",
+    MaterialType.OTHER: "Прочее",
+}
+
+
+class MontazhStage(StrEnum):
+    """Этапы монтажа по счёту."""
+    NONE = "none"              # Нет
+    IN_WORK = "in_work"        # В Работе
+    RAZMERY_OK = "razmery_ok"  # Размеры ОК
+    INVOICE_OK = "invoice_ok"  # Счет ОК
+    INVOICE_END = "invoice_end"  # Счет End
+
+
+MONTAZH_STAGE_LABELS: dict[str, str] = {
+    MontazhStage.NONE: "—",
+    MontazhStage.IN_WORK: "В Работе",
+    MontazhStage.RAZMERY_OK: "Размеры ОК",
+    MontazhStage.INVOICE_OK: "Счет ОК",
+    MontazhStage.INVOICE_END: "Счет End",
+}
+
+MONTAZH_STAGE_ORDER = [
+    MontazhStage.IN_WORK,
+    MontazhStage.RAZMERY_OK,
+    MontazhStage.INVOICE_OK,
+    MontazhStage.INVOICE_END,
+]
+
+
 class EdoRequestType(StrEnum):
     """Типы запросов ЭДО к бухгалтерии."""
     SIGN_INVOICE = "sign_invoice"           # 1. Подписать по ЭДО (счет №_)

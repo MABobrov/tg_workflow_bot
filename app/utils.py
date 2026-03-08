@@ -483,7 +483,10 @@ def fmt_task_card(task: dict[str, Any], project: dict[str, Any] | None, tz_name:
     if payload.get("sign_type"):
         extra_lines.append(f"✍️ Подписание: <b>{html.quote(str(payload['sign_type']))}</b>")
     if payload.get("material_type"):
-        extra_lines.append(f"📦 Материал: <b>{html.quote(str(payload['material_type']))}</b>")
+        from .enums import MATERIAL_TYPE_LABELS
+        _mt = str(payload["material_type"])
+        _mt_label = MATERIAL_TYPE_LABELS.get(_mt, _mt)
+        extra_lines.append(f"📦 Материал: <b>{html.quote(_mt_label)}</b>")
     if payload.get("supplier"):
         extra_lines.append(f"🏭 Поставщик: <b>{html.quote(str(payload['supplier']))}</b>")
     if payload.get("description"):
@@ -496,6 +499,10 @@ def fmt_task_card(task: dict[str, Any], project: dict[str, Any] | None, tz_name:
         extra_lines.append(f"📦 Груз: <b>{html.quote(str(payload['cargo']))}</b>")
     if payload.get("amount") and not payload.get("payment_amount"):
         extra_lines.append(f"💰 Сумма: <b>{html.quote(str(payload['amount']))}</b>")
+    if payload.get("linked_invoice_id"):
+        extra_lines.append(f"📋 Привязка к счёту: <b>#{payload['linked_invoice_id']}</b>")
+    if payload.get("parent_invoice_id"):
+        extra_lines.append(f"📋 Объект (счёт): <b>#{payload['parent_invoice_id']}</b>")
 
     lines = [
         header,

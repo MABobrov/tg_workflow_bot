@@ -12,7 +12,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from ..config import Config
 from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
-from ..keyboards import main_menu, task_actions_kb
+from ..keyboards import main_menu, task_actions_kb, invoice_select_kb
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
@@ -53,15 +53,76 @@ async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
     return resolve_menu_scope(user_id, user.role if user else None)
 
 
+# ---------------------------------------------------------------------------
+# Helper: show invoice picker or skip to description
+# ---------------------------------------------------------------------------
+
+async def _show_invoice_picker_or_skip(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    *,
+    title: str,
+    step_label: str,
+    inv_prefix: str,
+    desc_state: str,
+) -> None:
+    """Show invoice picker if invoices exist, otherwise skip to description."""
+    invoices = await db.list_invoices_for_selection(limit=15)
+    if invoices:
+        await message.answer(
+            f"{title}\n"
+            f"Шаг 1: По какому счёту вопрос?\n"
+            "Для отмены: <code>/cancel</code>.",
+            reply_markup=invoice_select_kb(invoices, prefix=inv_prefix),
+        )
+    else:
+        # No invoices in work — skip to description
+        await state.set_state(desc_state)
+        await state.update_data(linked_invoice_id=None)
+        await message.answer(
+            f"{title}\n"
+            f"{step_label}: опишите вопрос для ГД.\n"
+            "Для отмены: <code>/cancel</code>."
+        )
+
+
+# ===========================================================================
+# "🚨 Срочно ГД"
+# ===========================================================================
+
 @router.message(F.text == "🚨 Срочно ГД")
 async def start_urgent_gd(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=ALLOWED_ROLES):
         return
     await state.clear()
+    await _show_invoice_picker_or_skip(
+        message, state, db,
+        title="🚨 <b>Срочно ГД</b>",
+        step_label="Шаг 1/2",
+        inv_prefix="urgentgd_inv",
+        desc_state=UrgentGDSG.description.state,
+    )
+
+
+@router.callback_query(F.data.startswith("urgentgd_inv:"))
+async def urgent_gd_pick_invoice(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """User picked an invoice (or skip) for Срочно ГД."""
+    await cb.answer()
+    val = cb.data.split(":", 1)[1]  # type: ignore[union-attr]
+    linked = None if val == "skip" else int(val)
+    await state.update_data(linked_invoice_id=linked)
     await state.set_state(UrgentGDSG.description)
-    await message.answer(
-        "🚨 <b>Срочно ГД</b>\n"
-        "Шаг 1/2: опишите срочный вопрос для ГД.\n"
+
+    inv_label = ""
+    if linked:
+        inv = await db.get_invoice(linked)
+        if inv:
+            inv_label = f"\n📋 Счёт: №{inv.get('invoice_number', '?')}"
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"🚨 <b>Срочно ГД</b>{inv_label}\n"
+        "Шаг 2/3: опишите срочный вопрос для ГД.\n"
         "Для отмены: <code>/cancel</code>."
     )
 
@@ -137,6 +198,7 @@ async def urgent_gd_finalize(
     data = await state.get_data()
     description = data.get("description") or ""
     attachments = data.get("attachments") or []
+    linked_invoice_id = data.get("linked_invoice_id")
 
     gd_id = await resolve_default_assignee(db, config, Role.GD)
     if not gd_id:
@@ -147,6 +209,15 @@ async def urgent_gd_finalize(
         await state.clear()
         return
 
+    payload: dict[str, Any] = {
+        "comment": description,
+        "source": "urgent_gd",
+        "sender_id": u.id,
+        "sender_username": u.username,
+    }
+    if linked_invoice_id:
+        payload["linked_invoice_id"] = linked_invoice_id
+
     due = utcnow() + timedelta(hours=1)
     task = await db.create_task(
         project_id=None,
@@ -155,12 +226,7 @@ async def urgent_gd_finalize(
         created_by=u.id,
         assigned_to=int(gd_id),
         due_at_iso=to_iso(due),
-        payload={
-            "comment": description,
-            "source": "urgent_gd",
-            "sender_id": u.id,
-            "sender_username": u.username,
-        },
+        payload=payload,
     )
 
     for a in attachments:
@@ -173,9 +239,15 @@ async def urgent_gd_finalize(
         )
 
     initiator = await get_initiator_label(db, u.id)
+    inv_line = ""
+    if linked_invoice_id:
+        inv = await db.get_invoice(linked_invoice_id)
+        if inv:
+            inv_line = f"\n📋 Счёт: №{inv.get('invoice_number', '?')}"
+
     msg = (
         "🚨 <b>СРОЧНО ГД</b>\n"
-        f"👤 От: {initiator}\n\n"
+        f"👤 От: {initiator}{inv_line}\n\n"
         f"📝 {description}"
     )
 
@@ -210,19 +282,42 @@ async def urgent_gd_finalize(
 
 
 
-# ---------------------------------------------------------------------------
-# "Не срочно ГД" — задача с пониженным приоритетом
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# "📩 Не срочно ГД" — задача с пониженным приоритетом
+# ===========================================================================
 
 @router.message(F.text == "📩 Не срочно ГД")
 async def start_not_urgent_gd(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=ALLOWED_ROLES):
         return
     await state.clear()
+    await _show_invoice_picker_or_skip(
+        message, state, db,
+        title="📩 <b>Не срочно ГД</b>",
+        step_label="Шаг 1/2",
+        inv_prefix="noturggd_inv",
+        desc_state=NotUrgentGDSG.description.state,
+    )
+
+
+@router.callback_query(F.data.startswith("noturggd_inv:"))
+async def not_urgent_gd_pick_invoice(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """User picked an invoice (or skip) for Не срочно ГД."""
+    await cb.answer()
+    val = cb.data.split(":", 1)[1]  # type: ignore[union-attr]
+    linked = None if val == "skip" else int(val)
+    await state.update_data(linked_invoice_id=linked)
     await state.set_state(NotUrgentGDSG.description)
-    await message.answer(
-        "📩 <b>Не срочно ГД</b>\n"
-        "Шаг 1/2: опишите задачу / вопрос для ГД.\n"
+
+    inv_label = ""
+    if linked:
+        inv = await db.get_invoice(linked)
+        if inv:
+            inv_label = f"\n📋 Счёт: №{inv.get('invoice_number', '?')}"
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📩 <b>Не срочно ГД</b>{inv_label}\n"
+        "Опишите задачу / вопрос для ГД.\n"
         "Для отмены: <code>/cancel</code>."
     )
 
@@ -298,6 +393,7 @@ async def not_urgent_gd_finalize(
     description = data.get("description") or ""
     attachments = data.get("attachments") or []
     sender_role = await _current_role(db, u.id)
+    linked_invoice_id = data.get("linked_invoice_id")
 
     gd_id = await resolve_default_assignee(db, config, Role.GD)
     if not gd_id:
@@ -306,6 +402,16 @@ async def not_urgent_gd_finalize(
         )
         await state.clear()
         return
+
+    payload: dict[str, Any] = {
+        "comment": description,
+        "source": "not_urgent_gd",
+        "sender_id": u.id,
+        "sender_username": u.username,
+        "sender_role": sender_role,
+    }
+    if linked_invoice_id:
+        payload["linked_invoice_id"] = linked_invoice_id
 
     from datetime import timedelta as _td
     due = utcnow() + _td(days=7)
@@ -316,13 +422,7 @@ async def not_urgent_gd_finalize(
         created_by=u.id,
         assigned_to=int(gd_id),
         due_at_iso=to_iso(due),
-        payload={
-            "comment": description,
-            "source": "not_urgent_gd",
-            "sender_id": u.id,
-            "sender_username": u.username,
-            "sender_role": sender_role,
-        },
+        payload=payload,
     )
 
     for a in attachments:
@@ -335,9 +435,15 @@ async def not_urgent_gd_finalize(
         )
 
     initiator = await get_initiator_label(db, u.id)
+    inv_line = ""
+    if linked_invoice_id:
+        inv = await db.get_invoice(linked_invoice_id)
+        if inv:
+            inv_line = f"\n📋 Счёт: №{inv.get('invoice_number', '?')}"
+
     msg = (
         "📩 <b>Не срочно ГД</b>\n"
-        f"👤 От: {initiator}\n\n"
+        f"👤 От: {initiator}{inv_line}\n\n"
         f"📝 {description}"
     )
 

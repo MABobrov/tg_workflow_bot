@@ -1043,6 +1043,9 @@ async def invoice_end_gd_final(
             )
             return
         await db.update_invoice_status(invoice_id, InvoiceStatus.ENDED)
+        # Update montazh stage → invoice_end
+        from ..enums import MontazhStage
+        await db.update_montazh_stage(invoice_id, MontazhStage.INVOICE_END)
         linked_tasks = await db.search_tasks_by_payload(
             field="invoice_id",
             value=str(invoice_id),

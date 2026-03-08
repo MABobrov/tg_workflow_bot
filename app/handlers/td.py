@@ -50,11 +50,77 @@ async def gd_invoice_end_combined(message: Message, db: Database) -> None:
     if n_ie:
         parts.append(f"🏁 Счёт End: {n_ie}")
     summary = " | ".join(parts)
+
+    # Build keyboard: tasks + lead stats button
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    rows: list[list[InlineKeyboardButton]] = []
+    for t in tasks:
+        tid = t.get("id", 0)
+        ttype = t.get("type", "")
+        prefix = "💰" if ttype == TaskType.PAYMENT_CONFIRM else "🏁"
+        payload = t.get("payload") or {}
+        label = payload.get("invoice_number") or payload.get("supplier") or f"#{tid}"
+        rows.append([InlineKeyboardButton(text=f"{prefix} {label}", callback_data=f"task:{tid}")])
+    rows.append([InlineKeyboardButton(text="📊 Статистика по лидам", callback_data="gd_lead_stats")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
     await message.answer(
         f"🏁 <b>Счёт END</b> ({len(tasks)})\n{summary}\n\n"
         "Выберите задачу:",
-        reply_markup=tasks_kb(tasks),
+        reply_markup=kb,
     )
+
+
+@router.callback_query(F.data == "gd_lead_stats")
+async def gd_lead_stats_handler(cb: CallbackQuery, db: Database) -> None:
+    """Show lead conversion statistics for GD."""
+    await cb.answer()
+    stats = await db.get_lead_stats()
+
+    by_manager = stats.get("by_manager") or []
+    by_source = stats.get("by_source") or []
+    total = stats.get("total", 0)
+    responded = stats.get("responded", 0)
+
+    manager_labels = {
+        "manager_kv": "КВ",
+        "manager_kia": "КИА",
+        "manager_npn": "НПН",
+    }
+
+    lines = [
+        "📊 <b>Статистика лидов от РП</b>\n",
+        f"Всего лидов: <b>{total}</b>",
+        f"Обработано: <b>{responded}</b>\n",
+    ]
+
+    if by_manager:
+        lines.append("👤 <b>По менеджерам:</b>")
+        for m in by_manager:
+            role = m.get("assigned_manager_role") or "?"
+            lbl = manager_labels.get(role, role)
+            cnt = m.get("total", 0)
+            avg_min = m.get("avg_time")
+            if avg_min and avg_min > 0:
+                hours = int(avg_min) // 60
+                mins = int(avg_min) % 60
+                time_s = f"{hours}ч {mins}мин" if hours else f"{mins}мин"
+                lines.append(f"  • {lbl}: {cnt} лидов (ср.время: {time_s})")
+            else:
+                lines.append(f"  • {lbl}: {cnt} лидов")
+        lines.append("")
+
+    if by_source:
+        lines.append("📌 <b>По источникам:</b>")
+        for s in by_source:
+            src = s.get("lead_source") or "Другое"
+            cnt = s.get("total", 0)
+            lines.append(f"  • {src}: {cnt}")
+
+    if not by_manager and not by_source:
+        lines.append("Данных пока нет.")
+
+    await cb.message.answer("\n".join(lines))  # type: ignore
 
 
 # ==================== ОПЛАТА ПОСТАВЩИКУ (ТД/Сергей -> поставщик) ====================
@@ -68,7 +134,7 @@ async def start_supplier_payment(message: Message, state: FSMContext, db: Databa
     await state.set_state(SupplierPaymentSG.project)
     await message.answer(
         "💸 <b>Оплата поставщику</b>\n"
-        "Шаг 1/6: выберите проект.\n"
+        "Шаг 1/8: выберите проект.\n"
         "Для отмены: <code>/cancel</code>.",
         reply_markup=projects_kb(projects, ctx="suppl_pay"),
     )
@@ -81,8 +147,57 @@ async def supplier_pay_pick_project(cb: CallbackQuery, callback_data: ProjectCb,
     await cb.answer()
     project = await db.get_project(int(callback_data.project_id))
     await state.update_data(project_id=int(project["id"]))
+
+    # Show parent invoice picker
+    from ..keyboards import invoice_select_kb
+    invoices = await db.list_invoices_for_selection(limit=15)
+    if invoices:
+        await state.set_state(SupplierPaymentSG.parent_invoice)
+        await cb.message.answer(  # type: ignore
+            "Шаг 2/8: привязка к счёту объекта (или пропустите):",
+            reply_markup=invoice_select_kb(invoices, prefix="suppl_parent"),
+        )
+    else:
+        await state.update_data(parent_invoice_id=None)
+        from ..keyboards import material_type_kb
+        await state.set_state(SupplierPaymentSG.material_type)
+        await cb.message.answer(  # type: ignore
+            "Шаг 3/8: тип материала/услуги:",
+            reply_markup=material_type_kb(prefix="suppl_mat"),
+        )
+
+
+@router.callback_query(
+    SupplierPaymentSG.parent_invoice,
+    lambda cb: cb.data and cb.data.startswith("suppl_parent:"),
+)
+async def supplier_pay_pick_parent(cb: CallbackQuery, state: FSMContext) -> None:
+    """Pick parent invoice for supplier payment."""
+    await cb.answer()
+    val = (cb.data or "").split(":", 1)[1]
+    parent_id = None if val == "skip" else int(val)
+    await state.update_data(parent_invoice_id=parent_id)
+
+    from ..keyboards import material_type_kb
+    await state.set_state(SupplierPaymentSG.material_type)
+    await cb.message.answer(  # type: ignore
+        "Шаг 3/8: тип материала/услуги:",
+        reply_markup=material_type_kb(prefix="suppl_mat"),
+    )
+
+
+@router.callback_query(
+    SupplierPaymentSG.material_type,
+    lambda cb: cb.data and cb.data.startswith("suppl_mat:"),
+)
+async def supplier_pay_pick_material(cb: CallbackQuery, state: FSMContext) -> None:
+    """Pick material type for supplier payment."""
+    await cb.answer()
+    mat_code = (cb.data or "").split(":", 1)[1]
+    await state.update_data(material_type=mat_code)
+
     await state.set_state(SupplierPaymentSG.supplier)
-    await cb.message.answer("Поставщик (название компании):")  # type: ignore
+    await cb.message.answer("Шаг 4/8: поставщик (название компании):")  # type: ignore
 
 
 @router.message(SupplierPaymentSG.supplier)
@@ -93,7 +208,7 @@ async def supplier_pay_supplier(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(supplier=t)
     await state.set_state(SupplierPaymentSG.amount)
-    await message.answer("Сумма оплаты (например 50000 или 50k):")
+    await message.answer("Шаг 5/8: сумма оплаты (например 50000 или 50k):")
 
 
 @router.message(SupplierPaymentSG.amount)
@@ -104,7 +219,7 @@ async def supplier_pay_amount(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(amount=amount)
     await state.set_state(SupplierPaymentSG.invoice_number)
-    await message.answer("Номер счёта поставщика (или «-»):")
+    await message.answer("Шаг 6/8: номер счёта поставщика (или «-»):")
 
 
 @router.message(SupplierPaymentSG.invoice_number)
@@ -128,6 +243,7 @@ async def supplier_pay_comment(message: Message, state: FSMContext) -> None:
     b = InlineKeyboardBuilder()
     b.button(text="✅ Отправить ПП", callback_data="supplpay:create")
     b.button(text="⏭ Без вложений", callback_data="supplpay:create")
+    # Шаг 8/8: вложения
     b.adjust(1)
     await message.answer(
         "Приложите платёжное поручение / скрин оплаты (или нажмите кнопку):",
@@ -180,6 +296,8 @@ async def supplier_pay_finalize(
     invoice_number = data.get("invoice_number") or ""
     comment = data.get("comment") or ""
     attachments = data.get("attachments") or []
+    parent_invoice_id = data.get("parent_invoice_id")
+    material_type = data.get("material_type")
 
     # Задачу назначаем РП для информирования
     rp_id = await db.get_project_rp_id(int(project_id))
@@ -202,6 +320,8 @@ async def supplier_pay_finalize(
             "comment": comment,
             "td_id": u.id,
             "td_username": u.username,
+            "parent_invoice_id": parent_invoice_id,
+            "material_type": material_type,
         },
     )
 
@@ -223,6 +343,13 @@ async def supplier_pay_finalize(
     )
     if invoice_number:
         msg += f"🧾 Счёт №: <b>{invoice_number}</b>\n"
+    if parent_invoice_id:
+        parent_inv = await db.get_invoice(parent_invoice_id)
+        if parent_inv:
+            msg += f"📋 Объект: Счёт №{parent_inv.get('invoice_number', '?')} — {(parent_inv.get('object_address') or '')[:40]}\n"
+    if material_type:
+        from ..enums import MATERIAL_TYPE_LABELS
+        msg += f"📦 Материал: {MATERIAL_TYPE_LABELS.get(material_type, material_type)}\n"
     if comment:
         msg += f"📝 Комментарий: {comment}\n"
     msg += f"\nОт ГД: <code>{u.id}</code> @{u.username or '-'}"

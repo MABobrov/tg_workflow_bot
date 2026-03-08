@@ -29,6 +29,7 @@ from ..keyboards import (
     INST_BTN_MY_OBJECTS,
     INST_BTN_ORDER_EXTRA,
     INST_BTN_ORDER_MAT,
+    INST_BTN_RAZMERY_OK,
     invoice_list_kb,
     main_menu,
     tasks_kb,
@@ -305,6 +306,10 @@ async def invoice_ok_comment(
     # Set installer_ok condition
     await db.set_invoice_installer_ok(invoice_id, True)
 
+    # Update montazh stage → invoice_ok
+    from ..enums import MontazhStage
+    await db.update_montazh_stage(invoice_id, MontazhStage.INVOICE_OK)
+
     inv = await db.get_invoice(invoice_id)
     if not inv:
         await message.answer("❌ Счёт не найден.")
@@ -360,6 +365,85 @@ async def invoice_ok_comment(
             ),
         ),
     )
+
+
+# =====================================================================
+# РАЗМЕРЫ ОК (Монтажник подтверждает — размеры проверены)
+# =====================================================================
+
+@router.message(F.text == INST_BTN_RAZMERY_OK)
+async def start_razmery_ok(message: Message, state: FSMContext, db: Database) -> None:
+    """Installer: confirm measurements are OK for an invoice."""
+    if not await require_role_message(message, db, roles=[Role.INSTALLER]):
+        return
+    await state.clear()
+
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    invoices = await db.list_invoices(assigned_to=user_id, status=InvoiceStatus.IN_PROGRESS)
+    if not invoices:
+        await answer_service(message, "Нет счетов «В работе» для подтверждения размеров.", delay_seconds=60)
+        return
+
+    await message.answer(
+        "📐 <b>Размеры ОК</b>\n\n"
+        "Выберите счёт, по которому размеры проверены:",
+        reply_markup=invoice_list_kb(invoices, action_prefix="razmok"),
+    )
+
+
+@router.callback_query(F.data.startswith("razmok:view:"))
+async def razmery_ok_select(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+) -> None:
+    """Installer confirms measurements OK for the selected invoice."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    # Update montazh stage
+    from ..enums import MontazhStage
+    await db.update_montazh_stage(invoice_id, MontazhStage.RAZMERY_OK)
+
+    initiator = await get_initiator_label(db, u.id)
+    msg = (
+        f"📐 <b>Размеры ОК</b>\n"
+        f"👤 От: {initiator}\n\n"
+        f"Счёт №{inv['invoice_number']}\n"
+        f"Размеры проверены ✅"
+    )
+
+    # Notify RP
+    rp_id = await resolve_default_assignee(db, config, Role.RP)
+    if rp_id:
+        await notifier.safe_send(int(rp_id), msg)
+        await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
+
+    role, isolated_role = await _current_menu(db, u.id)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Размеры ОК подтверждены по счёту №{inv['invoice_number']}.",
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(
+                role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
+        ),
+    )  # type: ignore
 
 
 # =====================================================================

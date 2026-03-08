@@ -206,6 +206,20 @@ async def task_actions(
             await db.accept_task(task_id)
             task = await db.get_task(task_id)
         await _maybe_mark_lead_tracking_response(db, task)
+
+        # Update montazh_stage for installer tasks
+        try:
+            user_row = await db.get_user_optional(cb.from_user.id)
+            if user_row and Role.INSTALLER in (user_row.role or ""):
+                payload = task.get("payload") or {}
+                if isinstance(payload, str):
+                    payload = try_json_loads(payload)
+                inv_id = payload.get("invoice_id")
+                if inv_id:
+                    from ..enums import MontazhStage
+                    await db.update_montazh_stage(int(inv_id), MontazhStage.IN_WORK)
+        except Exception:
+            log.exception("Failed to update montazh_stage on take")
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         try:
             await cb.message.edit_reply_markup(reply_markup=task_actions_kb(task))  # type: ignore[union-attr]

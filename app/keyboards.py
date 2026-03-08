@@ -113,6 +113,7 @@ ACC_BTN_URGENT = "🚨 Срочно ГД"
 # --- Installer buttons ---
 INST_BTN_ORDER_MAT = "📦 Заказ материалов"
 INST_BTN_INVOICE_OK = "✅ Счет ок"
+INST_BTN_RAZMERY_OK = "📐 Размеры ОК"
 INST_BTN_ORDER_EXTRA = "📦 Заказ доп.материалов"
 INST_BTN_MY_OBJECTS = "📌 Мои объекты"
 INST_BTN_DAILY_REPORT = "📝 Отчёт за день"
@@ -221,10 +222,11 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
     if role == Role.INSTALLER:
         return [
             ["📥 Входящие задачи", INST_BTN_ORDER_MAT],
-            [INST_BTN_INVOICE_OK, INST_BTN_ORDER_EXTRA],
-            [INST_BTN_MY_OBJECTS, INST_BTN_DAILY_REPORT],
-            [INST_BTN_IN_WORK, INST_BTN_NOT_URGENT],
-            [INST_BTN_URGENT, INST_BTN_SYNC],
+            [INST_BTN_INVOICE_OK, INST_BTN_RAZMERY_OK],
+            [INST_BTN_ORDER_EXTRA, INST_BTN_MY_OBJECTS],
+            [INST_BTN_DAILY_REPORT, INST_BTN_IN_WORK],
+            [INST_BTN_NOT_URGENT, INST_BTN_URGENT],
+            [INST_BTN_SYNC],
         ]
     if role == Role.GD:
         return [
@@ -1001,6 +1003,36 @@ def invoices_work_list_kb(
         b.button(text=text[:60], callback_data=f"rp_work:view:{inv['id']}")
     b.button(text="🔄 Обновить", callback_data="rp_work:refresh")
     b.adjust(1)
+    return b.as_markup()
+
+
+def invoice_select_kb(
+    invoices: list[dict[str, Any]],
+    prefix: str = "selinv",
+    allow_skip: bool = True,
+) -> InlineKeyboardMarkup:
+    """Inline-пикер счетов «в работе» для привязки задач/сообщений к счёту."""
+    b = InlineKeyboardBuilder()
+    for inv in invoices[:15]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:28]
+        label = f"№{num}"
+        if addr:
+            label += f" — {addr}"
+        b.button(text=label, callback_data=f"{prefix}:{inv['id']}")
+    if allow_skip:
+        b.button(text="➡️ Без привязки к счёту", callback_data=f"{prefix}:skip")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def material_type_kb(prefix: str = "mattype") -> InlineKeyboardMarkup:
+    """Inline-пикер типа материала/услуги."""
+    from .enums import MATERIAL_TYPE_LABELS
+    b = InlineKeyboardBuilder()
+    for code, label in MATERIAL_TYPE_LABELS.items():
+        b.button(text=label, callback_data=f"{prefix}:{code}")
+    b.adjust(2)
     return b.as_markup()
 
 

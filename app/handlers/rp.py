@@ -831,7 +831,7 @@ async def start_invoice_create(message: Message, state: FSMContext, db: Database
     await state.set_state(InvoiceCreateSG.project)
     await message.answer(
         "💳 <b>Счёт на оплату ГД</b>\n"
-        "Шаг 1/5: выберите проект:",
+        "Шаг 1/7: выберите проект:",
         reply_markup=projects_kb(projects, ctx="invoice"),
     )
 
@@ -841,15 +841,64 @@ async def start_invoice_create(message: Message, state: FSMContext, db: Database
     lambda cb: cb.data and cb.data.startswith("proj:"),
 )
 async def invoice_pick_project(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Pick project for invoice."""
+    """Pick project for invoice → show parent invoice picker."""
     await cb.answer()
-    # Parse project_id from callback data
     from ..callbacks import ProjectCb
     data = ProjectCb.unpack(cb.data)
     project = await db.get_project(data.project_id)
     await state.update_data(project_id=data.project_id, project_code=project.get("code", ""))
+
+    # Show parent invoice picker
+    from ..keyboards import invoice_select_kb
+    invoices = await db.list_invoices_for_selection(limit=15)
+    if invoices:
+        await state.set_state(InvoiceCreateSG.parent_invoice)
+        await cb.message.answer(  # type: ignore[union-attr]
+            "Шаг 2/7: привязка к счёту объекта (или пропустите):",
+            reply_markup=invoice_select_kb(invoices, prefix="inv_create_parent"),
+        )
+    else:
+        # No invoices — skip to material type
+        await state.update_data(parent_invoice_id=None)
+        from ..keyboards import material_type_kb
+        await state.set_state(InvoiceCreateSG.material_type)
+        await cb.message.answer(  # type: ignore[union-attr]
+            "Шаг 3/7: тип материала/услуги:",
+            reply_markup=material_type_kb(prefix="inv_create_mat"),
+        )
+
+
+@router.callback_query(
+    InvoiceCreateSG.parent_invoice,
+    lambda cb: cb.data and cb.data.startswith("inv_create_parent:"),
+)
+async def invoice_pick_parent(cb: CallbackQuery, state: FSMContext) -> None:
+    """Pick parent invoice for the new invoice payment."""
+    await cb.answer()
+    val = (cb.data or "").split(":", 1)[1]
+    parent_id = None if val == "skip" else int(val)
+    await state.update_data(parent_invoice_id=parent_id)
+
+    from ..keyboards import material_type_kb
+    await state.set_state(InvoiceCreateSG.material_type)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "Шаг 3/7: тип материала/услуги:",
+        reply_markup=material_type_kb(prefix="inv_create_mat"),
+    )
+
+
+@router.callback_query(
+    InvoiceCreateSG.material_type,
+    lambda cb: cb.data and cb.data.startswith("inv_create_mat:"),
+)
+async def invoice_pick_material(cb: CallbackQuery, state: FSMContext) -> None:
+    """Pick material type for the new invoice payment."""
+    await cb.answer()
+    mat_code = (cb.data or "").split(":", 1)[1]
+    await state.update_data(material_type=mat_code)
+
     await state.set_state(InvoiceCreateSG.supplier)
-    await cb.message.answer("Шаг 2/5: укажите поставщика:")  # type: ignore[union-attr]
+    await cb.message.answer("Шаг 4/7: укажите поставщика:")  # type: ignore[union-attr]
 
 
 @router.message(InvoiceCreateSG.supplier)
@@ -860,7 +909,7 @@ async def invoice_supplier(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(supplier=text)
     await state.set_state(InvoiceCreateSG.amount)
-    await message.answer("Шаг 3/5: укажите сумму:")
+    await message.answer("Шаг 5/7: укажите сумму:")
 
 
 @router.message(InvoiceCreateSG.amount)
@@ -873,7 +922,7 @@ async def invoice_amount(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(amount=amount)
     await state.set_state(InvoiceCreateSG.invoice_number)
-    await message.answer("Шаг 4/5: укажите номер счёта:")
+    await message.answer("Шаг 6/7: укажите номер счёта:")
 
 
 @router.message(InvoiceCreateSG.invoice_number)
@@ -884,7 +933,7 @@ async def invoice_number(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(invoice_number=text)
     await state.set_state(InvoiceCreateSG.comment)
-    await message.answer("Шаг 5/5: комментарий (или напишите «-» для пропуска):")
+    await message.answer("Шаг 7/7: комментарий (или напишите «-» для пропуска):")
 
 
 @router.message(InvoiceCreateSG.comment)
@@ -953,6 +1002,8 @@ async def invoice_finalize(
     invoice_number = data.get("invoice_number", "")
     comment = data.get("comment", "")
     attachments = data.get("attachments", [])
+    parent_invoice_id = data.get("parent_invoice_id")
+    material_type = data.get("material_type")
 
     from ..services.assignment import resolve_default_assignee
     from ..enums import TaskType, TaskStatus
@@ -980,6 +1031,8 @@ async def invoice_finalize(
             "comment": comment,
             "sender_id": u.id,
             "sender_username": u.username,
+            "parent_invoice_id": parent_invoice_id,
+            "material_type": material_type,
         },
     )
 
@@ -1002,6 +1055,13 @@ async def invoice_finalize(
         f"💰 Сумма: {amount}\n"
         f"🔢 № счёта: {invoice_number}\n"
     )
+    if parent_invoice_id:
+        parent_inv = await db.get_invoice(parent_invoice_id)
+        if parent_inv:
+            msg += f"📋 Объект: Счёт №{parent_inv.get('invoice_number', '?')} — {(parent_inv.get('object_address') or '')[:40]}\n"
+    if material_type:
+        from ..enums import MATERIAL_TYPE_LABELS
+        msg += f"📦 Материал: {MATERIAL_TYPE_LABELS.get(material_type, material_type)}\n"
     if comment:
         msg += f"💬 {comment}\n"
 
