@@ -660,9 +660,29 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
             await integrations.sheets.upsert_task(t, project_code=project_code)
             tasks_ok += 1
 
+        # --- invoices ---
+        all_invoices = await db.list_invoices(limit=10000)
+        invoices_ok = 0
+        for inv in sorted(all_invoices, key=lambda x: int(x["id"])):
+            manager_label = ""
+            if inv.get("created_by"):
+                u = await db.get_user_optional(int(inv["created_by"]))
+                if u:
+                    manager_label = f"@{u.username}" if u.username else (u.full_name or str(u.telegram_id))
+
+            cost = None
+            if not inv.get("parent_invoice_id"):
+                try:
+                    cost = await db.get_full_invoice_cost_card(int(inv["id"]))
+                except Exception:
+                    cost = None
+
+            await integrations.sheets.upsert_invoice(inv, manager_label=manager_label, cost=cost)
+            invoices_ok += 1
+
         await message.answer(
             "✅ Синхронизация Google Sheets завершена.\n"
-            f"Проектов: <b>{projects_ok}</b> | Задач: <b>{tasks_ok}</b>",
+            f"Проектов: <b>{projects_ok}</b> | Задач: <b>{tasks_ok}</b> | Счетов: <b>{invoices_ok}</b>",
         )
 
     # --- 2. Detailed task report ---

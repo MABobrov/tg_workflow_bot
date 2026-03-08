@@ -82,6 +82,7 @@ class Config:
     gsheet_spreadsheet_id: Optional[str]
     gsheet_projects_tab: str
     gsheet_tasks_tab: str
+    gsheet_invoices_tab: str
     google_sa_json: Optional[str]  # raw JSON or base64 JSON
     google_sa_file: Optional[str]  # path to json file (alternative)
 
@@ -177,6 +178,7 @@ def load_config() -> Config:
     gsheet_spreadsheet_id = os.getenv("GSHEET_SPREADSHEET_ID")
     gsheet_projects_tab = os.getenv("GSHEET_PROJECTS_TAB", "Projects").strip()
     gsheet_tasks_tab = os.getenv("GSHEET_TASKS_TAB", "Tasks").strip()
+    gsheet_invoices_tab = os.getenv("GSHEET_INVOICES_TAB", "Invoices").strip()
     google_sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     google_sa_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
 
@@ -227,6 +229,7 @@ def load_config() -> Config:
         gsheet_spreadsheet_id=gsheet_spreadsheet_id,
         gsheet_projects_tab=gsheet_projects_tab,
         gsheet_tasks_tab=gsheet_tasks_tab,
+        gsheet_invoices_tab=gsheet_invoices_tab,
         google_sa_json=google_sa_json,
         google_sa_file=google_sa_file,
         amocrm_enabled=amocrm_enabled,

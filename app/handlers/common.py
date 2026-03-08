@@ -789,12 +789,25 @@ async def sync_data_non_gd(
         await integrations.sheets.upsert_task(t, project_code=project_code)
         tasks_ok += 1
 
+    # --- invoices (без себестоимости для не-ГД) ---
+    all_invoices = await db.list_invoices(limit=10000)
+    invoices_ok = 0
+    for inv in sorted(all_invoices, key=lambda x: int(x["id"])):
+        manager_label = ""
+        if inv.get("created_by"):
+            u = await db.get_user_optional(int(inv["created_by"]))
+            if u:
+                manager_label = f"@{u.username}" if u.username else (u.full_name or str(u.telegram_id))
+        await integrations.sheets.upsert_invoice(inv, manager_label=manager_label, cost=None)
+        invoices_ok += 1
+
     menu_context = await _menu_context(db, message.from_user.id, active_role or role)
     await answer_service(
         message,
         "✅ Синхронизация завершена.\n"
         f"Проектов: <b>{projects_ok}</b>\n"
-        f"Задач: <b>{tasks_ok}</b>",
+        f"Задач: <b>{tasks_ok}</b>\n"
+        f"Счетов: <b>{invoices_ok}</b>",
         delay_seconds=300,
         reply_markup=private_only_reply_markup(
             message,

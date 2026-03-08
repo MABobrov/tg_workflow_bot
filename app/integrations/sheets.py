@@ -62,6 +62,37 @@ TASKS_HEADER = [
     "Отправитель",
 ]
 
+INVOICES_HEADER = [
+    "ID",
+    "№ Счёта",
+    "Адрес",
+    "Сумма",
+    "Статус",
+    "Тип (б/н/кред)",
+    "Менеджер",
+    "Роль менеджера",
+    "Поставщик",
+    "Тип материала",
+    "Родит. счёт ID",
+    "Этап монтажа",
+    "Монтажник ОК",
+    "ЭДО подписано",
+    "Долгов нет",
+    "ЗП Замерщик",
+    "ЗП Замерщик сумма",
+    "ЗП Монтажник",
+    "ЗП Монтажник сумма",
+    "ЗП Менеджер",
+    "ЗП Менеджер сумма",
+    "Материалы итого",
+    "Оплаты пост. итого",
+    "Расходы итого",
+    "Маржа",
+    "Маржа %",
+    "Создан",
+    "Обновлён",
+]
+
 
 @dataclass
 class SheetsConfig:
@@ -69,6 +100,7 @@ class SheetsConfig:
     spreadsheet_id: str
     projects_tab: str
     tasks_tab: str
+    invoices_tab: str = "Invoices"
     timezone_name: str = "Europe/Moscow"
     service_account_json: str | None = None
     service_account_file: str | None = None
@@ -235,6 +267,66 @@ class GoogleSheetsService:
         else:
             ws.append_row(row_values, value_input_option="USER_ENTERED")
 
+    def upsert_invoice_sync(
+        self,
+        invoice: dict[str, Any],
+        manager_label: str = "",
+        cost: dict[str, Any] | None = None,
+    ) -> None:
+        ws = self._get_or_create_ws(self.cfg.invoices_tab, INVOICES_HEADER)
+
+        inv_id = invoice.get("id")
+        if not inv_id:
+            return
+
+        _c = cost or {}
+        is_credit = "Кредит" if invoice.get("is_credit") else "б/н"
+
+        _ROLE_LABELS = {
+            "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+        }
+
+        row_values = [
+            inv_id,
+            invoice.get("invoice_number") or "",
+            invoice.get("object_address") or "",
+            self._fmt_amount(invoice.get("amount")),
+            invoice.get("status") or "",
+            is_credit,
+            manager_label,
+            _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
+            invoice.get("supplier") or "",
+            invoice.get("material_type") or "",
+            invoice.get("parent_invoice_id") or "",
+            invoice.get("montazh_stage") or "",
+            "Да" if invoice.get("installer_ok") else "",
+            "Да" if invoice.get("edo_signed") else "",
+            "Да" if invoice.get("no_debts") else "",
+            invoice.get("zp_status") or "",
+            self._fmt_amount(invoice.get("zp_zamery_total")),
+            invoice.get("zp_installer_status") or "",
+            self._fmt_amount(invoice.get("zp_installer_amount")),
+            invoice.get("zp_manager_status") or "",
+            self._fmt_amount(invoice.get("zp_manager_amount")),
+            self._fmt_amount(_c.get("materials_total")) if _c else "",
+            self._fmt_amount(_c.get("supplier_payments_total")) if _c else "",
+            self._fmt_amount(_c.get("total_cost")) if _c else "",
+            self._fmt_amount(_c.get("margin")) if _c else "",
+            f"{_c.get('margin_pct', 0):.1f}%" if _c and _c.get("margin_pct") is not None else "",
+            format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),
+            format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
+        ]
+
+        try:
+            cell = ws.find(str(inv_id), in_column=1)
+        except gspread.CellNotFound:
+            cell = None
+        if cell:
+            row = cell.row
+            ws.update([row_values], f"A{row}")
+        else:
+            ws.append_row(row_values, value_input_option="USER_ENTERED")
+
     # ---------- async wrappers ----------
 
     async def upsert_project(self, project: dict[str, Any], manager_label: str = "") -> None:
@@ -246,3 +338,13 @@ class GoogleSheetsService:
         if not self.cfg.enabled:
             return
         await asyncio.to_thread(self.upsert_task_sync, task, project_code)
+
+    async def upsert_invoice(
+        self,
+        invoice: dict[str, Any],
+        manager_label: str = "",
+        cost: dict[str, Any] | None = None,
+    ) -> None:
+        if not self.cfg.enabled:
+            return
+        await asyncio.to_thread(self.upsert_invoice_sync, invoice, manager_label, cost)

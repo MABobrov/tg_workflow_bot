@@ -94,6 +94,7 @@ async def main() -> None:
                 spreadsheet_id=config.gsheet_spreadsheet_id,
                 projects_tab=config.gsheet_projects_tab,
                 tasks_tab=config.gsheet_tasks_tab,
+                invoices_tab=config.gsheet_invoices_tab,
                 timezone_name=config.timezone,
                 service_account_json=config.google_sa_json,
                 service_account_file=config.google_sa_file,
