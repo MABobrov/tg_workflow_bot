@@ -353,11 +353,13 @@ class Database:
             ("invoices", "closing_docs_status", "TEXT"),
             ("invoices", "payment_terms", "TEXT"),
             # --- Расчётные данные менеджера (План/Факт) ---
-            ("invoices", "estimated_materials", "REAL"),
+            ("invoices", "estimated_materials", "REAL"),  # legacy, заменено на glass+profile
             ("invoices", "estimated_installation", "REAL"),
             ("invoices", "estimated_loaders", "REAL"),
             ("invoices", "estimated_logistics", "REAL"),
             ("invoices", "client_source", "TEXT"),  # 'own' | 'gd_lead'
+            ("invoices", "estimated_glass", "REAL"),    # стекло (возвратный НДС)
+            ("invoices", "estimated_profile", "REAL"),   # ал. профиль (возвратный НДС)
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -1169,7 +1171,11 @@ class Database:
         Карточка «План / Факт» для сравнения расчётных и фактических данных.
         Расчётные данные вводятся менеджером при запуске счёта в работу.
         Фактические берутся из get_full_invoice_cost_card().
-        НДС рассчитывается автоматически: amount * 22 / 122.
+
+        НДС с учётом возвратного:
+          output_vat = amount * 22 / 122
+          input_vat  = (стекло + профиль) * 22 / 122  (возвратный)
+          net_vat    = output_vat - input_vat
 
         Распределение прибыли:
           1) ЗП РП = 8% от прибыли
@@ -1179,9 +1185,11 @@ class Database:
         if not inv:
             return {
                 "has_estimated": False,
-                "estimated_materials": 0, "estimated_installation": 0,
+                "estimated_glass": 0, "estimated_profile": 0,
+                "estimated_installation": 0,
                 "estimated_loaders": 0, "estimated_logistics": 0,
-                "estimated_vat": 0, "estimated_total_cost": 0,
+                "output_vat": 0, "input_vat": 0, "net_vat": 0,
+                "estimated_total_cost": 0,
                 "estimated_profit": 0, "estimated_profitability": 0,
                 "actual_total_cost": 0, "actual_profit": 0,
                 "actual_profitability": 0, "cost_delta": 0,
@@ -1194,16 +1202,28 @@ class Database:
         amount = float(inv.get("amount") or 0)
 
         # План (расчётные данные менеджера)
-        est_mat = float(inv.get("estimated_materials") or 0)
+        est_glass = float(inv.get("estimated_glass") or 0)
+        est_profile = float(inv.get("estimated_profile") or 0)
+        est_mat_legacy = float(inv.get("estimated_materials") or 0)  # backward compat
         est_inst = float(inv.get("estimated_installation") or 0)
         est_load = float(inv.get("estimated_loaders") or 0)
         est_log = float(inv.get("estimated_logistics") or 0)
-        est_total = est_mat + est_inst + est_load + est_log
-        est_vat = amount * 22 / 122 if amount > 0 else 0.0
-        est_profit = amount - est_total - est_vat
+
+        # Материалы = стекло + профиль (+ legacy если есть)
+        materials_total = est_glass + est_profile + est_mat_legacy
+        est_total = materials_total + est_inst + est_load + est_log
+
+        # НДС с учётом возвратного
+        refundable_base = est_glass + est_profile  # только стекло + профиль
+        output_vat = amount * 22 / 122 if amount > 0 else 0.0
+        input_vat = refundable_base * 22 / 122 if refundable_base > 0 else 0.0
+        net_vat = output_vat - input_vat
+
+        est_profit = amount - est_total - net_vat
         est_pct = (est_profit / amount * 100) if amount > 0 else 0.0
 
-        has_estimated = any([est_mat, est_inst, est_load, est_log])
+        has_estimated = any([est_glass, est_profile, est_mat_legacy,
+                             est_inst, est_load, est_log])
 
         # Факт (из cost card)
         fact_total = cost["total_cost"]
@@ -1225,11 +1245,16 @@ class Database:
         return {
             "has_estimated": has_estimated,
             "amount": amount,
-            "estimated_materials": est_mat,
+            "estimated_glass": est_glass,
+            "estimated_profile": est_profile,
+            "estimated_materials_legacy": est_mat_legacy,
+            "materials_total": materials_total,
             "estimated_installation": est_inst,
             "estimated_loaders": est_load,
             "estimated_logistics": est_log,
-            "estimated_vat": est_vat,
+            "output_vat": output_vat,
+            "input_vat": input_vat,
+            "net_vat": net_vat,
             "estimated_total_cost": est_total,
             "estimated_profit": est_profit,
             "estimated_profitability": est_pct,

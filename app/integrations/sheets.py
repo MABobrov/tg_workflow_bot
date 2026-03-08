@@ -377,22 +377,30 @@ class GoogleSheetsService:
 
         # Estimated (plan) columns — from manager input
         amount = float(invoice.get("amount") or 0)
-        est_mat = float(invoice.get("estimated_materials") or 0)
+        est_glass = float(invoice.get("estimated_glass") or 0)
+        est_profile = float(invoice.get("estimated_profile") or 0)
+        est_mat_legacy = float(invoice.get("estimated_materials") or 0)
         est_inst = float(invoice.get("estimated_installation") or 0)
         est_load = float(invoice.get("estimated_loaders") or 0)
         est_log = float(invoice.get("estimated_logistics") or 0)
-        est_total = est_mat + est_inst + est_load + est_log
-        est_vat = amount * 22 / 122 if amount > 0 else 0
-        est_profit = amount - est_total - est_vat
+        materials_total = est_glass + est_profile + est_mat_legacy
+        est_total = materials_total + est_inst + est_load + est_log
+
+        # НДС с возвратным
+        refundable_base = est_glass + est_profile
+        output_vat = amount * 22 / 122 if amount > 0 else 0
+        input_vat = refundable_base * 22 / 122 if refundable_base > 0 else 0
+        net_vat = output_vat - input_vat
+        est_profit = amount - est_total - net_vat
         est_pct = (est_profit / amount * 100) if amount > 0 else 0
 
-        if any([est_mat, est_inst, est_load, est_log]):
-            cells[16] = self._fmt_amount(est_mat)                                    # Расч.мат.
+        if any([est_glass, est_profile, est_mat_legacy, est_inst, est_load, est_log]):
+            cells[16] = self._fmt_amount(materials_total)                            # Расч.мат. (стекло+профиль)
             cells[17] = self._fmt_amount(est_inst)                                   # Установка
             cells[18] = self._fmt_amount(est_load)                                   # Грузчики
             cells[19] = self._fmt_amount(est_log)                                    # Логистика
             cells[20] = self._fmt_amount(est_profit)                                 # Прибыль
-            cells[21] = self._fmt_amount(est_vat)                                    # НДС (авто)
+            cells[21] = self._fmt_amount(net_vat)                                    # Чистый НДС (с возвратом)
             cells[23] = f"{est_pct:.1f}%"                                            # Рент-ть расч
 
         # Actual (fact) columns

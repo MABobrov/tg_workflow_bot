@@ -263,7 +263,8 @@ class InvoiceStartSG(StatesGroup):
     # Источник клиента (для распределения прибыли)
     client_source = State()      # own (50/50) | gd_lead (75/25 в пользу ГД)
     # Расчётные данные (План/Факт)
-    estimated_materials = State()     # расч. стоимость материалов
+    estimated_glass = State()        # стекло (с возвратным НДС)
+    estimated_profile = State()      # ал. профиль (с возвратным НДС)
     estimated_installation = State()  # расч. стоимость установки
     estimated_loaders = State()       # расч. стоимость грузчиков
     estimated_logistics = State()     # расч. стоимость логистики

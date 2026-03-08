@@ -395,17 +395,17 @@ async def invoice_start_client_source(cb: CallbackQuery, state: FSMContext) -> N
     await cb.answer()
     source = cb.data.split(":")[1]  # type: ignore[union-attr]
     await state.update_data(client_source=source)
-    await state.set_state(InvoiceStartSG.estimated_materials)
+    await state.set_state(InvoiceStartSG.estimated_glass)
     label = "👤 Мой клиент (50/50)" if source == "own" else "📋 Лид от ГД (75/25)"
     await cb.message.answer(  # type: ignore[union-attr]
         f"Источник: {label}\n\n"
-        "📊 <b>Расчётные данные</b> (шаг 1/4)\n"
-        "Введите <b>расчётную стоимость материалов</b> (Расч.мат.) в ₽:\n"
-        "<i>Введите 0, если материалов нет.</i>",
+        "📊 <b>Расчётные данные</b> (шаг 1/5)\n"
+        "Введите <b>расчётную стоимость стекла</b> в ₽:\n"
+        "<i>Введите 0, если стекла нет.</i>",
     )
 
 
-# ---------- Расчётные данные (4 шага) ----------
+# ---------- Расчётные данные (5 шагов) ----------
 
 def _parse_est_value(text: str) -> float | None:
     """Parse estimated value from user input. Returns None if invalid."""
@@ -417,16 +417,31 @@ def _parse_est_value(text: str) -> float | None:
         return None
 
 
-@router.message(InvoiceStartSG.estimated_materials)
-async def invoice_start_est_materials(message: Message, state: FSMContext) -> None:
+@router.message(InvoiceStartSG.estimated_glass)
+async def invoice_start_est_glass(message: Message, state: FSMContext) -> None:
     val = _parse_est_value(message.text or "")
     if val is None:
         await message.answer("⚠️ Введите корректное число ≥ 0:")
         return
-    await state.update_data(estimated_materials=val)
+    await state.update_data(estimated_glass=val)
+    await state.set_state(InvoiceStartSG.estimated_profile)
+    await message.answer(
+        "📊 <b>Расчётные данные</b> (шаг 2/5)\n"
+        "Введите <b>расчётную стоимость алюминиевого профиля</b> в ₽:\n"
+        "<i>Введите 0, если профиля нет.</i>",
+    )
+
+
+@router.message(InvoiceStartSG.estimated_profile)
+async def invoice_start_est_profile(message: Message, state: FSMContext) -> None:
+    val = _parse_est_value(message.text or "")
+    if val is None:
+        await message.answer("⚠️ Введите корректное число ≥ 0:")
+        return
+    await state.update_data(estimated_profile=val)
     await state.set_state(InvoiceStartSG.estimated_installation)
     await message.answer(
-        "📊 <b>Расчётные данные</b> (шаг 2/4)\n"
+        "📊 <b>Расчётные данные</b> (шаг 3/5)\n"
         "Введите <b>расчётную стоимость установки</b> в ₽:\n"
         "<i>Введите 0, если установки нет.</i>",
     )
@@ -441,7 +456,7 @@ async def invoice_start_est_installation(message: Message, state: FSMContext) ->
     await state.update_data(estimated_installation=val)
     await state.set_state(InvoiceStartSG.estimated_loaders)
     await message.answer(
-        "📊 <b>Расчётные данные</b> (шаг 3/4)\n"
+        "📊 <b>Расчётные данные</b> (шаг 4/5)\n"
         "Введите <b>расчётную стоимость грузчиков</b> в ₽:\n"
         "<i>Введите 0, если грузчиков нет.</i>",
     )
@@ -456,7 +471,7 @@ async def invoice_start_est_loaders(message: Message, state: FSMContext) -> None
     await state.update_data(estimated_loaders=val)
     await state.set_state(InvoiceStartSG.estimated_logistics)
     await message.answer(
-        "📊 <b>Расчётные данные</b> (шаг 4/4)\n"
+        "📊 <b>Расчётные данные</b> (шаг 5/5)\n"
         "Введите <b>расчётную стоимость логистики</b> в ₽:\n"
         "<i>Введите 0, если логистики нет.</i>",
     )
@@ -475,13 +490,18 @@ async def invoice_start_est_logistics(message: Message, state: FSMContext) -> No
     data = await state.get_data()
     inv_data = data.get("invoice_data", {})
     amount = float(inv_data.get("amount", 0))
-    est_mat = data.get("estimated_materials", 0)
+    est_glass = data.get("estimated_glass", 0)
+    est_profile = data.get("estimated_profile", 0)
     est_inst = data.get("estimated_installation", 0)
     est_load = data.get("estimated_loaders", 0)
     est_log = val
-    est_total = est_mat + est_inst + est_load + est_log
-    est_vat = amount * 22 / 122 if amount > 0 else 0
-    est_profit = amount - est_total - est_vat
+    est_total = est_glass + est_profile + est_inst + est_load + est_log
+
+    # НДС с учётом возвратного
+    output_vat = amount * 22 / 122 if amount > 0 else 0
+    input_vat = (est_glass + est_profile) * 22 / 122 if (est_glass + est_profile) > 0 else 0
+    net_vat = output_vat - input_vat
+    est_profit = amount - est_total - net_vat
     est_pct = (est_profit / amount * 100) if amount > 0 else 0
 
     # Profit split
@@ -502,11 +522,14 @@ async def invoice_start_est_logistics(message: Message, state: FSMContext) -> No
 
     await message.answer(
         f"📊 <b>Расчётные данные введены:</b>\n"
-        f"  Материалы: {est_mat:,.0f}₽\n"
+        f"  Стекло: {est_glass:,.0f}₽\n"
+        f"  Ал.профиль: {est_profile:,.0f}₽\n"
         f"  Установка: {est_inst:,.0f}₽\n"
         f"  Грузчики: {est_load:,.0f}₽\n"
         f"  Логистика: {est_log:,.0f}₽\n"
-        f"  НДС (авто): {est_vat:,.0f}₽\n"
+        f"  НДС выходной: {output_vat:,.0f}₽\n"
+        f"  Возвр.НДС: -{input_vat:,.0f}₽\n"
+        f"  Чистый НДС: {net_vat:,.0f}₽\n"
         f"  ─────────────\n"
         f"  Расч.себестоимость: {est_total:,.0f}₽\n"
         f"  Расч.прибыль: {est_profit:,.0f}₽ ({est_pct:.1f}%)\n\n"
@@ -576,14 +599,16 @@ async def invoice_start_send(
         return
 
     # Save estimated data + client source to DB
-    est_mat = data.get("estimated_materials", 0)
+    est_glass = data.get("estimated_glass", 0)
+    est_profile = data.get("estimated_profile", 0)
     est_inst = data.get("estimated_installation", 0)
     est_load = data.get("estimated_loaders", 0)
     est_log = data.get("estimated_logistics", 0)
     client_source = data.get("client_source", "own")
     await db.update_invoice(
         invoice_id,
-        estimated_materials=est_mat,
+        estimated_glass=est_glass,
+        estimated_profile=est_profile,
         estimated_installation=est_inst,
         estimated_loaders=est_load,
         estimated_logistics=est_log,
@@ -628,9 +653,13 @@ async def invoice_start_send(
     # Notify GD
     initiator = await get_initiator_label(db, u.id)
     amount = float(inv_data.get("amount", 0))
-    est_total = est_mat + est_inst + est_load + est_log
-    est_vat = amount * 22 / 122 if amount > 0 else 0
-    est_profit = amount - est_total - est_vat
+    est_total = est_glass + est_profile + est_inst + est_load + est_log
+
+    # НДС с учётом возвратного
+    output_vat = amount * 22 / 122 if amount > 0 else 0
+    input_vat = (est_glass + est_profile) * 22 / 122 if (est_glass + est_profile) > 0 else 0
+    net_vat = output_vat - input_vat
+    est_profit = amount - est_total - net_vat
     est_pct = (est_profit / amount * 100) if amount > 0 else 0
 
     # Profit split
@@ -653,11 +682,14 @@ async def invoice_start_send(
         f"💰 Сумма: {amount:,.0f}₽\n"
         f"🔗 Источник: {src_label}\n\n"
         f"📊 <b>Расчётные данные:</b>\n"
-        f"  Материалы: {est_mat:,.0f}₽\n"
+        f"  Стекло: {est_glass:,.0f}₽\n"
+        f"  Ал.профиль: {est_profile:,.0f}₽\n"
         f"  Установка: {est_inst:,.0f}₽\n"
         f"  Грузчики: {est_load:,.0f}₽\n"
         f"  Логистика: {est_log:,.0f}₽\n"
-        f"  НДС (авто): {est_vat:,.0f}₽\n"
+        f"  НДС выходной: {output_vat:,.0f}₽\n"
+        f"  Возвр.НДС: -{input_vat:,.0f}₽\n"
+        f"  Чистый НДС: {net_vat:,.0f}₽\n"
         f"  Расч.себест-ть: {est_total:,.0f}₽\n"
         f"  Расч.прибыль: {est_profit:,.0f}₽ ({est_pct:.1f}%)\n\n"
         f"💰 <b>Распределение:</b>\n"
