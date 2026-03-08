@@ -807,8 +807,12 @@ def manager_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMar
 
 
 def rp_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
-    """Подменю 'Еще' для РП (функционал будет добавлен позже)."""
-    rows: list[list[str]] = []
+    """Подменю 'Еще' для РП: Лид, Срочно ГД, Поиск, Синхронизация, Справка."""
+    rows: list[list[str]] = [
+        [RP_BTN_LEAD, RP_BTN_URGENT],
+        [RP_BTN_SEARCH_INVOICE, RP_BTN_SYNC],
+        [RP_BTN_HELP],
+    ]
     if show_role_selector_back:
         rows.append([BACK_TO_ROLE_SELECTOR])
     rows.append([RP_BTN_CANCEL, RP_BTN_BACK_HOME])

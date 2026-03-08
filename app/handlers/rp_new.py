@@ -817,10 +817,134 @@ async def rp_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
         text += f"💬 Коммент. к оплате: {inv['payment_comment']}\n"
 
     b = InlineKeyboardBuilder()
+    b.button(text="💬 Переписка", callback_data=f"rp_work:msgs:{invoice_id}")
+    b.button(text="📋 Задачи", callback_data=f"rp_work:tasks:{invoice_id}")
+    b.button(text="📦 Расходы", callback_data=f"rp_work:expenses:{invoice_id}")
     b.button(text="⬅️ Назад к списку", callback_data="rp_work:refresh")
-    b.adjust(1)
+    b.adjust(3, 1)
 
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+# --- Вложенные страницы карточки «Счета в Работе» ---
+
+
+@router.callback_query(F.data.regexp(r"^rp_work:msgs:\d+$"))
+async def rp_work_messages(cb: CallbackQuery, db: Database) -> None:
+    """Переписка, привязанная к счёту."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    messages = await db.list_chat_messages_by_invoice(invoice_id, limit=30)
+
+    num = inv.get("invoice_number") or f"#{inv.get('id')}"
+    lines: list[str] = [f"💬 <b>Переписка — Счёт №{num}</b>\n"]
+
+    if not messages:
+        lines.append("Нет привязанных сообщений.")
+    else:
+        for msg in reversed(messages):  # chronological order
+            channel = msg.get("channel", "—")
+            sender_id = msg.get("sender_id", "")
+            text_content = (msg.get("text") or "")[:120]
+            dt = (msg.get("created_at") or "")[:16]
+            direction = "→" if msg.get("direction") == "outgoing" else "←"
+            has_file = " 📎" if msg.get("has_attachment") else ""
+            lines.append(f"{dt} [{channel}] {direction} {text_content}{has_file}")
+
+    text_out = "\n".join(lines)
+    if len(text_out) > 3800:
+        text_out = text_out[:3800] + "\n\n... (обрезано)"
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ К карточке", callback_data=f"rp_work:view:{invoice_id}")
+    b.button(text="⬅️ К списку", callback_data="rp_work:refresh")
+    b.adjust(2)
+
+    await cb.message.answer(text_out, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.regexp(r"^rp_work:tasks:\d+$"))
+async def rp_work_tasks(cb: CallbackQuery, db: Database) -> None:
+    """Задачи, привязанные к счёту."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    tasks = await db.list_tasks_by_invoice(invoice_id, limit=30)
+
+    num = inv.get("invoice_number") or f"#{inv.get('id')}"
+    lines: list[str] = [f"📋 <b>Задачи — Счёт №{num}</b>\n"]
+
+    if not tasks:
+        lines.append("Нет привязанных задач.")
+    else:
+        status_emoji = {
+            "open": "🟡", "in_progress": "🔵", "done": "✅", "rejected": "❌",
+        }
+        for t in tasks:
+            s_emoji = status_emoji.get(t.get("status", ""), "❓")
+            t_type = (t.get("task_type") or "—").replace("_", " ").title()
+            assignee_id = t.get("assignee_id")
+            assignee_label = ""
+            if assignee_id:
+                u = await db.get_user_optional(int(assignee_id))
+                if u:
+                    assignee_label = f" → @{u.username}" if u.username else f" → {u.full_name or assignee_id}"
+            dt = (t.get("created_at") or "")[:10]
+            lines.append(f"{s_emoji} {t_type}{assignee_label} ({dt})")
+
+    text_out = "\n".join(lines)
+    if len(text_out) > 3800:
+        text_out = text_out[:3800] + "\n\n... (обрезано)"
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ К карточке", callback_data=f"rp_work:view:{invoice_id}")
+    b.button(text="⬅️ К списку", callback_data="rp_work:refresh")
+    b.adjust(2)
+
+    await cb.message.answer(text_out, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.regexp(r"^rp_work:expenses:\d+$"))
+async def rp_work_expenses(cb: CallbackQuery, db: Database) -> None:
+    """Расходы по счёту (расширенный доступ РП — с суммами, без маржи)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    from ..utils import format_rp_expenses
+
+    children = await db.list_child_invoices(invoice_id)
+    supplier_payments = await db.list_supplier_payments_for_invoice(invoice_id)
+
+    text_out = format_rp_expenses(inv, children, supplier_payments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ К карточке", callback_data=f"rp_work:view:{invoice_id}")
+    b.button(text="⬅️ К списку", callback_data="rp_work:refresh")
+    b.adjust(2)
+
+    await cb.message.answer(text_out, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 # =====================================================================

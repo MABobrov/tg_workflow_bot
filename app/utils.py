@@ -475,6 +475,81 @@ def format_materials_list(
     return "\n".join(lines)
 
 
+def format_rp_expenses(
+    inv: dict[str, Any],
+    children: list[dict[str, Any]],
+    supplier_payments: list[dict[str, Any]],
+) -> str:
+    """Расходы по счёту для РП (расширенный доступ — С суммами, БЕЗ маржи)."""
+    from .enums import MATERIAL_TYPE_LABELS
+
+    num = html.quote(str(inv.get("invoice_number") or f"#{inv.get('id')}"))
+    addr = html.quote(str(inv.get("object_address") or inv.get("address") or "—"))
+
+    lines: list[str] = [
+        f"📦 <b>Расходы — Счёт №{num}</b>",
+        f"📍 {addr}",
+    ]
+
+    if not children and not supplier_payments:
+        lines.append("\nНет записей о закупках.")
+        return "\n".join(lines)
+
+    materials_total = 0.0
+
+    # Дочерние счета (материалы)
+    if children:
+        lines.append("")
+        lines.append("<b>Материалы (дочерние счета):</b>")
+        for ch in children:
+            mat = ch.get("material_type") or "other"
+            label = MATERIAL_TYPE_LABELS.get(mat, mat)
+            supplier = html.quote(ch.get("supplier") or "—")
+            try:
+                amt = float(ch.get("amount") or 0)
+            except (ValueError, TypeError):
+                amt = 0.0
+            materials_total += amt
+            amt_s = f"{amt:,.0f}".replace(",", " ")
+            line = f"  • {label}"
+            if supplier and supplier != "—":
+                line += f" — {supplier}"
+            line += f": <b>{amt_s}</b> руб."
+            lines.append(line)
+        mt_s = f"{materials_total:,.0f}".replace(",", " ")
+        lines.append(f"Итого материалов: <b>{mt_s}</b> руб.")
+
+    # Оплаты поставщикам
+    sp_total = 0.0
+    if supplier_payments:
+        lines.append("")
+        lines.append("<b>Оплаты поставщикам:</b>")
+        for sp in supplier_payments:
+            supplier = html.quote(sp.get("supplier", "—") or "—")
+            try:
+                amt = float(sp.get("amount") or 0)
+            except (ValueError, TypeError):
+                amt = 0.0
+            sp_total += amt
+            mat = sp.get("material_type", "")
+            mat_label = MATERIAL_TYPE_LABELS.get(mat, mat) if mat else ""
+            amt_s = f"{amt:,.0f}".replace(",", " ")
+            line = f"  • {supplier}"
+            if mat_label:
+                line += f" ({mat_label})"
+            line += f": <b>{amt_s}</b> руб."
+            lines.append(line)
+        spt_s = f"{sp_total:,.0f}".replace(",", " ")
+        lines.append(f"Итого оплат: <b>{spt_s}</b> руб.")
+
+    grand = materials_total + sp_total
+    grand_s = f"{grand:,.0f}".replace(",", " ")
+    lines.append("")
+    lines.append(f"Всего расходов: <b>{grand_s}</b> руб.")
+    lines.append(f"Позиций: {len(children) + len(supplier_payments)}")
+    return "\n".join(lines)
+
+
 def format_cost_card(inv: dict[str, Any], cost: dict[str, Any]) -> str:
     """HTML-карточка себестоимости для Telegram."""
     from .enums import MATERIAL_TYPE_LABELS

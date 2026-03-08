@@ -1148,9 +1148,9 @@ class Database:
         }
 
     async def list_invoices_for_installer(self, user_id: int) -> list[dict[str, Any]]:
-        """Счета, назначенные монтажнику (installer_id = user_id), в работе."""
+        """Счета, назначенные монтажнику (assigned_to = user_id), в работе."""
         cur = await self.conn.execute(
-            "SELECT * FROM invoices WHERE installer_id = ? "
+            "SELECT * FROM invoices WHERE assigned_to = ? "
             "AND status IN ('in_progress', 'paid') "
             "AND parent_invoice_id IS NULL "
             "ORDER BY created_at DESC LIMIT 15",
@@ -1168,6 +1168,37 @@ class Database:
             (invoice_id, limit),
         )
         return [dict(r) for r in await cur.fetchall()]
+
+    async def list_tasks_by_invoice(
+        self, invoice_id: int, limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Все задачи, привязанные к счёту через payload_json (invoice_id или parent_invoice_id)."""
+        inv_str = str(invoice_id)
+        cur = await self.conn.execute(
+            "SELECT * FROM tasks "
+            "WHERE ("
+            "  json_extract(payload_json, '$.invoice_id') = ? "
+            "  OR json_extract(payload_json, '$.parent_invoice_id') = ? "
+            "  OR json_extract(payload_json, '$.linked_invoice_id') = ? "
+            ") "
+            "ORDER BY created_at DESC LIMIT ?",
+            (inv_str, inv_str, inv_str, limit),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        if not rows:
+            # Fallback: json_extract may return int — try with int
+            cur2 = await self.conn.execute(
+                "SELECT * FROM tasks "
+                "WHERE ("
+                "  json_extract(payload_json, '$.invoice_id') = ? "
+                "  OR json_extract(payload_json, '$.parent_invoice_id') = ? "
+                "  OR json_extract(payload_json, '$.linked_invoice_id') = ? "
+                ") "
+                "ORDER BY created_at DESC LIMIT ?",
+                (invoice_id, invoice_id, invoice_id, limit),
+            )
+            rows = [dict(r) for r in await cur2.fetchall()]
+        return rows
 
     async def update_montazh_stage(self, invoice_id: int, stage: str) -> None:
         """Обновить этап монтажа по счёту."""
