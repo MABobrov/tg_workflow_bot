@@ -71,6 +71,17 @@ async def main() -> None:
     await db.connect()
     await db.init_schema()
 
+    # Привязка счетов к менеджерам по маркировке в номере
+    marker_map = {}
+    if config.default_manager_kia_id:
+        marker_map["КИА"] = config.default_manager_kia_id
+    if config.default_manager_kv_id:
+        marker_map["КВ"] = config.default_manager_kv_id
+    if config.default_manager_npn_id:
+        marker_map["НПН"] = config.default_manager_npn_id
+    if marker_map:
+        await db.assign_invoices_by_marker(marker_map)
+
     work_chat_id = await get_work_chat_id(db, config)
 
     bot = Bot(

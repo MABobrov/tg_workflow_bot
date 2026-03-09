@@ -2697,6 +2697,33 @@ class Database:
         return [dict(r) for r in await cur.fetchall()]
 
     # =====================================================================
+    # ONE-TIME DATA FIX: assign invoices to managers by marker
+    # =====================================================================
+
+    async def assign_invoices_by_marker(self, marker_map: dict[str, int]) -> int:
+        """Привязать счета к менеджерам по маркировке в номере счёта.
+
+        marker_map: {"КИА": manager_kia_id, "КВ": manager_kv_id, "НПН": manager_npn_id}
+        Returns number of updated rows.
+        """
+        total = 0
+        for marker, manager_id in marker_map.items():
+            if not manager_id:
+                continue
+            cur = await self.conn.execute(
+                "UPDATE invoices SET created_by = ? "
+                "WHERE invoice_number LIKE ? "
+                "AND created_by != ? "
+                "AND parent_invoice_id IS NULL",
+                (manager_id, f"%{marker}%", manager_id),
+            )
+            total += cur.rowcount
+        if total:
+            await self.conn.commit()
+            log.info("assign_invoices_by_marker: updated %d invoices", total)
+        return total
+
+    # =====================================================================
     # RAZMERY REQUESTS (проверка размеров стекла)
     # =====================================================================
 
