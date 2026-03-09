@@ -510,21 +510,30 @@ async def installer_my_objects(message: Message, db: Database) -> None:
     )]
     ended = [i for i in all_inv if i["status"] == InvoiceStatus.ENDED]
 
+    _STAGE_ORDER = {"in_work": 0, "razmery_ok": 1, "invoice_ok": 2}
+    _STAGE_LABEL = {
+        "in_work": "🔨 В работе",
+        "razmery_ok": "📐 Размеры ОК",
+        "invoice_ok": "✅ Счёт ОК",
+        "none": "⏳ Ожидает",
+    }
+
     def _fmt_line(inv: dict) -> str:
         zp = inv.get("zp_installer_status") or inv.get("zp_status", "not_requested")
         zp_emoji = "✅" if zp == "approved" else ("⏳" if zp == "requested" else "—")
-        status_emoji = {
-            "in_progress": "🔄", "paid": "✅",
-            "closing": "📌", "ended": "🏁",
-        }.get(inv["status"], "❓")
+        stage = inv.get("montazh_stage") or "none"
+        stage_lbl = _STAGE_LABEL.get(stage, stage)
         return (
-            f"{status_emoji} №{inv['invoice_number']} — "
-            f"{inv.get('object_address', '-')[:30]} [ЗП: {zp_emoji}]"
+            f"• №{inv['invoice_number']} — "
+            f"{inv.get('object_address', '-')[:25]}\n"
+            f"  {stage_lbl} [ЗП: {zp_emoji}]"
         )
 
     text = f"📌 <b>Мои объекты</b> ({len(all_inv)})\n\n"
 
     if in_work:
+        # Сортировка по montazh_stage
+        in_work.sort(key=lambda i: _STAGE_ORDER.get(i.get("montazh_stage") or "none", 99))
         text += f"<b>🔄 В работе ({len(in_work)}):</b>\n"
         text += "\n".join(_fmt_line(i) for i in in_work[:15]) + "\n\n"
 
