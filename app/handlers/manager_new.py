@@ -1651,10 +1651,26 @@ async def my_invoice_view(cb: CallbackQuery, db: Database) -> None:
     }
     stage = inv.get("montazh_stage") or "none"
 
+    # Финансы
+    amount = float(inv.get("amount") or 0)
+    first_pay = float(inv.get("first_payment_amount") or 0)
+    debt = inv.get("outstanding_debt")
+
     text = (
         f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
         f"📍 Адрес: {inv.get('object_address', '-')}\n"
-        f"💰 Сумма: {inv.get('amount', 0):,.0f}₽\n"
+        f"💰 Сумма: {amount:,.0f}₽\n"
+        f"💵 Первый платёж: {first_pay:,.0f}₽\n"
+    )
+    if debt is not None:
+        text += f"🔴 Долг: {float(debt):,.0f}₽\n"
+    else:
+        calc_debt = amount - first_pay
+        if calc_debt > 0:
+            text += f"🔴 Долг (расч.): {calc_debt:,.0f}₽\n"
+        else:
+            text += f"🟢 Долг: 0₽\n"
+    text += (
         f"📊 Статус: {status_label}\n"
         f"🔧 Этап: {_mgr_stage_lbl.get(stage, stage)}\n"
     )
