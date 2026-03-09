@@ -2156,6 +2156,7 @@ class Database:
         created_by: int | None = None,
         assigned_to: int | None = None,
         status: str | None = None,
+        marker: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
@@ -2169,6 +2170,9 @@ class Database:
         if status is not None:
             clauses.append("status = ?")
             params.append(status)
+        if marker is not None:
+            clauses.append("invoice_number LIKE ?")
+            params.append(f"%{marker}%")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(limit)
         cur = await self.conn.execute(

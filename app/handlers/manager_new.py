@@ -1587,12 +1587,29 @@ async def edo_finalize(
 # МОИ СЧЕТА
 # =====================================================================
 
+_ROLE_MARKER = {"manager_kia": "КИА", "manager_kv": "КВ", "manager_npn": "НПН"}
+
+
 @router.message(F.text == MGR_BTN_MY_INVOICES)
 async def my_invoices(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
         return
 
-    invoices = await db.list_invoices(created_by=message.from_user.id)  # type: ignore[union-attr]
+    user = await db.get_user(message.from_user.id)  # type: ignore[union-attr]
+    roles = (user.role or "").split(",")
+
+    # Определяем маркер по суб-роли менеджера (manager_kia → КИА, и т.д.)
+    marker = None
+    for r in roles:
+        if r.strip() in _ROLE_MARKER:
+            marker = _ROLE_MARKER[r.strip()]
+            break
+
+    if marker:
+        invoices = await db.list_invoices(marker=marker)
+    else:
+        invoices = await db.list_invoices(created_by=message.from_user.id)  # type: ignore[union-attr]
+
     if not invoices:
         await answer_service(message, "📑 У вас пока нет счетов.", delay_seconds=60)
         return
