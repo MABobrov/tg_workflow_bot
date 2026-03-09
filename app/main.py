@@ -72,13 +72,21 @@ async def main() -> None:
     await db.init_schema()
 
     # Привязка счетов к менеджерам по маркировке в номере
-    marker_map = {}
-    if config.default_manager_kia_id:
-        marker_map["КИА"] = config.default_manager_kia_id
-    if config.default_manager_kv_id:
-        marker_map["КВ"] = config.default_manager_kv_id
-    if config.default_manager_npn_id:
-        marker_map["НПН"] = config.default_manager_npn_id
+    marker_map: dict[str, int] = {}
+    # Сначала из env, потом fallback на роли из БД
+    for marker, env_id, role_name in [
+        ("КИА", config.default_manager_kia_id, "manager_kia"),
+        ("КВ", config.default_manager_kv_id, "manager_kv"),
+        ("НПН", config.default_manager_npn_id, "manager_npn"),
+    ]:
+        if env_id:
+            marker_map[marker] = env_id
+        else:
+            users = await db.find_users_by_role(role_name)
+            # Предпочесть пользователя с базовой ролью «manager»
+            users.sort(key=lambda u: (0 if "manager" in (u.role or "").split(",") else 1))
+            if users:
+                marker_map[marker] = users[0].telegram_id
     if marker_map:
         await db.assign_invoices_by_marker(marker_map)
 

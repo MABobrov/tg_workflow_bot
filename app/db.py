@@ -418,11 +418,10 @@ class Database:
             await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
         await self.conn.commit()
 
-        # --- Одноразовая миграция: все назначенные счета → montazh_stage='in_work' ---
+        # --- Одноразовая миграция: все активные счета → montazh_stage='in_work' ---
         await self.conn.execute(
             "UPDATE invoices SET montazh_stage = 'in_work' "
-            "WHERE assigned_to IS NOT NULL "
-            "AND (montazh_stage IS NULL OR montazh_stage = 'none') "
+            "WHERE (montazh_stage IS NULL OR montazh_stage = 'none') "
             "AND status IN ('in_progress', 'paid') "
             "AND parent_invoice_id IS NULL"
         )
@@ -1339,33 +1338,52 @@ class Database:
         )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def list_installer_confirmed_invoices(self, user_id: int) -> list[dict[str, Any]]:
-        """Счета, подтверждённые монтажником «В работу» (montazh_stage >= IN_WORK).
-        Сортировка: in_work → razmery_ok → invoice_ok, затем по дате."""
-        cur = await self.conn.execute(
-            "SELECT * FROM invoices WHERE assigned_to = ? "
-            "AND montazh_stage IN ('in_work', 'razmery_ok', 'invoice_ok') "
-            "AND status IN ('in_progress', 'paid') "
-            "AND parent_invoice_id IS NULL "
-            "ORDER BY CASE montazh_stage "
-            "  WHEN 'in_work' THEN 1 "
-            "  WHEN 'razmery_ok' THEN 2 "
-            "  WHEN 'invoice_ok' THEN 3 "
-            "  ELSE 4 END, created_at DESC LIMIT 15",
-            (user_id,),
-        )
+    async def list_installer_confirmed_invoices(self, user_id: int | None = None) -> list[dict[str, Any]]:
+        """Счета «В работу» (montazh_stage >= IN_WORK).
+        Если user_id=None — все счета (для общего списка монтажников)."""
+        if user_id is not None:
+            cur = await self.conn.execute(
+                "SELECT * FROM invoices WHERE assigned_to = ? "
+                "AND montazh_stage IN ('in_work', 'razmery_ok', 'invoice_ok') "
+                "AND status IN ('in_progress', 'paid') "
+                "AND parent_invoice_id IS NULL "
+                "ORDER BY CASE montazh_stage "
+                "  WHEN 'in_work' THEN 1 WHEN 'razmery_ok' THEN 2 "
+                "  WHEN 'invoice_ok' THEN 3 ELSE 4 END, created_at DESC LIMIT 15",
+                (user_id,),
+            )
+        else:
+            cur = await self.conn.execute(
+                "SELECT * FROM invoices WHERE "
+                "montazh_stage IN ('in_work', 'razmery_ok', 'invoice_ok') "
+                "AND status IN ('in_progress', 'paid') "
+                "AND parent_invoice_id IS NULL "
+                "ORDER BY CASE montazh_stage "
+                "  WHEN 'in_work' THEN 1 WHEN 'razmery_ok' THEN 2 "
+                "  WHEN 'invoice_ok' THEN 3 ELSE 4 END, created_at DESC LIMIT 15",
+            )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def list_installer_unconfirmed_invoices(self, user_id: int) -> list[dict[str, Any]]:
-        """Счета, назначенные монтажнику, но ещё НЕ подтверждённые «В работу»."""
-        cur = await self.conn.execute(
-            "SELECT * FROM invoices WHERE assigned_to = ? "
-            "AND (montazh_stage IS NULL OR montazh_stage = 'none') "
-            "AND status IN ('in_progress', 'paid') "
-            "AND parent_invoice_id IS NULL "
-            "ORDER BY created_at DESC LIMIT 15",
-            (user_id,),
-        )
+    async def list_installer_unconfirmed_invoices(self, user_id: int | None = None) -> list[dict[str, Any]]:
+        """Счета, ещё НЕ подтверждённые «В работу».
+        Если user_id=None — все неподтверждённые (для общего списка)."""
+        if user_id is not None:
+            cur = await self.conn.execute(
+                "SELECT * FROM invoices WHERE assigned_to = ? "
+                "AND (montazh_stage IS NULL OR montazh_stage = 'none') "
+                "AND status IN ('in_progress', 'paid') "
+                "AND parent_invoice_id IS NULL "
+                "ORDER BY created_at DESC LIMIT 15",
+                (user_id,),
+            )
+        else:
+            cur = await self.conn.execute(
+                "SELECT * FROM invoices WHERE "
+                "(montazh_stage IS NULL OR montazh_stage = 'none') "
+                "AND status IN ('in_progress', 'paid') "
+                "AND parent_invoice_id IS NULL "
+                "ORDER BY created_at DESC LIMIT 15",
+            )
         return [dict(r) for r in await cur.fetchall()]
 
     async def assign_installer_to_invoice(

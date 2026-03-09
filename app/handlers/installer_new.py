@@ -73,7 +73,7 @@ async def start_order_materials(message: Message, state: FSMContext, db: Databas
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    invoices = await db.list_installer_confirmed_invoices(message.from_user.id)
+    invoices = await db.list_installer_confirmed_invoices()
     b = InlineKeyboardBuilder()
     for inv in invoices:
         num = inv.get("invoice_number") or f"#{inv['id']}"
@@ -254,7 +254,7 @@ async def start_order_extra(message: Message, state: FSMContext, db: Database) -
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    invoices = await db.list_installer_confirmed_invoices(message.from_user.id)  # type: ignore[union-attr]
+    invoices = await db.list_installer_confirmed_invoices()  # type: ignore[union-attr]
     b = InlineKeyboardBuilder()
     for inv in invoices:
         num = inv.get("invoice_number") or f"#{inv['id']}"
@@ -284,8 +284,7 @@ async def start_invoice_ok(message: Message, state: FSMContext, db: Database) ->
         return
     await state.clear()
 
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_installer_confirmed_invoices(user_id)
+    invoices = await db.list_installer_confirmed_invoices()
     if not invoices:
         await answer_service(message, "Нет подтверждённых счетов «В работе».", delay_seconds=60)
         return
@@ -422,7 +421,7 @@ async def start_razmery_ok(message: Message, state: FSMContext, db: Database) ->
     user_id = message.from_user.id  # type: ignore[union-attr]
 
     # Счета in_work БЕЗ активного razmery_request → можно отправить бланк
-    confirmed = await db.list_installer_confirmed_invoices(user_id)
+    confirmed = await db.list_installer_confirmed_invoices()
     send_list = []
     check_list = []
     for inv in confirmed:
@@ -799,12 +798,11 @@ async def installer_my_objects(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
 
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
+    invoices = await db.list_invoices(limit=50)
     all_inv = [i for i in invoices if i["status"] in (
         InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
         InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
-    )]
+    ) and not i.get("parent_invoice_id")]
 
     if not all_inv:
         await answer_service(message, "📌 Нет объектов.", delay_seconds=60)
@@ -989,7 +987,7 @@ async def installer_in_work(message: Message, state: FSMContext, db: Database) -
         return
     await state.clear()
     user_id = message.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_installer_unconfirmed_invoices(user_id)
+    invoices = await db.list_installer_unconfirmed_invoices()
 
     if not invoices:
         await answer_service(message, "🔨 Нет новых счетов для принятия в работу ✅", delay_seconds=60)
