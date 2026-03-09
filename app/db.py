@@ -1308,6 +1308,40 @@ class Database:
         )
         return [dict(r) for r in await cur.fetchall()]
 
+    async def list_installer_confirmed_invoices(self, user_id: int) -> list[dict[str, Any]]:
+        """Счета, подтверждённые монтажником «В работу» (montazh_stage >= IN_WORK)."""
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices WHERE assigned_to = ? "
+            "AND montazh_stage IN ('in_work', 'razmery_ok', 'invoice_ok') "
+            "AND status IN ('in_progress', 'paid') "
+            "AND parent_invoice_id IS NULL "
+            "ORDER BY created_at DESC LIMIT 15",
+            (user_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def list_installer_unconfirmed_invoices(self, user_id: int) -> list[dict[str, Any]]:
+        """Счета, назначенные монтажнику, но ещё НЕ подтверждённые «В работу»."""
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices WHERE assigned_to = ? "
+            "AND (montazh_stage IS NULL OR montazh_stage = 'none') "
+            "AND status IN ('in_progress', 'paid') "
+            "AND parent_invoice_id IS NULL "
+            "ORDER BY created_at DESC LIMIT 15",
+            (user_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def assign_installer_to_invoice(
+        self, invoice_id: int, installer_id: int,
+    ) -> None:
+        """Назначить монтажника на счёт + сбросить montazh_stage."""
+        await self.update_invoice(
+            invoice_id,
+            assigned_to=installer_id,
+            montazh_stage="none",
+        )
+
     async def list_chat_messages_by_invoice(
         self, invoice_id: int, limit: int = 50,
     ) -> list[dict[str, Any]]:

@@ -929,6 +929,11 @@ async def gd_task_create_finalize(
         await refresh_recipient_keyboard(notifier, db, config, target_id)
 
         await integrations.sync_task(task, project_code="")
+
+        # При назначении монтажника на счёт — привязать к счёту
+        if channel == "montazh" and linked_inv_id:
+            await db.assign_installer_to_invoice(int(linked_inv_id), target_id)
+
     await state.clear()
 
     await state.set_state(ChatProxySG.menu)

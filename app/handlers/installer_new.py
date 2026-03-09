@@ -21,7 +21,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
 from ..db import Database
-from ..enums import InvoiceStatus, Role, TaskStatus, TaskType
+from ..enums import InvoiceStatus, MontazhStage, Role, TaskStatus, TaskType
 from ..keyboards import (
     INST_BTN_DAILY_REPORT,
     INST_BTN_IN_WORK,
@@ -72,7 +72,7 @@ async def start_order_materials(message: Message, state: FSMContext, db: Databas
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    invoices = await db.list_invoices_for_installer(message.from_user.id)
+    invoices = await db.list_installer_confirmed_invoices(message.from_user.id)
     b = InlineKeyboardBuilder()
     for inv in invoices:
         num = inv.get("invoice_number") or f"#{inv['id']}"
@@ -253,11 +253,23 @@ async def start_order_extra(message: Message, state: FSMContext, db: Database) -
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    await state.set_state(InstallerOrderMaterialsSG.description)
+    invoices = await db.list_installer_confirmed_invoices(message.from_user.id)  # type: ignore[union-attr]
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:25]
+        b.button(
+            text=f"№{num} — {addr}",
+            callback_data=f"inst_order_inv:{inv['id']}",
+        )
+    b.button(text="⏩ Без привязки", callback_data="inst_order_inv:skip")
+    b.adjust(1)
+    await state.set_state(InstallerOrderMaterialsSG.invoice_pick)
     await message.answer(
         "📦 <b>Заказ доп.материалов</b>\n\n"
-        "Опишите, что нужно (объект, материалы, размеры).\n"
-        "Для отмены: <code>/cancel</code>."
+        "Выберите счёт для привязки или пропустите:\n"
+        "Для отмены: <code>/cancel</code>.",
+        reply_markup=b.as_markup(),
     )
 
 
@@ -271,11 +283,10 @@ async def start_invoice_ok(message: Message, state: FSMContext, db: Database) ->
         return
     await state.clear()
 
-    # Show invoices in IN_PROGRESS state assigned to this installer
     user_id = message.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_invoices(assigned_to=user_id, status=InvoiceStatus.IN_PROGRESS)
+    invoices = await db.list_installer_confirmed_invoices(user_id)
     if not invoices:
-        await answer_service(message, "Нет счетов «В работе» для подтверждения.", delay_seconds=60)
+        await answer_service(message, "Нет подтверждённых счетов «В работе».", delay_seconds=60)
         return
 
     await state.set_state(InstallerInvoiceOkSG.select_invoice)
@@ -409,9 +420,9 @@ async def start_razmery_ok(message: Message, state: FSMContext, db: Database) ->
     await state.clear()
 
     user_id = message.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_invoices(assigned_to=user_id, status=InvoiceStatus.IN_PROGRESS)
+    invoices = await db.list_installer_confirmed_invoices(user_id)
     if not invoices:
-        await answer_service(message, "Нет счетов «В работе» для подтверждения размеров.", delay_seconds=60)
+        await answer_service(message, "Нет подтверждённых счетов «В работе».", delay_seconds=60)
         return
 
     await message.answer(
@@ -443,8 +454,6 @@ async def razmery_ok_select(
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    # Update montazh stage
-    from ..enums import MontazhStage
     await db.update_montazh_stage(invoice_id, MontazhStage.RAZMERY_OK)
 
     initiator = await get_initiator_label(db, u.id)
@@ -485,32 +494,44 @@ async def installer_my_objects(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
 
-    # Show all invoices assigned to this installer with status IN_PROGRESS, PAID, ENDED
     user_id = message.from_user.id  # type: ignore[union-attr]
     invoices = await db.list_invoices(assigned_to=user_id, limit=50)
-    active = [i for i in invoices if i["status"] in (
+    all_inv = [i for i in invoices if i["status"] in (
         InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
         InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
     )]
 
-    if not active:
-        await answer_service(message, "📌 Нет активных объектов.", delay_seconds=60)
+    if not all_inv:
+        await answer_service(message, "📌 Нет объектов.", delay_seconds=60)
         return
 
-    lines = []
-    for inv in active[:20]:
-        zp = inv.get("zp_status", "not_requested")
-        zp_emoji = "✅" if zp == "approved" else "⏳"
+    in_work = [i for i in all_inv if i["status"] in (
+        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID, InvoiceStatus.CLOSING,
+    )]
+    ended = [i for i in all_inv if i["status"] == InvoiceStatus.ENDED]
+
+    def _fmt_line(inv: dict) -> str:
+        zp = inv.get("zp_installer_status") or inv.get("zp_status", "not_requested")
+        zp_emoji = "✅" if zp == "approved" else ("⏳" if zp == "requested" else "—")
         status_emoji = {
             "in_progress": "🔄", "paid": "✅",
             "closing": "📌", "ended": "🏁",
         }.get(inv["status"], "❓")
-        lines.append(
-            f"{status_emoji} №{inv['invoice_number']} — {inv.get('object_address', '-')[:30]} "
-            f"[ЗП: {zp_emoji}]"
+        return (
+            f"{status_emoji} №{inv['invoice_number']} — "
+            f"{inv.get('object_address', '-')[:30]} [ЗП: {zp_emoji}]"
         )
 
-    text = f"📌 <b>Мои объекты</b> ({len(active)}):\n\n" + "\n".join(lines)
+    text = f"📌 <b>Мои объекты</b> ({len(all_inv)})\n\n"
+
+    if in_work:
+        text += f"<b>🔄 В работе ({len(in_work)}):</b>\n"
+        text += "\n".join(_fmt_line(i) for i in in_work[:15]) + "\n\n"
+
+    if ended:
+        text += f"<b>🏁 Счет End ({len(ended)}):</b>\n"
+        text += "\n".join(_fmt_line(i) for i in ended[:10]) + "\n"
+
     await message.answer(text)
 
 
@@ -648,18 +669,130 @@ async def daily_report_finalize(
 # =====================================================================
 
 @router.message(F.text == INST_BTN_IN_WORK)
-async def installer_in_work(message: Message, db: Database) -> None:
+async def installer_in_work(message: Message, state: FSMContext, db: Database) -> None:
+    """Список неподтверждённых счетов для принятия в работу."""
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
-    tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)  # type: ignore[union-attr]
-    new_tasks = [t for t in tasks if t.get("status") == TaskStatus.OPEN]
-    if not new_tasks:
-        await message.answer("🔨 Нет новых задач для принятия ✅")
+    await state.clear()
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    invoices = await db.list_installer_unconfirmed_invoices(user_id)
+
+    if not invoices:
+        await answer_service(message, "🔨 Нет новых счетов для принятия в работу ✅", delay_seconds=60)
         return
+
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:25]
+        b.button(
+            text=f"📄 №{num} — {addr}"[:55],
+            callback_data=f"inst_work:view:{inv['id']}",
+        )
+    b.adjust(1)
+
     await message.answer(
-        f"🔨 <b>В Работу</b> ({len(new_tasks)}):\n\n"
-        "Нажмите на задачу для просмотра и принятия:",
-        reply_markup=tasks_kb(new_tasks),
+        f"🔨 <b>В Работу</b> ({len(invoices)})\n\n"
+        "Счета, назначенные вам. Нажмите для просмотра и подтверждения:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("inst_work:view:"))
+async def installer_work_view_card(
+    cb: CallbackQuery, db: Database,
+) -> None:
+    """Карточка счёта для подтверждения «В работу»."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    try:
+        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+    except (ValueError, TypeError):
+        amount_str = f"{inv.get('amount', 0)}₽"
+
+    text = (
+        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
+        f"📍 Адрес: {inv.get('object_address', '—')}\n"
+        f"💰 Сумма: {amount_str}\n"
+    )
+    # Расчётная стоимость монтажа
+    est_install = inv.get("estimated_installation")
+    if est_install:
+        try:
+            text += f"🔧 Расч. стоимость монтажа: {float(est_install):,.0f}₽\n"
+        except (ValueError, TypeError):
+            pass
+    text += f"📅 Создан: {(inv.get('created_at') or '—')[:10]}\n"
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Ок (получил)", callback_data=f"inst_work:ack:{invoice_id}")
+    b.button(text="🔨 В работу", callback_data=f"inst_work:confirm:{invoice_id}")
+    b.adjust(2)
+
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.startswith("inst_work:ack:"))
+async def installer_work_acknowledge(cb: CallbackQuery, db: Database) -> None:
+    """Подтверждение получения (мягкое, без смены статуса)."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer("✅ Принято")
+    await cb.message.answer("✅ Получение счёта подтверждено.")  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.startswith("inst_work:confirm:"))
+async def installer_work_confirm(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Монтажник подтверждает «В работу» → montazh_stage=IN_WORK."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    await db.update_montazh_stage(invoice_id, MontazhStage.IN_WORK)
+
+    # Уведомить РП
+    initiator = await get_initiator_label(db, u.id)
+    msg = (
+        f"🔨 <b>Монтажник — В работу</b>\n"
+        f"👤 От: {initiator}\n\n"
+        f"Счёт №{inv['invoice_number']} принят в работу ✅"
+    )
+    rp_id = await resolve_default_assignee(db, config, Role.RP)
+    if rp_id:
+        await notifier.safe_send(int(rp_id), msg)
+        await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
+
+    role, isolated_role = await _current_menu(db, u.id)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Счёт №{inv['invoice_number']} принят в работу.",
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(
+                role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
+        ),
     )
 
 
@@ -678,6 +811,7 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
         "WHERE installer_ok = 1 "
         "  AND (zp_installer_status IS NULL OR zp_installer_status = 'not_requested') "
         "  AND assigned_to = ? "
+        "  AND status NOT IN ('ended', 'rejected') "
         "ORDER BY id DESC LIMIT 20",
         (user_id,),
     )

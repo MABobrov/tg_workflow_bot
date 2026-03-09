@@ -112,6 +112,7 @@ ACC_BTN_SYNC = "🔄 Синхронизация данных"
 ACC_BTN_URGENT = "🚨 Срочно ГД"
 
 # --- Installer buttons ---
+INST_BTN_INBOX = "📥 Входящие задачи"
 INST_BTN_ORDER_MAT = "📦 Заказ материалов"
 INST_BTN_INVOICE_OK = "✅ Счет ок"
 INST_BTN_RAZMERY_OK = "📐 Размеры ОК"
@@ -223,11 +224,11 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         ]
     if role == Role.INSTALLER:
         return [
-            ["📥 Входящие задачи", INST_BTN_ORDER_MAT],
+            [INST_BTN_INBOX, INST_BTN_IN_WORK],
+            [INST_BTN_ORDER_MAT, INST_BTN_ORDER_EXTRA],
             [INST_BTN_INVOICE_OK, INST_BTN_RAZMERY_OK],
-            [INST_BTN_ORDER_EXTRA, INST_BTN_MY_OBJECTS],
-            [INST_BTN_DAILY_REPORT, INST_BTN_ZP],
-            [INST_BTN_IN_WORK, INST_BTN_NOT_URGENT],
+            [INST_BTN_MY_OBJECTS, INST_BTN_DAILY_REPORT],
+            [INST_BTN_ZP, INST_BTN_NOT_URGENT],
             [INST_BTN_SYNC],
         ]
     if role == Role.GD:
