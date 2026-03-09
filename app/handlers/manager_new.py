@@ -29,6 +29,7 @@ from ..enums import (
     Role,
     TaskStatus,
     TaskType,
+    ZAMERY_SOURCE_LABELS,
 )
 from ..keyboards import (
     MGR_BTN_CHECK_KP,
@@ -41,11 +42,15 @@ from ..keyboards import (
     MGR_BTN_SEARCH_INVOICE,
     MGR_BTN_ZAMERY,
     MGR_BTN_ZP,
+    edo_invoice_pick_kb,
     edo_type_kb,
     invoice_list_kb,
     main_menu,
     manager_chat_submenu,
     tasks_kb,
+    zamery_lead_pick_kb,
+    zamery_my_requests_kb,
+    zamery_source_kb,
 )
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
@@ -60,6 +65,7 @@ from ..states import (
     IssueSG,
     ManagerChatProxySG,
     ManagerZpSG,
+    ZameryRequestSG,
 )
 from ..utils import answer_service, format_materials_list, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
 from .auth import require_role_callback, require_role_message
@@ -1330,9 +1336,45 @@ async def start_edo_request(message: Message, state: FSMContext, db: Database) -
     if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES + [Role.RP]):
         return
     await state.clear()
+
+    invoices = await db.list_invoices_for_edo(message.from_user.id)  # type: ignore[union-attr]
+    if invoices:
+        await state.set_state(EdoRequestSG.invoice_pick)
+        await message.answer(
+            "📄 <b>Бухгалтерия (ЭДО)</b>\n\n"
+            "Выберите счёт:",
+            reply_markup=edo_invoice_pick_kb(invoices),
+        )
+    else:
+        # Нет счетов — сразу к типу запроса (ручной ввод)
+        await state.set_state(EdoRequestSG.request_type)
+        await message.answer(
+            "📄 <b>Бухгалтерия (ЭДО)</b>\n\n"
+            "У вас нет активных счетов.\n"
+            "Выберите тип запроса:",
+            reply_markup=edo_type_kb(),
+        )
+
+
+@router.callback_query(EdoRequestSG.invoice_pick, F.data.startswith("edo_inv:"))
+async def edo_invoice_picked(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    await cb.answer()
+    val = cb.data.split(":", 1)[-1]  # type: ignore[union-attr]
+    if val == "manual":
+        await state.update_data(edo_invoice_id=None)
+    else:
+        inv_id = int(val)
+        inv = await db.get_invoice(inv_id)
+        if inv:
+            await state.update_data(
+                edo_invoice_id=inv_id,
+                invoice_number=inv["invoice_number"],
+            )
+        else:
+            await state.update_data(edo_invoice_id=None)
+
     await state.set_state(EdoRequestSG.request_type)
-    await message.answer(
-        "📄 <b>Бухгалтерия (ЭДО)</b>\n\n"
+    await cb.message.answer(  # type: ignore[union-attr]
         "Выберите тип запроса:",
         reply_markup=edo_type_kb(),
     )
@@ -1344,9 +1386,17 @@ async def edo_type_selected(cb: CallbackQuery, state: FSMContext) -> None:
     edo_type = cb.data.split(":")[-1]  # type: ignore[union-attr]
     await state.update_data(request_type=edo_type, attachments=[])
 
+    data = await state.get_data()
     if edo_type == "other":
         await state.set_state(EdoRequestSG.description)
         await cb.message.answer("Опишите суть запроса:")  # type: ignore[union-attr]
+    elif data.get("invoice_number"):
+        # Номер счёта уже выбран из пикера — пропускаем ввод
+        await state.set_state(EdoRequestSG.comment)
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"Счёт: <code>{data['invoice_number']}</code>\n\n"
+            "Добавьте <b>комментарий</b> (или «—» для пропуска):",
+        )
     else:
         await state.set_state(EdoRequestSG.invoice_number)
         await cb.message.answer("Введите <b>номер счёта</b>:")  # type: ignore[union-attr]
@@ -1449,6 +1499,7 @@ async def edo_finalize(
         return
 
     requester_role = await _current_role(db, u.id) or "manager"
+    edo_invoice_id = data.get("edo_invoice_id")
     edo_id = await db.create_edo_request(
         request_type=request_type,
         requested_by=u.id,
@@ -1457,6 +1508,7 @@ async def edo_finalize(
         invoice_number=invoice_number,
         description=description,
         comment=comment,
+        invoice_id=edo_invoice_id,
     )
 
     task = await db.create_task(
@@ -1772,20 +1824,324 @@ async def search_invoice_view(cb: CallbackQuery, db: Database) -> None:
 
 
 # =====================================================================
-# ЗАМЕРЫ (chat-proxy to zamery channel)
+# ЗАМЕРЫ — структурированные заявки на замер
 # =====================================================================
 
 @router.message(F.text == MGR_BTN_ZAMERY)
 async def mgr_zamery(message: Message, state: FSMContext, db: Database) -> None:
+    """Кнопка «📐 Замеры» — дашборд заявок на замер."""
     if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
         return
     await state.clear()
-    await state.set_state(ManagerChatProxySG.menu)
-    await state.update_data(channel="zamery")
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    requests = await db.list_zamery_requests(requested_by=user_id, limit=20)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="➕ Новая заявка на замер", callback_data="zam_new:start")
+    if requests:
+        n_open = sum(1 for r in requests if r["status"] in ("open", "in_progress"))
+        n_done = sum(1 for r in requests if r["status"] == "done")
+        text = (
+            f"📐 <b>Замеры</b> ({len(requests)})\n"
+            f"⏳ Активных: {n_open} | ✅ Завершённых: {n_done}\n\n"
+        )
+        for req in requests[:10]:
+            status_emoji = {"open": "⏳", "in_progress": "🔄", "done": "✅", "rejected": "❌"}.get(req["status"], "❓")
+            addr = (req.get("address") or "")[:25]
+            b.button(text=f"{status_emoji} #{req['id']} — {addr}"[:55], callback_data=f"zam_req:view:{req['id']}")
+    else:
+        text = "📐 <b>Замеры</b>\n\nНет заявок. Создайте новую:"
+    b.button(text="🔄 Обновить", callback_data="zam_dash:refresh")
+    b.adjust(1)
+    await message.answer(text, reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data == "zam_dash:refresh")
+async def zamery_dash_refresh(cb: CallbackQuery, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
+    await cb.answer()
+    user_id = cb.from_user.id
+    requests = await db.list_zamery_requests(requested_by=user_id, limit=20)
+    b = InlineKeyboardBuilder()
+    b.button(text="➕ Новая заявка на замер", callback_data="zam_new:start")
+    if requests:
+        n_open = sum(1 for r in requests if r["status"] in ("open", "in_progress"))
+        n_done = sum(1 for r in requests if r["status"] == "done")
+        text = (
+            f"📐 <b>Замеры</b> ({len(requests)})\n"
+            f"⏳ Активных: {n_open} | ✅ Завершённых: {n_done}\n\n"
+        )
+        for req in requests[:10]:
+            status_emoji = {"open": "⏳", "in_progress": "🔄", "done": "✅", "rejected": "❌"}.get(req["status"], "❓")
+            addr = (req.get("address") or "")[:25]
+            b.button(text=f"{status_emoji} #{req['id']} — {addr}"[:55], callback_data=f"zam_req:view:{req['id']}")
+    else:
+        text = "📐 <b>Замеры</b>\n\nНет заявок. Создайте новую:"
+    b.button(text="🔄 Обновить", callback_data="zam_dash:refresh")
+    b.adjust(1)
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.regexp(r"^zam_req:view:\d+$"))
+async def zamery_my_view(cb: CallbackQuery, db: Database) -> None:
+    """Менеджер: карточка своей заявки на замер."""
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
+    await cb.answer()
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req = await db.get_zamery_request(req_id)
+    if not req:
+        await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        return
+    source_label = ZAMERY_SOURCE_LABELS.get(req["source_type"], req["source_type"])
+    status_label = {"open": "⏳ Ожидает", "in_progress": "🔄 В работе", "done": "✅ Выполнено", "rejected": "❌ Отклонено"}.get(req["status"], req["status"])
+    text = (
+        f"📐 <b>Заявка #{req['id']}</b>\n\n"
+        f"📌 Источник: {source_label}\n"
+        f"📍 Адрес: {req['address']}\n"
+        f"📊 Статус: {status_label}\n"
+    )
+    if req.get("description"):
+        text += f"📝 Описание: {req['description']}\n"
+    if req.get("client_contact"):
+        text += f"📞 Контакт: {req['client_contact']}\n"
+    if req.get("response_comment"):
+        text += f"\n💬 Ответ замерщика: {req['response_comment']}\n"
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Назад к списку", callback_data="zam_dash:refresh")
+    b.adjust(1)
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+# --- Замер: создание новой заявки (FSM) ---
+
+@router.callback_query(F.data == "zam_new:start")
+async def zamery_new_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
+    await cb.answer()
+    await state.clear()
+    await state.set_state(ZameryRequestSG.source_type)
+    await state.update_data(attachments=[])
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📐 <b>Новая заявка на замер</b>\n\n"
+        "Выберите источник:",
+        reply_markup=zamery_source_kb(),
+    )
+
+
+@router.callback_query(ZameryRequestSG.source_type, F.data.startswith("zam_src:"))
+async def zamery_source_selected(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    await cb.answer()
+    source = cb.data.split(":")[-1]  # type: ignore[union-attr]
+    await state.update_data(source_type=source)
+
+    if source == "lead":
+        user_id = cb.from_user.id
+        lead_tasks = await db.list_open_lead_tasks_for_manager(user_id, limit=15)
+        if not lead_tasks:
+            await cb.message.answer(  # type: ignore[union-attr]
+                "⚠️ Нет открытых лидов от РП.\nВыберите другой источник:",
+                reply_markup=zamery_source_kb(),
+            )
+            return
+        await state.set_state(ZameryRequestSG.lead_pick)
+        await cb.message.answer(  # type: ignore[union-attr]
+            "Выберите лид для привязки:",
+            reply_markup=zamery_lead_pick_kb(lead_tasks),
+        )
+    else:
+        await state.set_state(ZameryRequestSG.address)
+        await cb.message.answer("Введите <b>адрес</b> замера:")  # type: ignore[union-attr]
+
+
+@router.callback_query(ZameryRequestSG.lead_pick, F.data.startswith("zam_lead:"))
+async def zamery_lead_picked(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    await cb.answer()
+    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    task = await db.get_task(task_id)
+    payload = try_json_loads(task.get("payload_json")) if task else {}
+    lead_id = payload.get("lead_id")
+    await state.update_data(lead_task_id=task_id, lead_id=lead_id)
+    await state.set_state(ZameryRequestSG.address)
+    await cb.message.answer("Введите <b>адрес</b> замера:")  # type: ignore[union-attr]
+
+
+@router.message(ZameryRequestSG.address)
+async def zamery_address(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if len(text) < 3:
+        await message.answer("Введите адрес (минимум 3 символа):")
+        return
+    await state.update_data(address=text)
+    await state.set_state(ZameryRequestSG.description)
+    await message.answer("Введите <b>описание</b> работ:")
+
+
+@router.message(ZameryRequestSG.description)
+async def zamery_description(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if len(text) < 3:
+        await message.answer("Опишите подробнее:")
+        return
+    await state.update_data(description=text)
+    await state.set_state(ZameryRequestSG.client_contact)
+    await message.answer("Введите <b>контакт клиента</b> (телефон/имя):")
+
+
+@router.message(ZameryRequestSG.client_contact)
+async def zamery_client_contact(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Введите контакт клиента:")
+        return
+    await state.update_data(client_contact=text)
+    await state.set_state(ZameryRequestSG.attachments)
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Отправить замерщику", callback_data="zam:create")
+    b.button(text="⏭ Без вложений", callback_data="zam:create")
+    b.adjust(1)
     await message.answer(
-        "📐 <b>Замеры</b>\n\n"
-        "Выберите действие:",
-        reply_markup=manager_chat_submenu("⬅️ Назад"),
+        "Прикрепите файл/фото или нажмите кнопку:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(ZameryRequestSG.attachments)
+async def zamery_attachments(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    attachments: list[dict[str, Any]] = data.get("attachments", [])
+    if message.document:
+        attachments.append({"file_type": "document", "file_id": message.document.file_id, "file_unique_id": message.document.file_unique_id, "caption": message.caption})
+    elif message.photo:
+        ph = message.photo[-1]
+        attachments.append({"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id, "caption": message.caption})
+    else:
+        await message.answer("Пришлите файл/фото или нажмите кнопку.")
+        return
+    await state.update_data(attachments=attachments)
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+
+
+@router.callback_query(F.data == "zam:create")
+async def zamery_finalize(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+) -> None:
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+    data = await state.get_data()
+    source_type = data["source_type"]
+    address = data["address"]
+    description = data.get("description")
+    client_contact = data.get("client_contact")
+    attachments = data.get("attachments", [])
+    lead_id = data.get("lead_id")
+    lead_task_id = data.get("lead_task_id")
+
+    zamery_id_user = await resolve_default_assignee(db, config, Role.ZAMERY)
+    if not zamery_id_user:
+        await cb.message.answer("⚠️ Замерщик не найден.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+
+    requester_role = await _current_role(db, u.id) or "manager_kv"
+    import json
+    zam_req_id = await db.create_zamery_request(
+        source_type=source_type,
+        address=address,
+        description=description,
+        client_contact=client_contact,
+        requested_by=u.id,
+        requester_role=requester_role,
+        assigned_to=int(zamery_id_user),
+        lead_id=lead_id,
+        lead_task_id=lead_task_id,
+        attachments_json=json.dumps([{"file_id": a["file_id"], "file_type": a["file_type"]} for a in attachments]) if attachments else None,
+    )
+
+    task = await db.create_task(
+        project_id=None,
+        type_=TaskType.ZAMERY_REQUEST,
+        status=TaskStatus.OPEN,
+        created_by=u.id,
+        assigned_to=int(zamery_id_user),
+        due_at_iso=None,
+        payload={
+            "zamery_request_id": zam_req_id,
+            "source_type": source_type,
+            "address": address,
+            "description": description,
+            "client_contact": client_contact,
+        },
+    )
+    await db.update_zamery_request(zam_req_id, task_id=int(task["id"]))
+
+    for a in attachments:
+        await db.add_attachment(
+            task_id=int(task["id"]),
+            file_id=a["file_id"],
+            file_unique_id=a.get("file_unique_id"),
+            file_type=a["file_type"],
+            caption=a.get("caption"),
+        )
+
+    source_label = ZAMERY_SOURCE_LABELS.get(source_type, source_type)
+    initiator = await get_initiator_label(db, u.id)
+    from ..keyboards import task_actions_kb
+    task_kb = task_actions_kb(task)
+    msg = (
+        f"📐 <b>Заявка на замер #{zam_req_id}</b>\n"
+        f"👤 От: {initiator}\n\n"
+        f"📌 Источник: {source_label}\n"
+        f"📍 Адрес: {address}\n"
+    )
+    if description:
+        msg += f"📝 Описание: {description}\n"
+    if client_contact:
+        msg += f"📞 Контакт: {client_contact}\n"
+
+    await notifier.safe_send(int(zamery_id_user), msg, reply_markup=task_kb)
+    for a in attachments:
+        await notifier.safe_send_media(int(zamery_id_user), a["file_type"], a["file_id"], caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, int(zamery_id_user))
+
+    # Если привязан к лиду → уведомить РП
+    if source_type == "lead" and lead_task_id:
+        rp_id = await resolve_default_assignee(db, config, Role.RP)
+        if rp_id:
+            rp_msg = (
+                f"📐 <b>Заявка на замер по лиду</b>\n"
+                f"👤 От: {initiator}\n\n"
+                f"🎯 Лид #{lead_task_id}\n"
+                f"📍 Адрес: {address}\n"
+            )
+            if description:
+                rp_msg += f"📝 {description}\n"
+            await notifier.safe_send(int(rp_id), rp_msg)
+            await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
+
+    menu_role, isolated_role = await _current_menu(db, u.id)
+    await state.clear()
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Заявка на замер #{zam_req_id} отправлена замерщику.",
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(
+                menu_role,
+                is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
+        ),
     )
 
 

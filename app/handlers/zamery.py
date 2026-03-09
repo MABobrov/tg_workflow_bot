@@ -19,12 +19,16 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
 from ..db import Database
-from ..enums import InvoiceStatus, Role
+from ..enums import (
+    InvoiceStatus, MANAGER_ROLES, Role, TaskStatus, TaskType,
+    ZAMERY_SOURCE_LABELS,
+)
 from ..keyboards import (
     ZAM_BTN_MY_OBJECTS,
     ZAM_BTN_ZAMERY,
     main_menu,
     tasks_kb,
+    zamery_incoming_kb,
 )
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
@@ -50,24 +54,173 @@ async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
 
 
 # =====================================================================
-# ЗАМЕРЫ (incoming requests)
+# ЗАМЕРЫ (incoming requests — структурированные заявки)
 # =====================================================================
 
 @router.message(F.text == ZAM_BTN_ZAMERY)
 async def zamery_inbox(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.ZAMERY]):
         return
+    uid = message.from_user.id  # type: ignore[union-attr]
 
-    tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)  # type: ignore[union-attr]
-    if not tasks:
+    reqs = await db.list_zamery_requests(
+        assigned_to=uid, status="open", limit=30,
+    )
+    in_progress = await db.list_zamery_requests(
+        assigned_to=uid, status="in_progress", limit=30,
+    )
+    all_reqs = reqs + in_progress
+
+    if not all_reqs:
         await answer_service(message, "📐 Нет входящих заявок на замеры ✅", delay_seconds=60)
         return
 
-    await message.answer(
-        f"📐 <b>Замеры</b> ({len(tasks)}):\n\n"
-        "Нажмите на заявку для просмотра:",
-        reply_markup=tasks_kb(tasks),
+    # Статистика по менеджерам
+    stats = await db.get_zamery_stats_by_manager(uid)
+    stat_lines = []
+    role_short = {
+        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+    }
+    for s in stats:
+        rn = role_short.get(s.get("requester_role", ""), s.get("requester_role", "?"))
+        stat_lines.append(f"  {rn}: {s['cnt']} заявок")
+
+    text = f"📐 <b>Замеры</b> ({len(all_reqs)}):\n\n"
+    if stat_lines:
+        text += "<b>По менеджерам:</b>\n" + "\n".join(stat_lines) + "\n\n"
+    text += "Нажмите на заявку для просмотра:"
+
+    await message.answer(text, reply_markup=zamery_incoming_kb(all_reqs))
+
+
+@router.callback_query(F.data.startswith("zam_in:view:"))
+async def zamery_view_request(
+    cb: CallbackQuery, db: Database,
+) -> None:
+    """Замерщик: просмотр карточки заявки."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req = await db.get_zamery_request(req_id)
+    if not req:
+        await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        return
+
+    source_label = ZAMERY_SOURCE_LABELS.get(req.get("source_type", ""), "—")
+    role_short = {
+        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+    }.get(req.get("requester_role", ""), "?")
+    initiator = await get_initiator_label(db, req["requested_by"])
+    status_label = {
+        "open": "⏳ Новая", "in_progress": "🔄 В работе",
+        "done": "✅ Выполнена", "rejected": "❌ Отклонена",
+    }.get(req.get("status", ""), "❓")
+
+    text = (
+        f"📐 <b>Заявка на замер #{req['id']}</b>\n\n"
+        f"👤 От: {initiator} ({role_short})\n"
+        f"📌 Источник: {source_label}\n"
+        f"📍 Адрес: {req.get('address', '—')}\n"
     )
+    if req.get("description"):
+        text += f"📝 Описание: {req['description']}\n"
+    if req.get("client_contact"):
+        text += f"📞 Контакт: {req['client_contact']}\n"
+    text += f"Статус: {status_label}\n"
+    text += f"📅 Создана: {req.get('created_at', '—')[:16]}\n"
+
+    b = InlineKeyboardBuilder()
+    if req.get("status") in ("open", "in_progress"):
+        if req.get("status") == "open":
+            b.button(text="✅ Принять", callback_data=f"zam_in:accept:{req_id}")
+        b.button(text="❌ Отклонить", callback_data=f"zam_in:reject:{req_id}")
+        b.adjust(2)
+
+    # Показать вложения
+    attachments = []
+    if req.get("attachments_json"):
+        try:
+            attachments = json.loads(req["attachments_json"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    await cb.message.answer(text, reply_markup=b.as_markup() if b.export() else None)  # type: ignore[union-attr]
+    for a in attachments:
+        ft = a.get("file_type", "document")
+        fid = a.get("file_id")
+        if fid and ft == "photo":
+            from aiogram.types import InputMediaPhoto
+            await cb.message.answer_photo(fid)  # type: ignore[union-attr]
+        elif fid:
+            await cb.message.answer_document(fid)  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.startswith("zam_in:accept:"))
+async def zamery_accept_request(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Замерщик: принять заявку на замер."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer("✅ Принято")
+
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req = await db.get_zamery_request(req_id)
+    if not req:
+        await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        return
+
+    await db.update_zamery_request(req_id, status="in_progress")
+    # Обновить задачу
+    if req.get("task_id"):
+        await db.update_task_status(req["task_id"], TaskStatus.IN_PROGRESS)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Заявка #{req_id} принята в работу."
+    )
+
+    # Уведомить менеджера
+    await notifier.safe_send(
+        req["requested_by"],
+        f"✅ <b>Заявка на замер #{req_id} принята</b>\n\n"
+        f"📍 {req.get('address', '—')}",
+    )
+    await refresh_recipient_keyboard(notifier, db, config, req["requested_by"])
+
+
+@router.callback_query(F.data.startswith("zam_in:reject:"))
+async def zamery_reject_request(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Замерщик: отклонить заявку на замер."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer("❌ Отклонено")
+
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req = await db.get_zamery_request(req_id)
+    if not req:
+        await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        return
+
+    await db.update_zamery_request(req_id, status="rejected")
+    if req.get("task_id"):
+        await db.update_task_status(req["task_id"], TaskStatus.REJECTED)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"❌ Заявка #{req_id} отклонена."
+    )
+
+    # Уведомить менеджера
+    await notifier.safe_send(
+        req["requested_by"],
+        f"❌ <b>Заявка на замер #{req_id} отклонена</b>\n\n"
+        f"📍 {req.get('address', '—')}\n"
+        "Свяжитесь с замерщиком для уточнения.",
+    )
+    await refresh_recipient_keyboard(notifier, db, config, req["requested_by"])
 
 
 # =====================================================================

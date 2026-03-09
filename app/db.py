@@ -295,6 +295,29 @@ class Database:
             );
 
             CREATE INDEX IF NOT EXISTS idx_lead_tracking_mgr ON lead_tracking(assigned_manager_id);
+
+            CREATE TABLE IF NOT EXISTS zamery_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_type TEXT NOT NULL,
+                lead_id INTEGER REFERENCES lead_tracking(id),
+                lead_task_id INTEGER REFERENCES tasks(id),
+                address TEXT NOT NULL,
+                description TEXT,
+                client_contact TEXT,
+                attachments_json TEXT,
+                requested_by INTEGER NOT NULL,
+                requester_role TEXT NOT NULL,
+                assigned_to INTEGER,
+                task_id INTEGER REFERENCES tasks(id),
+                status TEXT NOT NULL DEFAULT 'open',
+                response_comment TEXT,
+                responded_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_zamery_req_by ON zamery_requests(requested_by);
+            CREATE INDEX IF NOT EXISTS idx_zamery_req_to ON zamery_requests(assigned_to, status);
             """
         )
         await self.conn.commit()
@@ -360,6 +383,8 @@ class Database:
             ("invoices", "client_source", "TEXT"),  # 'own' | 'gd_lead'
             ("invoices", "estimated_glass", "REAL"),    # стекло (возвратный НДС)
             ("invoices", "estimated_profile", "REAL"),   # ал. профиль (возвратный НДС)
+            # --- ЭДО: привязка к счёту ---
+            ("edo_requests", "invoice_id", "INTEGER"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -710,9 +735,10 @@ class Database:
         params.append(limit)
         cur = await self.conn.execute(
             f"""
-            SELECT * FROM tasks
-            WHERE assigned_to = ? AND status IN ({placeholders}) {where_type}
-            ORDER BY COALESCE(due_at, created_at) ASC
+            SELECT t.*, u.role AS creator_role FROM tasks t
+            LEFT JOIN users u ON t.created_by = u.telegram_id
+            WHERE t.assigned_to = ? AND t.status IN ({placeholders}) {where_type}
+            ORDER BY COALESCE(t.due_at, t.created_at) ASC
             LIMIT ?
             """,
             tuple(params),
@@ -2226,18 +2252,19 @@ class Database:
         description: str | None = None,
         comment: str | None = None,
         task_id: int | None = None,
+        invoice_id: int | None = None,
     ) -> int:
         now = to_iso(utcnow())
         cur = await self.conn.execute(
             """
             INSERT INTO edo_requests
                 (request_type, requested_by, requested_by_role, assigned_to,
-                 invoice_number, description, comment, task_id,
+                 invoice_number, description, comment, task_id, invoice_id,
                  status, received_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
             """,
             (request_type, requested_by, requested_by_role, assigned_to,
-             invoice_number, description, comment, task_id,
+             invoice_number, description, comment, task_id, invoice_id,
              now, now),
         )
         await self.conn.commit()
@@ -2317,16 +2344,42 @@ class Database:
         response_attachments_json: str | None = None,
     ) -> None:
         now = to_iso(utcnow())
-        # Use generic update — response columns added via migration
-        await self.update_edo_request(
-            edo_id,
-            status="done",
-            response_type=response_type,
-            responded_by=responder_id,
-            response_comment=response_comment,
-            response_attachments_json=response_attachments_json,
-            completed_at=now,
+        # Авто-расчёт времени обработки
+        processing_minutes: int | None = None
+        edo = await self.get_edo_request(edo_id)
+        if edo and edo.get("created_at"):
+            from datetime import datetime
+            try:
+                created = datetime.fromisoformat(edo["created_at"])
+                completed = datetime.fromisoformat(now)
+                processing_minutes = int((completed - created).total_seconds() / 60)
+            except (ValueError, TypeError):
+                pass
+        fields: dict[str, Any] = {
+            "status": "done",
+            "response_type": response_type,
+            "responded_by": responder_id,
+            "response_comment": response_comment,
+            "response_attachments_json": response_attachments_json,
+            "completed_at": now,
+        }
+        if processing_minutes is not None:
+            fields["processing_time_minutes"] = processing_minutes
+        await self.update_edo_request(edo_id, **fields)
+
+    async def list_invoices_for_edo(
+        self, created_by: int, limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Счета менеджера для ЭДО: в работе, не ended, не дочерние."""
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices "
+            "WHERE created_by = ? "
+            "AND status NOT IN ('new', 'rejected', 'ended') "
+            "AND parent_invoice_id IS NULL "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (created_by, limit),
         )
+        return [dict(r) for r in await cur.fetchall()]
 
     # =====================================================================
     # LEAD TRACKING
@@ -2466,6 +2519,112 @@ class Database:
         cur = await self.conn.execute("SELECT COUNT(*) FROM lead_tracking")
         row = await cur.fetchone()
         return row[0] if row else 0
+
+    # =====================================================================
+    # ZAMERY REQUESTS
+    # =====================================================================
+
+    async def create_zamery_request(
+        self,
+        source_type: str,
+        address: str,
+        requested_by: int,
+        requester_role: str,
+        assigned_to: int,
+        description: str | None = None,
+        client_contact: str | None = None,
+        lead_id: int | None = None,
+        lead_task_id: int | None = None,
+        task_id: int | None = None,
+        attachments_json: str | None = None,
+    ) -> int:
+        now = to_iso(utcnow())
+        cur = await self.conn.execute(
+            "INSERT INTO zamery_requests "
+            "(source_type, address, description, client_contact, "
+            " requested_by, requester_role, assigned_to, "
+            " lead_id, lead_task_id, task_id, attachments_json, "
+            " status, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (source_type, address, description, client_contact,
+             requested_by, requester_role, assigned_to,
+             lead_id, lead_task_id, task_id, attachments_json,
+             "open", now),
+        )
+        await self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def get_zamery_request(self, zamery_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM zamery_requests WHERE id = ?", (zamery_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_zamery_requests(
+        self,
+        requested_by: int | None = None,
+        assigned_to: int | None = None,
+        status: str | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if requested_by is not None:
+            clauses.append("requested_by = ?")
+            params.append(requested_by)
+        if assigned_to is not None:
+            clauses.append("assigned_to = ?")
+            params.append(assigned_to)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        cur = await self.conn.execute(
+            f"SELECT * FROM zamery_requests {where} ORDER BY created_at DESC LIMIT ?",
+            tuple(params),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def update_zamery_request(self, zamery_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        fields["updated_at"] = to_iso(utcnow())
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [zamery_id]
+        await self.conn.execute(
+            f"UPDATE zamery_requests SET {sets} WHERE id = ?", tuple(vals),
+        )
+        await self.conn.commit()
+
+    async def get_zamery_stats_by_manager(
+        self, assigned_to: int,
+    ) -> list[dict[str, Any]]:
+        """Статистика заявок на замер по ролям менеджеров."""
+        cur = await self.conn.execute(
+            "SELECT requester_role, "
+            "  COUNT(*) AS total, "
+            "  SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done, "
+            "  SUM(CASE WHEN status IN ('open','in_progress') THEN 1 ELSE 0 END) AS active "
+            "FROM zamery_requests WHERE assigned_to = ? "
+            "GROUP BY requester_role ORDER BY total DESC",
+            (assigned_to,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def list_open_lead_tasks_for_manager(
+        self, manager_id: int, limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Открытые LEAD_TO_PROJECT задачи для этого менеджера."""
+        cur = await self.conn.execute(
+            "SELECT * FROM tasks "
+            "WHERE assigned_to = ? AND type = 'lead_to_project' "
+            "AND status IN ('open', 'in_progress') "
+            "ORDER BY created_at DESC LIMIT ?",
+            (manager_id, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
 
     # =====================================================================
     # ROLE SWITCHING (РП ↔ НПН)

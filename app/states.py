@@ -291,6 +291,7 @@ class GdInvoiceEndSG(StatesGroup):
 
 class EdoRequestSG(StatesGroup):
     """Менеджер/РП: запрос ЭДО к бухгалтерии."""
+    invoice_pick = State()       # выбор счёта из списка
     request_type = State()       # тип запроса (1-4 inline-кнопки)
     invoice_number = State()     # номер счёта (для типов 1-3)
     description = State()        # пояснение (для типа «Другое»)
@@ -360,6 +361,16 @@ class ManagerChatProxySG(StatesGroup):
     menu = State()               # подменю чата
     writing = State()            # ввод сообщения
     writing_attachments = State()  # прикрепление файлов
+
+
+class ZameryRequestSG(StatesGroup):
+    """Менеджер: заявка на замер."""
+    source_type = State()        # выбор источника: lead / own_client / repeat
+    lead_pick = State()          # выбор лида из списка (только для source=lead)
+    address = State()            # адрес замера
+    description = State()        # описание работ
+    client_contact = State()     # контакт клиента (телефон/имя)
+    attachments = State()        # вложения (фото, документы)
 
 
 class ZameryZpSG(StatesGroup):

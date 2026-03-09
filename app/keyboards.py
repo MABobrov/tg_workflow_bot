@@ -625,11 +625,20 @@ def projects_kb(projects: list[dict[str, Any]], ctx: str) -> InlineKeyboardMarku
     return b.as_markup()
 
 
+_ROLE_SHORT: dict[str, str] = {
+    "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+    "rp": "РП", "zamery": "Замер", "accounting": "Бухг",
+    "gd": "ГД", "installer": "Монт", "driver": "Вод", "tinter": "Тон",
+}
+
+
 def tasks_kb(tasks: list[dict[str, Any]]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for t in tasks:
-        text = f"#{t['id']} • {task_type_label(t.get('type'))} • {task_status_label(t.get('status'))}"
-        b.button(text=text[:60], callback_data=TaskCb(task_id=int(t["id"]), action="open").pack())
+        role_short = _ROLE_SHORT.get(t.get("creator_role", ""), "")
+        role_tag = f" ({role_short})" if role_short else ""
+        text = f"#{t['id']}{role_tag} • {task_type_label(t.get('type'))} • {task_status_label(t.get('status'))}"
+        b.button(text=text[:64], callback_data=TaskCb(task_id=int(t["id"]), action="open").pack())
     b.adjust(1)
     return b.as_markup()
 
@@ -875,6 +884,78 @@ def edo_type_kb() -> InlineKeyboardMarkup:
     b.button(text="2. Закрывающие по ЭДО (счет №_)", callback_data="edo:sign_closing")
     b.button(text="3. Подписать по ЭДО УПД поставщика", callback_data="edo:sign_upd")
     b.button(text="4. Другое: пояснить суть", callback_data="edo:other")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def zamery_source_kb() -> InlineKeyboardMarkup:
+    """3 inline-кнопки выбора источника заявки на замер."""
+    b = InlineKeyboardBuilder()
+    b.button(text="🎯 Привязать к лиду", callback_data="zam_src:lead")
+    b.button(text="👤 Свой клиент", callback_data="zam_src:own_client")
+    b.button(text="🔄 Повторный", callback_data="zam_src:repeat")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def zamery_lead_pick_kb(leads: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+    """Inline-пикер лидов от РП для привязки к замеру."""
+    b = InlineKeyboardBuilder()
+    for lead_task in leads:
+        payload = try_json_loads(lead_task.get("payload_json"))
+        desc = (payload.get("description") or "")[:35]
+        label = f"🎯 #{lead_task['id']}"
+        if desc:
+            label += f" — {desc}"
+        b.button(text=label[:55], callback_data=f"zam_lead:{lead_task['id']}")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def zamery_my_requests_kb(requests: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+    """Менеджер: список своих заявок на замер."""
+    b = InlineKeyboardBuilder()
+    for req in requests:
+        status_emoji = {
+            "open": "⏳", "in_progress": "🔄", "done": "✅", "rejected": "❌",
+        }.get(req.get("status", ""), "❓")
+        addr = (req.get("address") or "")[:30]
+        b.button(
+            text=f"{status_emoji} #{req['id']} — {addr}"[:55],
+            callback_data=f"zam_req:view:{req['id']}",
+        )
+    b.adjust(1)
+    return b.as_markup()
+
+
+def zamery_incoming_kb(requests: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+    """Замерщик: входящие заявки на замер."""
+    b = InlineKeyboardBuilder()
+    for req in requests:
+        addr = (req.get("address") or "")[:25]
+        role_short = _ROLE_SHORT.get(req.get("requester_role", ""), "")
+        b.button(
+            text=f"📐 #{req['id']} ({role_short}) — {addr}"[:55],
+            callback_data=f"zam_in:view:{req['id']}",
+        )
+    b.adjust(1)
+    return b.as_markup()
+
+
+def edo_invoice_pick_kb(invoices: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+    """Inline-пикер счетов для ЭДО-запроса."""
+    b = InlineKeyboardBuilder()
+    for inv in invoices[:15]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:25]
+        status_emoji = {
+            "pending": "⏳", "in_progress": "🔄", "paid": "✅", "closing": "📌",
+        }.get(inv.get("status", ""), "❓")
+        label = f"{status_emoji} №{num}"
+        if addr:
+            label += f" — {addr}"
+        b.button(text=label[:55], callback_data=f"edo_inv:{inv['id']}")
+    b.button(text="✍️ Ввести номер вручную", callback_data="edo_inv:manual")
     b.adjust(1)
     return b.as_markup()
 

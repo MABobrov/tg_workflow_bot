@@ -74,6 +74,7 @@ class TaskType(StrEnum):
     # --- ЗП сотрудников ---
     ZP_MANAGER = "zp_manager"            # ЗП отд.продаж (менеджер → ГД)
     ZP_INSTALLER = "zp_installer"        # ЗП монтажника (монтажник → ГД)
+    ZAMERY_REQUEST = "zamery_request"    # заявка на замер (менеджер → замерщик)
 
 
 class TaskStatus(StrEnum):
@@ -156,3 +157,17 @@ class EdoRequestType(StrEnum):
     SIGN_CLOSING = "sign_closing"           # 2. Закрывающие по ЭДО (счет №_)
     SIGN_UPD = "sign_upd"                  # 3. Подписать по ЭДО УПД поставщика
     OTHER = "other"                         # 4. Другое: пояснить суть
+
+
+class ZamerySourceType(StrEnum):
+    """Источник заявки на замер."""
+    LEAD = "lead"              # Привязать к лиду (от РП)
+    OWN_CLIENT = "own_client"  # Свой клиент
+    REPEAT = "repeat"          # Повторный
+
+
+ZAMERY_SOURCE_LABELS: dict[str, str] = {
+    ZamerySourceType.LEAD: "🎯 Привязка к лиду",
+    ZamerySourceType.OWN_CLIENT: "👤 Свой клиент",
+    ZamerySourceType.REPEAT: "🔄 Повторный",
+}

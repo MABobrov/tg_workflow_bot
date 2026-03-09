@@ -254,6 +254,18 @@ async def edo_respond_finalize(
         "docs_needed": "📨 Запрос документов",
     }.get(response_type, response_type)
 
+    # Время обработки
+    processing_time_str = ""
+    if edo_id:
+        edo_rec = await db.get_edo_request(edo_id)
+        if edo_rec and edo_rec.get("processing_time_minutes") is not None:
+            mins = edo_rec["processing_time_minutes"]
+            if mins < 60:
+                processing_time_str = f"⏱ Время обработки: {mins} мин.\n"
+            else:
+                h, m = divmod(mins, 60)
+                processing_time_str = f"⏱ Время обработки: {h}ч {m}мин.\n"
+
     # Notify requester
     if requester_id:
         initiator = await get_initiator_label(db, u.id)
@@ -266,6 +278,8 @@ async def edo_respond_finalize(
             msg += f"Счёт №: <code>{invoice_number}</code>\n"
         if comment:
             msg += f"Комментарий: {comment}\n"
+        if processing_time_str:
+            msg += processing_time_str
 
         await notifier.safe_send(int(requester_id), msg)
         for a in attachments:
