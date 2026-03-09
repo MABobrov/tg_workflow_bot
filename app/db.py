@@ -318,6 +318,25 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_zamery_req_by ON zamery_requests(requested_by);
             CREATE INDEX IF NOT EXISTS idx_zamery_req_to ON zamery_requests(assigned_to, status);
+
+            CREATE TABLE IF NOT EXISTS razmery_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_id INTEGER NOT NULL,
+                installer_id INTEGER NOT NULL,
+                installer_comment TEXT,
+                rp_id INTEGER,
+                rp_comment TEXT,
+                rp_sent_at TEXT,
+                result TEXT,
+                result_comment TEXT,
+                result_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_razmery_req_inv ON razmery_requests(invoice_id, status);
+            CREATE INDEX IF NOT EXISTS idx_razmery_req_inst ON razmery_requests(installer_id, status);
             """
         )
         await self.conn.commit()
@@ -2676,6 +2695,70 @@ class Database:
             (manager_id, limit),
         )
         return [dict(r) for r in await cur.fetchall()]
+
+    # =====================================================================
+    # RAZMERY REQUESTS (проверка размеров стекла)
+    # =====================================================================
+
+    async def create_razmery_request(
+        self,
+        invoice_id: int,
+        installer_id: int,
+        comment: str | None = None,
+    ) -> int:
+        now = to_iso(utcnow())
+        cur = await self.conn.execute(
+            "INSERT INTO razmery_requests "
+            "(invoice_id, installer_id, installer_comment, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'pending', ?, ?)",
+            (invoice_id, installer_id, comment, now, now),
+        )
+        await self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def get_razmery_request(self, req_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM razmery_requests WHERE id = ?", (req_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_active_razmery_request(self, invoice_id: int) -> dict[str, Any] | None:
+        """Последний не-approved razmery_request для счёта."""
+        cur = await self.conn.execute(
+            "SELECT * FROM razmery_requests "
+            "WHERE invoice_id = ? AND status NOT IN ('approved') "
+            "ORDER BY id DESC LIMIT 1",
+            (invoice_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_razmery_requests_for_rp(self, limit: int = 30) -> list[dict[str, Any]]:
+        """Все активные razmery_requests (для РП inbox)."""
+        cur = await self.conn.execute(
+            "SELECT r.*, i.invoice_number, i.object_address "
+            "FROM razmery_requests r "
+            "JOIN invoices i ON i.id = r.invoice_id "
+            "WHERE r.status NOT IN ('approved') "
+            "ORDER BY CASE r.status "
+            "  WHEN 'pending' THEN 1 "
+            "  WHEN 'error' THEN 2 "
+            "  WHEN 'rp_received' THEN 3 "
+            "  WHEN 'verification_sent' THEN 4 "
+            "  ELSE 5 END, r.created_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def update_razmery_request(self, req_id: int, **fields: Any) -> None:
+        fields["updated_at"] = to_iso(utcnow())
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [req_id]
+        await self.conn.execute(
+            f"UPDATE razmery_requests SET {sets} WHERE id = ?", vals,
+        )
+        await self.conn.commit()
 
     # =====================================================================
     # ROLE SWITCHING (РП ↔ НПН)

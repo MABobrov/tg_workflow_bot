@@ -336,6 +336,21 @@ class InstallerWorkAcceptSG(StatesGroup):
     viewing = State()
 
 
+class InstallerRazmerySG(StatesGroup):
+    """Монтажник: бланк размеров стекла + ответ на проверку."""
+    select_invoice = State()       # выбор счёта
+    comment = State()              # комментарий к бланку
+    attachments = State()          # вложения (бланк размеров)
+    result_comment = State()       # комментарий к ОК/Ошибке
+    result_attachments = State()   # вложения к ОК/Ошибке
+
+
+class RpRazmerySG(StatesGroup):
+    """РП: форма поставщика для монтажника на проверку."""
+    comment = State()              # комментарий к форме
+    attachments = State()          # вложения (бланк поставщика)
+
+
 class InstallerOrderMaterialsSG(StatesGroup):
     """Монтажник: Заказ материалов / Заказ доп.материалов → РП."""
     invoice_pick = State()       # выбор счёта для привязки

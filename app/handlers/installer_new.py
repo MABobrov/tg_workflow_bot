@@ -42,6 +42,7 @@ from ..states import (
     InstallerDailyReportSG,
     InstallerInvoiceOkSG,
     InstallerOrderMaterialsSG,
+    InstallerRazmerySG,
     InstallerZpSG,
 )
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
@@ -409,80 +410,384 @@ async def invoice_ok_comment(
 
 
 # =====================================================================
-# РАЗМЕРЫ ОК (Монтажник подтверждает — размеры проверены)
+# РАЗМЕРЫ ОК — workflow проверки размеров стекла
 # =====================================================================
 
 @router.message(F.text == INST_BTN_RAZMERY_OK)
 async def start_razmery_ok(message: Message, state: FSMContext, db: Database) -> None:
-    """Installer: confirm measurements are OK for an invoice."""
+    """Кнопка «Размеры ОК»: два раздела — отправить бланк / проверить форму."""
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-
     user_id = message.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_installer_confirmed_invoices(user_id)
-    if not invoices:
-        await answer_service(message, "Нет подтверждённых счетов «В работе».", delay_seconds=60)
+
+    # Счета in_work БЕЗ активного razmery_request → можно отправить бланк
+    confirmed = await db.list_installer_confirmed_invoices(user_id)
+    send_list = []
+    check_list = []
+    for inv in confirmed:
+        stage = inv.get("montazh_stage", "")
+        if stage != "in_work":
+            continue
+        req = await db.get_active_razmery_request(inv["id"])
+        if not req:
+            send_list.append(inv)
+        elif req["status"] == "verification_sent":
+            check_list.append((inv, req))
+
+    if not send_list and not check_list:
+        await answer_service(message, "📐 Нет счетов для отправки размеров.", delay_seconds=60)
         return
 
-    await message.answer(
-        "📐 <b>Размеры ОК</b>\n\n"
-        "Выберите счёт, по которому размеры проверены:",
-        reply_markup=invoice_list_kb(invoices, action_prefix="razmok"),
+    b = InlineKeyboardBuilder()
+    if send_list:
+        for inv in send_list:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = (inv.get("object_address") or "")[:20]
+            b.button(
+                text=f"📤 №{num} — {addr}"[:55],
+                callback_data=f"razmok_new:send:{inv['id']}",
+            )
+    if check_list:
+        for inv, req in check_list:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = (inv.get("object_address") or "")[:20]
+            b.button(
+                text=f"📋 №{num} — проверить"[:55],
+                callback_data=f"razmok_new:check:{req['id']}",
+            )
+    b.adjust(1)
+
+    text = "📐 <b>Размеры ОК</b>\n\n"
+    if send_list:
+        text += f"📤 Отправить бланк ({len(send_list)})\n"
+    if check_list:
+        text += f"📋 На проверке ({len(check_list)})\n"
+    await message.answer(text, reply_markup=b.as_markup())
+
+
+# --- Шаг 1: отправка бланка размеров РП ---
+
+@router.callback_query(F.data.startswith("razmok_new:send:"))
+async def razmery_pick_invoice(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await state.clear()
+    await state.set_state(InstallerRazmerySG.comment)
+    await state.update_data(razmery_invoice_id=invoice_id, razmery_attachments=[])
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📐 <b>Бланк размеров стекла</b>\n\n"
+        "Добавьте комментарий к бланку размеров\n"
+        "(или «-» для пропуска, «❌ Отмена» для отмены):",
     )
 
 
-@router.callback_query(F.data.startswith("razmok:view:"))
-async def razmery_ok_select(
-    cb: CallbackQuery,
-    state: FSMContext,
-    db: Database,
-    config: Config,
-    notifier: Notifier,
-) -> None:
-    """Installer confirms measurements OK for the selected invoice."""
-    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+@router.message(InstallerRazmerySG.comment, F.text.casefold().in_({"❌ отмена", "отмена", "/cancel"}))
+@router.message(InstallerRazmerySG.attachments, F.text.casefold().in_({"❌ отмена", "отмена", "/cancel"}))
+@router.message(InstallerRazmerySG.result_comment, F.text.casefold().in_({"❌ отмена", "отмена", "/cancel"}))
+@router.message(InstallerRazmerySG.result_attachments, F.text.casefold().in_({"❌ отмена", "отмена", "/cancel"}))
+async def razmery_cancel(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    u = message.from_user
+    await state.clear()
+    role, isolated_role = await _current_menu(db, u.id)  # type: ignore[union-attr]
+    await message.answer(
+        "❌ Отменено.",
+        reply_markup=main_menu(
+            role, is_admin=u.id in (config.admin_ids or set()),  # type: ignore[union-attr]
+            unread=await db.count_unread_tasks(u.id),  # type: ignore[union-attr]
+            isolated_role=isolated_role,
+        ),
+    )
+
+
+@router.message(InstallerRazmerySG.comment)
+async def razmery_comment(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    comment = None if text == "-" else text
+    await state.update_data(razmery_comment=comment)
+    await state.set_state(InstallerRazmerySG.attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="📤 Отправить РП", callback_data="razmok_new:create")
+    b.button(text="⏭ Без вложений", callback_data="razmok_new:create")
+    b.adjust(1)
+    await message.answer(
+        "Прикрепите бланк размеров (фото/документ).\n"
+        "Когда готовы — нажмите кнопку:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(InstallerRazmerySG.attachments)
+async def razmery_attach(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    attachments = data.get("razmery_attachments", [])
+    if message.document:
+        attachments.append({"file_type": "document", "file_id": message.document.file_id})
+    elif message.photo:
+        attachments.append({"file_type": "photo", "file_id": message.photo[-1].file_id})
+    else:
+        await message.answer("Прикрепите файл/фото или нажмите кнопку.")
         return
+    await state.update_data(razmery_attachments=attachments)
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+
+
+@router.callback_query(F.data == "razmok_new:create")
+async def razmery_send_to_rp(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Финализация: создать razmery_request + уведомить РП."""
     await cb.answer()
     u = cb.from_user
     if not u:
         return
+    data = await state.get_data()
+    invoice_id = data.get("razmery_invoice_id")
+    comment = data.get("razmery_comment")
+    attachments = data.get("razmery_attachments", [])
 
-    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req_id = await db.create_razmery_request(invoice_id, u.id, comment)
+
     inv = await db.get_invoice(invoice_id)
-    if not inv:
-        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
-        return
-
-    await db.update_montazh_stage(invoice_id, MontazhStage.RAZMERY_OK)
-
+    inv_num = inv["invoice_number"] if inv else "?"
     initiator = await get_initiator_label(db, u.id)
-    msg = (
-        f"📐 <b>Размеры ОК</b>\n"
-        f"👤 От: {initiator}\n\n"
-        f"Счёт №{inv['invoice_number']}\n"
-        f"Размеры проверены ✅"
-    )
 
-    # Notify RP
+    # Уведомить РП
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ ОК (принял)", callback_data=f"razmok_rp:received:{req_id}")
+    b.adjust(1)
+
+    msg = (
+        f"📐 <b>Бланк размеров стекла</b>\n"
+        f"👤 От: {initiator}\n"
+        f"🧾 Счёт: №{inv_num}\n"
+    )
+    if comment:
+        msg += f"💬 {comment}\n"
+
     rp_id = await resolve_default_assignee(db, config, Role.RP)
     if rp_id:
-        await notifier.safe_send(int(rp_id), msg)
+        await notifier.safe_send(int(rp_id), msg, reply_markup=b.as_markup())
+        for a in attachments:
+            await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"])
         await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
+    await state.clear()
     role, isolated_role = await _current_menu(db, u.id)
     await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ Размеры ОК подтверждены по счёту №{inv['invoice_number']}.",
-        reply_markup=private_only_reply_markup(
-            cb.message,
-            main_menu(
-                role,
-                is_admin=u.id in (config.admin_ids or set()),
+        f"✅ Бланк размеров отправлен РП по счёту №{inv_num}.",
+        reply_markup=main_menu(
+            role, is_admin=u.id in (config.admin_ids or set()),
+            unread=await db.count_unread_tasks(u.id),
+            isolated_role=isolated_role,
+        ),
+    )
+
+
+# --- Шаг 3: проверка формы поставщика от РП ---
+
+@router.callback_query(F.data.startswith("razmok_new:check:"))
+async def razmery_check_view(cb: CallbackQuery, db: Database) -> None:
+    """Просмотр формы поставщика от РП."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req = await db.get_razmery_request(req_id)
+    if not req:
+        await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        return
+
+    inv = await db.get_invoice(req["invoice_id"])
+    inv_num = inv["invoice_number"] if inv else "?"
+    rp_label = await get_initiator_label(db, req["rp_id"]) if req.get("rp_id") else "РП"
+
+    text = (
+        f"📐 <b>Проверка размеров</b>\n\n"
+        f"🧾 Счёт: №{inv_num}\n"
+        f"👤 Форма от: {rp_label}\n"
+    )
+    if req.get("rp_comment"):
+        text += f"💬 {req['rp_comment']}\n"
+    text += "\nПроверьте форму и выберите действие:"
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Размеры ОК", callback_data=f"razmok_inst:ok:{req_id}")
+    b.button(text="❌ Ошибка", callback_data=f"razmok_inst:error:{req_id}")
+    b.adjust(2)
+
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.startswith("razmok_inst:ok:"))
+async def razmery_respond_ok(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await state.clear()
+    await state.set_state(InstallerRazmerySG.result_comment)
+    await state.update_data(
+        razmery_req_id=req_id, razmery_result="ok", razmery_result_attachments=[],
+    )
+    await cb.message.answer(  # type: ignore[union-attr]
+        "✅ <b>Размеры ОК</b>\n\n"
+        "Добавьте комментарий (или «-» для пропуска):",
+    )
+
+
+@router.callback_query(F.data.startswith("razmok_inst:error:"))
+async def razmery_respond_error(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await state.clear()
+    await state.set_state(InstallerRazmerySG.result_comment)
+    await state.update_data(
+        razmery_req_id=req_id, razmery_result="error", razmery_result_attachments=[],
+    )
+    await cb.message.answer(  # type: ignore[union-attr]
+        "❌ <b>Ошибка в размерах</b>\n\n"
+        "Опишите ошибку (обязательно):",
+    )
+
+
+@router.message(InstallerRazmerySG.result_comment)
+async def razmery_result_comment(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    data = await state.get_data()
+    if data.get("razmery_result") == "error" and (not text or text == "-"):
+        await message.answer("Опишите ошибку — комментарий обязателен:")
+        return
+    comment = None if text == "-" else text
+    await state.update_data(razmery_result_comment=comment)
+    await state.set_state(InstallerRazmerySG.result_attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="📤 Отправить", callback_data="razmok_inst:result_send")
+    b.button(text="⏭ Без вложений", callback_data="razmok_inst:result_send")
+    b.adjust(1)
+    await message.answer(
+        "Прикрепите файлы (опционально). Когда готовы — нажмите кнопку:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(InstallerRazmerySG.result_attachments)
+async def razmery_result_attach(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    attachments = data.get("razmery_result_attachments", [])
+    if message.document:
+        attachments.append({"file_type": "document", "file_id": message.document.file_id})
+    elif message.photo:
+        attachments.append({"file_type": "photo", "file_id": message.photo[-1].file_id})
+    else:
+        await message.answer("Прикрепите файл/фото или нажмите кнопку.")
+        return
+    await state.update_data(razmery_result_attachments=attachments)
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+
+
+@router.callback_query(F.data == "razmok_inst:result_send")
+async def razmery_result_send(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Финализация ответа: Размеры ОК или Ошибка."""
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+    data = await state.get_data()
+    req_id = data.get("razmery_req_id")
+    result = data.get("razmery_result", "ok")
+    comment = data.get("razmery_result_comment")
+    attachments = data.get("razmery_result_attachments", [])
+
+    from ..utils import to_iso, utcnow
+    now = to_iso(utcnow())
+
+    req = await db.get_razmery_request(req_id)
+    if not req:
+        await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+
+    inv = await db.get_invoice(req["invoice_id"])
+    inv_num = inv["invoice_number"] if inv else "?"
+    initiator = await get_initiator_label(db, u.id)
+
+    if result == "ok":
+        await db.update_razmery_request(
+            req_id, status="approved", result="ok",
+            result_comment=comment, result_at=now,
+        )
+        await db.update_montazh_stage(req["invoice_id"], MontazhStage.RAZMERY_OK)
+
+        rp_id = await resolve_default_assignee(db, config, Role.RP)
+        if rp_id:
+            msg = (
+                f"✅ <b>Размеры ОК</b>\n"
+                f"👤 От: {initiator}\n"
+                f"🧾 Счёт: №{inv_num}\n"
+                f"Размеры проверены ✅"
+            )
+            if comment:
+                msg += f"\n💬 {comment}"
+            await notifier.safe_send(int(rp_id), msg)
+            for a in attachments:
+                await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"])
+            await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
+
+        await state.clear()
+        role, isolated_role = await _current_menu(db, u.id)
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"✅ Размеры ОК подтверждены по счёту №{inv_num}.",
+            reply_markup=main_menu(
+                role, is_admin=u.id in (config.admin_ids or set()),
                 unread=await db.count_unread_tasks(u.id),
                 isolated_role=isolated_role,
             ),
-        ),
-    )  # type: ignore
+        )
+    else:
+        # Ошибка → возврат к rp_received (РП исправляет)
+        await db.update_razmery_request(
+            req_id, status="rp_received", result="error",
+            result_comment=comment, result_at=now,
+        )
+
+        rp_id = await resolve_default_assignee(db, config, Role.RP)
+        if rp_id:
+            b = InlineKeyboardBuilder()
+            b.button(
+                text="📐 Отправить исправление",
+                callback_data=f"razmok_rp:send_form:{req_id}",
+            )
+            b.adjust(1)
+            msg = (
+                f"❌ <b>Ошибка в размерах</b>\n"
+                f"👤 От: {initiator}\n"
+                f"🧾 Счёт: №{inv_num}\n"
+                f"💬 {comment or '-'}"
+            )
+            await notifier.safe_send(int(rp_id), msg, reply_markup=b.as_markup())
+            for a in attachments:
+                await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"])
+            await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
+
+        await state.clear()
+        role, isolated_role = await _current_menu(db, u.id)
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"❌ Ошибка отправлена РП по счёту №{inv_num}.",
+            reply_markup=main_menu(
+                role, is_admin=u.id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(u.id),
+                isolated_role=isolated_role,
+            ),
+        )
 
 
 # =====================================================================

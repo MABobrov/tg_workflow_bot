@@ -56,6 +56,7 @@ from ..keyboards import (
     RP_BTN_ROLE_RP_INACTIVE,
     RP_BTN_ROLE_NPN,
     RP_BTN_ROLE_NPN_ACTIVE,
+    RP_MONTAZH_BTN_RAZMERY,
     RP_SUBBTN_MGR_KIA,
     RP_SUBBTN_MGR_KV,
     RP_SUBBTN_MONTAZH,
@@ -82,6 +83,7 @@ from ..states import (
     KpReviewSG,
     LeadToProjectSG,
     ManagerChatProxySG,
+    RpRazmerySG,
 )
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
@@ -592,6 +594,278 @@ async def rp_montazh_work_view(cb: CallbackQuery, db: Database) -> None:
     b.adjust(1)
 
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+# =====================================================================
+# РАЗМЕРЫ — workflow проверки размеров стекла (РП-сторона)
+# =====================================================================
+
+@router.message(ManagerChatProxySG.menu, F.text == RP_MONTAZH_BTN_RAZMERY)
+async def rp_razmery_inbox(message: Message, state: FSMContext, db: Database) -> None:
+    """Монтажная гр. → Размеры: inbox заявок на размеры."""
+    data = await state.get_data()
+    channel = data.get("channel", "montazh")
+    if channel != "montazh":
+        return
+
+    reqs = await db.list_razmery_requests_for_rp()
+    if not reqs:
+        await message.answer(
+            "📐 <b>Размеры</b>\n\nНет активных заявок ✅"
+        )
+        return
+
+    _STATUS_LABEL = {
+        "pending": "🆕 Новый",
+        "rp_received": "📝 Ожидает формы",
+        "error": "❌ Ошибка → исправить",
+        "verification_sent": "📤 Отправлено",
+    }
+
+    b = InlineKeyboardBuilder()
+    for req in reqs:
+        inv_num = req.get("invoice_number") or f"#{req['invoice_id']}"
+        sl = _STATUS_LABEL.get(req["status"], req["status"])
+        b.button(
+            text=f"{sl}: №{inv_num}"[:55],
+            callback_data=f"razmok_rp:view:{req['id']}",
+        )
+    b.adjust(1)
+
+    stats = {}
+    for req in reqs:
+        s = req["status"]
+        stats[s] = stats.get(s, 0) + 1
+    stats_line = " | ".join(f"{_STATUS_LABEL.get(k, k)}: {v}" for k, v in stats.items())
+
+    await message.answer(
+        f"📐 <b>Размеры</b> ({len(reqs)})\n"
+        f"{stats_line}\n\n"
+        "Нажмите для просмотра:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("razmok_rp:view:"))
+async def rp_razmery_view(cb: CallbackQuery, db: Database) -> None:
+    """Карточка заявки на размеры."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req = await db.get_razmery_request(req_id)
+    if not req:
+        await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        return
+
+    inv = await db.get_invoice(req["invoice_id"])
+    inv_num = inv["invoice_number"] if inv else "?"
+    addr = inv.get("object_address", "—") if inv else "—"
+    inst_label = await get_initiator_label(db, req["installer_id"])
+
+    _STATUS_LABEL = {
+        "pending": "🆕 Ожидает подтверждения",
+        "rp_received": "📝 Ожидает формы поставщика",
+        "error": "❌ Ошибка — нужно исправить",
+        "verification_sent": "📤 Отправлено монтажнику",
+    }
+
+    text = (
+        f"📐 <b>Заявка на размеры #{req['id']}</b>\n\n"
+        f"🧾 Счёт: №{inv_num}\n"
+        f"📍 Адрес: {addr}\n"
+        f"👷 Монтажник: {inst_label}\n"
+        f"📊 Статус: {_STATUS_LABEL.get(req['status'], req['status'])}\n"
+    )
+    if req.get("installer_comment"):
+        text += f"💬 Комментарий: {req['installer_comment']}\n"
+    if req.get("result") == "error" and req.get("result_comment"):
+        text += f"\n❌ <b>Ошибка от монтажника:</b>\n{req['result_comment']}\n"
+
+    b = InlineKeyboardBuilder()
+    if req["status"] == "pending":
+        b.button(text="✅ ОК (принял)", callback_data=f"razmok_rp:received:{req_id}")
+    elif req["status"] in ("rp_received", "error"):
+        b.button(text="📐 Отправить форму", callback_data=f"razmok_rp:send_form:{req_id}")
+    elif req["status"] == "verification_sent":
+        b.button(text="⏳ Ожидаем ответ", callback_data=f"razmok_rp:noop:{req_id}")
+    b.adjust(1)
+
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.startswith("razmok_rp:noop:"))
+async def rp_razmery_noop(cb: CallbackQuery) -> None:
+    await cb.answer("Ожидаем ответ монтажника")
+
+
+@router.callback_query(F.data.startswith("razmok_rp:received:"))
+async def rp_razmery_confirm_receipt(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """РП подтверждает получение бланка."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer("✅ Принял")
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req = await db.get_razmery_request(req_id)
+    if not req:
+        return
+
+    await db.update_razmery_request(req_id, status="rp_received", rp_id=cb.from_user.id)
+
+    inv = await db.get_invoice(req["invoice_id"])
+    inv_num = inv["invoice_number"] if inv else "?"
+
+    # Уведомить монтажника
+    await notifier.safe_send(
+        req["installer_id"],
+        f"✅ РП принял бланк размеров по счёту №{inv_num}.\n"
+        "Ожидайте форму поставщика для проверки.",
+    )
+    await refresh_recipient_keyboard(notifier, db, config, req["installer_id"])
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Получение подтверждено. Теперь заполните форму поставщика и отправьте монтажнику.\n"
+        "Используйте кнопку «📐 Размеры» → выберите заявку → «Отправить форму».",
+    )
+
+
+# --- Шаг 2: РП отправляет форму поставщика ---
+
+@router.callback_query(F.data.startswith("razmok_rp:send_form:"))
+async def rp_razmery_start_form(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """РП начинает отправку формы поставщика."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req = await db.get_razmery_request(req_id)
+    if not req:
+        await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        return
+
+    await state.update_data(rp_razmery_req_id=req_id, rp_razmery_attachments=[])
+    await state.set_state(RpRazmerySG.comment)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📐 <b>Форма поставщика</b>\n\n"
+        "Добавьте комментарий к форме\n"
+        "(или «-» для пропуска, «❌ Отмена» для отмены):",
+    )
+
+
+@router.message(RpRazmerySG.comment, F.text.casefold().in_({"❌ отмена", "отмена", "/cancel"}))
+@router.message(RpRazmerySG.attachments, F.text.casefold().in_({"❌ отмена", "отмена", "/cancel"}))
+async def rp_razmery_cancel(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(ManagerChatProxySG.menu)
+    await state.update_data(channel="montazh")
+    await message.answer(
+        "❌ Отменено.",
+        reply_markup=rp_montazh_submenu("⬅️ Назад"),
+    )
+
+
+@router.message(RpRazmerySG.comment)
+async def rp_razmery_form_comment(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    comment = None if text == "-" else text
+    await state.update_data(rp_razmery_comment=comment)
+    await state.set_state(RpRazmerySG.attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="📤 Отправить монтажнику", callback_data="razmok_rp:form_create")
+    b.button(text="⏭ Без вложений", callback_data="razmok_rp:form_create")
+    b.adjust(1)
+    await message.answer(
+        "Прикрепите форму поставщика (фото/документ).\n"
+        "Когда готовы — нажмите кнопку:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(RpRazmerySG.attachments)
+async def rp_razmery_form_attach(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    attachments = data.get("rp_razmery_attachments", [])
+    if message.document:
+        attachments.append({"file_type": "document", "file_id": message.document.file_id})
+    elif message.photo:
+        attachments.append({"file_type": "photo", "file_id": message.photo[-1].file_id})
+    else:
+        await message.answer("Прикрепите файл/фото или нажмите кнопку.")
+        return
+    await state.update_data(rp_razmery_attachments=attachments)
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+
+
+@router.callback_query(F.data == "razmok_rp:form_create")
+async def rp_razmery_form_send(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Финализация: отправить форму поставщика монтажнику."""
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+    data = await state.get_data()
+    req_id = data.get("rp_razmery_req_id")
+    comment = data.get("rp_razmery_comment")
+    attachments = data.get("rp_razmery_attachments", [])
+
+    from ..utils import to_iso, utcnow
+    now = to_iso(utcnow())
+
+    req = await db.get_razmery_request(req_id)
+    if not req:
+        await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+
+    await db.update_razmery_request(
+        req_id,
+        status="verification_sent",
+        rp_id=u.id,
+        rp_comment=comment,
+        rp_sent_at=now,
+        result=None,
+        result_comment=None,
+    )
+
+    inv = await db.get_invoice(req["invoice_id"])
+    inv_num = inv["invoice_number"] if inv else "?"
+    rp_label = await get_initiator_label(db, u.id)
+
+    # Уведомить монтажника
+    inst_b = InlineKeyboardBuilder()
+    inst_b.button(text="✅ Размеры ОК", callback_data=f"razmok_inst:ok:{req_id}")
+    inst_b.button(text="❌ Ошибка", callback_data=f"razmok_inst:error:{req_id}")
+    inst_b.adjust(2)
+
+    msg = (
+        f"📐 <b>Проверка размеров</b>\n"
+        f"👤 От: {rp_label}\n"
+        f"🧾 Счёт: №{inv_num}\n"
+    )
+    if comment:
+        msg += f"💬 {comment}\n"
+    msg += "\nПроверьте форму и подтвердите:"
+
+    await notifier.safe_send(
+        req["installer_id"], msg, reply_markup=inst_b.as_markup(),
+    )
+    for a in attachments:
+        await notifier.safe_send_media(req["installer_id"], a["file_type"], a["file_id"])
+    await refresh_recipient_keyboard(notifier, db, config, req["installer_id"])
+
+    # Вернуть РП в подменю montazh
+    await state.clear()
+    await state.set_state(ManagerChatProxySG.menu)
+    await state.update_data(channel="montazh")
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Форма поставщика отправлена монтажнику по счёту №{inv_num}.",
+        reply_markup=rp_montazh_submenu("⬅️ Назад"),
+    )
 
 
 # =====================================================================

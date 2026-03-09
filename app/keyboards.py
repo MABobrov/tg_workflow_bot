@@ -98,6 +98,7 @@ RP_BTN_TEAM = "👥 Команда"                        # legacy
 RP_SUBBTN_MGR_KV = "Менеджер КВ"                  # legacy
 RP_SUBBTN_MGR_KIA = "Менеджер КИА"                # legacy
 RP_SUBBTN_MONTAZH = "Монтаж"                      # legacy
+RP_MONTAZH_BTN_RAZMERY = "📐 Размеры"
 RP_BTN_URGENT = "🚨 Срочно ГД"                    # legacy
 RP_BTN_SEARCH_INVOICE = "🔍 Поиск счёта"          # legacy
 RP_BTN_SYNC = "🔄 Синхронизация данных"            # legacy
@@ -870,10 +871,10 @@ def rp_chat_gd_submenu(back_label: str = "⬅️ Назад") -> ReplyKeyboardMa
 
 
 def rp_montazh_submenu(back_label: str = "⬅️ Назад") -> ReplyKeyboardMarkup:
-    """Подменю «Монтажная гр.» для РП: Чат / В работу."""
+    """Подменю «Монтажная гр.» для РП: Чат / В работу / Размеры."""
     rows = [
         ["💬 Чат", "🔧 В работу"],
-        [back_label],
+        ["📐 Размеры", back_label],
     ]
     return _build_reply_rows(rows)
 
