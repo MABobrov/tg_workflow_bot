@@ -1038,11 +1038,11 @@ async def installer_work_view_card(
             text += f"📐 Площадь: {float(area):,.1f} м²\n"
         except (ValueError, TypeError):
             pass
-    # Расчётная стоимость монтажа
+    # Расчётная стоимость монтажа (монтажнику показываем −30%)
     est_install = inv.get("estimated_installation")
     if est_install:
         try:
-            text += f"🔧 Расч. стоимость монтажа: {float(est_install):,.0f}₽\n"
+            text += f"🔧 Расч. стоимость монтажа: {float(est_install) * 0.7:,.0f}₽\n"
         except (ValueError, TypeError):
             pass
     text += f"📅 Создан: {(inv.get('created_at') or '—')[:10]}\n"
