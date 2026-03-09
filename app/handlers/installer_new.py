@@ -713,16 +713,17 @@ async def installer_work_view_card(
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    try:
-        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
-    except (ValueError, TypeError):
-        amount_str = f"{inv.get('amount', 0)}₽"
-
     text = (
         f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
         f"📍 Адрес: {inv.get('object_address', '—')}\n"
-        f"💰 Сумма: {amount_str}\n"
     )
+    # Площадь (м²)
+    area = inv.get("area_m2")
+    if area:
+        try:
+            text += f"📐 Площадь: {float(area):,.1f} м²\n"
+        except (ValueError, TypeError):
+            pass
     # Расчётная стоимость монтажа
     est_install = inv.get("estimated_installation")
     if est_install:

@@ -612,10 +612,10 @@ async def gd_task_pick_invoice(cb: CallbackQuery, state: FSMContext, db: Databas
     val = (cb.data or "").split(":", 1)[1]
     linked = None if val == "skip" else int(val)
     await state.update_data(linked_invoice_id=linked)
-    await state.set_state(GdTaskCreateSG.description)
 
     data = await state.get_data()
     label = channel_label(data.get("task_channel", ""))
+    channel = data.get("task_channel", "")
 
     inv_label = ""
     if linked:
@@ -623,6 +623,17 @@ async def gd_task_pick_invoice(cb: CallbackQuery, state: FSMContext, db: Databas
         if inv:
             inv_label = f"\n📋 Счёт: №{inv.get('invoice_number', '?')}"
 
+    # Для montazh + выбран счёт → запросить площадь (м²)
+    if channel == "montazh" and linked:
+        await state.set_state(GdTaskCreateSG.area_m2)
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"📝 <b>Новая задача → {label}</b>{inv_label}\n\n"
+            "📐 Укажите площадь (м²):\n"
+            "(«❌ Отмена» — отменить, «-» — без площади)",
+        )
+        return
+
+    await state.set_state(GdTaskCreateSG.description)
     await cb.message.answer(  # type: ignore[union-attr]
         f"📝 <b>Новая задача → {label}</b>{inv_label}\n\n"
         "Шаг 1/4: опишите задачу\n"
@@ -675,12 +686,43 @@ async def gd_task_pick_installer(cb: CallbackQuery, state: FSMContext, db: Datab
     await _show_task_invoice_picker_or_desc(cb, state, db, label)
 
 
+@router.message(GdTaskCreateSG.area_m2)
+async def gd_task_area_m2(message: Message, state: FSMContext) -> None:
+    """Ввод площади м² для монтажной задачи."""
+    text = (message.text or "").strip()
+    if text == "-":
+        area = None
+    else:
+        text = text.replace(",", ".").replace("м2", "").replace("m2", "").strip()
+        try:
+            area = float(text)
+            if area <= 0:
+                raise ValueError
+        except (ValueError, TypeError):
+            await message.answer(
+                "Введите число (площадь в м²), например <b>45.5</b>\n"
+                "или «-» без площади, «❌ Отмена» для отмены:"
+            )
+            return
+    await state.update_data(task_area_m2=area)
+    await state.set_state(GdTaskCreateSG.description)
+
+    data = await state.get_data()
+    label = channel_label(data.get("task_channel", ""))
+    await message.answer(
+        f"📝 <b>Новая задача → {label}</b>\n\n"
+        "Шаг 1/4: опишите задачу\n"
+        "(«❌ Отмена» — отменить):",
+    )
+
+
 # --- Cancel task creation at any step ---
 _CANCEL_TEXTS = {"❌ отмена", "отмена", "cancel", "/cancel", "❌отмена"}
 
 
 @router.message(GdTaskCreateSG.pick_installer, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.invoice_pick, F.text.casefold().in_(_CANCEL_TEXTS))
+@router.message(GdTaskCreateSG.area_m2, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.description, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.deadline, F.text.casefold().in_(_CANCEL_TEXTS))
 @router.message(GdTaskCreateSG.deadline_time, F.text.casefold().in_(_CANCEL_TEXTS))
@@ -930,9 +972,16 @@ async def gd_task_create_finalize(
 
         await integrations.sync_task(task, project_code="")
 
-        # При назначении монтажника на счёт — привязать к счёту
+        # При назначении монтажника на счёт — привязать к счёту + сохранить площадь
         if channel == "montazh" and linked_inv_id:
             await db.assign_installer_to_invoice(int(linked_inv_id), target_id)
+            task_area = data.get("task_area_m2")
+            if task_area is not None:
+                await db.conn.execute(
+                    "UPDATE invoices SET area_m2 = ? WHERE id = ?",
+                    (task_area, int(linked_inv_id)),
+                )
+                await db.conn.commit()
 
     await state.clear()
 

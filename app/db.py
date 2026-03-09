@@ -385,6 +385,8 @@ class Database:
             ("invoices", "estimated_profile", "REAL"),   # ал. профиль (возвратный НДС)
             # --- ЭДО: привязка к счёту ---
             ("edo_requests", "invoice_id", "INTEGER"),
+            # --- Площадь (м²) для монтажника ---
+            ("invoices", "area_m2", "REAL"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")

@@ -172,6 +172,7 @@ class GdTaskCreateSG(StatesGroup):
     """Создание задачи от ГД из чат-прокси."""
     pick_installer = State()  # Выбор монтажника (для montazh)
     invoice_pick = State()    # Выбор счёта для привязки
+    area_m2 = State()         # Площадь м² (только для montazh)
     description = State()
     deadline = State()
     deadline_time = State()
