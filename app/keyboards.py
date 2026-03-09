@@ -672,7 +672,7 @@ def task_actions_kb(task: dict[str, Any]) -> InlineKeyboardMarkup:
         if status == TaskStatus.OPEN:
             # Первый шаг — подтвердить получение
             b = InlineKeyboardBuilder()
-            b.button(text="✅ Подтвердить получение", callback_data=TaskCb(task_id=tid, action="inv_received").pack())
+            b.button(text="✅ Подтвердить оплату", callback_data=TaskCb(task_id=tid, action="inv_received").pack())
             b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="inv_reject").pack())
         elif status == TaskStatus.IN_PROGRESS:
             # После подтверждения — действия по оплате
@@ -997,7 +997,7 @@ def invoices_work_list_kb(
 ) -> InlineKeyboardMarkup:
     """Inline-кнопки «Счета в Работе» с двойными индикаторами 💰/📄.
 
-    💰 = статус оплаты: ⏳ ожидает / 🔄 в работе / ✅ оплачен
+    💰 = статус оплаты: ⏳ ждёт подтверждения / 🔄 в работе / ✅ оплачен
     📄 = статус документов (ЭДО): ⏳ не подписано / ✅ подписано
     """
     b = InlineKeyboardBuilder()

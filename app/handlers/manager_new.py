@@ -675,7 +675,7 @@ async def invoice_start_send(
         src_label = "👤 Клиент менеджера (50/50)"
 
     msg_text = (
-        f"💼 <b>Новый счёт на оплату от {role_label}</b>\n"
+        f"💼 <b>Запрос подтверждения оплаты от {role_label}</b>\n"
         f"👤 От: {initiator}\n\n"
         f"📄 Счёт №: <code>{invoice_number}</code>\n"
         f"📍 Адрес: {inv_data.get('object_address', '-')}\n"
@@ -705,6 +705,20 @@ async def invoice_start_send(
         await notifier.safe_send_media(int(gd_id), a["file_type"], a["file_id"], caption=a.get("caption"))
     await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
+    # Уведомить РП: счёт взят в работу, ждёт подтверждения ГД
+    rp_id = await resolve_default_assignee(db, config, Role.RP)
+    if rp_id:
+        rp_text = (
+            f"📋 <b>Новый счёт в работе</b>\n"
+            f"👤 От: {initiator}\n\n"
+            f"📄 Счёт №: <code>{invoice_number}</code>\n"
+            f"📍 Адрес: {inv_data.get('object_address', '-')}\n"
+            f"💰 Сумма: {amount:,.0f}₽\n\n"
+            f"⏳ <b>Статус: ждёт подтверждения ГД</b>"
+        )
+        await notifier.safe_send(int(rp_id), rp_text)
+        await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
+
     # Дополнение 1: спрашиваем ГД — подписаны ли документы в ЭДО
     b_edo = InlineKeyboardBuilder()
     b_edo.button(text="✅ Да, подписаны в ЭДО", callback_data=f"invstart_edo:yes:{invoice_id}")
@@ -720,7 +734,7 @@ async def invoice_start_send(
     menu_role, isolated_role = await _current_menu(db, u.id)
     await state.clear()
     await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ Счёт №{invoice_number} отправлен ГД на оплату.",
+        f"✅ Счёт №{invoice_number} отправлен на подтверждение ГД.",
         reply_markup=private_only_reply_markup(
             cb.message,
             main_menu(
@@ -1552,7 +1566,7 @@ async def my_invoice_view(cb: CallbackQuery, db: Database) -> None:
 
     status_label = {
         "new": "🆕 Новый",
-        "pending": "⏳ Ожидает оплаты",
+        "pending": "⏳ Ждёт подтверждения ГД",
         "in_progress": "🔄 В работе",
         "paid": "✅ Оплачен",
         "on_hold": "⏸ Отложен",
@@ -1713,7 +1727,7 @@ async def search_invoice_view(cb: CallbackQuery, db: Database) -> None:
         return
 
     status_label = {
-        "new": "🆕 Новый", "pending": "⏳ Ожидает оплаты",
+        "new": "🆕 Новый", "pending": "⏳ Ждёт подтверждения ГД",
         "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
         "on_hold": "⏸ Отложен", "rejected": "❌ Отклонён",
         "closing": "📌 Закрытие", "ended": "🏁 Счет End",

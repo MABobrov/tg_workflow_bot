@@ -545,7 +545,7 @@ async def rp_montazh_work_view(cb: CallbackQuery, db: Database) -> None:
         return
 
     status_label = {
-        "pending": "⏳ Ожидает оплаты", "in_progress": "🔄 В работе",
+        "pending": "⏳ Ждёт подтверждения ГД", "in_progress": "🔄 В работе",
         "paid": "✅ Оплачен",
     }.get(inv["status"], inv["status"])
 
@@ -704,7 +704,7 @@ async def _show_invoices_work_dashboard(
 
     header_parts: list[str] = []
     if n_pending:
-        header_parts.append(f"⏳ Ожидают оплаты: {n_pending}")
+        header_parts.append(f"⏳ Ждёт подтверждения: {n_pending}")
     if n_progress:
         header_parts.append(f"🔄 В работе: {n_progress}")
     if n_paid:
@@ -767,7 +767,7 @@ async def rp_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
         return
 
     status_label = {
-        "new": "🆕 Новый", "pending": "⏳ Ожидает оплаты",
+        "new": "🆕 Новый", "pending": "⏳ Ждёт подтверждения ГД",
         "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
         "on_hold": "⏸ Отложен", "rejected": "❌ Отклонён",
         "closing": "📌 Закрытие", "ended": "🏁 Счет End",
@@ -2399,7 +2399,7 @@ async def kp_issued_view(cb: CallbackQuery, db: Database) -> None:
     payment_label = "🏦 Кред (кредит)" if is_credit else "💳 б/н (безналичный)"
 
     status_label = {
-        "new": "🆕 Новый", "pending": "⏳ Ожидает оплаты",
+        "new": "🆕 Новый", "pending": "⏳ Ждёт подтверждения ГД",
         "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
         "on_hold": "⏸ Отложен", "rejected": "❌ Отклонён",
         "closing": "📌 Закрытие", "ended": "🏁 Счет End",

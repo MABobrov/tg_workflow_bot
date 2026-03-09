@@ -14,6 +14,7 @@ from ..db import Database
 from ..enums import InvoiceStatus, ProjectStatus, Role, TaskStatus, TaskType
 from ..keyboards import main_menu, manager_project_actions_kb, task_actions_kb
 from ..services.integration_hub import IntegrationHub
+from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCompleteSG
@@ -375,6 +376,18 @@ async def task_actions(
                 f"🏢 Поставщик: {supplier or '—'}\n"
                 f"💰 Сумма: {amount or '—'}",
             )
+        # Уведомить РП: ГД подтвердил оплату, счёт в работе
+        rp_id = await resolve_default_assignee(db, config, Role.RP)
+        if rp_id:
+            rp_text = (
+                f"✅ <b>Оплата подтверждена ГД</b>\n\n"
+                f"🔢 № счёта: {invoice_number or '—'}\n"
+                f"🏢 Поставщик: {supplier or '—'}\n"
+                f"💰 Сумма: {amount or '—'}\n\n"
+                f"📊 Статус: <b>В работе</b>"
+            )
+            await notifier.safe_send(int(rp_id), rp_text)
+            await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await state.clear()
         # Показать обновлённую карточку с новыми кнопками (Оплатить/Отложить/Отклонить)
