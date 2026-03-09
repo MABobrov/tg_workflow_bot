@@ -1644,13 +1644,45 @@ async def my_invoice_view(cb: CallbackQuery, db: Database) -> None:
         "ended": "🏁 Счет End",
     }.get(inv["status"], inv["status"])
 
+    # --- Montazh stage ---
+    _mgr_stage_lbl = {
+        "in_work": "🔨 В работе", "razmery_ok": "📐 Размеры ОК",
+        "invoice_ok": "✅ Счёт ОК", "none": "⏳ Ожидает",
+    }
+    stage = inv.get("montazh_stage") or "none"
+
     text = (
         f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
         f"📍 Адрес: {inv.get('object_address', '-')}\n"
         f"💰 Сумма: {inv.get('amount', 0):,.0f}₽\n"
         f"📊 Статус: {status_label}\n"
-        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
+        f"🔧 Этап: {_mgr_stage_lbl.get(stage, stage)}\n"
     )
+
+    area = inv.get("area_m2")
+    if area:
+        try:
+            text += f"📐 Площадь: {float(area):,.1f} м²\n"
+        except (ValueError, TypeError):
+            pass
+
+    est_install = inv.get("estimated_installation")
+    if est_install:
+        try:
+            text += f"🔧 Расч. стоимость монтажа: {float(est_install):,.0f}₽\n"
+        except (ValueError, TypeError):
+            pass
+
+    # ZP
+    zp_mgr = inv.get("zp_manager_status") or "not_requested"
+    zp_inst = inv.get("zp_installer_status") or "not_requested"
+    _zp = lambda s: "✅" if s == "approved" else ("⏳" if s == "requested" else "—")
+    text += f"💸 ЗП менеджер: {_zp(zp_mgr)}  монтажник: {_zp(zp_inst)}\n"
+
+    text += f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
+
+    if inv.get("client_name"):
+        text += f"👤 Клиент: {inv['client_name']}\n"
     if inv.get("description"):
         text += f"💬 Комментарий: {inv['description']}\n"
 

@@ -793,6 +793,15 @@ async def razmery_result_send(
 # МОИ ОБЪЕКТЫ (list invoices)
 # =====================================================================
 
+_STAGE_LABEL = {
+    "in_work": "🔨 В работе",
+    "razmery_ok": "📐 Размеры ОК",
+    "invoice_ok": "✅ Счёт ОК",
+    "none": "⏳ Ожидает",
+}
+_STAGE_ORDER = {"in_work": 0, "razmery_ok": 1, "invoice_ok": 2}
+
+
 @router.message(F.text == INST_BTN_MY_OBJECTS)
 async def installer_my_objects(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
@@ -808,43 +817,90 @@ async def installer_my_objects(message: Message, db: Database) -> None:
         await answer_service(message, "📌 Нет объектов.", delay_seconds=60)
         return
 
-    in_work = [i for i in all_inv if i["status"] in (
-        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID, InvoiceStatus.CLOSING,
-    )]
-    ended = [i for i in all_inv if i["status"] == InvoiceStatus.ENDED]
+    # Сортировка: активные (по montazh_stage) → ended
+    all_inv.sort(key=lambda i: (
+        0 if i["status"] != InvoiceStatus.ENDED else 1,
+        _STAGE_ORDER.get(i.get("montazh_stage") or "none", 99),
+    ))
 
-    _STAGE_ORDER = {"in_work": 0, "razmery_ok": 1, "invoice_ok": 2}
-    _STAGE_LABEL = {
-        "in_work": "🔨 В работе",
-        "razmery_ok": "📐 Размеры ОК",
-        "invoice_ok": "✅ Счёт ОК",
-        "none": "⏳ Ожидает",
-    }
-
-    def _fmt_line(inv: dict) -> str:
-        zp = inv.get("zp_installer_status") or inv.get("zp_status", "not_requested")
-        zp_emoji = "✅" if zp == "approved" else ("⏳" if zp == "requested" else "—")
+    b = InlineKeyboardBuilder()
+    for inv in all_inv[:20]:
         stage = inv.get("montazh_stage") or "none"
-        stage_lbl = _STAGE_LABEL.get(stage, stage)
-        return (
-            f"• №{inv['invoice_number']} — "
-            f"{inv.get('object_address', '-')[:25]}\n"
-            f"  {stage_lbl} [ЗП: {zp_emoji}]"
-        )
+        stage_lbl = _STAGE_LABEL.get(stage, "")
+        status_emoji = "🏁" if inv["status"] == InvoiceStatus.ENDED else ""
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:20]
+        label = f"{status_emoji}{stage_lbl} №{num} — {addr}"
+        b.button(text=label[:60], callback_data=f"instobj:view:{inv['id']}")
+    b.adjust(1)
 
-    text = f"📌 <b>Мои объекты</b> ({len(all_inv)})\n\n"
+    await message.answer(
+        f"📌 <b>Мои объекты</b> ({len(all_inv)})\n\n"
+        "Нажмите на счёт для просмотра карточки:",
+        reply_markup=b.as_markup(),
+    )
 
-    if in_work:
-        # Сортировка по montazh_stage
-        in_work.sort(key=lambda i: _STAGE_ORDER.get(i.get("montazh_stage") or "none", 99))
-        text += f"<b>🔄 В работе ({len(in_work)}):</b>\n"
-        text += "\n".join(_fmt_line(i) for i in in_work[:15]) + "\n\n"
 
-    if ended:
-        text += f"<b>🏁 Счет End ({len(ended)}):</b>\n"
-        text += "\n".join(_fmt_line(i) for i in ended[:10]) + "\n"
+@router.callback_query(F.data.startswith("instobj:view:"))
+async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
+    """Карточка счёта для монтажника."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
 
-    await message.answer(text)
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    stage = inv.get("montazh_stage") or "none"
+    stage_lbl = _STAGE_LABEL.get(stage, stage)
+
+    status_label = {
+        "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
+        "closing": "📌 Закрытие", "ended": "🏁 Счет End",
+    }.get(inv["status"], inv["status"])
+
+    zp = inv.get("zp_installer_status") or "not_requested"
+    zp_lbl = "✅ Получена" if zp == "approved" else ("⏳ Запрошена" if zp == "requested" else "— Не запрошена")
+
+    text = (
+        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
+        f"📍 Адрес: {inv.get('object_address', '—')}\n"
+        f"📊 Статус: {status_label}\n"
+        f"🔧 Этап: {stage_lbl}\n"
+    )
+
+    area = inv.get("area_m2")
+    if area:
+        try:
+            text += f"📐 Площадь: {float(area):,.1f} м²\n"
+        except (ValueError, TypeError):
+            pass
+
+    est_install = inv.get("estimated_installation")
+    if est_install:
+        try:
+            text += f"💰 Расч. стоимость монтажа: {float(est_install) * 0.7:,.0f}₽\n"
+        except (ValueError, TypeError):
+            pass
+
+    text += f"💸 ЗП: {zp_lbl}\n"
+
+    zp_amount = inv.get("zp_installer_amount")
+    if zp_amount and zp in ("requested", "approved"):
+        try:
+            text += f"💵 Сумма ЗП: {float(zp_amount):,.0f}₽\n"
+        except (ValueError, TypeError):
+            pass
+
+    text += f"📅 Создан: {(inv.get('created_at') or '—')[:10]}\n"
+
+    if inv.get("description"):
+        text += f"💬 Комментарий: {inv['description']}\n"
+
+    await cb.message.answer(text)  # type: ignore[union-attr]
 
 
 # =====================================================================
