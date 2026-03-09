@@ -406,6 +406,20 @@ class Database:
             ("edo_requests", "invoice_id", "INTEGER"),
             # --- Площадь (м²) для монтажника ---
             ("invoices", "area_m2", "REAL"),
+            # --- Расширенные финансовые поля (из бланка) ---
+            ("invoices", "client_type", "INTEGER"),            # Свой=1 / Атмосфера=2
+            ("invoices", "deadline_end_date", "TEXT"),          # Дата окончания сроков
+            ("invoices", "nds_amount", "REAL"),                 # НДС
+            ("invoices", "profit_tax", "REAL"),                 # Налог на прибыль
+            ("invoices", "rentability_calc", "REAL"),           # Рентабельность расч. %
+            ("invoices", "surcharge_amount", "REAL"),           # Сумма доплаты
+            ("invoices", "surcharge_date", "TEXT"),             # Дата ПП по доплате
+            ("invoices", "final_surcharge_amount", "REAL"),     # Сумма окончательной доплаты
+            ("invoices", "final_surcharge_date", "TEXT"),       # Дата ПП окончательной доплаты
+            ("invoices", "contract_signed", "TEXT"),            # Подписан Договор: Эдо/Ориг/Нет
+            ("invoices", "agent_fee", "REAL"),                  # Агентское вознаграждение
+            ("invoices", "manager_zp_blank", "REAL"),           # Менеджер ЗП по бланку
+            ("invoices", "npn_amount", "REAL"),                 # НПН с 10% налог
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
