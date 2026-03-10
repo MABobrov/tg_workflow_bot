@@ -325,10 +325,15 @@ def run():
     conn.row_factory = sqlite3.Row
     now = datetime.utcnow().isoformat()
 
-    # ── 1. Update existing invoices ──
+    # ── 0. Drop legacy unique index on invoice_number ──
+    conn.execute("DROP INDEX IF EXISTS idx_invoices_number_unique")
+    conn.commit()
+    print("  Dropped unique index on invoice_number (if existed)")
+
+    # ── 1. Update existing invoices (idempotent) ──
     for inv in UPDATES:
-        inv_id = inv.pop("id")
-        fields = {k: v for k, v in inv.items() if v is not None}
+        inv_id = inv["id"]
+        fields = {k: v for k, v in inv.items() if k != "id" and v is not None}
         fields["updated_at"] = now
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [inv_id]
@@ -346,6 +351,15 @@ def run():
     kv_manager_id = row[0] if row else 0
 
     for inv in NEW_INVOICES:
+        # Skip if already inserted (check by client_name + amount)
+        cur = conn.execute(
+            "SELECT id FROM invoices WHERE client_name = ? AND amount = ?",
+            (inv["client_name"], inv["amount"]),
+        )
+        if cur.fetchone():
+            print(f"  Skipped (already exists): {inv['client_name']}, amount={inv['amount']}")
+            continue
+
         inv["created_by"] = kv_manager_id
         inv["creator_role"] = "manager_kv"
         inv["created_at"] = now
@@ -355,7 +369,7 @@ def run():
         col_names = ", ".join(cols)
         vals = [inv[c] for c in cols]
         conn.execute(f"INSERT INTO invoices ({col_names}) VALUES ({placeholders})", vals)
-        print(f"  Inserted invoice_number={inv['invoice_number']}, amount={inv.get('amount')}")
+        print(f"  Inserted invoice_number={inv['invoice_number']}, client={inv['client_name']}, amount={inv.get('amount')}")
 
     conn.commit()
 

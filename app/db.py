@@ -441,28 +441,12 @@ class Database:
         )
         await self.conn.commit()
 
-        cur = await self.conn.execute(
-            """
-            SELECT invoice_number
-            FROM invoices
-            WHERE invoice_number IS NOT NULL AND trim(invoice_number) != ''
-            GROUP BY invoice_number
-            HAVING COUNT(*) > 1
-            LIMIT 1
-            """
+        # Drop legacy unique index — invoice_number is NOT unique
+        # (e.g. multiple КВ invoices are valid).
+        await self.conn.execute(
+            "DROP INDEX IF EXISTS idx_invoices_number_unique"
         )
-        duplicate_invoice = await cur.fetchone()
-        if duplicate_invoice:
-            log.error(
-                "Duplicate invoice_number detected (%s); unique index was not created. "
-                "Clean duplicates to restore invoice uniqueness.",
-                duplicate_invoice["invoice_number"],
-            )
-        else:
-            await self.conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_number_unique ON invoices(invoice_number)"
-            )
-            await self.conn.commit()
+        await self.conn.commit()
 
         # --- Indexes for invoice hierarchy & chat-invoice linking ---
         await self.conn.execute(
@@ -2043,10 +2027,6 @@ class Database:
         invoice_number_normalized = (invoice_number or "").strip()
         if not invoice_number_normalized:
             raise ValueError("invoice_number is required")
-        existing = await self.get_invoice_by_number(invoice_number_normalized)
-        if existing:
-            raise ValueError(f"invoice_number '{invoice_number_normalized}' already exists")
-
         now = to_iso(utcnow())
         cur = await self.conn.execute(
             """
