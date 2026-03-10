@@ -359,7 +359,7 @@ async def acc_work_request_cancel(cb: CallbackQuery, state: FSMContext) -> None:
 async def acc_invoice_end(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.ACCOUNTING]):
         return
-    invoices = await db.list_invoices(status=InvoiceStatus.ENDED, limit=30)
+    invoices = await db.list_invoices(status=InvoiceStatus.ENDED, limit=30, exclude_no_digit=True)
     if not invoices:
         await answer_service(message, "🏁 Нет закрытых счетов.", delay_seconds=60)
         return

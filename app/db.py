@@ -2197,6 +2197,8 @@ class Database:
         status: str | None = None,
         marker: str | None = None,
         limit: int = 50,
+        *,
+        exclude_no_digit: bool = False,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -2212,6 +2214,8 @@ class Database:
         if marker is not None:
             clauses.append("invoice_number LIKE ?")
             params.append(f"%{marker}%")
+        if exclude_no_digit:
+            clauses.append("invoice_number GLOB '*[0-9]*'")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(limit)
         cur = await self.conn.execute(
