@@ -1066,12 +1066,15 @@ class Database:
     async def list_invoices_in_work(self, limit: int = 50) -> list[dict[str, Any]]:
         """List invoices 'in work' (pending/in_progress/paid, excluding credit).
 
+        Excludes: is_credit=1 AND invoices whose number contains no digits
+        (letter-only numbers like manager marks are treated as credit).
         Used for RP «Счета в Работе» dashboard.
         """
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid') "
             "AND (is_credit = 0 OR is_credit IS NULL) "
+            "AND invoice_number GLOB '*[0-9]*' "
             "ORDER BY updated_at DESC LIMIT ?",
             (limit,),
         )
@@ -1083,7 +1086,8 @@ class Database:
         cur = await self.conn.execute(
             "SELECT COUNT(*) FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid') "
-            "AND (is_credit = 0 OR is_credit IS NULL)"
+            "AND (is_credit = 0 OR is_credit IS NULL) "
+            "AND invoice_number GLOB '*[0-9]*'"
         )
         row = await cur.fetchone()
         return row[0] if row else 0
@@ -1093,11 +1097,15 @@ class Database:
     # ------------------------------------------------------------------
 
     async def list_invoices_for_selection(self, limit: int = 30) -> list[dict[str, Any]]:
-        """Счета «в работе» + «Счёт End» для inline-пикера (NOT credit)."""
+        """Счета «в работе» + «Счёт End» для inline-пикера (NOT credit).
+
+        Excludes letter-only invoice numbers (treated as credit).
+        """
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid', 'ended') "
             "AND (is_credit = 0 OR is_credit IS NULL) "
+            "AND invoice_number GLOB '*[0-9]*' "
             "ORDER BY updated_at DESC LIMIT ?",
             (limit,),
         )

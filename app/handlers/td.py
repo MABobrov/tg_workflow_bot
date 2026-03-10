@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -8,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from ..callbacks import ProjectCb
+from ..callbacks import ProjectCb, TaskCb
 from ..config import Config
 from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
@@ -127,7 +128,11 @@ async def gd_lead_stats_handler(cb: CallbackQuery, db: Database) -> None:
 
 @router.message(F.text.startswith(GD_BTN_SUPPLIER_PAY))
 async def gd_supplier_pay_dashboard(message: Message, state: FSMContext, db: Database) -> None:
-    """Dashboard: incoming ZP requests (priority) + outgoing supplier payment."""
+    """Dashboard: incoming ZP requests (priority) + outgoing supplier payment.
+
+    When ZP requests exist → show only ZP buttons (roles already specify invoices).
+    When NO ZP requests → show full invoices-in-work list with payment marks.
+    """
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
     await state.clear()
@@ -139,7 +144,10 @@ async def gd_supplier_pay_dashboard(message: Message, state: FSMContext, db: Dat
     total_zp = len(zp_installer) + len(zp_zamery) + len(zp_manager)
 
     lines = ["💸 <b>Оплата поставщику</b>\n"]
+    b = InlineKeyboardBuilder()
+
     if total_zp:
+        # --- ZP mode: show ZP requests directly (no full list) ---
         lines.append(f"📋 <b>Входящие ЗП: {total_zp}</b>")
         if zp_installer:
             lines.append(f"  🔧 Монтажник: {len(zp_installer)}")
@@ -147,29 +155,75 @@ async def gd_supplier_pay_dashboard(message: Message, state: FSMContext, db: Dat
             lines.append(f"  📐 Замерщик: {len(zp_zamery)}")
         if zp_manager:
             lines.append(f"  💼 Отд.Продаж: {len(zp_manager)}")
-    else:
-        lines.append("✅ Нет входящих запросов ЗП")
 
-    b = InlineKeyboardBuilder()
-    # Priority: installer → zamery → manager
-    for inv in zp_installer:
-        amt = inv.get("zp_installer_amount") or 0
-        b.button(
-            text=f"🔧 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
-            callback_data=f"gdzp_inst:view:{inv['id']}",
+        # Priority: installer → zamery → manager
+        for inv in zp_installer:
+            amt = inv.get("zp_installer_amount") or 0
+            b.button(
+                text=f"🔧 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
+                callback_data=f"gdzp_inst:view:{inv['id']}",
+            )
+        for inv in zp_zamery:
+            amt = inv.get("zp_zamery_total") or 0
+            b.button(
+                text=f"📐 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
+                callback_data=f"gdzp_zam:view:{inv['id']}",
+            )
+        for inv in zp_manager:
+            amt = inv.get("zp_manager_amount") or 0
+            b.button(
+                text=f"💼 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
+                callback_data=f"gdzp_mgr:view:{inv['id']}",
+            )
+    else:
+        # --- No ZP: show full invoices-in-work list ---
+        invoices = await db.list_invoices_in_work(limit=50)
+
+        user_id = message.from_user.id  # type: ignore[union-attr]
+        invoice_tasks = await db.list_tasks_for_user(
+            assigned_to=user_id,
+            statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
+            type_filter=TaskType.INVOICE_PAYMENT,
+            limit=100,
         )
-    for inv in zp_zamery:
-        amt = inv.get("zp_zamery_total") or 0
-        b.button(
-            text=f"📐 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
-            callback_data=f"gdzp_zam:view:{inv['id']}",
-        )
-    for inv in zp_manager:
-        amt = inv.get("zp_manager_amount") or 0
-        b.button(
-            text=f"💼 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
-            callback_data=f"gdzp_mgr:view:{inv['id']}",
-        )
+        inv_task_map: dict[int, dict] = {}
+        for t in invoice_tasks:
+            try:
+                payload = json.loads(t.get("payload_json") or "{}") if t.get("payload_json") else {}
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            linked_inv = payload.get("invoice_id") or payload.get("parent_invoice_id")
+            if linked_inv:
+                try:
+                    inv_task_map[int(linked_inv)] = t
+                except (ValueError, TypeError):
+                    pass
+
+        n_payment = len(inv_task_map)
+        if n_payment:
+            lines.append(f"💰 Запросы на оплату: {n_payment}")
+        if not n_payment:
+            lines.append("✅ Нет входящих запросов")
+
+        for inv in invoices[:20]:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = (inv.get("object_address") or "")[:25]
+            task = inv_task_map.get(inv["id"])
+            if task:
+                label = f"💰 №{num}"
+                if addr:
+                    label += f" — {addr}"
+                b.button(text=label[:60], callback_data=TaskCb(task_id=int(task["id"]), action="open").pack())
+            else:
+                status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
+                label = f"{status_icon} №{num}"
+                if addr:
+                    label += f" — {addr}"
+                b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
+
+        if invoices:
+            lines.append(f"\nВсего счетов: {len(invoices)}")
+
     b.button(text="💸 Новая оплата поставщику", callback_data="supplier_pay_start")
     b.adjust(1)
 

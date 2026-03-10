@@ -19,6 +19,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from ..callbacks import TaskCb
 from ..config import Config
 from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
@@ -182,35 +183,124 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
 
 @router.message(F.text.startswith(GD_BTN_INVOICES))
 async def gd_invoices(message: Message, db: Database, config: Config) -> None:
-    """Show list of open invoice payment tasks."""
+    """Show full list of invoices in work with payment-request marks."""
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
 
     user_id = message.from_user.id  # type: ignore[union-attr]
 
+    invoices = await db.list_invoices_in_work(limit=50)
+
+    # Pending INVOICE_PAYMENT tasks — to mark invoices
     invoice_tasks = await db.list_tasks_for_user(
         assigned_to=user_id,
         statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
         type_filter=TaskType.INVOICE_PAYMENT,
-        limit=50,
+        limit=100,
     )
+
+    # Map: invoice_id → task (via payload)
+    inv_task_map: dict[int, dict] = {}
+    for t in invoice_tasks:
+        payload = try_json_loads(t.get("payload_json") or "{}")
+        linked_inv = payload.get("invoice_id") or payload.get("parent_invoice_id")
+        if linked_inv:
+            try:
+                inv_task_map[int(linked_inv)] = t
+            except (ValueError, TypeError):
+                pass
 
     is_admin = user_id in (config.admin_ids or set())
 
-    if not invoice_tasks:
+    if not invoices and not invoice_tasks:
         await answer_service(
             message,
-            "✅ Нет открытых счетов на оплату.",
+            "✅ Нет счетов в работе.",
             delay_seconds=60,
             reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id), gd_invoice_unread=await db.count_gd_invoice_tasks(user_id), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(user_id), gd_supplier_pay_unread=await db.count_gd_supplier_pay_tasks(user_id))),
         )
         return
 
-    await message.answer(
-        f"<b>Счета на Оплату</b> ({len(invoice_tasks)}):\n\n"
-        "Выберите счёт для просмотра:",
-        reply_markup=tasks_kb(invoice_tasks),
+    n_tasks = len(inv_task_map)
+    b = InlineKeyboardBuilder()
+    for inv in invoices[:20]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:25]
+        task = inv_task_map.get(inv["id"])
+        if task:
+            label = f"💰 №{num}"
+            if addr:
+                label += f" — {addr}"
+            b.button(text=label[:60], callback_data=TaskCb(task_id=int(task["id"]), action="open").pack())
+        else:
+            status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
+            label = f"{status_icon} №{num}"
+            if addr:
+                label += f" — {addr}"
+            b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
+    b.button(text="🔄 Обновить", callback_data="gd_inv:refresh")
+    b.adjust(1)
+
+    header = f"<b>Счета на Оплату</b> ({len(invoices)})"
+    if n_tasks:
+        header += f"\n💰 Запросы на оплату: {n_tasks}"
+    header += "\n\nНажмите на счёт для просмотра:"
+
+    await message.answer(header, reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data == "gd_inv:refresh")
+async def gd_invoices_refresh(cb: CallbackQuery, db: Database) -> None:
+    """Refresh the 'Счета на Оплату' dashboard (inline)."""
+    if not await require_role_message(cb, db, roles=[Role.GD]):
+        return
+    await cb.answer("🔄 Обновлено")
+
+    user_id = cb.from_user.id  # type: ignore[union-attr]
+    invoices = await db.list_invoices_in_work(limit=50)
+
+    invoice_tasks = await db.list_tasks_for_user(
+        assigned_to=user_id,
+        statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
+        type_filter=TaskType.INVOICE_PAYMENT,
+        limit=100,
     )
+    inv_task_map: dict[int, dict] = {}
+    for t in invoice_tasks:
+        payload = try_json_loads(t.get("payload_json") or "{}")
+        linked_inv = payload.get("invoice_id") or payload.get("parent_invoice_id")
+        if linked_inv:
+            try:
+                inv_task_map[int(linked_inv)] = t
+            except (ValueError, TypeError):
+                pass
+
+    n_tasks = len(inv_task_map)
+    b = InlineKeyboardBuilder()
+    for inv in invoices[:20]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:25]
+        task = inv_task_map.get(inv["id"])
+        if task:
+            label = f"💰 №{num}"
+            if addr:
+                label += f" — {addr}"
+            b.button(text=label[:60], callback_data=TaskCb(task_id=int(task["id"]), action="open").pack())
+        else:
+            status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
+            label = f"{status_icon} №{num}"
+            if addr:
+                label += f" — {addr}"
+            b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
+    b.button(text="🔄 Обновить", callback_data="gd_inv:refresh")
+    b.adjust(1)
+
+    header = f"<b>Счета на Оплату</b> ({len(invoices)})"
+    if n_tasks:
+        header += f"\n💰 Запросы на оплату: {n_tasks}"
+    header += "\n\nНажмите на счёт для просмотра:"
+
+    await cb.message.answer(header, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------
