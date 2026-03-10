@@ -61,7 +61,7 @@ from ..utils import (
     task_type_label,
     try_json_loads,
 )
-from .auth import require_role_message
+from .auth import require_role_callback, require_role_message
 from .chat_proxy import enter_chat_menu
 
 log = logging.getLogger(__name__)
@@ -252,7 +252,7 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
 @router.callback_query(F.data == "gd_inv:refresh")
 async def gd_invoices_refresh(cb: CallbackQuery, db: Database) -> None:
     """Refresh the 'Счета на Оплату' dashboard (inline)."""
-    if not await require_role_message(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
         return
     await cb.answer("🔄 Обновлено")
 
@@ -360,7 +360,7 @@ async def gd_invoices_work(message: Message, db: Database) -> None:
 @router.callback_query(F.data == "gd_work:refresh")
 async def gd_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
     """Refresh the invoices-in-work dashboard for GD."""
-    if not await require_role_message(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
         return
     await cb.answer("🔄 Обновлено")
 
@@ -410,7 +410,7 @@ async def gd_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data.regexp(r"^gd_work:view:\d+$"))
 async def gd_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
     """Invoice card from GD work dashboard — full cost card."""
-    if not await require_role_message(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
         return
     await cb.answer()
 
@@ -498,8 +498,10 @@ SEARCH_CRITERIA_LABELS = {
 
 
 @router.callback_query(F.data.startswith("inv_search:"))
-async def gd_search_pick_criteria(cb: CallbackQuery, state: FSMContext) -> None:
+async def gd_search_pick_criteria(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """User picked a search criterion."""
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
+        return
     await cb.answer()
     criteria = cb.data.split(":", 1)[1]  # type: ignore[union-attr]
     await state.update_data(search_criteria=criteria)
@@ -682,6 +684,8 @@ async def _show_sales_invoice_picker_or_write(
 @router.callback_query(F.data.startswith(f"{_SALES_INV_PREFIX}:"))
 async def gd_write_pick_invoice(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """GD выбрал счёт (или 'Без привязки') перед написанием сообщения."""
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
+        return
     await cb.answer()
     val = (cb.data or "").split(":", 1)[1]
     linked = None if val == "skip" else int(val)
@@ -1059,6 +1063,8 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
 @router.callback_query(F.data.regexp(r"^inv_stats:\d+$"))
 async def gd_invoice_stats(cb: CallbackQuery, db: Database) -> None:
     """Полная карточка себестоимости по родительскому счёту."""
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
+        return
     await cb.answer()
     parent_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
     inv = await db.get_invoice(parent_id)
@@ -1083,6 +1089,8 @@ async def gd_invoice_stats(cb: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data.regexp(r"^inv_planfact:\d+$"))
 async def gd_invoice_plan_fact(cb: CallbackQuery, db: Database) -> None:
     """Карточка План/Факт для ГД."""
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
+        return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
     inv = await db.get_invoice(invoice_id)
@@ -1102,6 +1110,8 @@ async def gd_invoice_plan_fact(cb: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data.regexp(r"^inv_msgs:\d+$"))
 async def gd_invoice_messages(cb: CallbackQuery, db: Database) -> None:
     """Все сообщения из всех каналов, привязанные к конкретному счёту."""
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
+        return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
     inv = await db.get_invoice(invoice_id)
