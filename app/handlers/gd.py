@@ -30,6 +30,7 @@ from ..keyboards import (
     GD_BTN_ACCOUNTING,
     GD_BTN_CHAT_RP,
     GD_BTN_INVOICES,
+    GD_BTN_INVOICES_WORK,
     GD_BTN_KIA_CRED,
     GD_BTN_NPN_CRED,
     GD_BTN_KV_CRED,
@@ -210,6 +211,164 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
         "Выберите счёт для просмотра:",
         reply_markup=tasks_kb(invoice_tasks),
     )
+
+
+# ---------------------------------------------------------------------------
+# "📊 Счета в работе" — full invoice list for GD (same as RP dashboard)
+# ---------------------------------------------------------------------------
+
+@router.message(F.text.startswith(GD_BTN_INVOICES_WORK))
+async def gd_invoices_work(message: Message, db: Database) -> None:
+    """Show full list of invoices in work (same view as RP)."""
+    if not await require_role_message(message, db, roles=[Role.GD]):
+        return
+
+    invoices = await db.list_invoices_in_work(limit=50)
+
+    if not invoices:
+        await answer_service(message, "✅ Нет счетов в работе.", delay_seconds=60)
+        return
+
+    n_pending = sum(1 for inv in invoices if inv.get("status") == "pending")
+    n_progress = sum(1 for inv in invoices if inv.get("status") == "in_progress")
+    n_paid = sum(1 for inv in invoices if inv.get("status") == "paid")
+
+    header_parts: list[str] = []
+    if n_pending:
+        header_parts.append(f"⏳ Ждёт: {n_pending}")
+    if n_progress:
+        header_parts.append(f"🔄 В работе: {n_progress}")
+    if n_paid:
+        header_parts.append(f"✅ Оплачены: {n_paid}")
+
+    b = InlineKeyboardBuilder()
+    for inv in invoices[:20]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:25]
+        status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
+        try:
+            amt = f"{float(inv.get('amount', 0)):,.0f}₽"
+        except (ValueError, TypeError):
+            amt = ""
+        label = f"{status_icon} №{num}"
+        if addr:
+            label += f" — {addr}"
+        if amt:
+            label += f" ({amt})"
+        b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
+    b.button(text="🔄 Обновить", callback_data="gd_work:refresh")
+    b.adjust(1)
+
+    text = (
+        f"📊 <b>Счета в работе</b> ({len(invoices)})\n"
+        f"{' | '.join(header_parts)}\n\n"
+        "Нажмите на счёт для просмотра:"
+    )
+    await message.answer(text, reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data == "gd_work:refresh")
+async def gd_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
+    """Refresh the invoices-in-work dashboard for GD."""
+    if not await require_role_message(cb, db, roles=[Role.GD]):
+        return
+    await cb.answer("🔄 Обновлено")
+
+    invoices = await db.list_invoices_in_work(limit=50)
+    if not invoices:
+        await cb.message.answer("✅ Нет счетов в работе.")  # type: ignore[union-attr]
+        return
+
+    n_pending = sum(1 for inv in invoices if inv.get("status") == "pending")
+    n_progress = sum(1 for inv in invoices if inv.get("status") == "in_progress")
+    n_paid = sum(1 for inv in invoices if inv.get("status") == "paid")
+
+    header_parts: list[str] = []
+    if n_pending:
+        header_parts.append(f"⏳ Ждёт: {n_pending}")
+    if n_progress:
+        header_parts.append(f"🔄 В работе: {n_progress}")
+    if n_paid:
+        header_parts.append(f"✅ Оплачены: {n_paid}")
+
+    b = InlineKeyboardBuilder()
+    for inv in invoices[:20]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:25]
+        status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
+        try:
+            amt = f"{float(inv.get('amount', 0)):,.0f}₽"
+        except (ValueError, TypeError):
+            amt = ""
+        label = f"{status_icon} №{num}"
+        if addr:
+            label += f" — {addr}"
+        if amt:
+            label += f" ({amt})"
+        b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
+    b.button(text="🔄 Обновить", callback_data="gd_work:refresh")
+    b.adjust(1)
+
+    text = (
+        f"📊 <b>Счета в работе</b> ({len(invoices)})\n"
+        f"{' | '.join(header_parts)}\n\n"
+        "Нажмите на счёт для просмотра:"
+    )
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.regexp(r"^gd_work:view:\d+$"))
+async def gd_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
+    """Invoice card from GD work dashboard — full cost card."""
+    if not await require_role_message(cb, db, roles=[Role.GD]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    status_label = {
+        "new": "🆕 Новый", "pending": "⏳ Ждёт подтверждения",
+        "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
+        "on_hold": "⏸ Отложен", "rejected": "❌ Отклонён",
+        "closing": "📌 Закрытие", "ended": "🏁 Счет End",
+        "credit": "🏦 Кредит",
+    }.get(inv["status"], inv["status"])
+
+    try:
+        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+    except (ValueError, TypeError):
+        amount_str = f"{inv.get('amount', 0)}₽"
+
+    creator_label = "—"
+    if inv.get("created_by"):
+        creator_label = await get_initiator_label(db, int(inv["created_by"]))
+
+    text = (
+        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
+        f"📍 Адрес: {inv.get('object_address', '-')}\n"
+        f"💰 Сумма: {amount_str}\n"
+        f"📊 Статус: {status_label}\n"
+        f"👤 Создал: {creator_label}\n"
+        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
+    )
+
+    # Full cost card
+    from ..utils import format_cost_card
+    cost = await db.get_full_invoice_cost_card(invoice_id)
+    if cost and cost.get("total_cost", 0) > 0:
+        text += format_cost_card(inv, cost)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="📊 Себестоимость", callback_data=f"inv_stats:{invoice_id}")
+    b.button(text="💬 Сообщения", callback_data=f"inv_msgs:{invoice_id}")
+    b.button(text="⬅️ Назад к списку", callback_data="gd_work:refresh")
+    b.adjust(2, 1)
+
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------

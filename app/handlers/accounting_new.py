@@ -24,13 +24,14 @@ from ..db import Database
 from ..enums import InvoiceStatus, Role, TaskStatus
 from ..keyboards import (
     ACC_BTN_INVOICE_END,
+    ACC_BTN_INVOICES_WORK,
     invoice_list_kb,
     main_menu,
 )
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import EdoResponseSG
+from ..states import AccRequestToManagerSG, EdoResponseSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup
 from .auth import require_role_callback, require_role_message
 
@@ -53,6 +54,301 @@ async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
 # =====================================================================
 # ВХОДЯЩИЕ ЗАДАЧИ — обработчик перенесён в common.py (универсальный)
 # =====================================================================
+
+
+# =====================================================================
+# СЧЕТА В РАБОТЕ (list in-work invoices, excluding credit)
+# =====================================================================
+
+@router.message(F.text == ACC_BTN_INVOICES_WORK)
+async def acc_invoices_work(message: Message, state: FSMContext, db: Database) -> None:
+    """Список счетов в работе (без кредитных) с возможностью отправить запрос менеджеру."""
+    if not await require_role_message(message, db, roles=[Role.ACCOUNTING]):
+        return
+    await state.clear()
+    await _show_acc_invoices_work(message, db)
+
+
+async def _show_acc_invoices_work(
+    target: Message | CallbackQuery,
+    db: Database,
+) -> None:
+    """Общий хелпер: показать список счетов в работе для бухгалтерии."""
+    invoices = await db.list_invoices_in_work(limit=50)
+
+    if not invoices:
+        msg = target.message if isinstance(target, CallbackQuery) else target
+        await msg.answer("✅ Нет счетов в работе.")  # type: ignore[union-attr]
+        return
+
+    b = InlineKeyboardBuilder()
+    for inv in invoices[:20]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:25]
+        status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
+        try:
+            amt = f"{float(inv.get('amount', 0)):,.0f}₽"
+        except (ValueError, TypeError):
+            amt = ""
+        label = f"{status_icon} №{num}"
+        if addr:
+            label += f" — {addr}"
+        if amt:
+            label += f" ({amt})"
+        b.button(text=label[:60], callback_data=f"acc_work:view:{inv['id']}")
+    b.button(text="🔄 Обновить", callback_data="acc_work:refresh")
+    b.adjust(1)
+
+    n_total = len(invoices)
+    msg = target.message if isinstance(target, CallbackQuery) else target
+    await msg.answer(  # type: ignore[union-attr]
+        f"📊 <b>Счета в работе</b> ({n_total})\n\n"
+        "Нажмите на счёт для просмотра / отправки запроса менеджеру:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "acc_work:refresh")
+async def acc_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer("🔄 Обновлено")
+    await _show_acc_invoices_work(cb, db)
+
+
+@router.callback_query(F.data.regexp(r"^acc_work:view:\d+$"))
+async def acc_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
+    """Карточка счёта в работе — бухгалтерия."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    status_label = {
+        "new": "🆕 Новый", "pending": "⏳ Ждёт подтверждения",
+        "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
+        "on_hold": "⏸ Отложен", "closing": "📌 Закрытие",
+        "ended": "🏁 Счет End",
+    }.get(inv["status"], inv["status"])
+
+    try:
+        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+    except (ValueError, TypeError):
+        amount_str = f"{inv.get('amount', 0)}₽"
+
+    creator_label = "—"
+    if inv.get("created_by"):
+        creator_label = await get_initiator_label(db, int(inv["created_by"]))
+    creator_role_label = {
+        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+    }.get(inv.get("creator_role", ""), inv.get("creator_role", ""))
+
+    text = (
+        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
+        f"📍 Адрес: {inv.get('object_address', '-')}\n"
+        f"💰 Сумма: {amount_str}\n"
+        f"📊 Статус: {status_label}\n"
+        f"👤 Менеджер: {creator_label} ({creator_role_label})\n"
+        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
+    )
+
+    b = InlineKeyboardBuilder()
+    b.button(text="📨 Запрос менеджеру", callback_data=f"acc_work:req:{invoice_id}")
+    b.button(text="📊 Себестоимость", callback_data=f"acc_cost:{invoice_id}")
+    b.button(text="⬅️ Назад к списку", callback_data="acc_work:refresh")
+    b.adjust(1)
+
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.regexp(r"^acc_work:req:\d+$"))
+async def acc_work_request_start(
+    cb: CallbackQuery, state: FSMContext, db: Database,
+) -> None:
+    """Начать отправку запроса менеджеру счёта."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    manager_id = inv.get("created_by")
+    if not manager_id:
+        await cb.message.answer("⚠️ У счёта нет привязанного менеджера.")  # type: ignore[union-attr]
+        return
+
+    await state.clear()
+    await state.set_state(AccRequestToManagerSG.text)
+    await state.update_data(
+        invoice_id=invoice_id,
+        manager_id=int(manager_id),
+        attachments=[],
+    )
+
+    num = inv.get("invoice_number") or f"#{invoice_id}"
+    mgr_label = await get_initiator_label(db, int(manager_id))
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📨 <b>Запрос менеджеру</b>\n"
+        f"Счёт: №{num}\n"
+        f"Менеджер: {mgr_label}\n\n"
+        "Введите текст запроса:"
+    )
+
+
+@router.message(AccRequestToManagerSG.text)
+async def acc_work_request_text(message: Message, state: FSMContext) -> None:
+    """Получить текст запроса."""
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Введите текст запроса:")
+        return
+    await state.update_data(request_text=text)
+    await state.set_state(AccRequestToManagerSG.attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Отправить запрос", callback_data="acc_req:send")
+    b.button(text="❌ Отмена", callback_data="acc_req:cancel")
+    b.adjust(1)
+    await message.answer(
+        "Прикрепите файлы (необязательно) или нажмите «Отправить»:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(AccRequestToManagerSG.attachments)
+async def acc_work_request_attach(message: Message, state: FSMContext) -> None:
+    """Получить вложения."""
+    data = await state.get_data()
+    attachments: list[dict[str, Any]] = data.get("attachments", [])
+
+    if message.document:
+        attachments.append({
+            "file_type": "document",
+            "file_id": message.document.file_id,
+            "file_unique_id": message.document.file_unique_id,
+            "caption": message.caption,
+        })
+    elif message.photo:
+        ph = message.photo[-1]
+        attachments.append({
+            "file_type": "photo",
+            "file_id": ph.file_id,
+            "file_unique_id": ph.file_unique_id,
+            "caption": message.caption,
+        })
+    else:
+        await message.answer("📎 Прикрепите файл/фото или нажмите кнопку отправки.")
+        return
+
+    await state.update_data(attachments=attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text=f"✅ Отправить ({len(attachments)} файл.)", callback_data="acc_req:send")
+    b.button(text="❌ Отмена", callback_data="acc_req:cancel")
+    b.adjust(1)
+    await message.answer(
+        f"📎 Файлов: <b>{len(attachments)}</b>. Ещё файлы или нажмите «Отправить»:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "acc_req:send")
+async def acc_work_request_send(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+) -> None:
+    """Отправить запрос менеджеру."""
+    await cb.answer()
+    data = await state.get_data()
+    await state.clear()
+
+    invoice_id = data.get("invoice_id")
+    manager_id = data.get("manager_id")
+    request_text = data.get("request_text", "")
+    attachments: list[dict[str, Any]] = data.get("attachments", [])
+
+    if not manager_id:
+        await cb.message.answer("⚠️ Менеджер не найден.")  # type: ignore[union-attr]
+        return
+
+    inv = await db.get_invoice(invoice_id) if invoice_id else None
+    num = (inv.get("invoice_number") if inv else None) or f"#{invoice_id}"
+
+    from ..enums import TaskType
+    from ..utils import utcnow, to_iso
+    from datetime import timedelta
+
+    sender_id = cb.from_user.id if cb.from_user else 0
+    task = await db.create_task(
+        project_id=inv.get("project_id") if inv else None,
+        type_=TaskType.EDO_REQUEST,
+        status=TaskStatus.OPEN,
+        created_by=sender_id,
+        assigned_to=int(manager_id),
+        due_at_iso=to_iso(utcnow() + timedelta(hours=24)),
+        payload={
+            "invoice_id": invoice_id,
+            "invoice_number": num,
+            "request_text": request_text,
+            "sender_id": sender_id,
+            "source": "accounting_request",
+        },
+    )
+
+    for a in attachments:
+        await db.add_attachment(
+            task_id=int(task["id"]),
+            file_id=a["file_id"],
+            file_unique_id=a.get("file_unique_id"),
+            file_type=a["file_type"],
+            caption=a.get("caption"),
+        )
+
+    initiator = await get_initiator_label(db, sender_id)
+    mgr_text = (
+        f"📨 <b>Запрос от бухгалтерии</b>\n"
+        f"👤 От: {initiator}\n"
+        f"📄 Счёт: №{num}\n"
+    )
+    if inv and inv.get("object_address"):
+        mgr_text += f"📍 {inv['object_address'][:50]}\n"
+    mgr_text += f"\n💬 {request_text}\n"
+    if attachments:
+        mgr_text += f"\n📎 Вложений: {len(attachments)}"
+
+    from ..keyboards import task_actions_kb
+    await notifier.safe_send(int(manager_id), mgr_text, reply_markup=task_actions_kb(task))
+    for a in attachments:
+        try:
+            if a["file_type"] == "document":
+                await notifier.bot.send_document(int(manager_id), a["file_id"])
+            elif a["file_type"] == "photo":
+                await notifier.bot.send_photo(int(manager_id), a["file_id"])
+        except Exception:
+            pass
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Запрос отправлен менеджеру (счёт №{num})."
+    )
+
+
+@router.callback_query(F.data == "acc_req:cancel")
+async def acc_work_request_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer("❌ Отменено")
+    await state.clear()
+    await cb.message.answer("❌ Запрос отменён.")  # type: ignore[union-attr]
 
 
 # =====================================================================

@@ -42,6 +42,7 @@ GD_BTN_NPN_CRED = "НПН Кред"
 GD_SUBBTN_KV_CRED = "Менеджер КВ (кредит)"
 GD_SUBBTN_KIA_CRED = "Менеджер КИА (кредит)"
 GD_SUBBTN_NPN_CRED = "Менеджер НПН (кредит)"
+GD_BTN_INVOICES_WORK = "📊 Счета в работе"
 GD_BTN_INVOICE_END_GD = "🏁 Счёт END"
 GD_BTN_SUPPLIER_PAY = "💸 Оплата поставщику"
 GD_BTN_BACK_HOME = BACK_TO_HOME
@@ -106,7 +107,7 @@ RP_BTN_HELP = "📚 Справка"                        # legacy
 
 # --- Accounting buttons ---
 ACC_BTN_INBOX = "📥 Входящие задачи"
-ACC_BTN_NOT_URGENT = "📩 Не срочно ГД"
+ACC_BTN_INVOICES_WORK = "📊 Счета в работе"
 ACC_BTN_SEARCH = "🔍 Поиск счёта"
 ACC_BTN_INVOICE_END = "🏁 Закрытые Счета"
 ACC_BTN_SYNC = "🔄 Синхронизация данных"
@@ -211,17 +212,18 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         # TD merged into GD — redirect to GD menu
         return [
             [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
-            [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
-            [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
-            [GD_BTN_MONTAZH, GD_BTN_SALES],
-            [GD_BTN_SYNC, GD_BTN_SEARCH_INVOICE],
-            [GD_BTN_CANCEL, GD_BTN_MORE],
+            [GD_BTN_INVOICES_WORK, GD_BTN_INVOICE_END_GD],
+            [GD_BTN_SUPPLIER_PAY, GD_BTN_CHAT_RP],
+            [GD_BTN_ACCOUNTING, GD_BTN_MONTAZH],
+            [GD_BTN_SALES, GD_BTN_SYNC],
+            [GD_BTN_SEARCH_INVOICE, GD_BTN_MORE],
+            [GD_BTN_CANCEL],
         ]
     if role == Role.ACCOUNTING:
         return [
-            [ACC_BTN_INBOX, ACC_BTN_NOT_URGENT],
+            [ACC_BTN_INBOX, ACC_BTN_INVOICES_WORK],
             [ACC_BTN_SEARCH, ACC_BTN_INVOICE_END],
-            [ACC_BTN_SYNC, ACC_BTN_URGENT],
+            [ACC_BTN_URGENT],
         ]
     if role == Role.INSTALLER:
         return [
@@ -235,11 +237,12 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
     if role == Role.GD:
         return [
             [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
-            [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
-            [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
-            [GD_BTN_MONTAZH, GD_BTN_SALES],
-            [GD_BTN_SYNC, GD_BTN_SEARCH_INVOICE],
-            [GD_BTN_CANCEL, GD_BTN_MORE],
+            [GD_BTN_INVOICES_WORK, GD_BTN_INVOICE_END_GD],
+            [GD_BTN_SUPPLIER_PAY, GD_BTN_CHAT_RP],
+            [GD_BTN_ACCOUNTING, GD_BTN_MONTAZH],
+            [GD_BTN_SALES, GD_BTN_SYNC],
+            [GD_BTN_SEARCH_INVOICE, GD_BTN_MORE],
+            [GD_BTN_CANCEL],
         ]
     if role == Role.DRIVER:
         return [

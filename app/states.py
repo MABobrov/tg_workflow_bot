@@ -417,3 +417,9 @@ class RpSupplierInvoiceSG(StatesGroup):
     """РП: отправить счёт от поставщика ГД (из карточки «Счета в работе»)."""
     attachments = State()        # прикрепить файл(ы) счёта
     comment = State()            # комментарий
+
+
+class AccRequestToManagerSG(StatesGroup):
+    """Бухгалтерия: запрос/задача менеджеру счёта."""
+    text = State()               # текст запроса
+    attachments = State()        # вложения
