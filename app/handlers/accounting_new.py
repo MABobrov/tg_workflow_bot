@@ -74,7 +74,7 @@ async def _show_acc_invoices_work(
     db: Database,
 ) -> None:
     """Общий хелпер: показать список счетов в работе для бухгалтерии."""
-    invoices = await db.list_invoices_in_work(limit=50)
+    invoices = await db.list_invoices_in_work(limit=50, exclude_no_digit=True)
 
     if not invoices:
         msg = target.message if isinstance(target, CallbackQuery) else target

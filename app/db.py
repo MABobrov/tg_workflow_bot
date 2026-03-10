@@ -1063,18 +1063,22 @@ class Database:
         row = await cur.fetchone()
         return row[0] if row else 0
 
-    async def list_invoices_in_work(self, limit: int = 50) -> list[dict[str, Any]]:
+    async def list_invoices_in_work(
+        self, limit: int = 50, *, exclude_no_digit: bool = False,
+    ) -> list[dict[str, Any]]:
         """List invoices 'in work' (pending/in_progress/paid, excluding credit).
 
-        Excludes: is_credit=1 AND invoices whose number contains no digits
-        (letter-only numbers like manager marks are treated as credit).
-        Used for RP «Счета в Работе» dashboard.
+        Args:
+            exclude_no_digit: if True, also exclude invoices whose number
+                contains no digits (letter-only like КВ/КИА — treated as
+                credit). Used for accounting dashboard.
         """
+        digit_clause = "AND invoice_number GLOB '*[0-9]*' " if exclude_no_digit else ""
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid') "
             "AND (is_credit = 0 OR is_credit IS NULL) "
-            "AND invoice_number GLOB '*[0-9]*' "
+            f"{digit_clause}"
             "ORDER BY updated_at DESC LIMIT ?",
             (limit,),
         )
@@ -1086,8 +1090,7 @@ class Database:
         cur = await self.conn.execute(
             "SELECT COUNT(*) FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid') "
-            "AND (is_credit = 0 OR is_credit IS NULL) "
-            "AND invoice_number GLOB '*[0-9]*'"
+            "AND (is_credit = 0 OR is_credit IS NULL)"
         )
         row = await cur.fetchone()
         return row[0] if row else 0
@@ -1097,15 +1100,11 @@ class Database:
     # ------------------------------------------------------------------
 
     async def list_invoices_for_selection(self, limit: int = 30) -> list[dict[str, Any]]:
-        """Счета «в работе» + «Счёт End» для inline-пикера (NOT credit).
-
-        Excludes letter-only invoice numbers (treated as credit).
-        """
+        """Счета «в работе» + «Счёт End» для inline-пикера (NOT credit)."""
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid', 'ended') "
             "AND (is_credit = 0 OR is_credit IS NULL) "
-            "AND invoice_number GLOB '*[0-9]*' "
             "ORDER BY updated_at DESC LIMIT ?",
             (limit,),
         )
