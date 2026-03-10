@@ -1100,6 +1100,7 @@ def invoices_work_list_kb(
 
         text = f"💰{pay_emoji} 📄{doc_emoji} №{inv.get('invoice_number', '?')} — {amount_str}"
         b.button(text=text[:60], callback_data=f"rp_work:view:{inv['id']}")
+    b.button(text="➕ Добавить из закрытых", callback_data="rp_work:add_ended")
     b.button(text="🔄 Обновить", callback_data="rp_work:refresh")
     b.adjust(1)
     return b.as_markup()

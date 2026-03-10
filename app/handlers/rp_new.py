@@ -1254,6 +1254,99 @@ async def rp_work_expenses(cb: CallbackQuery, db: Database) -> None:
     await cb.message.answer(text_out, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
+# --- Добавление закрытых счетов обратно в работу ---
+
+
+@router.callback_query(F.data == "rp_work:add_ended")
+async def rp_work_add_ended(cb: CallbackQuery, db: Database) -> None:
+    """Показать список ended-счетов для возврата в работу."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    ended = await db.list_ended_invoices(limit=20)
+    if not ended:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "✅ Нет закрытых счетов для возврата."
+        )
+        return
+
+    b = InlineKeyboardBuilder()
+    for inv in ended:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:28]
+        label = f"🏁 №{num}"
+        if addr:
+            label += f" — {addr}"
+        b.button(text=label[:60], callback_data=f"rp_work:return:{inv['id']}")
+    b.button(text="⬅️ Назад к списку", callback_data="rp_work:refresh")
+    b.adjust(1)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"🏁 <b>Закрытые счета</b> ({len(ended)})\n\n"
+        "Выберите счёт для возврата в работу:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.regexp(r"^rp_work:return:\d+$"))
+async def rp_work_return_confirm(cb: CallbackQuery, db: Database) -> None:
+    """Подтверждение возврата ended-счёта в работу."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    try:
+        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
+    except (ValueError, TypeError):
+        amount_str = f"{inv.get('amount', 0)}₽"
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Вернуть в работу", callback_data=f"rp_work:return_ok:{invoice_id}")
+    b.button(text="❌ Отмена", callback_data="rp_work:add_ended")
+    b.adjust(1)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"🔄 <b>Вернуть счёт в работу?</b>\n\n"
+        f"📄 №{inv.get('invoice_number', '?')}\n"
+        f"📍 {inv.get('object_address', '-')}\n"
+        f"💰 {amount_str}\n"
+        f"📊 Текущий статус: 🏁 Закрыт\n\n"
+        "Статус изменится на «В работе».",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.regexp(r"^rp_work:return_ok:\d+$"))
+async def rp_work_return_ok(cb: CallbackQuery, db: Database) -> None:
+    """Вернуть ended-счёт в работу (status → in_progress)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer("✅ Возвращён в работу")
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    await db.update_invoice_status(invoice_id, "in_progress")
+
+    num = inv.get("invoice_number") or f"#{invoice_id}"
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Счёт №{num} возвращён в работу."
+    )
+
+    # Refresh the dashboard
+    await _show_invoices_work_dashboard(cb, db)
+
+
 # =====================================================================
 # БУХГАЛТЕРИЯ (УПД) — ЭДО-запрос от РП (Этап 8)
 #
