@@ -76,6 +76,7 @@ class TaskType(StrEnum):
     ZP_INSTALLER = "zp_installer"        # ЗП монтажника (монтажник → ГД)
     ZAMERY_REQUEST = "zamery_request"    # заявка на замер (менеджер → замерщик)
     RAZMERY_VERIFICATION = "razmery_verification"  # проверка размеров стекла
+    SUPPLIER_INVOICE = "supplier_invoice"  # счёт от поставщика (РП → ГД)
 
 
 class TaskStatus(StrEnum):

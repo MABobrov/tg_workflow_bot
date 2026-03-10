@@ -156,7 +156,7 @@ def _build_reply_rows(rows: list[list[str]]) -> ReplyKeyboardMarkup:
         for label in row:
             kb.button(text=label)
     kb.adjust(*[len(row) for row in rows])
-    return kb.as_markup(resize_keyboard=True)
+    return kb.as_markup(resize_keyboard=True, is_persistent=True)
 
 
 def role_selector_label(role: str) -> str:

@@ -411,3 +411,9 @@ class ManagerZpSG(StatesGroup):
     select_invoice = State()     # выбор счёта со статусом 'ended'
     amount = State()             # ввод суммы ЗП
     confirm = State()            # подтверждение
+
+
+class RpSupplierInvoiceSG(StatesGroup):
+    """РП: отправить счёт от поставщика ГД (из карточки «Счета в работе»)."""
+    attachments = State()        # прикрепить файл(ы) счёта
+    comment = State()            # комментарий

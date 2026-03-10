@@ -84,6 +84,7 @@ from ..states import (
     LeadToProjectSG,
     ManagerChatProxySG,
     RpRazmerySG,
+    RpSupplierInvoiceSG,
 )
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
@@ -1127,8 +1128,9 @@ async def rp_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
     b.button(text="💬 Переписка", callback_data=f"rp_work:msgs:{invoice_id}")
     b.button(text="📋 Задачи", callback_data=f"rp_work:tasks:{invoice_id}")
     b.button(text="📦 Расходы", callback_data=f"rp_work:expenses:{invoice_id}")
+    b.button(text="📎 Счёт ГД", callback_data=f"rp_work:send_inv_gd:{invoice_id}")
     b.button(text="⬅️ Назад к списку", callback_data="rp_work:refresh")
-    b.adjust(3, 1)
+    b.adjust(2, 2, 1)
 
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
@@ -1345,6 +1347,221 @@ async def rp_work_return_ok(cb: CallbackQuery, db: Database) -> None:
 
     # Refresh the dashboard
     await _show_invoices_work_dashboard(cb, db)
+
+
+# =====================================================================
+# ОТПРАВКА СЧЁТА ОТ ПОСТАВЩИКА → ГД (из карточки «Счета в работе»)
+# =====================================================================
+
+
+@router.callback_query(F.data.regexp(r"^rp_work:send_inv_gd:\d+$"))
+async def rp_work_send_inv_gd_start(
+    cb: CallbackQuery, state: FSMContext, db: Database,
+) -> None:
+    """Начать отправку счёта от поставщика для ГД."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    await state.clear()
+    await state.set_state(RpSupplierInvoiceSG.attachments)
+    await state.update_data(invoice_id=invoice_id, attachments=[])
+
+    num = inv.get("invoice_number") or f"#{invoice_id}"
+    b = InlineKeyboardBuilder()
+    b.button(text="⏭ Без файлов → Комментарий", callback_data="rp_sinv:skip_attach")
+    b.button(text="❌ Отмена", callback_data="rp_sinv:cancel")
+    b.adjust(1)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📎 <b>Счёт от поставщика → ГД</b>\n"
+        f"Счёт: №{num}\n\n"
+        "Прикрепите файл(ы) счёта от поставщика (документ или фото).\n"
+        "Когда все файлы прикреплены — нажмите кнопку:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(RpSupplierInvoiceSG.attachments)
+async def rp_sinv_attach(message: Message, state: FSMContext) -> None:
+    """Получить файл(ы) от РП для отправки ГД."""
+    data = await state.get_data()
+    attachments: list[dict[str, Any]] = data.get("attachments", [])
+
+    if message.document:
+        attachments.append({
+            "file_type": "document",
+            "file_id": message.document.file_id,
+            "file_unique_id": message.document.file_unique_id,
+            "caption": message.caption,
+        })
+    elif message.photo:
+        ph = message.photo[-1]
+        attachments.append({
+            "file_type": "photo",
+            "file_id": ph.file_id,
+            "file_unique_id": ph.file_unique_id,
+            "caption": message.caption,
+        })
+    else:
+        await message.answer("📎 Прикрепите файл или фото. Для продолжения нажмите кнопку.")
+        return
+
+    await state.update_data(attachments=attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text=f"✅ Далее ({len(attachments)} файл.)", callback_data="rp_sinv:skip_attach")
+    b.button(text="❌ Отмена", callback_data="rp_sinv:cancel")
+    b.adjust(1)
+    await message.answer(
+        f"📎 Принял. Файлов: <b>{len(attachments)}</b>.\n"
+        "Прикрепите ещё или нажмите «Далее»:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "rp_sinv:skip_attach")
+async def rp_sinv_to_comment(cb: CallbackQuery, state: FSMContext) -> None:
+    """Перейти к вводу комментария."""
+    await cb.answer()
+
+    await state.set_state(RpSupplierInvoiceSG.comment)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⏭ Без комментария", callback_data="rp_sinv:send")
+    b.button(text="❌ Отмена", callback_data="rp_sinv:cancel")
+    b.adjust(1)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        "💬 Введите комментарий к счёту (или нажмите «Без комментария»):",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(RpSupplierInvoiceSG.comment)
+async def rp_sinv_comment_text(
+    message: Message, state: FSMContext, db: Database,
+    config: "Config", notifier: "Notifier",
+) -> None:
+    """Получить комментарий и отправить ГД."""
+    comment = (message.text or "").strip()
+    if comment == "-":
+        comment = ""
+    await state.update_data(comment=comment)
+    await _rp_sinv_finalize(message, state, db, config, notifier, message.from_user)
+
+
+@router.callback_query(F.data == "rp_sinv:send")
+async def rp_sinv_send_no_comment(
+    cb: CallbackQuery, state: FSMContext, db: Database,
+    config: "Config", notifier: "Notifier",
+) -> None:
+    """Отправить без комментария."""
+    await cb.answer()
+    await state.update_data(comment="")
+    await _rp_sinv_finalize(cb.message, state, db, config, notifier, cb.from_user)  # type: ignore[arg-type]
+
+
+@router.callback_query(F.data == "rp_sinv:cancel")
+async def rp_sinv_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    """Отменить отправку счёта."""
+    await cb.answer("❌ Отменено")
+    await state.clear()
+    await cb.message.answer("❌ Отправка счёта отменена.")  # type: ignore[union-attr]
+
+
+async def _rp_sinv_finalize(
+    event_msg: Any,
+    state: FSMContext,
+    db: Database,
+    config: Any,
+    notifier: Any,
+    from_user: Any,
+) -> None:
+    """Создать задачу SUPPLIER_INVOICE и отправить ГД."""
+    data = await state.get_data()
+    await state.clear()
+
+    invoice_id = data.get("invoice_id")
+    attachments: list[dict[str, Any]] = data.get("attachments", [])
+    comment: str = data.get("comment", "")
+
+    inv = await db.get_invoice(invoice_id) if invoice_id else None
+    num = (inv.get("invoice_number") if inv else None) or f"#{invoice_id}"
+
+    from ..services.assignment import resolve_default_assignee
+    from ..enums import TaskType, TaskStatus
+    from ..utils import utcnow, to_iso
+    from datetime import timedelta
+
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
+    if not gd_id:
+        await event_msg.answer("⚠️ ГД не найден. Настройте роль GD.")
+        return
+
+    due = utcnow() + timedelta(hours=7)
+    task = await db.create_task(
+        project_id=inv.get("project_id") if inv else None,
+        type_=TaskType.SUPPLIER_INVOICE,
+        status=TaskStatus.OPEN,
+        created_by=from_user.id if from_user else 0,
+        assigned_to=int(gd_id),
+        due_at_iso=to_iso(due),
+        payload={
+            "invoice_id": invoice_id,
+            "invoice_number": num,
+            "comment": comment,
+            "sender_id": from_user.id if from_user else 0,
+            "sender_username": (from_user.username if from_user else ""),
+        },
+    )
+
+    for a in attachments:
+        await db.add_attachment(
+            task_id=int(task["id"]),
+            file_id=a["file_id"],
+            file_unique_id=a.get("file_unique_id"),
+            file_type=a["file_type"],
+            caption=a.get("caption"),
+        )
+
+    initiator = await get_initiator_label(db, from_user.id) if from_user else "?"
+    gd_text = (
+        f"📎 <b>Счёт от поставщика</b>\n"
+        f"👤 От: {initiator}\n"
+        f"📄 Счёт: №{num}\n"
+    )
+    if inv and inv.get("object_address"):
+        gd_text += f"📍 Объект: {inv['object_address'][:50]}\n"
+    if comment:
+        gd_text += f"💬 {comment}\n"
+    gd_text += f"\n📎 Вложений: {len(attachments)}"
+
+    from ..keyboards import task_actions_kb
+    await notifier.safe_send(
+        int(gd_id), gd_text,
+        reply_markup=task_actions_kb(task),
+    )
+
+    for a in attachments:
+        try:
+            if a["file_type"] == "document":
+                await notifier.bot.send_document(int(gd_id), a["file_id"])
+            elif a["file_type"] == "photo":
+                await notifier.bot.send_photo(int(gd_id), a["file_id"])
+        except Exception:
+            pass
+
+    await event_msg.answer(
+        f"✅ Счёт от поставщика отправлен ГД (счёт №{num}).\n"
+        f"📎 Файлов: {len(attachments)}"
+    )
 
 
 # =====================================================================

@@ -35,6 +35,7 @@ from .handlers import (
     manager,
     manager_new,
     projects,
+    rp,
     rp_new,
     search,
     tasks,
@@ -176,6 +177,7 @@ async def main() -> None:
     # New role-specific routers
     dp.include_router(manager_new.router)
     dp.include_router(rp_new.router)
+    dp.include_router(rp.router)          # InvoiceCreateSG, OrderMaterial, Delivery, etc.
     dp.include_router(accounting_new.router)
     dp.include_router(installer_new.router)
     dp.include_router(zamery.router)
