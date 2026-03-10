@@ -41,8 +41,10 @@ from ..services.notifier import Notifier
 from ..states import (
     InstallerDailyReportSG,
     InstallerInvoiceOkSG,
+    InstallerMatInitSG,
     InstallerOrderMaterialsSG,
     InstallerRazmerySG,
+    InstallerZpInitSG,
     InstallerZpSG,
 )
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
@@ -65,6 +67,32 @@ async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
 
 
 # =====================================================================
+# ОБЩИЙ CALLBACK «НАЗАД» — возврат в главное меню монтажника
+# =====================================================================
+
+@router.callback_query(F.data == "inst_nav:home")
+async def installer_back_home(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
+) -> None:
+    """Возврат в главное меню монтажника из любого inline-меню."""
+    await cb.answer()
+    await state.clear()
+    u = cb.from_user
+    if not u:
+        return
+    role, isolated_role = await _current_menu(db, u.id)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📋 Главное меню",
+        reply_markup=main_menu(
+            role,
+            is_admin=u.id in (config.admin_ids or set()),
+            unread=await db.count_unread_tasks(u.id),
+            isolated_role=isolated_role,
+        ),
+    )
+
+
+# =====================================================================
 # ЗАКАЗ МАТЕРИАЛОВ (to RP)
 # =====================================================================
 
@@ -83,12 +111,12 @@ async def start_order_materials(message: Message, state: FSMContext, db: Databas
             callback_data=f"inst_order_inv:{inv['id']}",
         )
     b.button(text="⏩ Без привязки", callback_data="inst_order_inv:skip")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
     await state.set_state(InstallerOrderMaterialsSG.invoice_pick)
     await message.answer(
         "📦 <b>Заказ материалов</b>\n\n"
-        "Выберите счёт для привязки заказа или пропустите:\n"
-        "Для отмены: <code>/cancel</code>.",
+        "Выберите счёт для привязки заказа или пропустите:",
         reply_markup=b.as_markup(),
     )
 
@@ -264,12 +292,12 @@ async def start_order_extra(message: Message, state: FSMContext, db: Database) -
             callback_data=f"inst_order_inv:{inv['id']}",
         )
     b.button(text="⏩ Без привязки", callback_data="inst_order_inv:skip")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
     await state.set_state(InstallerOrderMaterialsSG.invoice_pick)
     await message.answer(
         "📦 <b>Заказ доп.материалов</b>\n\n"
-        "Выберите счёт для привязки или пропустите:\n"
-        "Для отмены: <code>/cancel</code>.",
+        "Выберите счёт для привязки или пропустите:",
         reply_markup=b.as_markup(),
     )
 
@@ -412,14 +440,53 @@ async def invoice_ok_comment(
 # РАЗМЕРЫ ОК — workflow проверки размеров стекла
 # =====================================================================
 
+def _build_mat_init_kb(
+    invoices: list[dict[str, Any]], selected: set[int],
+) -> InlineKeyboardBuilder:
+    """Построить inline-клавиатуру мульти-выбора «материал заказан» (☐/✅)."""
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        inv_id = inv["id"]
+        prefix = "✅" if inv_id in selected else "☐"
+        num = inv.get("invoice_number") or f"#{inv_id}"
+        addr = (inv.get("object_address") or "—")[:25]
+        b.button(text=f"{prefix} №{num} — {addr}"[:55], callback_data=f"matinit:toggle:{inv_id}")
+    b.button(text="✅ Готово", callback_data="matinit:done")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
+    b.adjust(1)
+    return b
+
+
 @router.message(F.text == INST_BTN_RAZMERY_OK)
 async def start_razmery_ok(message: Message, state: FSMContext, db: Database) -> None:
-    """Кнопка «Размеры ОК»: два раздела — отправить бланк / проверить форму."""
+    """Кнопка «Размеры ОК»: инициализация (первый вход) или стандартный поток."""
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
     user_id = message.from_user.id  # type: ignore[union-attr]
 
+    # --- Первый заход: инициализация «материал заказан» ---
+    if not await db.is_installer_razmery_initialized(user_id):
+        confirmed = await db.list_installer_confirmed_invoices(user_id)
+        if not confirmed:
+            await db.set_installer_razmery_initialized(user_id)
+            # Продолжить к стандартному потоку ниже
+        else:
+            await state.set_state(InstallerMatInitSG.selecting)
+            await state.update_data(
+                mat_init_selected=[],
+                mat_init_invoices=[inv["id"] for inv in confirmed],
+            )
+            b = _build_mat_init_kb(confirmed, set())
+            await message.answer(
+                "📐 <b>Размеры ОК — инициализация</b>\n\n"
+                "Выберите счета, по которым <b>материал уже заказан</b>:\n"
+                "(они будут исключены из списка «Размеры ОК»)",
+                reply_markup=b.as_markup(),
+            )
+            return
+
+    # --- Стандартный поток ---
     # Счета in_work БЕЗ активного razmery_request → можно отправить бланк
     confirmed = await db.list_installer_confirmed_invoices()
     send_list = []
@@ -428,6 +495,8 @@ async def start_razmery_ok(message: Message, state: FSMContext, db: Database) ->
         stage = inv.get("montazh_stage", "")
         if stage != "in_work":
             continue
+        if inv.get("materials_ordered"):
+            continue  # Исключить счета с заказанным материалом
         req = await db.get_active_razmery_request(inv["id"])
         if not req:
             send_list.append(inv)
@@ -455,6 +524,7 @@ async def start_razmery_ok(message: Message, state: FSMContext, db: Database) ->
                 text=f"📋 №{num} — проверить"[:55],
                 callback_data=f"razmok_new:check:{req['id']}",
             )
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
 
     text = "📐 <b>Размеры ОК</b>\n\n"
@@ -463,6 +533,54 @@ async def start_razmery_ok(message: Message, state: FSMContext, db: Database) ->
     if check_list:
         text += f"📋 На проверке ({len(check_list)})\n"
     await message.answer(text, reply_markup=b.as_markup())
+
+
+# --- Mat init: toggle / done ---
+
+@router.callback_query(F.data.startswith("matinit:toggle:"), InstallerMatInitSG.selecting)
+async def mat_init_toggle(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Переключить выбор счёта в мульти-выборе «материал заказан»."""
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    data = await state.get_data()
+    selected = set(data.get("mat_init_selected", []))
+    if inv_id in selected:
+        selected.discard(inv_id)
+    else:
+        selected.add(inv_id)
+    await state.update_data(mat_init_selected=list(selected))
+    # Перестроить клавиатуру
+    all_ids = data.get("mat_init_invoices", [])
+    invoices = []
+    for iid in all_ids:
+        inv = await db.get_invoice(iid)
+        if inv:
+            invoices.append(inv)
+    b = _build_mat_init_kb(invoices, selected)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=b.as_markup())  # type: ignore[union-attr]
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "matinit:done", InstallerMatInitSG.selecting)
+async def mat_init_done(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Завершить инициализацию: выбранные → materials_ordered=1."""
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+    data = await state.get_data()
+    selected = set(data.get("mat_init_selected", []))
+    for inv_id in selected:
+        await db.set_invoice_materials_ordered(inv_id, True)
+    await db.set_installer_razmery_initialized(u.id)
+    await state.clear()
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Инициализация завершена.\n"
+        f"Счетов с заказанным материалом: <b>{len(selected)}</b>\n\n"
+        "Нажмите «📐 Размеры ОК» ещё раз для работы.",
+    )
 
 
 # --- Шаг 1: отправка бланка размеров РП ---
@@ -871,6 +989,8 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
         f"📊 Статус: {status_label}\n"
         f"🔧 Этап: {stage_lbl}\n"
     )
+    if inv.get("materials_ordered"):
+        text += "📦 Материал заказан\n"
 
     area = inv.get("area_m2")
     if area:
@@ -1169,18 +1289,60 @@ async def installer_work_confirm(
 # ЗАПРОС ЗП МОНТАЖНИКА (InstallerZpSG)
 # =====================================================================
 
+def _build_zp_init_kb(
+    invoices: list[dict[str, Any]], selected: set[int],
+) -> InlineKeyboardBuilder:
+    """Построить inline-клавиатуру мульти-выбора ЗП (☐/✅)."""
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        inv_id = inv["id"]
+        prefix = "✅" if inv_id in selected else "☐"
+        num = inv.get("invoice_number") or f"#{inv_id}"
+        addr = (inv.get("object_address") or "—")[:25]
+        b.button(text=f"{prefix} №{num} — {addr}"[:55], callback_data=f"zpinit:toggle:{inv_id}")
+    b.button(text="✅ Готово", callback_data="zpinit:done")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
+    b.adjust(1)
+    return b
+
+
 @router.message(F.text == INST_BTN_ZP)
 async def installer_zp_start(message: Message, state: FSMContext, db: Database) -> None:
-    """Show invoices eligible for ZP request (installer_ok=True, zp_installer_status='not_requested')."""
+    """Запрос ЗП: инициализация (первый вход) или стандартный поток."""
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     user_id = message.from_user.id  # type: ignore[union-attr]
+    await state.clear()
+
+    # --- Первый заход: инициализация ---
+    if not await db.is_installer_zp_initialized(user_id):
+        invoices = await db.list_installer_confirmed_invoices(user_id)
+        if not invoices:
+            await db.set_installer_zp_initialized(user_id)
+            await message.answer("✅ Нет счетов в работе. Инициализация завершена.")
+            return
+        await state.set_state(InstallerZpInitSG.selecting)
+        await state.update_data(
+            zp_init_selected=[],
+            zp_init_invoices=[inv["id"] for inv in invoices],
+        )
+        b = _build_zp_init_kb(invoices, set())
+        await message.answer(
+            "💰 <b>Инициализация ЗП</b>\n\n"
+            "Выберите счета, по которым ЗП <b>не оплачена</b>:\n"
+            "(нажмите на счёт для выбора/снятия, затем «✅ Готово»)",
+            reply_markup=b.as_markup(),
+        )
+        return
+
+    # --- Стандартный поток (после инициализации) ---
     cur = await db.conn.execute(
         "SELECT * FROM invoices "
-        "WHERE installer_ok = 1 "
-        "  AND (zp_installer_status IS NULL OR zp_installer_status = 'not_requested') "
+        "WHERE (zp_installer_status IS NULL OR zp_installer_status = 'not_requested') "
         "  AND assigned_to = ? "
-        "  AND status NOT IN ('ended', 'rejected') "
+        "  AND montazh_stage IN ('in_work', 'razmery_ok', 'invoice_ok') "
+        "  AND status IN ('in_progress', 'paid') "
+        "  AND parent_invoice_id IS NULL "
         "ORDER BY id DESC LIMIT 20",
         (user_id,),
     )
@@ -1193,11 +1355,62 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
     for inv in invoices:
         label = f"№{inv['invoice_number'] or '—'} / {(inv.get('object_address') or '—')[:30]}"
         b.button(text=label, callback_data=f"instzp:pick:{inv['id']}")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
     await state.set_state(InstallerZpSG.select_invoice)
     await message.answer(
         "💰 <b>Запрос ЗП</b>\n\nВыберите счёт:",
         reply_markup=b.as_markup(),
+    )
+
+
+# --- ZP init: toggle / done ---
+
+@router.callback_query(F.data.startswith("zpinit:toggle:"), InstallerZpInitSG.selecting)
+async def zp_init_toggle(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Переключить выбор счёта в мульти-выборе ЗП."""
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    data = await state.get_data()
+    selected = set(data.get("zp_init_selected", []))
+    if inv_id in selected:
+        selected.discard(inv_id)
+    else:
+        selected.add(inv_id)
+    await state.update_data(zp_init_selected=list(selected))
+    # Перестроить клавиатуру
+    all_ids = data.get("zp_init_invoices", [])
+    invoices = []
+    for iid in all_ids:
+        inv = await db.get_invoice(iid)
+        if inv:
+            invoices.append(inv)
+    b = _build_zp_init_kb(invoices, selected)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=b.as_markup())  # type: ignore[union-attr]
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "zpinit:done", InstallerZpInitSG.selecting)
+async def zp_init_done(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Завершить инициализацию ЗП: невыбранные → not_applicable."""
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+    data = await state.get_data()
+    selected = set(data.get("zp_init_selected", []))
+    all_ids = data.get("zp_init_invoices", [])
+    for inv_id in all_ids:
+        if inv_id not in selected:
+            await db.set_invoice_zp_installer_status(inv_id, "not_applicable")
+    await db.set_installer_zp_initialized(u.id)
+    await state.clear()
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Инициализация завершена.\n"
+        f"Счетов с неоплаченной ЗП: <b>{len(selected)}</b>\n\n"
+        "Нажмите «💰 Запрос ЗП» ещё раз для выбора счёта.",
     )
 
 

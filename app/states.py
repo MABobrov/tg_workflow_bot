@@ -406,6 +406,16 @@ class InstallerZpSG(StatesGroup):
     confirm = State()            # подтверждение
 
 
+class InstallerZpInitSG(StatesGroup):
+    """Монтажник: инициализация ЗП — мульти-выбор счетов с неоплаченной ЗП."""
+    selecting = State()
+
+
+class InstallerMatInitSG(StatesGroup):
+    """Монтажник: инициализация «Размеры ОК» — по каким счетам материал заказан."""
+    selecting = State()
+
+
 class ManagerZpSG(StatesGroup):
     """Менеджер: Расчёт ЗП — запрос выплаты после Счет End."""
     select_invoice = State()     # выбор счёта со статусом 'ended'
