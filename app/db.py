@@ -27,6 +27,8 @@ class UserRow:
     is_active: int
     created_at: str
     updated_at: str
+    zp_init_done: int = 0
+    razmery_init_done: int = 0
 
 
 class Database:
