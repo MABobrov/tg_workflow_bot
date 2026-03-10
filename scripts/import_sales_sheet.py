@@ -186,6 +186,7 @@ async def main() -> None:
         traffic = (row[5] if len(row) > 5 else "").strip()
 
         status, is_credit = _determine_status(bn_kred, data_fakt or "", dolg)
+        existing_before_import = await db.get_invoice_by_number(nomer)
 
         # Creator: use GD as default creator for imported invoices
         creator_id = default_gd_id if default_gd_id else 0
@@ -218,12 +219,7 @@ async def main() -> None:
                 payment_terms=poyasneniya or None,
                 description=kontragent,
             )
-            # Check if it was an update
-            existing = await db.get_invoice_by_number(nomer)
-            if existing and existing["id"] == inv_id:
-                action = "UPD" if existing.get("client_name") else "NEW"
-            else:
-                action = "NEW"
+            action = "UPD" if existing_before_import else "NEW"
 
             if action == "NEW":
                 imported += 1

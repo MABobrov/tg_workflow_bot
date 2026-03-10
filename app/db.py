@@ -209,6 +209,7 @@ class Database:
                 amount REAL,
                 description TEXT,
                 object_address TEXT,
+                client_contact TEXT,
                 payment_deadline TEXT,
 
                 created_by INTEGER NOT NULL,
@@ -384,6 +385,7 @@ class Database:
             ("invoices", "zp_installer_requested_at", "TEXT"),
             ("invoices", "zp_installer_approved_at", "TEXT"),
             # --- Объединение с Отдел продаж ---
+            ("invoices", "client_contact", "TEXT"),
             ("invoices", "client_name", "TEXT"),
             ("invoices", "traffic_source", "TEXT"),
             ("invoices", "receipt_date", "TEXT"),
@@ -2121,40 +2123,36 @@ class Database:
         if not inv_num:
             raise ValueError("invoice_number is required")
         existing = await self.get_invoice_by_number(inv_num)
+        now = to_iso(utcnow())
         if existing:
-            # update new fields only
-            updates: dict[str, Any] = {}
-            if client_name:
-                updates["client_name"] = client_name
-            if traffic_source:
-                updates["traffic_source"] = traffic_source
-            if receipt_date:
-                updates["receipt_date"] = receipt_date
-            if deadline_days is not None:
-                updates["deadline_days"] = deadline_days
-            if actual_completion_date:
-                updates["actual_completion_date"] = actual_completion_date
-            if first_payment_amount is not None:
-                updates["first_payment_amount"] = first_payment_amount
-            if outstanding_debt is not None:
-                updates["outstanding_debt"] = outstanding_debt
-            if contract_type:
-                updates["contract_type"] = contract_type
-            if closing_docs_status:
-                updates["closing_docs_status"] = closing_docs_status
-            if payment_terms:
-                updates["payment_terms"] = payment_terms
-            if updates:
-                sets = ", ".join(f"{k} = ?" for k in updates)
-                vals = list(updates.values())
-                vals.append(existing["id"])
-                await self.conn.execute(
-                    f"UPDATE invoices SET {sets} WHERE id = ?", vals,
-                )
-                await self.conn.commit()
+            # Sheet import is the source of truth for these fields, so sync them on every run.
+            updates: dict[str, Any] = {
+                "status": status,
+                "is_credit": int(is_credit),
+                "object_address": object_address,
+                "amount": amount,
+                "description": description,
+                "client_name": client_name,
+                "traffic_source": traffic_source,
+                "receipt_date": receipt_date,
+                "deadline_days": deadline_days,
+                "actual_completion_date": actual_completion_date,
+                "first_payment_amount": first_payment_amount,
+                "outstanding_debt": outstanding_debt,
+                "contract_type": contract_type,
+                "closing_docs_status": closing_docs_status,
+                "payment_terms": payment_terms,
+                "updated_at": now,
+            }
+            sets = ", ".join(f"{k} = ?" for k in updates)
+            vals = list(updates.values())
+            vals.append(existing["id"])
+            await self.conn.execute(
+                f"UPDATE invoices SET {sets} WHERE id = ?", vals,
+            )
+            await self.conn.commit()
             return int(existing["id"])
 
-        now = to_iso(utcnow())
         cur = await self.conn.execute(
             """
             INSERT INTO invoices
@@ -2767,10 +2765,22 @@ class Database:
         now = to_iso(utcnow())
         count = 0
         for rec in records:
+            invoice_number = str(rec.get("invoice_number", "")).strip()
+            object_address = str(rec.get("object_address", "")).strip()
+            client_contact = str(rec.get("client_contact", "")).strip() or None
+
+            if not invoice_number or not object_address:
+                log.warning(
+                    "import_zamery_invoices: skip invalid record invoice_number=%r object_address=%r",
+                    rec.get("invoice_number"),
+                    rec.get("object_address"),
+                )
+                continue
+
             # Skip if already imported (by invoice_number)
             cur = await self.conn.execute(
                 "SELECT id FROM invoices WHERE invoice_number = ?",
-                (rec["invoice_number"],),
+                (invoice_number,),
             )
             if await cur.fetchone():
                 continue
@@ -2781,9 +2791,9 @@ class Database:
                 " status, zp_status, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, 'zamery', ?, 'ended', 'not_requested', ?, ?)",
                 (
-                    rec["invoice_number"],
-                    rec["object_address"],
-                    rec.get("client_contact", ""),
+                    invoice_number,
+                    object_address,
+                    client_contact,
                     zamery_user_id,
                     zamery_user_id,
                     now,
