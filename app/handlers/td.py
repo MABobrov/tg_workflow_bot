@@ -13,7 +13,7 @@ from ..callbacks import ProjectCb, TaskCb
 from ..config import Config
 from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
-from ..keyboards import GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY, main_menu, projects_kb, tasks_kb
+from ..keyboards import GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY, main_menu, projects_kb
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope

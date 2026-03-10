@@ -741,7 +741,7 @@ def format_estimated_summary(inv: dict[str, Any]) -> str:
         return "📊 Расчётные данные: <i>не заполнены</i>"
 
     lines = [
-        f"📊 <b>Расчётные данные:</b>",
+        "📊 <b>Расчётные данные:</b>",
         f"  Стекло: {est_glass:,.0f}₽",
         f"  Ал.профиль: {est_profile:,.0f}₽",
     ]

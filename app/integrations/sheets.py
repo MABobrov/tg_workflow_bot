@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import gspread
 from google.oauth2.service_account import Credentials

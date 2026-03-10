@@ -33,7 +33,6 @@ from ..keyboards import (
     INST_BTN_ZP,
     invoice_list_kb,
     main_menu,
-    tasks_kb,
 )
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
@@ -463,13 +462,13 @@ async def start_razmery_ok(message: Message, state: FSMContext, db: Database) ->
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    user_id = message.from_user.id  # type: ignore[union-attr]
+    installer_id = message.from_user.id  # type: ignore[union-attr]
 
     # --- Первый заход: инициализация «материал заказан» ---
-    if not await db.is_installer_razmery_initialized(user_id):
-        confirmed = await db.list_installer_confirmed_invoices(user_id)
+    if not await db.is_installer_razmery_initialized(installer_id):
+        confirmed = await db.list_installer_confirmed_invoices(installer_id)
         if not confirmed:
-            await db.set_installer_razmery_initialized(user_id)
+            await db.set_installer_razmery_initialized(installer_id)
             # Продолжить к стандартному потоку ниже
         else:
             await state.set_state(InstallerMatInitSG.selecting)
@@ -1162,7 +1161,6 @@ async def installer_in_work(message: Message, state: FSMContext, db: Database) -
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    user_id = message.from_user.id  # type: ignore[union-attr]
     invoices = await db.list_installer_unconfirmed_invoices()
 
     if not invoices:
@@ -1488,7 +1486,7 @@ async def installer_zp_confirm(
     # Create task for GD
     gd_id = await resolve_default_assignee(db, config, Role.GD)
     if gd_id:
-        task = await db.create_task(
+        await db.create_task(
             project_id=None,
             type_=TaskType.ZP_INSTALLER,
             status=TaskStatus.OPEN,

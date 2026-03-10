@@ -32,7 +32,7 @@ from typing import Any
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
@@ -79,7 +79,6 @@ from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import (
     EdoRequestSG,
-    KpReviewResponseSG,
     KpReviewSG,
     LeadToProjectSG,
     ManagerChatProxySG,
@@ -204,7 +203,6 @@ def _invoices_pay_kb(
     invoices: list[dict[str, Any]],
 ) -> InlineKeyboardMarkup:
     """Inline-кнопки для «Счета на оплату»: список + кнопка создания."""
-    from aiogram.types import InlineKeyboardMarkup
     b = InlineKeyboardBuilder()
     for inv in invoices:
         status_emoji = {
@@ -730,7 +728,7 @@ async def rp_razmery_confirm_receipt(
     await refresh_recipient_keyboard(notifier, db, config, req["installer_id"])
 
     await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ Получение подтверждено. Теперь заполните форму поставщика и отправьте монтажнику.\n"
+        "✅ Получение подтверждено. Теперь заполните форму поставщика и отправьте монтажнику.\n"
         "Используйте кнопку «📐 Размеры» → выберите заявку → «Отправить форму».",
     )
 
@@ -1161,7 +1159,6 @@ async def rp_work_messages(cb: CallbackQuery, db: Database) -> None:
     else:
         for msg in reversed(messages):  # chronological order
             channel = msg.get("channel", "—")
-            sender_id = msg.get("sender_id", "")
             text_content = (msg.get("text") or "")[:120]
             dt = (msg.get("created_at") or "")[:16]
             direction = "→" if msg.get("direction") == "outgoing" else "←"
@@ -2042,7 +2039,7 @@ async def start_lead_to_project(message: Message, state: FSMContext, db: Databas
         return
 
     # Count responded
-    n_responded = sum(1 for l in leads if l.get("response_at"))
+    n_responded = sum(1 for lead in leads if lead.get("response_at"))
     n_pending = len(leads) - n_responded
 
     stats = []
@@ -2080,7 +2077,7 @@ async def lead_refresh(cb: CallbackQuery, state: FSMContext, db: Database) -> No
         )
         return
 
-    n_responded = sum(1 for l in leads if l.get("response_at"))
+    n_responded = sum(1 for lead in leads if lead.get("response_at"))
     n_pending = len(leads) - n_responded
     stats = []
     if n_responded:
@@ -2576,7 +2573,6 @@ async def _show_kp_task_card(
     # Show attached КП documents
     attachments = await db.list_attachments(int(task["id"]))
     if attachments:
-        from ..services.notifier import Notifier
         # Show docs inline (just list them, user sees them in notification)
         att_text = f"📎 Вложения КП ({len(attachments)} файл(ов))"
         await target.message.answer(att_text)  # type: ignore[union-attr]

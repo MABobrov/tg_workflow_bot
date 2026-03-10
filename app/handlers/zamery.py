@@ -20,7 +20,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from ..config import Config
 from ..db import Database
 from ..enums import (
-    InvoiceStatus, MANAGER_ROLES, Role, TaskStatus, TaskType,
+    InvoiceStatus, Role, TaskStatus,
     ZAMERY_SOURCE_LABELS,
 )
 from ..keyboards import (
@@ -28,7 +28,6 @@ from ..keyboards import (
     ZAM_BTN_PAYMENT,
     ZAM_BTN_ZAMERY,
     main_menu,
-    tasks_kb,
     zamery_incoming_kb,
 )
 from ..services.assignment import resolve_default_assignee
@@ -152,7 +151,6 @@ async def zamery_view_request(
         ft = a.get("file_type", "document")
         fid = a.get("file_id")
         if fid and ft == "photo":
-            from aiogram.types import InputMediaPhoto
             await cb.message.answer_photo(fid)  # type: ignore[union-attr]
         elif fid:
             await cb.message.answer_document(fid)  # type: ignore[union-attr]

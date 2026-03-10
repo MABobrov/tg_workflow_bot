@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Iterable
 
 from aiogram.types import CallbackQuery, Message
 

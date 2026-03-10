@@ -25,7 +25,6 @@ from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
 from ..keyboards import (
     gd_sales_submenu,
-    gd_sales_write_to_kb,
     gd_chat_write_to_kb_universal,
     invoice_select_kb,
     GD_BTN_ACCOUNTING,

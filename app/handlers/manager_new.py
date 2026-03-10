@@ -49,7 +49,6 @@ from ..keyboards import (
     manager_chat_submenu,
     tasks_kb,
     zamery_lead_pick_kb,
-    zamery_my_requests_kb,
     zamery_source_kb,
 )
 from ..services.assignment import resolve_default_assignee
@@ -1669,7 +1668,7 @@ async def my_invoice_view(cb: CallbackQuery, db: Database) -> None:
         if calc_debt > 0:
             text += f"🔴 Долг (расч.): {calc_debt:,.0f}₽\n"
         else:
-            text += f"🟢 Долг: 0₽\n"
+            text += "🟢 Долг: 0₽\n"
     text += (
         f"📊 Статус: {status_label}\n"
         f"🔧 Этап: {_mgr_stage_lbl.get(stage, stage)}\n"
@@ -1692,8 +1691,14 @@ async def my_invoice_view(cb: CallbackQuery, db: Database) -> None:
     # ZP
     zp_mgr = inv.get("zp_manager_status") or "not_requested"
     zp_inst = inv.get("zp_installer_status") or "not_requested"
-    _zp = lambda s: "✅" if s == "approved" else ("⏳" if s == "requested" else "—")
-    text += f"💸 ЗП менеджер: {_zp(zp_mgr)}  монтажник: {_zp(zp_inst)}\n"
+    def _zp_badge(status: str) -> str:
+        if status == "approved":
+            return "✅"
+        if status == "requested":
+            return "⏳"
+        return "—"
+
+    text += f"💸 ЗП менеджер: {_zp_badge(zp_mgr)}  монтажник: {_zp_badge(zp_inst)}\n"
 
     text += f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
 
@@ -2583,7 +2588,7 @@ async def manager_zp_confirm(
     # Create task for GD
     gd_id = await resolve_default_assignee(db, config, Role.GD)
     if gd_id:
-        task = await db.create_task(
+        await db.create_task(
             project_id=None,
             type_=TaskType.ZP_MANAGER,
             status=TaskStatus.OPEN,
