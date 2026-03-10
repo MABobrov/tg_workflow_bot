@@ -420,6 +420,10 @@ class Database:
             ("invoices", "agent_fee", "REAL"),                  # Агентское вознаграждение
             ("invoices", "manager_zp_blank", "REAL"),           # Менеджер ЗП по бланку
             ("invoices", "npn_amount", "REAL"),                 # НПН с 10% налог
+            # --- Монтажник: инициализация ЗП и отслеживание материалов ---
+            ("invoices", "materials_ordered", "INTEGER DEFAULT 0"),
+            ("users", "zp_init_done", "INTEGER DEFAULT 0"),
+            ("users", "razmery_init_done", "INTEGER DEFAULT 0"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -1492,6 +1496,52 @@ class Database:
         await self.conn.execute(
             "UPDATE invoices SET montazh_stage = ?, updated_at = ? WHERE id = ?",
             (stage, to_iso(utcnow()), invoice_id),
+        )
+        await self.conn.commit()
+
+    # --- Installer init helpers (ZP & materials) ---
+
+    async def is_installer_zp_initialized(self, user_id: int) -> bool:
+        """Проверить, прошёл ли монтажник инициализацию ЗП."""
+        cur = await self.conn.execute(
+            "SELECT zp_init_done FROM users WHERE telegram_id = ?",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return bool(row and row["zp_init_done"])
+
+    async def set_installer_zp_initialized(self, user_id: int) -> None:
+        """Пометить, что монтажник прошёл инициализацию ЗП."""
+        await self.conn.execute(
+            "UPDATE users SET zp_init_done = 1 WHERE telegram_id = ?",
+            (user_id,),
+        )
+        await self.conn.commit()
+
+    async def is_installer_razmery_initialized(self, user_id: int) -> bool:
+        """Проверить, прошёл ли монтажник инициализацию «Размеры ОК»."""
+        cur = await self.conn.execute(
+            "SELECT razmery_init_done FROM users WHERE telegram_id = ?",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return bool(row and row["razmery_init_done"])
+
+    async def set_installer_razmery_initialized(self, user_id: int) -> None:
+        """Пометить, что монтажник прошёл инициализацию «Размеры ОК»."""
+        await self.conn.execute(
+            "UPDATE users SET razmery_init_done = 1 WHERE telegram_id = ?",
+            (user_id,),
+        )
+        await self.conn.commit()
+
+    async def set_invoice_materials_ordered(
+        self, invoice_id: int, ordered: bool = True,
+    ) -> None:
+        """Пометить счёт: материал заказан."""
+        await self.conn.execute(
+            "UPDATE invoices SET materials_ordered = ?, updated_at = ? WHERE id = ?",
+            (int(ordered), to_iso(utcnow()), invoice_id),
         )
         await self.conn.commit()
 
