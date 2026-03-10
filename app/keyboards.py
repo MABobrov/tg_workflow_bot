@@ -212,18 +212,17 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         # TD merged into GD — redirect to GD menu
         return [
             [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
-            [GD_BTN_INVOICES_WORK, GD_BTN_INVOICE_END_GD],
-            [GD_BTN_SUPPLIER_PAY, GD_BTN_CHAT_RP],
-            [GD_BTN_ACCOUNTING, GD_BTN_MONTAZH],
-            [GD_BTN_SALES, GD_BTN_SYNC],
-            [GD_BTN_SEARCH_INVOICE, GD_BTN_MORE],
-            [GD_BTN_CANCEL],
+            [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
+            [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
+            [GD_BTN_MONTAZH, GD_BTN_SALES],
+            [GD_BTN_SYNC, GD_BTN_SEARCH_INVOICE],
+            [GD_BTN_CANCEL, GD_BTN_MORE],
         ]
     if role == Role.ACCOUNTING:
         return [
             [ACC_BTN_INBOX, ACC_BTN_INVOICES_WORK],
             [ACC_BTN_SEARCH, ACC_BTN_INVOICE_END],
-            [ACC_BTN_URGENT],
+            [ACC_BTN_SYNC, ACC_BTN_URGENT],
         ]
     if role == Role.INSTALLER:
         return [
@@ -237,12 +236,11 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
     if role == Role.GD:
         return [
             [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
-            [GD_BTN_INVOICES_WORK, GD_BTN_INVOICE_END_GD],
-            [GD_BTN_SUPPLIER_PAY, GD_BTN_CHAT_RP],
-            [GD_BTN_ACCOUNTING, GD_BTN_MONTAZH],
-            [GD_BTN_SALES, GD_BTN_SYNC],
-            [GD_BTN_SEARCH_INVOICE, GD_BTN_MORE],
-            [GD_BTN_CANCEL],
+            [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
+            [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
+            [GD_BTN_MONTAZH, GD_BTN_SALES],
+            [GD_BTN_SYNC, GD_BTN_SEARCH_INVOICE],
+            [GD_BTN_CANCEL, GD_BTN_MORE],
         ]
     if role == Role.DRIVER:
         return [
