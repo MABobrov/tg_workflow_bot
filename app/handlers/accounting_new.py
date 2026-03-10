@@ -339,16 +339,42 @@ async def acc_work_request_send(
         except Exception:
             pass
 
+    u = cb.from_user
+    role, isolated_role = await _current_menu(db, u.id) if u else (Role.ACCOUNTING, False)
     await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ Запрос отправлен менеджеру (счёт №{num})."
+        f"✅ Запрос отправлен менеджеру (счёт №{num}).",
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(
+                role,
+                is_admin=u.id in (config.admin_ids or set()) if u else False,
+                unread=await db.count_unread_tasks(u.id) if u else 0,
+                isolated_role=isolated_role,
+            ),
+        ),
     )
 
 
 @router.callback_query(F.data == "acc_req:cancel")
-async def acc_work_request_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+async def acc_work_request_cancel(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
+) -> None:
     await cb.answer("❌ Отменено")
     await state.clear()
-    await cb.message.answer("❌ Запрос отменён.")  # type: ignore[union-attr]
+    u = cb.from_user
+    role, isolated_role = await _current_menu(db, u.id) if u else (Role.ACCOUNTING, False)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "❌ Запрос отменён.",
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(
+                role,
+                is_admin=u.id in (config.admin_ids or set()) if u else False,
+                unread=await db.count_unread_tasks(u.id) if u else 0,
+                isolated_role=isolated_role,
+            ),
+        ),
+    )
 
 
 # =====================================================================
