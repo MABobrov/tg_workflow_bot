@@ -1167,6 +1167,44 @@ class Database:
             })
         return result
 
+    async def list_supplier_payments_grouped(
+        self, invoice_id: int,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """SUPPLIER_PAYMENT tasks grouped by material category for invoice.
+
+        Categories:
+            metal   → profile
+            glass   → glass
+            additional → ldsp, gkl, sandwich, other
+            services → service
+        """
+        payments = await self.list_supplier_payments_for_invoice(invoice_id)
+        _CAT_MAP = {
+            "profile": "metal",
+            "glass": "glass",
+            "ldsp": "additional", "gkl": "additional",
+            "sandwich": "additional", "other": "additional",
+            "service": "services",
+        }
+        grouped: dict[str, list[dict[str, Any]]] = {
+            "metal": [], "glass": [], "additional": [], "services": [],
+        }
+        for p in payments:
+            cat = _CAT_MAP.get(p.get("material_type", ""), "additional")
+            grouped[cat].append(p)
+        return grouped
+
+    async def get_edo_upd_status_for_invoice(self, invoice_id: int) -> bool:
+        """True if a sign_upd EDO request is completed for this invoice."""
+        cur = await self.conn.execute(
+            "SELECT id FROM edo_requests "
+            "WHERE request_type = 'sign_upd' AND invoice_id = ? AND status = 'done' "
+            "LIMIT 1",
+            (invoice_id,),
+        )
+        row = await cur.fetchone()
+        return row is not None
+
     async def get_full_invoice_cost_card(self, invoice_id: int) -> dict[str, Any]:
         """
         Полная карточка себестоимости по родительскому счёту.

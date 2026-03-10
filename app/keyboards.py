@@ -1135,6 +1135,16 @@ def material_type_kb(prefix: str = "mattype") -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def urgency_kb(prefix: str = "inv_urgency") -> InlineKeyboardMarkup:
+    """Inline-пикер срочности оплаты: 1ч / 7ч / 24ч."""
+    b = InlineKeyboardBuilder()
+    b.button(text="⚡ В течение 1 часа", callback_data=f"{prefix}:1h")
+    b.button(text="🕐 В течение 7 часов", callback_data=f"{prefix}:7h")
+    b.button(text="📅 В течение 24 часов", callback_data=f"{prefix}:24h")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def finish_kb(action_cb_data: str, cancel_cb_data: str | None = None, finish_text: str = "✅ Создать") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text=finish_text, callback_data=action_cb_data)

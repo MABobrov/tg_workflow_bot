@@ -205,6 +205,7 @@ class InvoiceCreateSG(StatesGroup):
     amount = State()
     invoice_number = State()
     comment = State()
+    urgency = State()          # срочность: 1h / 7h / 24h
     attachments = State()
 
 

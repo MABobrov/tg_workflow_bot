@@ -302,27 +302,30 @@ async def rp_invoices_pay_refresh(cb: CallbackQuery, state: FSMContext, db: Data
 
 @router.callback_query(F.data == "rp_inv_pay:create")
 async def rp_invoices_pay_create(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Начать создание счёта на оплату ГД (→ InvoiceCreateSG)."""
+    """Начать создание счёта на оплату ГД (→ InvoiceCreateSG).
+
+    Simplified: skip project selection, go directly to invoice picker.
+    """
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
 
     from ..states import InvoiceCreateSG
+    from ..keyboards import invoice_select_kb
 
-    projects = await db.list_recent_projects(limit=30)
-    if not projects:
+    invoices = await db.list_invoices_in_work(limit=20)
+    if not invoices:
         await cb.message.answer(  # type: ignore[union-attr]
-            "⚠️ Нет проектов. Сначала создайте проект."
+            "⚠️ Нет счетов в работе."
         )
         return
 
-    from ..keyboards import projects_kb
     await state.clear()
-    await state.set_state(InvoiceCreateSG.project)
+    await state.set_state(InvoiceCreateSG.parent_invoice)
     await cb.message.answer(  # type: ignore[union-attr]
         "💳 <b>Счёт на оплату ГД</b>\n"
-        "Шаг 1/5: выберите проект:",
-        reply_markup=projects_kb(projects, ctx="invoice"),
+        "Шаг 1: выберите счёт объекта (№, адрес):",
+        reply_markup=invoice_select_kb(invoices, prefix="inv_create_parent", allow_skip=True),
     )
 
 
@@ -1083,6 +1086,36 @@ async def rp_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
         f"{c3} 3. Долгов нет\n"
         f"{c4} 4. ЗП — расчёт подтверждён\n"
     )
+
+    # ── Supplier payments grouped by material category ──
+    grouped = await db.list_supplier_payments_grouped(invoice_id)
+    _CAT_LABELS = {
+        "metal": ("🔩", "Металл"),
+        "glass": ("🪟", "Стекло"),
+        "additional": ("📦", "Доп. Материалы"),
+        "services": ("🚚", "Оплата услуг"),
+    }
+    has_any_material = any(grouped[cat] for cat in grouped)
+    text += "\n<b>📦 Заказанные материалы:</b>\n"
+    if not has_any_material:
+        text += "  Нет записей\n"
+    else:
+        for cat_key, (icon, label) in _CAT_LABELS.items():
+            items = grouped.get(cat_key, [])
+            if items:
+                total = sum(p["amount"] for p in items)
+                total_s = f"{total:,.0f}".replace(",", " ")
+                details = ", ".join(
+                    p.get("supplier") or "—" for p in items
+                )
+                text += f"✅ {icon} {label} — {total_s}₽ ({details})\n"
+            else:
+                text += f"⏳ {icon} {label}\n"
+
+    # ── UPD supplier signing via EDO ──
+    upd_signed = await db.get_edo_upd_status_for_invoice(invoice_id)
+    upd_icon = "✅" if upd_signed else "⏳"
+    text += f"\n<b>📄 УПД поставщика:</b>\n{upd_icon} Подписание по ЭДО\n"
 
     # Payment file info
     if inv.get("payment_file_id"):

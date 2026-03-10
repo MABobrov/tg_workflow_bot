@@ -854,7 +854,7 @@ async def invoice_pick_project(cb: CallbackQuery, state: FSMContext, db: Databas
     if invoices:
         await state.set_state(InvoiceCreateSG.parent_invoice)
         await cb.message.answer(  # type: ignore[union-attr]
-            "Шаг 2/7: привязка к счёту объекта (или пропустите):",
+            "Шаг 1: привязка к счёту объекта (или пропустите):",
             reply_markup=invoice_select_kb(invoices, prefix="inv_create_parent"),
         )
     else:
@@ -863,7 +863,7 @@ async def invoice_pick_project(cb: CallbackQuery, state: FSMContext, db: Databas
         from ..keyboards import material_type_kb
         await state.set_state(InvoiceCreateSG.material_type)
         await cb.message.answer(  # type: ignore[union-attr]
-            "Шаг 3/7: тип материала/услуги:",
+            "Шаг 2: тип материала/услуги:",
             reply_markup=material_type_kb(prefix="inv_create_mat"),
         )
 
@@ -872,17 +872,27 @@ async def invoice_pick_project(cb: CallbackQuery, state: FSMContext, db: Databas
     InvoiceCreateSG.parent_invoice,
     lambda cb: cb.data and cb.data.startswith("inv_create_parent:"),
 )
-async def invoice_pick_parent(cb: CallbackQuery, state: FSMContext) -> None:
+async def invoice_pick_parent(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """Pick parent invoice for the new invoice payment."""
     await cb.answer()
     val = (cb.data or "").split(":", 1)[1]
     parent_id = None if val == "skip" else int(val)
     await state.update_data(parent_invoice_id=parent_id)
 
+    # If project_id not set (simplified flow), extract from parent invoice
+    data = await state.get_data()
+    if not data.get("project_id") and parent_id:
+        parent_inv = await db.get_invoice(parent_id)
+        if parent_inv and parent_inv.get("project_id"):
+            await state.update_data(
+                project_id=parent_inv["project_id"],
+                project_code=parent_inv.get("invoice_number", ""),
+            )
+
     from ..keyboards import material_type_kb
     await state.set_state(InvoiceCreateSG.material_type)
     await cb.message.answer(  # type: ignore[union-attr]
-        "Шаг 3/7: тип материала/услуги:",
+        "Шаг 2: тип материала/услуги:",
         reply_markup=material_type_kb(prefix="inv_create_mat"),
     )
 
@@ -898,7 +908,7 @@ async def invoice_pick_material(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(material_type=mat_code)
 
     await state.set_state(InvoiceCreateSG.supplier)
-    await cb.message.answer("Шаг 4/7: укажите поставщика:")  # type: ignore[union-attr]
+    await cb.message.answer("Шаг 3: укажите поставщика:")  # type: ignore[union-attr]
 
 
 @router.message(InvoiceCreateSG.supplier)
@@ -909,7 +919,7 @@ async def invoice_supplier(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(supplier=text)
     await state.set_state(InvoiceCreateSG.amount)
-    await message.answer("Шаг 5/7: укажите сумму:")
+    await message.answer("Шаг 4: укажите сумму:")
 
 
 @router.message(InvoiceCreateSG.amount)
@@ -922,7 +932,7 @@ async def invoice_amount(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(amount=amount)
     await state.set_state(InvoiceCreateSG.invoice_number)
-    await message.answer("Шаг 6/7: укажите номер счёта:")
+    await message.answer("Шаг 5: укажите номер счёта:")
 
 
 @router.message(InvoiceCreateSG.invoice_number)
@@ -933,7 +943,7 @@ async def invoice_number(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(invoice_number=text)
     await state.set_state(InvoiceCreateSG.comment)
-    await message.answer("Шаг 7/7: комментарий (или напишите «-» для пропуска):")
+    await message.answer("Шаг 6: комментарий (или напишите «-» для пропуска):")
 
 
 @router.message(InvoiceCreateSG.comment)
@@ -941,15 +951,33 @@ async def invoice_comment(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     comment = text if text != "-" else ""
     await state.update_data(comment=comment, attachments=[])
-    await state.set_state(InvoiceCreateSG.attachments)
 
+    from ..keyboards import urgency_kb
+    await state.set_state(InvoiceCreateSG.urgency)
+    await message.answer(
+        "Шаг 7: срочность оплаты:",
+        reply_markup=urgency_kb(prefix="inv_urgency"),
+    )
+
+
+@router.callback_query(
+    InvoiceCreateSG.urgency,
+    lambda cb: cb.data and cb.data.startswith("inv_urgency:"),
+)
+async def invoice_urgency(cb: CallbackQuery, state: FSMContext) -> None:
+    """Pick urgency for the invoice payment."""
+    await cb.answer()
+    code = (cb.data or "").split(":", 1)[1]  # 1h / 7h / 24h
+    await state.update_data(urgency=code)
+
+    await state.set_state(InvoiceCreateSG.attachments)
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     b = InlineKeyboardBuilder()
     b.button(text="✅ Создать счёт", callback_data="invoice_create:finalize")
     b.button(text="⏭ Без вложений", callback_data="invoice_create:finalize")
     b.adjust(1)
-    await message.answer(
-        "Прикрепите файлы (счёт, скан). Когда готовы — нажмите кнопку:",
+    await cb.message.answer(  # type: ignore[union-attr]
+        "Шаг 8: прикрепите файлы (счёт, скан). Когда готовы — нажмите кнопку:",
         reply_markup=b.as_markup(),
     )
 
@@ -1016,7 +1044,9 @@ async def invoice_finalize(
         await state.clear()
         return
 
-    due = utcnow() + timedelta(days=3)
+    urgency = data.get("urgency", "1h")
+    _URGENCY_DELTA = {"1h": timedelta(hours=1), "7h": timedelta(hours=7), "24h": timedelta(hours=24)}
+    due = utcnow() + _URGENCY_DELTA.get(urgency, timedelta(hours=1))
     task = await db.create_task(
         project_id=project_id,
         type_=TaskType.INVOICE_PAYMENT,
@@ -1064,6 +1094,8 @@ async def invoice_finalize(
         msg += f"📦 Материал: {MATERIAL_TYPE_LABELS.get(material_type, material_type)}\n"
     if comment:
         msg += f"💬 {comment}\n"
+    _URGENCY_LABEL = {"1h": "⚡ В течение 1 часа", "7h": "🕐 В течение 7 часов", "24h": "📅 В течение 24 часов"}
+    msg += f"⏰ Срочность: {_URGENCY_LABEL.get(urgency, urgency)}\n"
 
     from ..keyboards import task_actions_kb
     await notifier.safe_send(int(gd_id), msg, reply_markup=task_actions_kb(task))
