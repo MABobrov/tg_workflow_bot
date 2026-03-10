@@ -133,6 +133,7 @@ ZAM_BTN_MY_OBJECTS = "📋 Мои замеры"
 ZAM_BTN_URGENT = "🚨 Срочно ГД"
 ZAM_BTN_NOT_URGENT = "📩 Не срочно ГД"
 ZAM_BTN_SYNC = "🔄 Синхронизация данных"
+ZAM_BTN_PAYMENT = "💰 Оплата замеров"
 
 ROLE_SELECTOR_PREFIX = "🎭 "
 ROLE_SELECTOR_LABELS: dict[str, str] = {
@@ -256,9 +257,9 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
         ]
     if role == Role.ZAMERY:
         return [
-            ["📥 Входящие задачи", ZAM_BTN_ZAMERY],
-            [ZAM_BTN_MY_OBJECTS, ZAM_BTN_URGENT],
-            [ZAM_BTN_NOT_URGENT, ZAM_BTN_SYNC],
+            [ZAM_BTN_ZAMERY, ZAM_BTN_MY_OBJECTS],
+            [ZAM_BTN_URGENT, ZAM_BTN_PAYMENT],
+            [ZAM_BTN_SYNC, OPEN_HELP],
         ]
     return []
 
@@ -481,6 +482,8 @@ def main_menu(
                         row[i] = rp_inbox_label
                     elif btn == GD_BTN_INBOX_GD:
                         row[i] = gd_inbox_label
+                    elif btn == ZAM_BTN_ZAMERY:
+                        row[i] = f"{ZAM_BTN_ZAMERY} 🔴{unread}"
                 # GD invoice payment badge
                 if btn == GD_BTN_INVOICES:
                     row[i] = gd_invoice_label
@@ -569,7 +572,6 @@ def main_menu(
     # Zamery — compact layout, no submenu
     if _is_pure_zamery(role):
         rows = [list(row) for row in _role_primary_action_rows(Role.ZAMERY)]
-        rows.append(["❌ Отмена", OPEN_HELP])
         if isolated_role:
             rows.append([BACK_TO_ROLE_SELECTOR])
         if is_admin:

@@ -137,6 +137,7 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
         assigned_to=user_id,
         statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
         limit=50,
+        exclude_created_by=user_id,
     )
 
     is_admin = user_id in (config.admin_ids or set())

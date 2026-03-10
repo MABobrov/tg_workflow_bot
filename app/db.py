@@ -752,14 +752,18 @@ class Database:
         statuses: Iterable[str] = ("open", "in_progress"),
         limit: int = 30,
         type_filter: str | None = None,
+        exclude_created_by: int | None = None,
     ) -> list[dict[str, Any]]:
         statuses = list(statuses)
         placeholders = ",".join("?" for _ in statuses)
         params: list[Any] = [assigned_to, *statuses]
         where_type = ""
         if type_filter:
-            where_type = " AND type = ?"
+            where_type += " AND type = ?"
             params.append(type_filter)
+        if exclude_created_by is not None:
+            where_type += " AND (created_by IS NULL OR created_by != ?)"
+            params.append(exclude_created_by)
         params.append(limit)
         cur = await self.conn.execute(
             f"""
@@ -891,12 +895,14 @@ class Database:
         return task_count + msg_count
 
     async def count_gd_inbox_tasks(self, user_id: int) -> int:
-        """Count tasks for GD inbox: OPEN/IN_PROGRESS, excluding invoice_payment, payment_confirm, invoice_end."""
+        """Count tasks for GD inbox: OPEN/IN_PROGRESS, excluding invoice_payment, payment_confirm, invoice_end.
+        Also excludes tasks created by the GD user themselves (outgoing tasks)."""
         cur = await self.conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE assigned_to = ? "
             "AND status IN ('open', 'in_progress') "
-            "AND type NOT IN ('invoice_payment', 'payment_confirm', 'invoice_end')",
-            (user_id,),
+            "AND type NOT IN ('invoice_payment', 'payment_confirm', 'invoice_end') "
+            "AND (created_by IS NULL OR created_by != ?)",
+            (user_id, user_id),
         )
         row = await cur.fetchone()
         return row[0] if row else 0
@@ -2747,6 +2753,48 @@ class Database:
             (assigned_to,),
         )
         return [dict(r) for r in await cur.fetchall()]
+
+    async def import_zamery_invoices(
+        self,
+        records: list[dict[str, str]],
+        zamery_user_id: int,
+    ) -> int:
+        """One-time import of zamery as invoices with zp_status='not_requested'.
+
+        Each record: {"invoice_number": ..., "object_address": ..., "client_contact": ...}
+        Returns number of inserted rows.
+        """
+        now = to_iso(utcnow())
+        count = 0
+        for rec in records:
+            # Skip if already imported (by invoice_number)
+            cur = await self.conn.execute(
+                "SELECT id FROM invoices WHERE invoice_number = ?",
+                (rec["invoice_number"],),
+            )
+            if await cur.fetchone():
+                continue
+            await self.conn.execute(
+                "INSERT INTO invoices "
+                "(invoice_number, object_address, client_contact, "
+                " created_by, creator_role, assigned_to, "
+                " status, zp_status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'zamery', ?, 'ended', 'not_requested', ?, ?)",
+                (
+                    rec["invoice_number"],
+                    rec["object_address"],
+                    rec.get("client_contact", ""),
+                    zamery_user_id,
+                    zamery_user_id,
+                    now,
+                    now,
+                ),
+            )
+            count += 1
+        if count:
+            await self.conn.commit()
+            log.info("import_zamery_invoices: inserted %d zamery records", count)
+        return count
 
     async def list_open_lead_tasks_for_manager(
         self, manager_id: int, limit: int = 20,

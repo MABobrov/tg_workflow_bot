@@ -91,6 +91,27 @@ async def main() -> None:
     if marker_map:
         await db.assign_invoices_by_marker(marker_map)
 
+    # One-time import: 8 zamery records as unpaid invoices
+    zamery_uid = config.default_zamery_id
+    if not zamery_uid:
+        _zam_users = await db.find_users_by_role("zamery")
+        if _zam_users:
+            zamery_uid = _zam_users[0].telegram_id
+    if zamery_uid:
+        _zamery_records = [
+            {"invoice_number": "ЗМ-КВ-1", "object_address": "г. Москва, Енисейская 2 стр.2", "client_contact": "Константин 89857948959"},
+            {"invoice_number": "ЗМ-КИА-1", "object_address": "г. Москва, Краснопресненская наб. 12 ЦМТ", "client_contact": "Юрий 89296880543"},
+            {"invoice_number": "ЗМ-КВ-2", "object_address": "г. Москва, ул. Рабочая д.91 стр.3", "client_contact": "Илья 89255702601"},
+            {"invoice_number": "ЗМ-НПН-1", "object_address": "г. Москва, ул. 2-я Звенигородская, д. 13, стр. 42", "client_contact": "Екатерина 8 926 588 19 84"},
+            {"invoice_number": "ЗМ-КВ-3", "object_address": "г. Москва, наб. Туполева 17", "client_contact": "Валерий Анатольевич 8 953 742 02 31"},
+            {"invoice_number": "ЗМ-КВ-4", "object_address": "г. Москва, пр-т Вернадского, д. 11/19", "client_contact": "Сюзанна 89152144332"},
+            {"invoice_number": "ЗМ-КВ-5", "object_address": "г. Москва, ул. Лобачевского д.28А", "client_contact": "Евгений 8 903 324 42 87"},
+            {"invoice_number": "ЗМ-КИА-2", "object_address": "г. Москва, ул. Мосфильмовская 88 корп 4 стр 1 кв. 742", "client_contact": "Петр +7 991 305-86-04"},
+        ]
+        imported = await db.import_zamery_invoices(_zamery_records, zamery_uid)
+        if imported:
+            logging.getLogger(__name__).info("Imported %d zamery records", imported)
+
     work_chat_id = await get_work_chat_id(db, config)
 
     bot = Bot(

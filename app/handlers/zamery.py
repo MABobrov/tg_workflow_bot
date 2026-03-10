@@ -25,6 +25,7 @@ from ..enums import (
 )
 from ..keyboards import (
     ZAM_BTN_MY_OBJECTS,
+    ZAM_BTN_PAYMENT,
     ZAM_BTN_ZAMERY,
     main_menu,
     tasks_kb,
@@ -241,37 +242,77 @@ async def zamery_my_objects(message: Message, db: Database) -> None:
     )]
 
     if not active:
-        await answer_service(message, "📌 Нет активных объектов.", delay_seconds=60)
+        await answer_service(message, "📌 Нет активных замеров.", delay_seconds=60)
         return
 
     lines = []
-    b = InlineKeyboardBuilder()
-    has_zp_buttons = False
-
     for inv in active[:20]:
         zp = inv.get("zp_status", "not_requested")
-        zp_emoji = {"approved": "✅", "requested": "⏳"}.get(zp, "—")
+        zp_label = {"approved": "✅ ЗП ОК", "requested": "⏳ ЗП запрошена"}.get(
+            zp, "❌ Не оплачен",
+        )
         status_emoji = {
             "in_progress": "🔄", "paid": "✅",
             "closing": "📌", "ended": "🏁",
         }.get(inv["status"], "❓")
         lines.append(
-            f"{status_emoji} №{inv['invoice_number']} — {inv.get('object_address', '-')[:30]} "
-            f"[ЗП: {zp_emoji}]"
+            f"{status_emoji} №{inv['invoice_number']} — "
+            f"{(inv.get('object_address') or '-')[:30]} "
+            f"[{zp_label}]"
         )
-        # Кнопка «Расчёт ЗП» для счетов без утверждённой ЗП
+
+    text = f"📋 <b>Мои замеры</b> ({len(active)}):\n\n" + "\n".join(lines)
+    await message.answer(text)
+
+
+# =====================================================================
+# ОПЛАТА ЗАМЕРОВ (список неоплаченных + кнопки ЗП)
+# =====================================================================
+
+@router.message(F.text == ZAM_BTN_PAYMENT)
+async def zamery_payment(message: Message, db: Database) -> None:
+    """Замерщик: Оплата замеров — список неоплаченных замеров с расчётом ЗП."""
+    if not await require_role_message(message, db, roles=[Role.ZAMERY]):
+        return
+
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
+    unpaid = [
+        i for i in invoices
+        if i.get("zp_status", "not_requested") != "approved"
+        and i["status"] in (
+            InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
+            InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
+        )
+    ]
+
+    if not unpaid:
+        await answer_service(message, "✅ Все замеры оплачены.", delay_seconds=60)
+        return
+
+    lines = []
+    b = InlineKeyboardBuilder()
+    has_buttons = False
+
+    for inv in unpaid[:20]:
+        zp = inv.get("zp_status", "not_requested")
+        zp_label = {"requested": "⏳ ЗП запрошена"}.get(zp, "❌ Не оплачен")
+        addr = (inv.get("object_address") or "-")[:30]
+        lines.append(f"📍 №{inv['invoice_number']} — {addr} [{zp_label}]")
+
+        # Кнопка расчёта ЗП — только для ещё не запрошенных
         if zp not in ("approved", "requested"):
             inv_num_short = inv["invoice_number"][:15]
             b.button(
                 text=f"💰 ЗП: №{inv_num_short}",
                 callback_data=f"zamzp:start:{inv['id']}",
             )
-            has_zp_buttons = True
+            has_buttons = True
 
     b.adjust(1)
-    text = f"📋 <b>Мои замеры</b> ({len(active)}):\n\n" + "\n".join(lines)
+    text = f"💰 <b>Оплата замеров</b> ({len(unpaid)}):\n\n" + "\n".join(lines)
 
-    if has_zp_buttons:
+    if has_buttons:
         text += "\n\n💰 Нажмите для расчёта ЗП:"
         await message.answer(text, reply_markup=b.as_markup())
     else:
@@ -309,6 +350,7 @@ async def zamery_zp_start(
         f"💰 <b>Расчёт ЗП — Счёт №{inv['invoice_number']}</b>\n\n"
         f"📍 Адрес: {inv.get('object_address', '-')}\n\n"
         "Введите <b>стоимость замера</b> (число, ₽):\n"
+        "По умолчанию: <b>2500₽</b>\n"
         "Для отмены: <code>/cancel</code>",
     )
 
