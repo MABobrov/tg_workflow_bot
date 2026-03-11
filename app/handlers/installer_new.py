@@ -924,7 +924,7 @@ async def installer_my_objects(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
 
-    invoices = await db.list_invoices(limit=50)
+    invoices = await db.list_invoices(limit=100)
     all_inv = [i for i in invoices if i["status"] in (
         InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
         InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
@@ -942,18 +942,18 @@ async def installer_my_objects(message: Message, db: Database) -> None:
         and i["status"] != InvoiceStatus.ENDED
         and (i.get("zp_installer_status") or "not_requested") != "approved"
     ]
+    archive = [
+        i for i in all_inv
+        if (i.get("zp_installer_status") or "not_requested") == "approved"
+    ]
 
-    text = f"📌 <b>Мои объекты</b> · {len(in_work) + len(waiting)} шт.\n"
+    total = len(in_work) + len(waiting) + len(archive)
+    text = f"📌 <b>Мои объекты</b> · {total} шт.\n"
 
     b = InlineKeyboardBuilder()
-    b.button(
-        text=f"🔨 В работе ({len(in_work)})",
-        callback_data="instobj:cat:work",
-    )
-    b.button(
-        text=f"✅ Ожидает расчёт ({len(waiting)})",
-        callback_data="instobj:cat:waiting",
-    )
+    b.button(text=f"🔨 В работе ({len(in_work)})", callback_data="instobj:cat:work")
+    b.button(text=f"✅ Ожидает расчёт ({len(waiting)})", callback_data="instobj:cat:waiting")
+    b.button(text=f"📦 Архив ({len(archive)})", callback_data="instobj:cat:archive")
     b.adjust(1)
 
     await message.answer(text, reply_markup=b.as_markup())
@@ -968,7 +968,7 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
 
     cat = cb.data.split(":")[-1]  # type: ignore[union-attr]
 
-    invoices = await db.list_invoices(limit=50)
+    invoices = await db.list_invoices(limit=100)
     all_inv = [i for i in invoices if i["status"] in (
         InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
         InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
@@ -979,8 +979,14 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
         filtered = [i for i in all_inv if i.get("montazh_stage") in work_stages]
         filtered.sort(key=lambda i: _STAGE_ORDER.get(i.get("montazh_stage") or "none", 99))
         title = "🔨 В работе"
+    elif cat == "archive":
+        filtered = [
+            i for i in all_inv
+            if (i.get("zp_installer_status") or "not_requested") == "approved"
+        ]
+        filtered.sort(key=lambda i: i.get("zp_installer_approved_at") or "", reverse=True)
+        title = "📦 Архив"
     else:
-        # Счёт ОК + не закрытые без ЗП approved
         filtered = [
             i for i in all_inv
             if i.get("montazh_stage") not in work_stages
@@ -994,11 +1000,16 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer(f"{title}\n\nНет счетов.")  # type: ignore[union-attr]
         return
 
-    await cb.message.answer(f"{title} ({len(filtered)})")  # type: ignore[union-attr]
+    if cat == "archive":
+        stats = _build_archive_stats(filtered)
+        await cb.message.answer(f"{title} ({len(filtered)})\n\n{stats}")  # type: ignore[union-attr]
+        card_fn = _build_archive_card
+    else:
+        await cb.message.answer(f"{title} ({len(filtered)})")  # type: ignore[union-attr]
+        card_fn = _build_inst_detail_card
 
     for inv in filtered[:15]:
-        card_text = _build_inst_detail_card(inv)
-        cat_back = "waiting" if inv.get("montazh_stage") == "invoice_ok" else "work"
+        card_text = card_fn(inv)
         b = InlineKeyboardBuilder()
         b.button(text="⬅️ Назад", callback_data="instobj:back")
         b.adjust(1)
@@ -1012,7 +1023,7 @@ async def installer_objects_back(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
 
-    invoices = await db.list_invoices(limit=50)
+    invoices = await db.list_invoices(limit=100)
     all_inv = [i for i in invoices if i["status"] in (
         InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
         InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
@@ -1026,12 +1037,18 @@ async def installer_objects_back(cb: CallbackQuery, db: Database) -> None:
         and i["status"] != InvoiceStatus.ENDED
         and (i.get("zp_installer_status") or "not_requested") != "approved"
     ]
+    archive = [
+        i for i in all_inv
+        if (i.get("zp_installer_status") or "not_requested") == "approved"
+    ]
 
-    text = f"📌 <b>Мои объекты</b> · {len(in_work) + len(waiting)} шт.\n"
+    total = len(in_work) + len(waiting) + len(archive)
+    text = f"📌 <b>Мои объекты</b> · {total} шт.\n"
 
     b = InlineKeyboardBuilder()
     b.button(text=f"🔨 В работе ({len(in_work)})", callback_data="instobj:cat:work")
     b.button(text=f"✅ Ожидает расчёт ({len(waiting)})", callback_data="instobj:cat:waiting")
+    b.button(text=f"📦 Архив ({len(archive)})", callback_data="instobj:cat:archive")
     b.adjust(1)
 
     try:
@@ -1102,6 +1119,119 @@ def _build_inst_detail_card(inv: dict) -> str:
     if inv.get("description"):
         text += f" · 💬 {inv['description'][:50]}"
     text += "\n"
+    return text
+
+
+def _build_archive_stats(invoices: list[dict]) -> str:
+    """Статистика архива: месяц, год, сроки."""
+    from datetime import date as _date
+
+    today = _date.today()
+    cur_month, cur_year = today.month, today.year
+
+    month_inv: list[dict] = []
+    year_inv: list[dict] = []
+    on_time = 0
+    late = 0
+
+    for inv in invoices:
+        approved_at = inv.get("zp_installer_approved_at") or ""
+        try:
+            dt = _date.fromisoformat(str(approved_at)[:10])
+        except (ValueError, TypeError):
+            dt = None
+
+        if dt and dt.year == cur_year:
+            year_inv.append(inv)
+            if dt.month == cur_month:
+                month_inv.append(inv)
+
+        deadline = inv.get("deadline_end_date")
+        completion = inv.get("actual_completion_date") or inv.get("zp_installer_approved_at")
+        if deadline and completion:
+            try:
+                d_dl = _date.fromisoformat(str(deadline)[:10])
+                d_co = _date.fromisoformat(str(completion)[:10])
+                if d_co <= d_dl:
+                    on_time += 1
+                else:
+                    late += 1
+            except (ValueError, TypeError):
+                pass
+
+    def _line(label: str, invs: list[dict]) -> str:
+        cnt = len(invs)
+        zp = sum(float(i.get("zp_installer_amount") or 0) for i in invs)
+        amounts = sum(float(i.get("amount") or 0) for i in invs)
+        pct = (zp / amounts * 100) if amounts > 0 else 0
+        return f"{label}: {cnt} шт. · {zp:,.0f}₽ · {pct:.1f}%"
+
+    lines = [
+        "📊 <b>Статистика</b>",
+        f"📅 Месяц: {_line('', month_inv).lstrip(': ')}",
+        f"📅 Год {cur_year}: {_line('', year_inv).lstrip(': ')}",
+        f"⏰ Сроки: ✅ {on_time} в срок · 🔴 {late} просрочено",
+    ]
+    return "\n".join(lines)
+
+
+def _build_archive_card(inv: dict) -> str:
+    """Карточка архивного счёта (финансовый фокус)."""
+    from datetime import date as _date
+
+    num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
+    text = f"📄 <b>№{num}</b> · 📦 Архив\n"
+    text += f"📍 {inv.get('object_address', '—')}\n"
+
+    amount = inv.get("amount")
+    if amount:
+        try:
+            text += f"💰 Сумма: {float(amount):,.0f}₽\n"
+        except (ValueError, TypeError):
+            pass
+
+    est_inst = inv.get("estimated_installation")
+    est_val = 0
+    if est_inst:
+        try:
+            est_val = int(float(est_inst) * 0.77) // 1000 * 1000
+            text += f"🔧 Расч. монтаж: {est_val:,}₽\n"
+        except (ValueError, TypeError):
+            pass
+
+    zp_amount = inv.get("zp_installer_amount")
+    zp_val = 0.0
+    if zp_amount:
+        try:
+            zp_val = float(zp_amount)
+            text += f"💵 ЗП выплачено: <b>{zp_val:,.0f}₽</b>\n"
+        except (ValueError, TypeError):
+            pass
+
+    if est_val and zp_val:
+        delta = zp_val - est_val
+        sign = "+" if delta >= 0 else ""
+        pct = (delta / est_val * 100) if est_val else 0
+        text += f"📊 Дельта: {sign}{delta:,.0f}₽ ({sign}{pct:.0f}%)\n"
+
+    deadline = inv.get("deadline_end_date")
+    completion = inv.get("actual_completion_date") or inv.get("zp_installer_approved_at")
+    if deadline and completion:
+        try:
+            d_dl = _date.fromisoformat(str(deadline)[:10])
+            d_co = _date.fromisoformat(str(completion)[:10])
+            diff = (d_dl - d_co).days
+            if diff >= 0:
+                text += f"⏰ ✅ в срок ({diff}дн запас)\n"
+            else:
+                text += f"⏰ 🔴 просрочен на {abs(diff)}дн\n"
+        except (ValueError, TypeError):
+            pass
+
+    approved = inv.get("zp_installer_approved_at")
+    if approved:
+        text += f"📅 Закрыт: {str(approved)[:10]}\n"
+
     return text
 
 
