@@ -820,37 +820,32 @@ async def _render_payment_list(
     no_cost = [i for i in not_requested if not i.get("zp_zamery_total")]
 
     # --- Карточка ---
-    text = "┌─────────────────────────\n"
-    text += "│ 💰 <b>Оплата замеров</b>\n"
-    text += "├─────────────────────────\n"
-    text += f"│ 📊 Всего замеров: <b>{len(unpaid) + len(paid_list)}</b>\n"
+    total_count = len(unpaid) + len(paid_list)
+    text = f"💰 <b>Оплата замеров</b> · {total_count} шт."
     if total_all:
-        text += f"│ 💵 Общая сумма: <b>{int(total_all)}₽</b>\n"
-    text += "│\n"
+        text += f" · {int(total_all)}₽"
+    text += "\n"
 
+    parts = []
     if not_requested:
-        text += f"│ ❌ Не оплачено: <b>{len(not_requested)}</b>"
+        s = f"❌ {len(not_requested)}"
         if sum_not_req:
-            text += f" — {int(sum_not_req)}₽"
-        text += "\n"
-
+            s += f" · {int(sum_not_req)}₽"
+        parts.append(s)
     if requested:
-        text += f"│ ⏳ На проверке: <b>{len(requested)}</b>"
+        s = f"⏳ {len(requested)}"
         if sum_requested:
-            text += f" — {int(sum_requested)}₽"
-        text += "\n"
-
+            s += f" · {int(sum_requested)}₽"
+        parts.append(s)
     if paid_list:
-        text += f"│ ✅ Оплачено: <b>{len(paid_list)}</b>"
+        s = f"✅ {len(paid_list)}"
         if sum_paid:
-            text += f" — {int(sum_paid)}₽"
-        text += "\n"
-
+            s += f" · {int(sum_paid)}₽"
+        parts.append(s)
+    if parts:
+        text += " | ".join(parts) + "\n"
     if no_cost:
-        text += f"│\n│ ⚠️ <i>Без стоимости: {len(no_cost)} шт.</i>\n"
-
-    text += "└─────────────────────────\n\n"
-    text += "Нажмите на замер, чтобы изменить стоимость:"
+        text += f"⚠️ <i>Без стоимости: {len(no_cost)}</i>\n"
 
     # --- Кнопки: каждый замер → редактировать стоимость ---
     b = InlineKeyboardBuilder()
@@ -920,16 +915,9 @@ async def zamery_payment_card(cb: CallbackQuery, state: FSMContext, db: Database
     if zp in ("approved", "requested"):
         zp_label = {"requested": "⏳ На проверке", "approved": "✅ Оплачена"}.get(zp, "")
         cost = inv.get("zp_zamery_total")
-        text = (
-            f"┌─────────────────────────\n"
-            f"│ 💰 <b>Замер №{inv['invoice_number']}</b>\n"
-            f"├─────────────────────────\n"
-            f"│ 📍 {inv.get('object_address', '—')}\n"
-            f"│ 💵 Стоимость: <b>{int(cost)}₽</b>\n" if cost else
-            f"│ 💵 Стоимость: <b>—</b>\n"
-        )
-        text += f"│ {zp_label}\n"
-        text += f"└─────────────────────────"
+        cost_str = f"<b>{int(cost)}₽</b>" if cost else "<b>—</b>"
+        addr = inv.get("object_address", "—")
+        text = f"💰 №{inv['invoice_number']} · {addr}\n💵 {cost_str} · {zp_label}"
         b = InlineKeyboardBuilder()
         b.button(text="⬅️ Назад", callback_data="zampay:back")
         b.adjust(1)
@@ -943,17 +931,9 @@ async def zamery_payment_card(cb: CallbackQuery, state: FSMContext, db: Database
 
     cost = inv.get("zp_zamery_total")
     addr = inv.get("object_address") or "—"
-    hint = f"Текущая: <b>{int(cost)}₽</b>" if cost else "<i>не указана</i>"
+    hint = f"<b>{int(cost)}₽</b>" if cost else "<i>—</i>"
 
-    text = (
-        f"┌─────────────────────────\n"
-        f"│ ✏️ <b>Замер №{inv['invoice_number']}</b>\n"
-        f"├─────────────────────────\n"
-        f"│ 📍 {addr}\n"
-        f"│ 💵 {hint}\n"
-        f"└─────────────────────────\n\n"
-        f"Введите новую стоимость замера в ₽:"
-    )
+    text = f"✏️ №{inv['invoice_number']} · {addr}\n💵 Сейчас: {hint}\n\nВведите новую стоимость (₽):"
     b = InlineKeyboardBuilder()
     b.button(text="⬅️ Отмена", callback_data="zampay:back")
     b.adjust(1)
@@ -1017,21 +997,11 @@ async def zamery_send_batch(
     # Показать итоговый расчёт карточкой
     total = sum(i["zp_zamery_total"] for i in sendable)
 
-    text = "┌─────────────────────────\n"
-    text += "│ 📋 <b>Расчёт по замерам</b>\n"
-    text += "├─────────────────────────\n"
+    text = f"📋 <b>Расчёт · {len(sendable)} зам. · {int(total)}₽</b>\n\n"
     for idx, inv in enumerate(sendable, 1):
-        addr = (inv.get("object_address") or "—")[:30]
-        text += f"│ {idx}. №{inv['invoice_number']}\n"
-        text += f"│    📍 {addr}\n"
-        text += f"│    💵 {int(inv['zp_zamery_total'])}₽\n"
-        if idx < len(sendable):
-            text += "│\n"
-    text += "├─────────────────────────\n"
-    text += f"│ 🔢 Замеров: <b>{len(sendable)}</b>\n"
-    text += f"│ 💰 Итого: <b>{int(total)}₽</b>\n"
-    text += "└─────────────────────────\n\n"
-    text += "Подтвердите отправку в оплату ГД:"
+        addr = (inv.get("object_address") or "—")[:25]
+        text += f"{idx}. №{inv['invoice_number']} · {addr} · {int(inv['zp_zamery_total'])}₽\n"
+    text += f"\nОтправить в оплату ГД?"
 
     b = InlineKeyboardBuilder()
     b.button(
