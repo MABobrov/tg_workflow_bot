@@ -6,7 +6,8 @@ from aiogram import Router
 from aiogram import html
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import ChatMemberUpdated, Message, ReplyKeyboardRemove
+from aiogram import F
+from aiogram.types import CallbackQuery, ChatMemberUpdated, Message, ReplyKeyboardRemove
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..callbacks import AdminRoleCb, AdminUserCb
@@ -690,6 +691,38 @@ async def menu_help(message: Message, db: Database, config: Config) -> None:
 
 
 # =====================================================================
+# УНИВЕРСАЛЬНЫЙ CALLBACK «НАЗАД» — возврат в главное меню (любая роль)
+# =====================================================================
+
+@router.callback_query(F.data == "nav:home")
+async def universal_back_home(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
+) -> None:
+    """Возврат в главное меню из любого inline-меню (любая роль)."""
+    await cb.answer()
+    await state.clear()
+    u = cb.from_user
+    if not u:
+        return
+    user = await db.get_user_optional(u.id)
+    role = user.role if user else None
+    menu_role, isolated_role = _menu_scope(u.id, role)
+    menu_context = await _menu_context(db, u.id, menu_role)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📋 Главное меню",
+        reply_markup=private_only_reply_markup(
+            cb.message,
+            main_menu(
+                menu_role,
+                is_admin=u.id in (config.admin_ids or set()),
+                isolated_role=isolated_role,
+                **menu_context,
+            ),
+        ),
+    )
+
+
+# =====================================================================
 # ВХОДЯЩИЕ ЗАДАЧИ (универсальный обработчик для всех ролей)
 # =====================================================================
 
@@ -707,7 +740,7 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
     await message.answer(
         f"📥 <b>Входящие задачи</b> ({len(tasks)}):\n\n"
         "Нажмите на задачу для просмотра:",
-        reply_markup=tasks_kb(tasks),
+        reply_markup=tasks_kb(tasks, back_callback="nav:home"),
     )
 
 

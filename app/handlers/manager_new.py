@@ -898,7 +898,7 @@ async def start_invoice_end(message: Message, state: FSMContext, db: Database) -
     await message.answer(
         "🏁 <b>Счет End</b>\n\n"
         "Выберите счёт для закрытия:",
-        reply_markup=invoice_list_kb(active, action_prefix="invend"),
+        reply_markup=invoice_list_kb(active, action_prefix="invend", back_callback="nav:home"),
     )
 
 
@@ -1616,7 +1616,7 @@ async def my_invoices(message: Message, db: Database) -> None:
     await message.answer(
         f"📑 <b>Мои Счета</b> ({len(invoices)}):\n\n"
         "Нажмите на счёт для просмотра:",
-        reply_markup=invoice_list_kb(invoices, action_prefix="myinv"),
+        reply_markup=invoice_list_kb(invoices, action_prefix="myinv", back_callback="nav:home"),
     )
 
 
@@ -1922,6 +1922,7 @@ async def mgr_zamery(message: Message, state: FSMContext, db: Database) -> None:
     else:
         text = "📐 <b>Замеры</b>\n\nНет заявок. Создайте новую:"
     b.button(text="🔄 Обновить", callback_data="zam_dash:refresh")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
     await message.answer(text, reply_markup=b.as_markup())
 
@@ -1949,6 +1950,7 @@ async def zamery_dash_refresh(cb: CallbackQuery, db: Database) -> None:
     else:
         text = "📐 <b>Замеры</b>\n\nНет заявок. Создайте новую:"
     b.button(text="🔄 Обновить", callback_data="zam_dash:refresh")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
@@ -2448,6 +2450,7 @@ async def manager_zp_start(message: Message, state: FSMContext, db: Database) ->
     for inv in eligible:
         label = f"№{inv['invoice_number'] or '—'} / {(inv.get('object_address') or '—')[:30]}"
         b.button(text=label, callback_data=f"mgrzp:pick:{inv['id']}")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     text_parts = ["💰 <b>Запрос ЗП</b>\n"]

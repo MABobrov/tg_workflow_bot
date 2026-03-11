@@ -90,7 +90,7 @@ async def zamery_inbox(message: Message, db: Database) -> None:
         text += "<b>По менеджерам:</b>\n" + "\n".join(stat_lines) + "\n\n"
     text += "Нажмите на заявку для просмотра:"
 
-    await message.answer(text, reply_markup=zamery_incoming_kb(all_reqs))
+    await message.answer(text, reply_markup=zamery_incoming_kb(all_reqs, back_callback="nav:home"))
 
 
 @router.callback_query(F.data.startswith("zam_in:view:"))
@@ -307,14 +307,13 @@ async def zamery_payment(message: Message, db: Database) -> None:
             )
             has_buttons = True
 
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
     text = f"💰 <b>Оплата замеров</b> ({len(unpaid)}):\n\n" + "\n".join(lines)
 
     if has_buttons:
         text += "\n\n💰 Нажмите для расчёта ЗП:"
-        await message.answer(text, reply_markup=b.as_markup())
-    else:
-        await message.answer(text)
+    await message.answer(text, reply_markup=b.as_markup())
 
 
 # =====================================================================

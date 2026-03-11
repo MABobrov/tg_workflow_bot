@@ -172,7 +172,7 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
         "Выберите задачу:"
     )
 
-    await message.answer(text, reply_markup=tasks_kb(all_tasks))
+    await message.answer(text, reply_markup=tasks_kb(all_tasks, back_callback="nav:home"))
 
 
 
@@ -239,6 +239,7 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
                 label += f" — {addr}"
             b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
     b.button(text="🔄 Обновить", callback_data="gd_inv:refresh")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     header = f"<b>Счета на Оплату</b> ({len(invoices)})"
@@ -293,6 +294,7 @@ async def gd_invoices_refresh(cb: CallbackQuery, db: Database) -> None:
                 label += f" — {addr}"
             b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
     b.button(text="🔄 Обновить", callback_data="gd_inv:refresh")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     header = f"<b>Счета на Оплату</b> ({len(invoices)})"
@@ -347,6 +349,7 @@ async def gd_invoices_work(message: Message, db: Database) -> None:
             label += f" ({amt})"
         b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
     b.button(text="🔄 Обновить", callback_data="gd_work:refresh")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     text = (
@@ -397,6 +400,7 @@ async def gd_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
             label += f" ({amt})"
         b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
     b.button(text="🔄 Обновить", callback_data="gd_work:refresh")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     text = (
@@ -542,7 +546,7 @@ async def gd_search_execute(message: Message, state: FSMContext, db: Database, c
 
     await message.answer(
         f"<b>Результаты поиска</b> ({len(results)}):",
-        reply_markup=tasks_kb(results),
+        reply_markup=tasks_kb(results, back_callback="nav:home"),
     )
 
 # ---------------------------------------------------------------------------
@@ -646,7 +650,7 @@ async def sales_incoming(message: Message, state: FSMContext, db: Database, conf
 
     await message.answer(
         f"<b>Входящие «Не срочно»</b> ({len(tasks)}):",
-        reply_markup=tasks_kb(tasks),
+        reply_markup=tasks_kb(tasks, back_callback="nav:home"),
     )
 
 

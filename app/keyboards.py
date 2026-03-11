@@ -637,13 +637,15 @@ _ROLE_SHORT: dict[str, str] = {
 }
 
 
-def tasks_kb(tasks: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+def tasks_kb(tasks: list[dict[str, Any]], *, back_callback: str | None = None) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for t in tasks:
         role_short = _ROLE_SHORT.get(t.get("creator_role", ""), "")
         role_tag = f" ({role_short})" if role_short else ""
         text = f"#{t['id']}{role_tag} • {task_type_label(t.get('type'))} • {task_status_label(t.get('status'))}"
         b.button(text=text[:64], callback_data=TaskCb(task_id=int(t["id"]), action="open").pack())
+    if back_callback:
+        b.button(text="⬅️ Назад", callback_data=back_callback)
     b.adjust(1)
     return b.as_markup()
 
@@ -933,7 +935,7 @@ def zamery_my_requests_kb(requests: list[dict[str, Any]]) -> InlineKeyboardMarku
     return b.as_markup()
 
 
-def zamery_incoming_kb(requests: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+def zamery_incoming_kb(requests: list[dict[str, Any]], *, back_callback: str | None = None) -> InlineKeyboardMarkup:
     """Замерщик: входящие заявки на замер."""
     b = InlineKeyboardBuilder()
     for req in requests:
@@ -943,6 +945,8 @@ def zamery_incoming_kb(requests: list[dict[str, Any]]) -> InlineKeyboardMarkup:
             text=f"📐 #{req['id']} ({role_short}) — {addr}"[:55],
             callback_data=f"zam_in:view:{req['id']}",
         )
+    if back_callback:
+        b.button(text="⬅️ Назад", callback_data=back_callback)
     b.adjust(1)
     return b.as_markup()
 
@@ -965,7 +969,7 @@ def edo_invoice_pick_kb(invoices: list[dict[str, Any]]) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def invoice_list_kb(invoices: list[dict], action_prefix: str = "inv") -> InlineKeyboardMarkup:
+def invoice_list_kb(invoices: list[dict], action_prefix: str = "inv", *, back_callback: str | None = None) -> InlineKeyboardMarkup:
     """Inline-кнопки со списком счетов."""
     b = InlineKeyboardBuilder()
     for inv in invoices:
@@ -976,6 +980,8 @@ def invoice_list_kb(invoices: list[dict], action_prefix: str = "inv") -> InlineK
         }.get(inv.get("status", ""), "❓")
         text = f"{status_emoji} №{inv.get('invoice_number', '?')} — {inv.get('amount', 0):.0f}₽"
         b.button(text=text[:60], callback_data=f"{action_prefix}:view:{inv['id']}")
+    if back_callback:
+        b.button(text="⬅️ Назад", callback_data=back_callback)
     b.adjust(1)
     return b.as_markup()
 

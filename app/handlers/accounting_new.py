@@ -97,6 +97,7 @@ async def _show_acc_invoices_work(
             label += f" ({amt})"
         b.button(text=label[:60], callback_data=f"acc_work:view:{inv['id']}")
     b.button(text="🔄 Обновить", callback_data="acc_work:refresh")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     n_total = len(invoices)
@@ -391,7 +392,7 @@ async def acc_invoice_end(message: Message, db: Database) -> None:
         return
     await message.answer(
         f"🏁 <b>Закрытые Счета</b> ({len(invoices)}):",
-        reply_markup=invoice_list_kb(invoices, action_prefix="accinv"),
+        reply_markup=invoice_list_kb(invoices, action_prefix="accinv", back_callback="nav:home"),
     )
 
 

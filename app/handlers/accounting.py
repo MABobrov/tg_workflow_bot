@@ -65,7 +65,7 @@ async def closing_tasks(message: Message, db: Database) -> None:
     await message.answer(
         f"📄 Запросы на закрывающие: <b>{len(tasks)}</b>\n"
         "Нажмите на задачу, чтобы открыть детали и действия.",
-        reply_markup=tasks_kb(tasks),
+        reply_markup=tasks_kb(tasks, back_callback="nav:home"),
     )
 
 

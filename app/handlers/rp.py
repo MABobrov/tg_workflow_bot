@@ -61,7 +61,7 @@ async def inbox_tasks(message: Message, db: Database) -> None:
     await message.answer(
         f"📥 Ваши задачи: <b>{len(tasks)}</b>\n"
         "Нажмите на задачу, чтобы открыть карточку и доступные действия.",
-        reply_markup=tasks_kb(tasks),
+        reply_markup=tasks_kb(tasks, back_callback="nav:home"),
     )
 
 

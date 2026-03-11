@@ -320,7 +320,7 @@ async def start_invoice_ok(message: Message, state: FSMContext, db: Database) ->
     await message.answer(
         "✅ <b>Счет ОК</b>\n\n"
         "Выберите счёт, по которому работы выполнены:",
-        reply_markup=invoice_list_kb(invoices, action_prefix="instok"),
+        reply_markup=invoice_list_kb(invoices, action_prefix="instok", back_callback="nav:home"),
     )
 
 
@@ -1175,6 +1175,7 @@ async def installer_in_work(message: Message, state: FSMContext, db: Database) -
             text=f"📄 №{num} — {addr}"[:55],
             callback_data=f"inst_work:view:{inv['id']}",
         )
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     await message.answer(

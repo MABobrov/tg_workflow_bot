@@ -119,7 +119,7 @@ async def rp_inbox_sales(message: Message, db: Database) -> None:
     await message.answer(
         f"📥 <b>Входящие Отд.Продаж</b> ({len(tasks)}):\n\n"
         "Нажмите на задачу для просмотра:",
-        reply_markup=tasks_kb(tasks),
+        reply_markup=tasks_kb(tasks, back_callback="nav:home"),
     )
 
 
@@ -146,7 +146,7 @@ async def rp_invoice_start_monitor(message: Message, db: Database) -> None:
         f"💼 <b>Счета В Работе</b> ({len(invoices)}):\n"
         f"{' | '.join(header_parts)}\n\n"
         "Нажмите для просмотра:",
-        reply_markup=invoice_list_kb(invoices, action_prefix="rpinv"),
+        reply_markup=invoice_list_kb(invoices, action_prefix="rpinv", back_callback="nav:home"),
     )
 
 
@@ -346,7 +346,7 @@ async def rp_invoice_end(message: Message, db: Database) -> None:
     await message.answer(
         f"🏁 <b>Счет End</b> ({len(all_inv)}):\n\n"
         "Нажмите для просмотра:",
-        reply_markup=invoice_list_kb(all_inv, action_prefix="rpinv"),
+        reply_markup=invoice_list_kb(all_inv, action_prefix="rpinv", back_callback="nav:home"),
     )
 
 
@@ -365,7 +365,7 @@ async def rp_issue(message: Message, db: Database) -> None:
         return
     await message.answer(
         f"🆘 <b>Проблема / Вопрос</b> ({len(issues)}):",
-        reply_markup=tasks_kb(issues),
+        reply_markup=tasks_kb(issues, back_callback="nav:home"),
     )
 
 
