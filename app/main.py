@@ -95,6 +95,8 @@ async def main() -> None:
     zamery_uid = config.default_zamery_id
     if not zamery_uid:
         _zam_users = await db.find_users_by_role("zamery")
+        # Предпочесть пользователя с ролью gd (ГД), иначе первого
+        _zam_users.sort(key=lambda u: (0 if "gd" in (u.role or "").split(",") else 1))
         if _zam_users:
             zamery_uid = _zam_users[0].telegram_id
     if zamery_uid:
