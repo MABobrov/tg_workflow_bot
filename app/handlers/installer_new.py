@@ -990,32 +990,7 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
             await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
         return
 
-    text = f"{title} ({len(filtered)})\n\n"
-    for inv in filtered[:15]:
-        num = inv.get("invoice_number") or f"#{inv['id']}"
-        addr = inv.get("object_address") or "—"
-        stage = inv.get("montazh_stage") or "none"
-        stage_lbl = _STAGE_LABEL.get(stage, "")
-        parts = [stage_lbl]
-        area = inv.get("area_m2")
-        if area:
-            try:
-                parts.append(f"{float(area):,.1f}м²")
-            except (ValueError, TypeError):
-                pass
-        est_inst = inv.get("estimated_installation")
-        if est_inst:
-            try:
-                parts.append(f"🔧{float(est_inst):,.0f}₽")
-            except (ValueError, TypeError):
-                pass
-        if inv.get("materials_ordered"):
-            parts.append("📦 мат.")
-        zp = inv.get("zp_installer_status") or "not_requested"
-        zp_s = "💸✅" if zp == "approved" else ("💸⏳" if zp == "requested" else "💸—")
-        parts.append(zp_s)
-        text += f"№{num} · {addr}\n"
-        text += f"  {' · '.join(parts)}\n"
+    text = f"{title} ({len(filtered)})\n"
 
     b = InlineKeyboardBuilder()
     for inv in filtered[:15]:
@@ -1083,11 +1058,12 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
     text = f"📄 <b>№{num}</b> · {stage_lbl}\n"
     text += f"📍 {inv.get('object_address', '—')}\n"
 
-    # Расчётная стоимость монтажа (от менеджера)
+    # Расчётная стоимость монтажа × 0.7 (от менеджера, -30%)
     est_inst = inv.get("estimated_installation")
     if est_inst:
         try:
-            text += f"🔧 Расч. монтаж: <b>{float(est_inst):,.0f}₽</b>\n"
+            val70 = float(est_inst) * 0.7
+            text += f"🔧 Расч. монтаж: <b>{val70:,.0f}₽</b>\n"
         except (ValueError, TypeError):
             pass
 
