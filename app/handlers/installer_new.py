@@ -100,7 +100,9 @@ async def start_order_materials(message: Message, state: FSMContext, db: Databas
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    invoices = await db.list_installer_confirmed_invoices()
+    all_inv = await db.list_installer_confirmed_invoices()
+    # Только счета в работе (не invoice_ok — работы завершены)
+    invoices = [i for i in all_inv if i.get("montazh_stage") in ("in_work", "razmery_ok")]
     b = InlineKeyboardBuilder()
     for inv in invoices:
         num = inv.get("invoice_number") or f"#{inv['id']}"
@@ -281,7 +283,9 @@ async def start_order_extra(message: Message, state: FSMContext, db: Database) -
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    invoices = await db.list_installer_confirmed_invoices()
+    all_inv = await db.list_installer_confirmed_invoices()
+    # Только счета в работе (не invoice_ok — работы завершены)
+    invoices = [i for i in all_inv if i.get("montazh_stage") in ("in_work", "razmery_ok")]
     b = InlineKeyboardBuilder()
     for inv in invoices:
         num = inv.get("invoice_number") or f"#{inv['id']}"
