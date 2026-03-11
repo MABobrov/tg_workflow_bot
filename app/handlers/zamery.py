@@ -1228,16 +1228,75 @@ async def zamery_schedule_main(message: Message, db: Database) -> None:
     await _render_schedule_main(message, db, uid, edit_existing=False)
 
 
+_RU_MONTH_NAMES = [
+    "", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+]
+
+
+async def _get_monthly_stats(
+    db: Database, uid: int, target_date: date,
+) -> dict[str, int]:
+    """Get zamery count for a given month."""
+    first_day = target_date.replace(day=1)
+    if target_date.month == 12:
+        last_day = target_date.replace(year=target_date.year + 1, month=1, day=1) - timedelta(days=1)
+    else:
+        last_day = target_date.replace(month=target_date.month + 1, day=1) - timedelta(days=1)
+    zamery = await db.list_zamery_for_schedule(uid, first_day.isoformat(), last_day.isoformat())
+    blackouts = await db.list_zamery_blackout_dates(uid, first_day.isoformat(), last_day.isoformat())
+    return {"zamery": len(zamery), "blackouts": len(blackouts)}
+
+
 async def _render_schedule_main(
     target: Message | CallbackQuery,
     db: Database,
     uid: int,
     edit_existing: bool = True,
 ) -> None:
-    """Render 5-week schedule overview."""
+    """Render schedule overview with monthly stats card + weeks."""
     today = date.today()
+
+    # --- Помесячная статистика (текущий + 2 предыдущих) ---
+    months_stats = []
+    for offset in range(-2, 1):
+        # Calculate month
+        y = today.year
+        m = today.month + offset
+        if m <= 0:
+            m += 12
+            y -= 1
+        elif m > 12:
+            m -= 12
+            y += 1
+        d = date(y, m, 1)
+        stats = await _get_monthly_stats(db, uid, d)
+        months_stats.append((d, stats))
+
+    # Current month stats
+    cur_month = months_stats[-1]
+    cur_d, cur_s = cur_month
+
+    # --- Карточка статистики ---
+    text = "┌─────────────────────────\n"
+    text += "│ 📅 <b>График замеров</b>\n"
+    text += "├─────────────────────────\n"
+    text += f"│ 📆 {_RU_MONTH_NAMES[cur_d.month]} {cur_d.year}\n"
+    text += f"│ 📐 Замеров в этом месяце: <b>{cur_s['zamery']}</b>\n"
+    text += f"│ 🚫 Выходных: <b>{cur_s['blackouts']}</b>\n"
+    text += "│\n"
+    text += "│ 📊 <b>Статистика по месяцам:</b>\n"
+    for d, s in months_stats:
+        is_cur = d.month == today.month and d.year == today.year
+        icon = "▶️" if is_cur else "▫️"
+        text += f"│ {icon} {_RU_MONTH_NAMES[d.month]}: <b>{s['zamery']}</b> замеров"
+        if s["blackouts"]:
+            text += f" · 🚫{s['blackouts']}"
+        text += "\n"
+    text += "└─────────────────────────\n\n"
+
+    # --- Недели ---
     weeks_data = []
-    # Show current week + 4 next weeks
     for w in range(5):
         mon, sun = _week_range(today, w)
         d_from = mon.isoformat()
@@ -1246,22 +1305,12 @@ async def _render_schedule_main(
         blackouts = await db.list_zamery_blackout_dates(uid, d_from, d_to)
         weeks_data.append((w, mon, sun, zamery, blackouts))
 
-    # Header
-    text = "📅 <b>График замеров</b>\n\n"
-
-    # Total stats
-    total_zamery = sum(len(z) for _, _, _, z, _ in weeks_data)
-    total_blackout = sum(len(b) for _, _, _, _, b in weeks_data)
-    text += f"📊 Замеров: <b>{total_zamery}</b> | 🚫 Выходных: <b>{total_blackout}</b>\n\n"
-
     b = InlineKeyboardBuilder()
     for w, mon, sun, zamery, blackouts in weeks_data:
-        # Week label
         label = f"{_format_date_short(mon)} — {_format_date_short(sun)}"
         if w == 0:
-            label = f"📍 {label}"  # current week marker
+            label = f"📍 {label}"
 
-        # Stats
         cnt = len(zamery)
         bl = len(blackouts)
         badge = ""
