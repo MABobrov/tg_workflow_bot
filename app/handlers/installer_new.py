@@ -936,14 +936,14 @@ async def installer_my_objects(message: Message, db: Database) -> None:
 
     work_stages = ("in_work", "razmery_ok")
     in_work = [i for i in all_inv if i.get("montazh_stage") in work_stages]
-    # Ожидает расчёт: не в работе + ЗП не approved
     waiting = [
         i for i in all_inv
         if i.get("montazh_stage") not in work_stages
+        and i["status"] != InvoiceStatus.ENDED
         and (i.get("zp_installer_status") or "not_requested") != "approved"
     ]
 
-    text = f"📌 <b>Мои объекты</b> · {len(all_inv)} шт.\n"
+    text = f"📌 <b>Мои объекты</b> · {len(in_work) + len(waiting)} шт.\n"
 
     b = InlineKeyboardBuilder()
     b.button(
@@ -980,10 +980,11 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
         filtered.sort(key=lambda i: _STAGE_ORDER.get(i.get("montazh_stage") or "none", 99))
         title = "🔨 В работе"
     else:
-        # Все счета НЕ в работе и с ЗП != approved
+        # Счёт ОК + не закрытые без ЗП approved
         filtered = [
             i for i in all_inv
             if i.get("montazh_stage") not in work_stages
+            and i["status"] != InvoiceStatus.ENDED
             and (i.get("zp_installer_status") or "not_requested") != "approved"
         ]
         filtered.sort(key=lambda i: i.get("created_at") or "", reverse=True)
@@ -1022,10 +1023,11 @@ async def installer_objects_back(cb: CallbackQuery, db: Database) -> None:
     waiting = [
         i for i in all_inv
         if i.get("montazh_stage") not in work_stages
+        and i["status"] != InvoiceStatus.ENDED
         and (i.get("zp_installer_status") or "not_requested") != "approved"
     ]
 
-    text = f"📌 <b>Мои объекты</b> · {len(all_inv)} шт.\n"
+    text = f"📌 <b>Мои объекты</b> · {len(in_work) + len(waiting)} шт.\n"
 
     b = InlineKeyboardBuilder()
     b.button(text=f"🔨 В работе ({len(in_work)})", callback_data="instobj:cat:work")
