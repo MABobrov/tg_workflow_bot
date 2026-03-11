@@ -24,7 +24,7 @@ from ..states import (
     OrderMaterialSG,
     TintingRequestSG,
 )
-from ..utils import fmt_project_card, get_initiator_label, parse_date, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
+from ..utils import fmt_project_card, get_initiator_label, parse_date, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -84,6 +84,11 @@ async def list_projects(message: Message, db: Database, config: Config) -> None:
 
 @router.message(F.text == "📦 Заказ материалов")
 async def start_order_material(message: Message, state: FSMContext, db: Database) -> None:
+    # Skip if the user has installer role — let installer_new handle it
+    if message.from_user:
+        _u = await db.get_user_optional(message.from_user.id)
+        if _u and _u.role and Role.INSTALLER in set(parse_roles(_u.role)):
+            return
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
