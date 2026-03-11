@@ -264,6 +264,8 @@ class InvoiceStartSG(StatesGroup):
     invoice_number = State()     # номер счёта (поиск в БД)
     # Источник клиента (для распределения прибыли)
     client_source = State()      # own (50/50) | gd_lead (75/25 в пользу ГД)
+    # Срок по договору
+    deadline_days = State()      # кол-во дней → deadline_end_date
     # Расчётные данные (План/Факт)
     estimated_glass = State()        # стекло (с возвратным НДС)
     estimated_profile = State()      # ал. профиль (с возвратным НДС)

@@ -400,10 +400,36 @@ async def invoice_start_client_source(cb: CallbackQuery, state: FSMContext) -> N
     await cb.answer()
     source = cb.data.split(":")[1]  # type: ignore[union-attr]
     await state.update_data(client_source=source)
-    await state.set_state(InvoiceStartSG.estimated_glass)
+    await state.set_state(InvoiceStartSG.deadline_days)
     label = "👤 Мой клиент (50/50)" if source == "own" else "📋 Лид от ГД (75/25)"
     await cb.message.answer(  # type: ignore[union-attr]
         f"Источник: {label}\n\n"
+        "📅 Введите <b>срок по договору</b> в днях\n"
+        "(количество дней от сегодня до окончания):",
+    )
+
+
+# ---------- Срок по договору ----------
+
+@router.message(InvoiceStartSG.deadline_days)
+async def invoice_start_deadline(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    try:
+        days = int(text)
+        if days <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("⚠️ Введите целое число дней > 0:")
+        return
+    from datetime import date, timedelta
+    end_date = date.today() + timedelta(days=days)
+    await state.update_data(
+        deadline_days=days,
+        deadline_end_date=end_date.isoformat(),
+    )
+    await state.set_state(InvoiceStartSG.estimated_glass)
+    await message.answer(
+        f"📅 Срок по договору: <b>{end_date.strftime('%d.%m.%Y')}</b> ({days} дн.)\n\n"
         "📊 <b>Расчётные данные</b> (шаг 1/5)\n"
         "Введите <b>расчётную стоимость стекла</b> в ₽:\n"
         "<i>Введите 0, если стекла нет.</i>",
@@ -610,6 +636,11 @@ async def invoice_start_send(
     est_load = data.get("estimated_loaders", 0)
     est_log = data.get("estimated_logistics", 0)
     client_source = data.get("client_source", "own")
+    deadline_fields = {}
+    if data.get("deadline_days"):
+        deadline_fields["deadline_days"] = data["deadline_days"]
+    if data.get("deadline_end_date"):
+        deadline_fields["deadline_end_date"] = data["deadline_end_date"]
     await db.update_invoice(
         invoice_id,
         estimated_glass=est_glass,
@@ -618,6 +649,7 @@ async def invoice_start_send(
         estimated_loaders=est_load,
         estimated_logistics=est_log,
         client_source=client_source,
+        **deadline_fields,
     )
 
     # Update invoice status

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date, datetime
 from typing import Any
 
 from aiogram import Router, F
@@ -117,6 +118,24 @@ async def acc_invoices_work(message: Message, state: FSMContext, db: Database) -
     await _show_acc_invoices_work(message, db)
 
 
+def _deadline_indicator(deadline_end_date: str | None) -> str:
+    """Return deadline indicator string like ' | Срок: 20.03.2026 ✅' or '' if no date."""
+    if not deadline_end_date:
+        return ""
+    try:
+        end = datetime.fromisoformat(deadline_end_date).date()
+    except (ValueError, TypeError):
+        return ""
+    delta = (end - date.today()).days
+    if delta < 0:
+        icon = "🔴"
+    elif delta <= 7:
+        icon = "⚠️"
+    else:
+        icon = "✅"
+    return f" | Срок: {end.strftime('%d.%m.%Y')} {icon}"
+
+
 def _doc_status_line(edo_signed: bool, originals_holder: str | None) -> str:
     """Format document status indicators."""
     edo = "✅ЭДО" if edo_signed else "⏳ЭДО"
@@ -167,8 +186,10 @@ async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
         inv.get("closing_originals_holder"),
     )
 
+    dl = _deadline_indicator(inv.get("deadline_end_date"))
+
     return (
-        f"{status_icon} <b>№{num}</b> | {date}\n"
+        f"{status_icon} <b>№{num}</b> | {date}{dl}\n"
         f"👤 {creator_label} ({role_label}) | 🏢 {supplier}\n"
         f"💰 {amt} | 💳 Долг: {debt}\n"
         f"\n"
@@ -685,7 +706,20 @@ async def acc_invoice_end(message: Message, db: Database) -> None:
 
     for inv in invoices[:15]:
         text = await _format_acc_card(inv, db)
-        await message.answer(text)
+        # Кнопка "Документы" если ещё не все 4 поля заполнены (однократное редактирование)
+        all_filled = (
+            inv.get("docs_edo_signed")
+            and inv.get("edo_signed")
+            and inv.get("docs_originals_holder")
+            and inv.get("closing_originals_holder")
+        )
+        if all_filled:
+            await message.answer(text)
+        else:
+            b = InlineKeyboardBuilder()
+            b.button(text="✏️ Документы", callback_data=f"acc_doc:menu:{inv['id']}")
+            b.adjust(1)
+            await message.answer(text, reply_markup=b.as_markup())
 
     footer = InlineKeyboardBuilder()
     footer.button(text="⬅️ Назад", callback_data="nav:home")
