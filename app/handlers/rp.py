@@ -84,12 +84,15 @@ async def list_projects(message: Message, db: Database, config: Config) -> None:
 
 @router.message(F.text == "📦 Заказ материалов")
 async def start_order_material(message: Message, state: FSMContext, db: Database) -> None:
-    # Skip if the user has installer role — let installer_new handle it
+    # If user is in installer menu, delegate to installer handler
     if message.from_user:
         _u = await db.get_user_optional(message.from_user.id)
         if _u and _u.role and Role.INSTALLER in set(parse_roles(_u.role)):
-            from aiogram.dispatcher.event.handler import ContinuePropagation
-            raise ContinuePropagation
+            from ..services.menu_scope import resolve_active_menu_role
+            _menu_role = resolve_active_menu_role(message.from_user.id, _u.role)
+            if _menu_role == Role.INSTALLER:
+                from .installer_new import start_order_materials
+                return await start_order_materials(message, state, db)
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
