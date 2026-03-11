@@ -980,30 +980,18 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
         title = "✅ Ожидает расчёт"
 
     if not filtered:
-        text = f"{title}\n\nНет счетов."
+        await cb.message.answer(f"{title}\n\nНет счетов.")  # type: ignore[union-attr]
+        return
+
+    await cb.message.answer(f"{title} ({len(filtered)})")  # type: ignore[union-attr]
+
+    for inv in filtered[:15]:
+        card_text = _build_inst_detail_card(inv)
+        cat_back = "waiting" if inv.get("montazh_stage") == "invoice_ok" else "work"
         b = InlineKeyboardBuilder()
         b.button(text="⬅️ Назад", callback_data="instobj:back")
         b.adjust(1)
-        try:
-            await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
-        except Exception:
-            await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
-        return
-
-    text = f"{title} ({len(filtered)})\n"
-
-    b = InlineKeyboardBuilder()
-    for inv in filtered[:15]:
-        num = inv.get("invoice_number") or f"#{inv['id']}"
-        addr = (inv.get("object_address") or "")[:18]
-        b.button(text=f"№{num} · {addr}", callback_data=f"instobj:view:{inv['id']}")
-    b.button(text="⬅️ Назад", callback_data="instobj:back")
-    b.adjust(1)
-
-    try:
-        await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
-    except Exception:
-        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+        await cb.message.answer(card_text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data == "instobj:back")
@@ -1035,6 +1023,70 @@ async def installer_objects_back(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
+def _build_inst_detail_card(inv: dict) -> str:
+    """Формирует карточку счёта для монтажника."""
+    stage = inv.get("montazh_stage") or "none"
+    stage_lbl = _STAGE_LABEL.get(stage, stage)
+    num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
+
+    text = f"📄 <b>№{num}</b> · {stage_lbl}\n"
+    text += f"📍 {inv.get('object_address', '—')}\n"
+
+    # Расчётная стоимость монтажа × 0.7
+    est_inst = inv.get("estimated_installation")
+    if est_inst:
+        try:
+            text += f"🔧 Расч. монтаж: <b>{float(est_inst) * 0.7:,.0f}₽</b>\n"
+        except (ValueError, TypeError):
+            pass
+
+    parts: list[str] = []
+    area = inv.get("area_m2")
+    if area:
+        try:
+            parts.append(f"📐 {float(area):,.1f} м²")
+        except (ValueError, TypeError):
+            pass
+    if inv.get("materials_ordered"):
+        parts.append("📦 Материал заказан")
+
+    zp = inv.get("zp_installer_status") or "not_requested"
+    zp_lbl = "✅" if zp == "approved" else ("⏳" if zp == "requested" else "—")
+    parts.append(f"💸 ЗП: {zp_lbl}")
+    zp_amount = inv.get("zp_installer_amount")
+    if zp_amount and zp in ("requested", "approved"):
+        try:
+            parts.append(f"💵 {float(zp_amount):,.0f}₽")
+        except (ValueError, TypeError):
+            pass
+    if parts:
+        text += " · ".join(parts) + "\n"
+
+    # Дата окончания сроков
+    deadline = inv.get("deadline_end_date")
+    if deadline:
+        from datetime import date as _date
+        try:
+            d = _date.fromisoformat(str(deadline)[:10])
+            delta = (d - _date.today()).days
+            if delta < 0:
+                ind = f"🔴 просрочен {abs(delta)}дн"
+            elif delta <= 7:
+                ind = f"⚠️ {delta}дн"
+            else:
+                ind = f"✅ {delta}дн"
+            text += f"⏰ Срок: {str(deadline)[:10]} ({ind})\n"
+        except (ValueError, TypeError):
+            text += f"⏰ Срок: {str(deadline)[:10]}\n"
+
+    created = (inv.get("created_at") or "—")[:10]
+    text += f"📅 {created}"
+    if inv.get("description"):
+        text += f" · 💬 {inv['description'][:50]}"
+    text += "\n"
+    return text
+
+
 @router.callback_query(F.data.startswith("instobj:view:"))
 async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
     """Карточка счёта для монтажника."""
@@ -1048,50 +1100,8 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
+    text = _build_inst_detail_card(inv)
     stage = inv.get("montazh_stage") or "none"
-    stage_lbl = _STAGE_LABEL.get(stage, stage)
-
-    zp = inv.get("zp_installer_status") or "not_requested"
-    zp_lbl = "✅ Получена" if zp == "approved" else ("⏳ Запрошена" if zp == "requested" else "—")
-
-    num = inv["invoice_number"]
-    text = f"📄 <b>№{num}</b> · {stage_lbl}\n"
-    text += f"📍 {inv.get('object_address', '—')}\n"
-
-    # Расчётная стоимость монтажа × 0.7 (от менеджера, -30%)
-    est_inst = inv.get("estimated_installation")
-    if est_inst:
-        try:
-            val70 = float(est_inst) * 0.7
-            text += f"🔧 Расч. монтаж: <b>{val70:,.0f}₽</b>\n"
-        except (ValueError, TypeError):
-            pass
-
-    parts = []
-    area = inv.get("area_m2")
-    if area:
-        try:
-            parts.append(f"📐 {float(area):,.1f} м²")
-        except (ValueError, TypeError):
-            pass
-    if inv.get("materials_ordered"):
-        parts.append("📦 Материал заказан")
-    parts.append(f"💸 ЗП: {zp_lbl}")
-    zp_amount = inv.get("zp_installer_amount")
-    if zp_amount and zp in ("requested", "approved"):
-        try:
-            parts.append(f"💵 {float(zp_amount):,.0f}₽")
-        except (ValueError, TypeError):
-            pass
-    text += " · ".join(parts) + "\n"
-
-    created = (inv.get("created_at") or "—")[:10]
-    text += f"📅 {created}"
-    if inv.get("description"):
-        text += f" · 💬 {inv['description'][:50]}"
-    text += "\n"
-
-    # Определяем категорию для кнопки «Назад»
     cat = "waiting" if stage == "invoice_ok" else "work"
     b = InlineKeyboardBuilder()
     b.button(text="⬅️ Назад", callback_data=f"instobj:cat:{cat}")
