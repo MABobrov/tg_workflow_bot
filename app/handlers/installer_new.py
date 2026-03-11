@@ -934,77 +934,124 @@ async def installer_my_objects(message: Message, db: Database) -> None:
         await answer_service(message, "📌 Нет объектов.", delay_seconds=60)
         return
 
-    # Разделение: в работе / завершённые
-    in_work = [i for i in all_inv if i["status"] != InvoiceStatus.ENDED]
-    ended = [i for i in all_inv if i["status"] == InvoiceStatus.ENDED]
+    # В работе: montazh_stage in_work / razmery_ok (не invoice_ok)
+    in_work = [i for i in all_inv if i.get("montazh_stage") in ("in_work", "razmery_ok")]
+    # Ожидает расчёт: montazh_stage = invoice_ok
+    waiting = [i for i in all_inv if i.get("montazh_stage") == "invoice_ok"]
 
-    # Сортировка по montazh_stage
-    in_work.sort(key=lambda i: _STAGE_ORDER.get(i.get("montazh_stage") or "none", 99))
-    ended.sort(key=lambda i: i.get("created_at") or "", reverse=True)
-
-    text = f"📌 <b>Мои объекты</b> · {len(all_inv)} шт.\n\n"
-
-    if in_work:
-        text += f"🔨 <b>В работе</b> ({len(in_work)})\n"
-        for inv in in_work[:15]:
-            text += _format_inst_object_card(inv)
-        text += "\n"
-
-    if ended:
-        text += f"🏁 <b>Работы ОК</b> ({len(ended)})\n"
-        for inv in ended[:10]:
-            text += _format_inst_object_card(inv)
+    text = f"📌 <b>Мои объекты</b> · {len(all_inv)} шт.\n"
 
     b = InlineKeyboardBuilder()
-    for inv in in_work[:15]:
-        num = inv.get("invoice_number") or f"#{inv['id']}"
-        addr = (inv.get("object_address") or "")[:18]
-        stage = inv.get("montazh_stage") or "none"
-        stage_icon = {"in_work": "🔨", "razmery_ok": "📐", "invoice_ok": "✅"}.get(stage, "⏳")
-        b.button(text=f"{stage_icon} №{num} · {addr}", callback_data=f"instobj:view:{inv['id']}")
-    for inv in ended[:5]:
-        num = inv.get("invoice_number") or f"#{inv['id']}"
-        addr = (inv.get("object_address") or "")[:18]
-        b.button(text=f"🏁 №{num} · {addr}", callback_data=f"instobj:view:{inv['id']}")
+    b.button(
+        text=f"🔨 В работе ({len(in_work)})",
+        callback_data="instobj:cat:work",
+    )
+    b.button(
+        text=f"✅ Ожидает расчёт ({len(waiting)})",
+        callback_data="instobj:cat:waiting",
+    )
     b.adjust(1)
 
     await message.answer(text, reply_markup=b.as_markup())
 
 
-def _format_inst_object_card(inv: dict) -> str:
-    """Compact card line for installer's object list."""
-    num = inv.get("invoice_number") or f"#{inv['id']}"
-    addr = inv.get("object_address") or "—"
-    stage = inv.get("montazh_stage") or "none"
-    stage_lbl = _STAGE_LABEL.get(stage, "⏳")
+@router.callback_query(F.data.startswith("instobj:cat:"))
+async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
+    """Список счетов по категории."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
 
-    # Main line
-    line = f"  №{num} · {addr}\n"
+    cat = cb.data.split(":")[-1]  # type: ignore[union-attr]
 
-    # Details line
-    parts = [stage_lbl]
+    invoices = await db.list_invoices(limit=50)
+    all_inv = [i for i in invoices if i["status"] in (
+        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
+        InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
+    ) and not i.get("parent_invoice_id")]
 
-    area = inv.get("area_m2")
-    if area:
-        try:
-            parts.append(f"{float(area):,.1f}м²")
-        except (ValueError, TypeError):
-            pass
-
-    if inv.get("materials_ordered"):
-        parts.append("📦 мат.")
-
-    zp = inv.get("zp_installer_status") or "not_requested"
-    if zp == "approved":
-        zp_s = "💸✅"
-    elif zp == "requested":
-        zp_s = "💸⏳"
+    if cat == "work":
+        filtered = [i for i in all_inv if i.get("montazh_stage") in ("in_work", "razmery_ok")]
+        filtered.sort(key=lambda i: _STAGE_ORDER.get(i.get("montazh_stage") or "none", 99))
+        title = "🔨 В работе"
     else:
-        zp_s = "💸—"
-    parts.append(zp_s)
+        filtered = [i for i in all_inv if i.get("montazh_stage") == "invoice_ok"]
+        filtered.sort(key=lambda i: i.get("created_at") or "", reverse=True)
+        title = "✅ Ожидает расчёт"
 
-    line += f"  {' · '.join(parts)}\n"
-    return line
+    if not filtered:
+        text = f"{title}\n\nНет счетов."
+        b = InlineKeyboardBuilder()
+        b.button(text="⬅️ Назад", callback_data="instobj:back")
+        b.adjust(1)
+        try:
+            await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+        except Exception:
+            await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+        return
+
+    text = f"{title} ({len(filtered)})\n\n"
+    for inv in filtered[:15]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = inv.get("object_address") or "—"
+        stage = inv.get("montazh_stage") or "none"
+        stage_lbl = _STAGE_LABEL.get(stage, "")
+        parts = [stage_lbl]
+        area = inv.get("area_m2")
+        if area:
+            try:
+                parts.append(f"{float(area):,.1f}м²")
+            except (ValueError, TypeError):
+                pass
+        if inv.get("materials_ordered"):
+            parts.append("📦 мат.")
+        zp = inv.get("zp_installer_status") or "not_requested"
+        zp_s = "💸✅" if zp == "approved" else ("💸⏳" if zp == "requested" else "💸—")
+        parts.append(zp_s)
+        text += f"№{num} · {addr}\n"
+        text += f"  {' · '.join(parts)}\n"
+
+    b = InlineKeyboardBuilder()
+    for inv in filtered[:15]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:18]
+        b.button(text=f"№{num} · {addr}", callback_data=f"instobj:view:{inv['id']}")
+    b.button(text="⬅️ Назад", callback_data="instobj:back")
+    b.adjust(1)
+
+    try:
+        await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    except Exception:
+        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "instobj:back")
+async def installer_objects_back(cb: CallbackQuery, db: Database) -> None:
+    """Назад к категориям."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+
+    invoices = await db.list_invoices(limit=50)
+    all_inv = [i for i in invoices if i["status"] in (
+        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
+        InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
+    ) and not i.get("parent_invoice_id")]
+
+    in_work = [i for i in all_inv if i.get("montazh_stage") in ("in_work", "razmery_ok")]
+    waiting = [i for i in all_inv if i.get("montazh_stage") == "invoice_ok"]
+
+    text = f"📌 <b>Мои объекты</b> · {len(all_inv)} шт.\n"
+
+    b = InlineKeyboardBuilder()
+    b.button(text=f"🔨 В работе ({len(in_work)})", callback_data="instobj:cat:work")
+    b.button(text=f"✅ Ожидает расчёт ({len(waiting)})", callback_data="instobj:cat:waiting")
+    b.adjust(1)
+
+    try:
+        await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    except Exception:
+        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data.startswith("instobj:view:"))
@@ -1023,16 +1070,11 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
     stage = inv.get("montazh_stage") or "none"
     stage_lbl = _STAGE_LABEL.get(stage, stage)
 
-    status_label = {
-        "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
-        "closing": "📌 Закрытие", "ended": "🏁 Счет End",
-    }.get(inv["status"], inv["status"])
-
     zp = inv.get("zp_installer_status") or "not_requested"
     zp_lbl = "✅ Получена" if zp == "approved" else ("⏳ Запрошена" if zp == "requested" else "—")
 
     num = inv["invoice_number"]
-    text = f"📄 <b>№{num}</b> · {status_label} · {stage_lbl}\n"
+    text = f"📄 <b>№{num}</b> · {stage_lbl}\n"
     text += f"📍 {inv.get('object_address', '—')}\n"
 
     parts = []
@@ -1059,7 +1101,16 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
         text += f" · 💬 {inv['description'][:50]}"
     text += "\n"
 
-    await cb.message.answer(text)  # type: ignore[union-attr]
+    # Определяем категорию для кнопки «Назад»
+    cat = "waiting" if stage == "invoice_ok" else "work"
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Назад", callback_data=f"instobj:cat:{cat}")
+    b.adjust(1)
+
+    try:
+        await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    except Exception:
+        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 # =====================================================================
