@@ -2857,14 +2857,15 @@ class Database:
         row = await cur.fetchone()
         total_done = dict(row)["total_done"] if row else 0
 
-        # Замеры привязанные к лиду → лид стал счётом
+        # Замеры привязанные к лиду → лид стал счётом (через project_id)
         cur = await self.conn.execute(
             "SELECT COUNT(*) AS cnt FROM zamery_requests zr "
             "WHERE zr.assigned_to = ? AND zr.status = 'done' "
             "AND zr.lead_id IS NOT NULL "
             "AND EXISTS (SELECT 1 FROM lead_tracking lt "
-            "  JOIN invoices i ON i.lead_id = lt.id "
+            "  JOIN invoices i ON i.project_id = lt.project_id "
             "  WHERE lt.id = zr.lead_id "
+            "  AND lt.project_id IS NOT NULL "
             "  AND i.status IN ('in_progress','paid','closing','ended'))",
             (assigned_to,),
         )
@@ -2878,8 +2879,9 @@ class Database:
             "SELECT requester_role, "
             "  COUNT(*) AS done, "
             "  SUM(CASE WHEN lead_id IS NOT NULL AND EXISTS ("
-            "    SELECT 1 FROM lead_tracking lt JOIN invoices i ON i.lead_id = lt.id "
-            "    WHERE lt.id = zr.lead_id AND i.status IN ('in_progress','paid','closing','ended')"
+            "    SELECT 1 FROM lead_tracking lt JOIN invoices i ON i.project_id = lt.project_id "
+            "    WHERE lt.id = zr.lead_id AND lt.project_id IS NOT NULL "
+            "    AND i.status IN ('in_progress','paid','closing','ended')"
             "  ) THEN 1 ELSE 0 END) AS with_invoice "
             "FROM zamery_requests zr "
             "WHERE zr.assigned_to = ? AND zr.status = 'done' "
