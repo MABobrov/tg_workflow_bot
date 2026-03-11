@@ -16,7 +16,7 @@ from typing import Any
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
@@ -51,8 +51,57 @@ async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
 
 
 # =====================================================================
-# ВХОДЯЩИЕ ЗАДАЧИ — обработчик перенесён в common.py (универсальный)
+# ВХОДЯЩИЕ ЗАДАЧИ (бухгалтерия — только непринятые)
 # =====================================================================
+
+@router.message(lambda m: (m.text or "").strip().startswith("📥 Входящие задачи"))
+async def acc_inbox_tasks(message: Message, db: Database) -> None:
+    """Входящие задачи бухгалтерии — только без подтверждения получения."""
+    if not message.from_user:
+        return
+    if not await require_role_message(message, db, roles=[Role.ACCOUNTING]):
+        return
+    tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)
+    # Только непринятые (accepted_at IS NULL)
+    unconfirmed = [t for t in tasks if not t.get("accepted_at")]
+    if not unconfirmed:
+        await answer_service(message, "📥 Нет новых задач ✅", delay_seconds=60)
+        return
+
+    from ..keyboards import task_actions_kb
+    await message.answer(f"📥 <b>Входящие задачи</b> ({len(unconfirmed)}):")
+    for t in unconfirmed[:15]:
+        tid = int(t["id"])
+        payload = {}
+        if t.get("payload"):
+            try:
+                payload = json.loads(t["payload"]) if isinstance(t["payload"], str) else t["payload"]
+            except Exception:
+                pass
+        inv_num = payload.get("invoice_number", "")
+        req_text = payload.get("request_text", t.get("description", ""))[:100]
+        source_label = payload.get("source", t.get("type", ""))
+        text = (
+            f"📋 <b>Задача #{tid}</b>\n"
+            f"📄 Счёт: {inv_num}\n" if inv_num else f"📋 <b>Задача #{tid}</b>\n"
+        )
+        text += f"💬 {req_text}\n" if req_text else ""
+        text += f"📅 {(t.get('created_at') or '-')[:10]}"
+
+        from ..callbacks import TaskCb
+        b = InlineKeyboardBuilder()
+        # Кнопка "Принято" + "Документы" если привязан к счёту
+        b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+        inv_id = payload.get("invoice_id")
+        if inv_id:
+            b.button(text="✏️ Документы", callback_data=f"acc_doc:menu:{inv_id}")
+        b.adjust(2)
+        await message.answer(text, reply_markup=b.as_markup())
+
+    footer = InlineKeyboardBuilder()
+    footer.button(text="⬅️ Назад", callback_data="nav:home")
+    footer.adjust(1)
+    await message.answer("—", reply_markup=footer.as_markup())
 
 
 # =====================================================================
@@ -146,7 +195,8 @@ async def _show_acc_invoices_work(
         text = await _format_acc_card(inv, db)
         b = InlineKeyboardBuilder()
         b.button(text="📨 Запрос менеджеру", callback_data=f"acc_work:req:{inv['id']}")
-        b.adjust(1)
+        b.button(text="✏️ Документы", callback_data=f"acc_doc:menu:{inv['id']}")
+        b.adjust(2)
         await msg.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
     footer = InlineKeyboardBuilder()
@@ -185,6 +235,227 @@ async def acc_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
 
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
+
+# =====================================================================
+# РЕДАКТИРОВАНИЕ СТАТУСА ДОКУМЕНТОВ (✏️ Документы)
+# =====================================================================
+
+_HOLDER_LABELS = {"gd": "у ГД", "manager": "у менеджера"}
+
+
+def _build_doc_menu_text(inv: dict[str, Any]) -> str:
+    """Text for the document editing menu."""
+    num = inv.get("invoice_number") or f"#{inv['id']}"
+    prim_edo = "✅" if inv.get("docs_edo_signed") else "⏳"
+    prim_h = inv.get("docs_originals_holder")
+    prim_orig = f"✅({_HOLDER_LABELS.get(prim_h, '?')})" if prim_h else "⏳"
+    clos_edo = "✅" if inv.get("edo_signed") else "⏳"
+    clos_h = inv.get("closing_originals_holder")
+    clos_orig = f"✅({_HOLDER_LABELS.get(clos_h, '?')})" if clos_h else "⏳"
+    return (
+        f"📋 <b>Статус документов №{num}</b>\n\n"
+        f"📋 Первичка: {prim_edo}ЭДО  {prim_orig}Ориг\n"
+        f"📋 Вторичка: {clos_edo}ЭДО  {clos_orig}Ориг\n\n"
+        "Нажмите для изменения:"
+    )
+
+
+def _build_doc_menu_kb(inv: dict[str, Any]) -> InlineKeyboardMarkup:
+    """Inline keyboard for the document editing menu."""
+    inv_id = inv["id"]
+    prim_edo = "✅" if inv.get("docs_edo_signed") else "⏳"
+    prim_h = inv.get("docs_originals_holder")
+    prim_orig = f"✅{_HOLDER_LABELS.get(prim_h, '')}" if prim_h else "⏳"
+    clos_edo = "✅" if inv.get("edo_signed") else "⏳"
+    clos_h = inv.get("closing_originals_holder")
+    clos_orig = f"✅{_HOLDER_LABELS.get(clos_h, '')}" if clos_h else "⏳"
+    b = InlineKeyboardBuilder()
+    b.button(text=f"📋 Первичка ЭДО: {prim_edo}", callback_data=f"acc_doc:prim_edo:{inv_id}")
+    b.button(text=f"📁 Первичка Ориг: {prim_orig}", callback_data=f"acc_doc:prim_orig:{inv_id}")
+    b.button(text=f"📋 Вторичка ЭДО: {clos_edo}", callback_data=f"acc_doc:clos_edo:{inv_id}")
+    b.button(text=f"📁 Вторичка Ориг: {clos_orig}", callback_data=f"acc_doc:clos_orig:{inv_id}")
+    b.button(text="⬅️ Назад", callback_data="acc_work:refresh")
+    b.adjust(1)
+    return b.as_markup()
+
+
+async def _notify_manager_doc_change(
+    db: Database, notifier: Notifier, inv: dict[str, Any], field: str, new_label: str,
+) -> None:
+    """Send notification to the invoice manager about doc status change."""
+    manager_id = inv.get("created_by")
+    if not manager_id:
+        return
+    num = inv.get("invoice_number") or f"#{inv['id']}"
+    try:
+        await notifier.safe_send(
+            int(manager_id),
+            f"📋 <b>Статус документов изменён</b>\n"
+            f"Счёт №{num}\n"
+            f"Бухгалтерия: {field} → {new_label}",
+        )
+    except Exception:
+        log.exception("Failed to notify manager %s about doc change", manager_id)
+
+
+@router.callback_query(F.data.regexp(r"^acc_doc:menu:\d+$"))
+async def acc_doc_menu(cb: CallbackQuery, db: Database) -> None:
+    """Show document status editing menu."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    await cb.message.answer(  # type: ignore[union-attr]
+        _build_doc_menu_text(inv),
+        reply_markup=_build_doc_menu_kb(inv),
+    )
+
+
+@router.callback_query(F.data.regexp(r"^acc_doc:prim_edo:\d+$"))
+async def acc_doc_toggle_prim_edo(cb: CallbackQuery, db: Database, notifier: Notifier) -> None:
+    """Toggle primary docs EDO status."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        return
+    new_val = 0 if inv.get("docs_edo_signed") else 1
+    await db.update_invoice(inv_id, docs_edo_signed=new_val)
+    inv = await db.get_invoice(inv_id)
+    label = "✅ подписано" if new_val else "⏳ не подписано"
+    await _notify_manager_doc_change(db, notifier, inv, "Первичка ЭДО", label)
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            _build_doc_menu_text(inv), reply_markup=_build_doc_menu_kb(inv),
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.regexp(r"^acc_doc:clos_edo:\d+$"))
+async def acc_doc_toggle_clos_edo(cb: CallbackQuery, db: Database, notifier: Notifier) -> None:
+    """Toggle closing docs EDO status."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        return
+    new_val = 0 if inv.get("edo_signed") else 1
+    await db.update_invoice(inv_id, edo_signed=new_val)
+    inv = await db.get_invoice(inv_id)
+    label = "✅ подписано" if new_val else "⏳ не подписано"
+    await _notify_manager_doc_change(db, notifier, inv, "Вторичка ЭДО", label)
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            _build_doc_menu_text(inv), reply_markup=_build_doc_menu_kb(inv),
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.regexp(r"^acc_doc:prim_orig:\d+$"))
+async def acc_doc_prim_orig_choose(cb: CallbackQuery, db: Database) -> None:
+    """Show originals holder choice for primary docs."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    b = InlineKeyboardBuilder()
+    b.button(text="У ГД", callback_data=f"acc_doc:prim_orig_set:{inv_id}:gd")
+    b.button(text="У менеджера", callback_data=f"acc_doc:prim_orig_set:{inv_id}:manager")
+    b.button(text="Нет", callback_data=f"acc_doc:prim_orig_set:{inv_id}:none")
+    b.button(text="⬅️ Назад", callback_data=f"acc_doc:menu:{inv_id}")
+    b.adjust(3, 1)
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            "📁 <b>Оригиналы первичных документов</b>\nУ кого находятся?",
+            reply_markup=b.as_markup(),
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.regexp(r"^acc_doc:clos_orig:\d+$"))
+async def acc_doc_clos_orig_choose(cb: CallbackQuery, db: Database) -> None:
+    """Show originals holder choice for closing docs."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    b = InlineKeyboardBuilder()
+    b.button(text="У ГД", callback_data=f"acc_doc:clos_orig_set:{inv_id}:gd")
+    b.button(text="У менеджера", callback_data=f"acc_doc:clos_orig_set:{inv_id}:manager")
+    b.button(text="Нет", callback_data=f"acc_doc:clos_orig_set:{inv_id}:none")
+    b.button(text="⬅️ Назад", callback_data=f"acc_doc:menu:{inv_id}")
+    b.adjust(3, 1)
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            "📁 <b>Оригиналы закрывающих документов</b>\nУ кого находятся?",
+            reply_markup=b.as_markup(),
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.regexp(r"^acc_doc:prim_orig_set:\d+:(gd|manager|none)$"))
+async def acc_doc_prim_orig_set(cb: CallbackQuery, db: Database, notifier: Notifier) -> None:
+    """Set originals holder for primary docs."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    parts = cb.data.split(":")  # type: ignore[union-attr]
+    inv_id = int(parts[3])
+    val = parts[4]
+    holder = None if val == "none" else val
+    await db.update_invoice(inv_id, docs_originals_holder=holder)
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        return
+    label = _HOLDER_LABELS.get(val, "нет")
+    await _notify_manager_doc_change(db, notifier, inv, "Первичка оригинал", label)
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            _build_doc_menu_text(inv), reply_markup=_build_doc_menu_kb(inv),
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.regexp(r"^acc_doc:clos_orig_set:\d+:(gd|manager|none)$"))
+async def acc_doc_clos_orig_set(cb: CallbackQuery, db: Database, notifier: Notifier) -> None:
+    """Set originals holder for closing docs."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    parts = cb.data.split(":")  # type: ignore[union-attr]
+    inv_id = int(parts[3])
+    val = parts[4]
+    holder = None if val == "none" else val
+    await db.update_invoice(inv_id, closing_originals_holder=holder)
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        return
+    label = _HOLDER_LABELS.get(val, "нет")
+    await _notify_manager_doc_change(db, notifier, inv, "Вторичка оригинал", label)
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            _build_doc_menu_text(inv), reply_markup=_build_doc_menu_kb(inv),
+        )
+    except Exception:
+        pass
+
+
+# =====================================================================
+# ЗАПРОС МЕНЕДЖЕРУ
+# =====================================================================
 
 @router.callback_query(F.data.regexp(r"^acc_work:req:\d+$"))
 async def acc_work_request_start(

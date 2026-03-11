@@ -378,7 +378,7 @@ async def cmd_help(message: Message, db: Database, config: Config) -> None:
         is_admin = message.from_user.id in (config.admin_ids or set())
     menu_role, isolated_role = _menu_scope(message.from_user.id if message.from_user else None, role)
     # ГД и РП видят справку по всем ролям; остальные — только по активной роли меню
-    guide_role = role if (set(parse_roles(role)) & {Role.GD, Role.RP}) else menu_role
+    guide_role = role if (menu_role and menu_role in (Role.GD, Role.RP)) else menu_role
     text = _role_guide(guide_role)
     if is_admin:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
@@ -662,7 +662,7 @@ async def menu_help(message: Message, db: Database, config: Config) -> None:
         is_admin = message.from_user.id in (config.admin_ids or set())
     menu_role, isolated_role = _menu_scope(message.from_user.id if message.from_user else None, role)
     # ГД и РП видят справку по всем ролям; остальные — только по активной роли меню
-    guide_role = role if (set(parse_roles(role)) & {Role.GD, Role.RP}) else menu_role
+    guide_role = role if (menu_role and menu_role in (Role.GD, Role.RP)) else menu_role
     text = _role_guide(guide_role)
     if is_admin:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
@@ -739,6 +739,12 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
         return
     if not await _guard_blocked_message(message, db):
         return
+    # Бухгалтерия обрабатывается в accounting_new.py
+    _u = await db.get_user_optional(message.from_user.id)
+    if _u and _u.role:
+        _active = resolve_active_menu_role(message.from_user.id, _u.role)
+        if _active == Role.ACCOUNTING:
+            return
     tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)
     if not tasks:
         await answer_service(message, "📥 Входящих задач нет ✅", delay_seconds=60)
