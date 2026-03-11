@@ -1088,7 +1088,7 @@ class Database:
                 is considered credit.
         """
         fmt_clause = (
-            "AND invoice_number GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]-*' "
+            "AND invoice_number GLOB '[0-9]*-*' "
             if only_regular else
             "AND (is_credit = 0 OR is_credit IS NULL) "
         )
@@ -1123,7 +1123,7 @@ class Database:
         исключая кредитные и прочие.
         """
         fmt_clause = (
-            "AND invoice_number GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]-*' "
+            "AND invoice_number GLOB '[0-9]*-*' "
             if only_regular else
             "AND (is_credit = 0 OR is_credit IS NULL) "
         )
@@ -2283,7 +2283,7 @@ class Database:
             clauses.append("invoice_number LIKE ?")
             params.append(f"%{marker}%")
         if only_regular:
-            clauses.append("invoice_number GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]-*'")
+            clauses.append("invoice_number GLOB '[0-9]*-*'")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(limit)
         cur = await self.conn.execute(
