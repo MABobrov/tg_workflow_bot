@@ -159,9 +159,11 @@ def _role_guide(role: str | None) -> str:
         )
 
     sections: list[str] = []
+    # ГД и РП видят справку по ВСЕМ ролям
+    show_all = bool(roles & {Role.GD, Role.RP})
     # Manager roles (new)
     manager_roles_in_user = roles & MANAGER_ROLES
-    if manager_roles_in_user or Role.MANAGER in roles:
+    if manager_roles_in_user or Role.MANAGER in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (Менеджер)</b>\n"
             "• «📋 Проверить КП/Счет» — отправить КП на проверку РП, создать счёт в БД.\n"
@@ -172,7 +174,7 @@ def _role_guide(role: str | None) -> str:
             "• «📩 Не срочно ГД» — задача ГД (пониженный приоритет).\n"
             "• Подменю «Ещё»: 💬 Менеджер (кред), 📑 Мои Счета, 🆘 Проблема/Вопрос, 🚨 Срочно ГД, 🔍 Поиск счёта.\n"
         )
-    if Role.RP in roles:
+    if Role.RP in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (РП)</b>\n"
             "• «📥 Входящие Отд.Продаж» — входящие задачи от менеджеров и ГД.\n"
@@ -184,7 +186,7 @@ def _role_guide(role: str | None) -> str:
             "• «📄 Бухгалтерия (ЭДО)» — запрос ЭДО.\n"
             "• Подменю «Ещё»: 🎯 Лид в проект, 🚨 Срочно ГД, 🔍 Поиск счёта.\n"
         )
-    if Role.ACCOUNTING in roles:
+    if Role.ACCOUNTING in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (Бухгалтерия)</b>\n"
             "• «📥 Входящие задачи» — запросы ЭДО от менеджеров и РП.\n"
@@ -193,7 +195,7 @@ def _role_guide(role: str | None) -> str:
             "• «🏁 Закрытые Счета» — список закрытых счетов.\n"
             "• «🚨 Срочно ГД» — срочный вопрос ГД.\n"
         )
-    if Role.INSTALLER in roles:
+    if Role.INSTALLER in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (Монтажник)</b>\n"
             "• «📦 Заказ материалов» — запрос материалов у РП.\n"
@@ -204,7 +206,7 @@ def _role_guide(role: str | None) -> str:
             "• «🔨 В Работу» — принять задачу от РП.\n"
             "• «📩 Не срочно ГД» / «🚨 Срочно ГД» — сообщения ГД.\n"
         )
-    if Role.ZAMERY in roles:
+    if Role.ZAMERY in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (Замерщик)</b>\n"
             "• «📋 Заявка на замер» — входящие заявки от Отд.Продаж и ГД.\n"
@@ -212,7 +214,7 @@ def _role_guide(role: str | None) -> str:
             "• «🚨 Срочно ГД» — двустороннее сообщение с ГД.\n"
             "• «💰 Оплата замеров» — расчёт ЗП за выполненные замеры.\n"
         )
-    if Role.GD in roles:
+    if Role.GD in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (ГД)</b>\n"
             "• «Счета на Оплату» — входящие счета от РП.\n"
@@ -225,21 +227,21 @@ def _role_guide(role: str | None) -> str:
             "• «Синхронизация данных» — синхронизация с Google Sheets.\n"
             "• «💬 Кред» — КВ, КИА, НПН.\n"
         )
-    if Role.DRIVER in roles:
+    if Role.DRIVER in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (Водитель)</b>\n"
             "• «📥 Входящие задачи» — заявки на доставку от РП.\n"
             "• «✅ Доставка выполнена» — подтвердить доставку.\n"
             "Заполните: проект, комментарий, фото разгрузки.\n"
         )
-    if Role.TINTER in roles:
+    if Role.TINTER in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (Тонировщик)</b>\n"
             "• «📥 Входящие задачи» — заявки на тонировку от РП.\n"
             "• «✅ Тонировка выполнена» — подтвердить тонировку.\n"
             "Заполните: проект, комментарий, фото результата.\n"
         )
-    if Role.LOADER in roles:
+    if Role.LOADER in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (Грузчик)</b>\n"
             "• «📥 Входящие задачи» — входящие задачи по объектам.\n"
