@@ -420,6 +420,18 @@ class ZameryBlackoutSG(StatesGroup):
     pick_dates = State()       # выбор дат для blackout
 
 
+class ZameryQuickBookSG(StatesGroup):
+    """Быстрая запись замера из графика (замерщик)."""
+    enter_address = State()
+    enter_description = State()
+
+
+class MgrQuickBookSG(StatesGroup):
+    """Быстрая запись замера из графика (менеджер)."""
+    enter_address = State()
+    enter_description = State()
+
+
 class ZameryZpSG(StatesGroup):
     """Замерщик: Расчёт ЗП — запрос выплаты с указанием стоимости замеров."""
     select_invoice = State()     # выбор счёта / объекта

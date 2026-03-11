@@ -35,7 +35,7 @@ from ..keyboards import (
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryCostEditSG, ZameryZpSG
+from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryCostEditSG, ZameryQuickBookSG, ZameryZpSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
@@ -1407,6 +1407,30 @@ async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
         text += "\n"
 
     b = InlineKeyboardBuilder()
+    # Кнопки свободных дней → заказать замер
+    free_btns = 0
+    for i in range(7):
+        day = mon + timedelta(days=i)
+        ds = day.isoformat()
+        if day >= today and ds not in blackout_set and ds not in zam_by_date:
+            wd = _RU_WEEKDAYS[day.weekday()]
+            b.button(
+                text=f"🟢 {day.day} {_RU_MONTHS[day.month]} ({wd}) — записать",
+                callback_data=f"zamsched:book:{ds}:{week_offset}",
+            )
+            free_btns += 1
+    # Дни с замерами — тоже можно добавить ещё
+    for i in range(7):
+        day = mon + timedelta(days=i)
+        ds = day.isoformat()
+        if day >= today and ds not in blackout_set and ds in zam_by_date:
+            wd = _RU_WEEKDAYS[day.weekday()]
+            cnt = len(zam_by_date[ds])
+            b.button(
+                text=f"📐 {day.day} {_RU_MONTHS[day.month]} ({wd}) — доп. замер",
+                callback_data=f"zamsched:book:{ds}:{week_offset}",
+            )
+
     # Nav buttons
     if week_offset > 0:
         b.button(text="⬅️ Пред. неделя", callback_data=f"zamsched:week:{week_offset - 1}")
@@ -1421,7 +1445,7 @@ async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
             callback_data=f"zamsched:blackout:rm:{bl['id']}:{week_offset}",
         )
     b.button(text="⬅️ К списку недель", callback_data="zamsched:main")
-    b.adjust(2, 1, 1, 1, 1, 1)
+    b.adjust(1)
 
     try:
         await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
@@ -1436,6 +1460,214 @@ async def zamery_schedule_back(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
     await _render_schedule_main(cb, db, cb.from_user.id, edit_existing=True)
+
+
+# --- Заказать замер из графика ---
+
+_BOOK_INTERVALS = [
+    "08:00–10:00", "10:00–12:00", "12:00–14:00",
+    "14:00–16:00", "16:00–18:00", "18:00–20:00",
+]
+
+
+@router.callback_query(F.data.startswith("zamsched:book:"))
+async def zamery_book_pick_time(cb: CallbackQuery, db: Database) -> None:
+    """Выбор временного интервала для записи замера."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+
+    parts = cb.data.split(":")  # type: ignore[union-attr]
+    ds = parts[2]  # ISO date
+    week_offset = int(parts[3])
+
+    uid = cb.from_user.id
+    d = date.fromisoformat(ds)
+    wd = _RU_WEEKDAYS[d.weekday()]
+
+    # Check which intervals are busy
+    summary = await db.get_zamery_schedule_summary(uid, ds, ds)
+    busy_intervals = summary["busy"].get(ds, [])
+
+    text = (
+        f"┌─────────────────────────\n"
+        f"│ 📐 <b>Записать замер</b>\n"
+        f"├─────────────────────────\n"
+        f"│ 📅 {d.day} {_RU_MONTHS[d.month]} ({wd})\n"
+    )
+    if busy_intervals:
+        text += f"│ ⚠️ Занято: {', '.join(busy_intervals)}\n"
+    text += f"└─────────────────────────\n\n"
+    text += "Выберите интервал:"
+
+    b = InlineKeyboardBuilder()
+    for interval in _BOOK_INTERVALS:
+        if interval in busy_intervals:
+            b.button(text=f"🔴 {interval}", callback_data=f"zamsched:booktime:{ds}:{interval}:{week_offset}")
+        else:
+            b.button(text=f"🟢 {interval}", callback_data=f"zamsched:booktime:{ds}:{interval}:{week_offset}")
+    b.button(text="⬅️ Назад к неделе", callback_data=f"zamsched:week:{week_offset}")
+    b.adjust(2, 2, 2, 1)
+
+    try:
+        await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    except Exception:
+        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.startswith("zamsched:booktime:"))
+async def zamery_book_enter_address(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Выбран интервал → ввод адреса."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+
+    parts = cb.data.split(":")  # type: ignore[union-attr]
+    ds = parts[2]
+    interval = parts[3]
+    week_offset = int(parts[4])
+
+    d = date.fromisoformat(ds)
+    wd = _RU_WEEKDAYS[d.weekday()]
+
+    await state.clear()
+    await state.set_state(ZameryQuickBookSG.enter_address)
+    await state.update_data(
+        book_date=ds,
+        book_interval=interval,
+        book_week_offset=week_offset,
+        book_source="zamery",  # кто записывает
+    )
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📐 <b>Запись замера</b>\n"
+        f"📅 {d.day} {_RU_MONTHS[d.month]} ({wd})  ⏰ {interval}\n\n"
+        f"Введите <b>адрес</b> замера:",
+    )
+
+
+@router.message(ZameryQuickBookSG.enter_address)
+async def zamery_book_address(message: Message, state: FSMContext) -> None:
+    """Адрес введён → запрос описания."""
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("⚠️ Введите адрес:")
+        return
+    await state.update_data(book_address=text)
+    await state.set_state(ZameryQuickBookSG.enter_description)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⏭ Без описания — сохранить", callback_data="zamsched:bookskip")
+    b.adjust(1)
+    await message.answer(
+        "📝 Введите <b>описание</b> (комментарий) или нажмите кнопку:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(ZameryQuickBookSG.enter_description, F.data == "zamsched:bookskip")
+async def zamery_book_skip_desc(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Пропустить описание → сохранить."""
+    await cb.answer()
+    await _finalize_quick_book(cb, state, db, config, notifier, description=None)
+
+
+@router.message(ZameryQuickBookSG.enter_description)
+async def zamery_book_description(
+    message: Message, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Описание введено → сохранить."""
+    text = (message.text or "").strip() or None
+    await _finalize_quick_book(message, state, db, config, notifier, description=text)
+
+
+async def _finalize_quick_book(
+    event: Message | CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    description: str | None,
+) -> None:
+    """Сохранить быструю запись замера."""
+    from ..enums import TaskType
+    data = await state.get_data()
+    ds = data["book_date"]
+    interval = data["book_interval"]
+    address = data["book_address"]
+    week_offset = data.get("book_week_offset", 0)
+
+    uid = event.from_user.id if event.from_user else 0
+    d = date.fromisoformat(ds)
+    wd = _RU_WEEKDAYS[d.weekday()]
+
+    # Resolve zamery user
+    zamery_uid = await resolve_default_assignee(db, config, Role.ZAMERY)
+    assigned_to = int(zamery_uid) if zamery_uid else uid
+
+    # Determine requester role
+    user = await db.get_user_optional(uid)
+    requester_role = resolve_active_menu_role(uid, user.role if user else None) or "zamery"
+
+    # Create zamery request
+    zam_req_id = await db.create_zamery_request(
+        source_type="schedule",
+        address=address,
+        description=description,
+        requested_by=uid,
+        requester_role=requester_role,
+        assigned_to=assigned_to,
+        base_cost=2500,
+        total_cost=2500,
+    )
+    # Set schedule
+    await db.update_zamery_request(
+        zam_req_id,
+        scheduled_date=ds,
+        scheduled_time_interval=interval,
+        status="in_progress",
+        accepted_at=datetime.now().isoformat(),
+    )
+
+    # Create generic task
+    task = await db.create_task(
+        project_id=None,
+        type_=TaskType.ZAMERY_REQUEST,
+        status=TaskStatus.IN_PROGRESS,
+        created_by=uid,
+        assigned_to=assigned_to,
+        due_at_iso=None,
+        payload={
+            "zamery_request_id": zam_req_id,
+            "source_type": "schedule",
+            "address": address,
+            "description": description,
+        },
+    )
+    await db.accept_task(int(task["id"]))
+    await db.update_zamery_request(zam_req_id, task_id=int(task["id"]))
+
+    await state.clear()
+
+    msg_target = event.message if isinstance(event, CallbackQuery) else event
+
+    text = (
+        f"┌─────────────────────────\n"
+        f"│ ✅ <b>Замер записан</b>\n"
+        f"├─────────────────────────\n"
+        f"│ 📅 {d.day} {_RU_MONTHS[d.month]} ({wd})\n"
+        f"│ ⏰ {interval}\n"
+        f"│ 📍 {address}\n"
+    )
+    if description:
+        text += f"│ 📝 {description}\n"
+    text += f"└─────────────────────────"
+
+    await msg_target.answer(text)  # type: ignore[union-attr]
+    # Обновить бейдж
+    await refresh_recipient_keyboard(notifier, db, config, uid)
 
 
 # --- Blackout: добавить ---
