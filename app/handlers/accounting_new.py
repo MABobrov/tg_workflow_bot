@@ -25,7 +25,6 @@ from ..enums import InvoiceStatus, Role, TaskStatus
 from ..keyboards import (
     ACC_BTN_INVOICE_END,
     ACC_BTN_INVOICES_WORK,
-    invoice_list_kb,
     main_menu,
 )
 from ..services.assignment import resolve_default_assignee
@@ -410,50 +409,17 @@ async def acc_invoice_end(message: Message, db: Database) -> None:
     if not invoices:
         await answer_service(message, "🏁 Нет закрытых счетов.", delay_seconds=60)
         return
-    await message.answer(
-        f"🏁 <b>Закрытые Счета</b> ({len(invoices)}):",
-        reply_markup=invoice_list_kb(invoices, action_prefix="accinv", back_callback="nav:home"),
-    )
 
+    await message.answer(f"🏁 <b>Закрытые Счета</b> ({len(invoices)}):")
 
-@router.callback_query(F.data.startswith("accinv:view:"))
-async def acc_invoice_view(cb: CallbackQuery, db: Database) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
-        return
-    await cb.answer()
-    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    inv = await db.get_invoice(invoice_id)
-    if not inv:
-        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
-        return
+    for inv in invoices[:15]:
+        text = await _format_acc_card(inv, db)
+        await message.answer(text)
 
-    text = (
-        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
-        f"📍 Адрес: {inv.get('object_address', '-')}\n"
-        f"💰 Сумма: {inv.get('amount', 0):,.0f}₽\n"
-        f"📊 Статус: 🏁 Закрытые Счета\n"
-        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
-    )
-    b = InlineKeyboardBuilder()
-    b.button(text="📊 Себестоимость", callback_data=f"acc_cost:{invoice_id}")
-    b.adjust(1)
-    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
-
-
-@router.callback_query(F.data.regexp(r"^acc_cost:\d+$"))
-async def acc_invoice_cost(cb: CallbackQuery, db: Database) -> None:
-    """Бухгалтерия: карточка себестоимости по закрытому счёту."""
-    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
-        return
-    await cb.answer()
-    inv_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
-    inv = await db.get_invoice(inv_id)
-    if not inv:
-        await cb.message.answer("⚠️ Счёт не найден.")  # type: ignore[union-attr]
-        return
-    cost = await db.get_full_invoice_cost_card(inv_id)
-    from ..utils import format_cost_card
-    await cb.message.answer(format_cost_card(inv, cost))  # type: ignore[union-attr]
+    footer = InlineKeyboardBuilder()
+    footer.button(text="⬅️ Назад", callback_data="nav:home")
+    footer.adjust(1)
+    await message.answer("—", reply_markup=footer.as_markup())
 
 
 # =====================================================================
