@@ -981,7 +981,7 @@ def invoice_list_kb(invoices: list[dict], action_prefix: str = "inv", *, back_ca
         if hide_amount:
             text = f"{status_emoji} №{inv.get('invoice_number', '?')}"
         else:
-            text = f"{status_emoji} №{inv.get('invoice_number', '?')} — {inv.get('amount', 0):.0f}₽"
+            text = f"{status_emoji} №{inv.get('invoice_number', '?')} — {(inv.get('amount') or 0):.0f}₽"
         b.button(text=text[:60], callback_data=f"{action_prefix}:view:{inv['id']}")
     if back_callback:
         b.button(text="⬅️ Назад", callback_data=back_callback)
