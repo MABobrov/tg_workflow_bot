@@ -319,6 +319,7 @@ async def _finalize_accept(
 
     await db.update_zamery_request(req_id, **update_fields)
     if req.get("task_id"):
+        await db.accept_task(int(req["task_id"]))
         await db.update_task_status(req["task_id"], TaskStatus.IN_PROGRESS)
 
     msg_target = event.message if isinstance(event, CallbackQuery) else event
@@ -341,6 +342,11 @@ async def _finalize_accept(
 
     await notifier.safe_send(req["requested_by"], notify_text)
     await refresh_recipient_keyboard(notifier, db, config, req["requested_by"])
+
+    # Обновить клавиатуру замерщика (бейдж на кнопке «Замеры»)
+    uid = event.from_user.id if isinstance(event, (Message, CallbackQuery)) and event.from_user else None
+    if uid:
+        await refresh_recipient_keyboard(notifier, db, config, uid)
     await state.clear()
 
 
@@ -375,6 +381,8 @@ async def zamery_reject_request(
         "Свяжитесь с замерщиком для уточнения.",
     )
     await refresh_recipient_keyboard(notifier, db, config, req["requested_by"])
+    # Обновить бейдж замерщика
+    await refresh_recipient_keyboard(notifier, db, config, cb.from_user.id)
 
 
 # =====================================================================
@@ -755,6 +763,10 @@ async def _finalize_complete(
         if fid:
             await notifier.safe_send_media(req["requested_by"], ft, fid, caption=a.get("caption"))
     await refresh_recipient_keyboard(notifier, db, config, req["requested_by"])
+    # Обновить бейдж замерщика
+    uid = event.from_user.id if isinstance(event, (Message, CallbackQuery)) and event.from_user else None
+    if uid:
+        await refresh_recipient_keyboard(notifier, db, config, uid)
     await state.clear()
 
 
