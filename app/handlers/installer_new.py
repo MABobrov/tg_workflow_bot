@@ -1115,7 +1115,7 @@ def _build_inst_detail_card(inv: dict) -> str:
     stage_lbl = _STAGE_LABEL.get(stage, stage)
     num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
 
-    text = f"📄 <b>№{num}</b> · {stage_lbl}\n"
+    text = f"📄 <b>№{num}</b> · {stage_lbl}{_credit_tag(inv)}\n"
     text += f"📍 {inv.get('object_address', '—')}\n"
 
     # Расчётная стоимость монтажа × 0.77, округление вниз кратно 1000
@@ -1236,7 +1236,7 @@ def _build_archive_card(inv: dict) -> str:
     from datetime import date as _date
 
     num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
-    text = f"📄 <b>№{num}</b> · 📦 Архив\n"
+    text = f"📄 <b>№{num}</b> · 📦 Архив{_credit_tag(inv)}\n"
     text += f"📍 {inv.get('object_address', '—')}\n"
 
     est_inst = inv.get("estimated_installation")
@@ -1317,6 +1317,21 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
 # =====================================================================
 # ЗАПРОС ЗП из «Ожидает расчёт» (InstallerZpAdjustSG)
 # =====================================================================
+
+
+def _is_credit(inv: dict) -> bool:
+    """Проверка: кредитный ли счёт."""
+    if inv.get("is_credit"):
+        return True
+    if inv.get("status") == "credit":
+        return True
+    num = str(inv.get("invoice_number") or "")
+    return num.upper().startswith("ЗМ")
+
+
+def _credit_tag(inv: dict) -> str:
+    """Короткая пометка для кредитного счёта."""
+    return " · 🏦 <b>КРЕДИТ</b>" if _is_credit(inv) else ""
 
 
 def _calc_est_montazh(inv: dict) -> int:
@@ -1563,8 +1578,9 @@ async def zpadj_finalize(
         initiator = await get_initiator_label(db, u.id)
         mode_label = "добавить к расч." if mode == "add" else "своя сумма"
 
+        credit_warn = "\n🏦 <b>⚠️ КРЕДИТНЫЙ СЧЁТ</b>\n" if _is_credit(inv) else ""
         notify_text = (
-            f"💰 <b>Запрос ЗП монтажника</b>\n\n"
+            f"💰 <b>Запрос ЗП монтажника</b>{credit_warn}\n"
             f"👤 От: {initiator}\n"
             f"🔢 Счёт: №{inv_number}\n"
             f"📍 {addr}\n"
@@ -1945,7 +1961,7 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
         addr = inv.get("object_address") or "—"
         est_val = _calc_est_montazh(inv)
 
-        card = f"{zp_icon} <b>№{num}</b> · {zp_label}\n"
+        card = f"{zp_icon} <b>№{num}</b> · {zp_label}{_credit_tag(inv)}\n"
         card += f"📍 {addr}\n"
         if est_val:
             card += f"🔧 Расч. монтаж: {est_val:,}₽\n"
@@ -2106,9 +2122,10 @@ async def installer_zp_confirm(
         b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
         b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
         b.adjust(2)
+        credit_warn = "\n🏦 <b>⚠️ КРЕДИТНЫЙ СЧЁТ</b>\n" if inv and _is_credit(inv) else ""
         await notifier.safe_send(
             int(gd_id),
-            f"💰 <b>Запрос ЗП монтажника</b>\n\n"
+            f"💰 <b>Запрос ЗП монтажника</b>{credit_warn}\n"
             f"👤 От: {initiator}\n"
             f"🔢 Счёт: №{inv_number}\n"
             f"📍 Адрес: {inv.get('object_address') or '—' if inv else '—'}\n"
