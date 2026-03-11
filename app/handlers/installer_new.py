@@ -100,7 +100,8 @@ async def start_order_materials(message: Message, state: FSMContext, db: Databas
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    invoices = await db.list_installer_confirmed_invoices()
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    invoices = await db.list_installer_confirmed_invoices(user_id)
     b = InlineKeyboardBuilder()
     for inv in invoices:
         num = inv.get("invoice_number") or f"#{inv['id']}"
@@ -281,7 +282,8 @@ async def start_order_extra(message: Message, state: FSMContext, db: Database) -
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    invoices = await db.list_installer_confirmed_invoices()  # type: ignore[union-attr]
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    invoices = await db.list_installer_confirmed_invoices(user_id)
     b = InlineKeyboardBuilder()
     for inv in invoices:
         num = inv.get("invoice_number") or f"#{inv['id']}"
@@ -320,7 +322,7 @@ async def start_invoice_ok(message: Message, state: FSMContext, db: Database) ->
     await message.answer(
         "✅ <b>Счет ОК</b>\n\n"
         "Выберите счёт, по которому работы выполнены:",
-        reply_markup=invoice_list_kb(invoices, action_prefix="instok", back_callback="nav:home"),
+        reply_markup=invoice_list_kb(invoices, action_prefix="instok", back_callback="nav:home", hide_amount=True),
     )
 
 
@@ -998,13 +1000,6 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
         except (ValueError, TypeError):
             pass
 
-    est_install = inv.get("estimated_installation")
-    if est_install:
-        try:
-            text += f"💰 Расч. стоимость монтажа: {float(est_install) * 0.7:,.0f}₽\n"
-        except (ValueError, TypeError):
-            pass
-
     text += f"💸 ЗП: {zp_lbl}\n"
 
     zp_amount = inv.get("zp_installer_amount")
@@ -1209,13 +1204,6 @@ async def installer_work_view_card(
     if area:
         try:
             text += f"📐 Площадь: {float(area):,.1f} м²\n"
-        except (ValueError, TypeError):
-            pass
-    # Расчётная стоимость монтажа (монтажнику показываем −30%)
-    est_install = inv.get("estimated_installation")
-    if est_install:
-        try:
-            text += f"🔧 Расч. стоимость монтажа: {float(est_install) * 0.7:,.0f}₽\n"
         except (ValueError, TypeError):
             pass
     text += f"📅 Создан: {(inv.get('created_at') or '—')[:10]}\n"

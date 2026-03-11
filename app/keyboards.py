@@ -969,7 +969,7 @@ def edo_invoice_pick_kb(invoices: list[dict[str, Any]]) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def invoice_list_kb(invoices: list[dict], action_prefix: str = "inv", *, back_callback: str | None = None) -> InlineKeyboardMarkup:
+def invoice_list_kb(invoices: list[dict], action_prefix: str = "inv", *, back_callback: str | None = None, hide_amount: bool = False) -> InlineKeyboardMarkup:
     """Inline-кнопки со списком счетов."""
     b = InlineKeyboardBuilder()
     for inv in invoices:
@@ -978,7 +978,10 @@ def invoice_list_kb(invoices: list[dict], action_prefix: str = "inv", *, back_ca
             "paid": "✅", "on_hold": "⏸", "rejected": "❌",
             "closing": "📌", "ended": "🏁",
         }.get(inv.get("status", ""), "❓")
-        text = f"{status_emoji} №{inv.get('invoice_number', '?')} — {inv.get('amount', 0):.0f}₽"
+        if hide_amount:
+            text = f"{status_emoji} №{inv.get('invoice_number', '?')}"
+        else:
+            text = f"{status_emoji} №{inv.get('invoice_number', '?')} — {inv.get('amount', 0):.0f}₽"
         b.button(text=text[:60], callback_data=f"{action_prefix}:view:{inv['id']}")
     if back_callback:
         b.button(text="⬅️ Назад", callback_data=back_callback)
