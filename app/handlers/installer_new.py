@@ -1088,14 +1088,15 @@ def _build_inst_detail_card(inv: dict) -> str:
     zp = inv.get("zp_installer_status") or "not_requested"
     zp_lbl = "✅" if zp == "approved" else ("⏳" if zp == "requested" else "—")
     parts.append(f"💸 ЗП: {zp_lbl}")
+    if parts:
+        text += " · ".join(parts) + "\n"
+
     zp_amount = inv.get("zp_installer_amount")
     if zp_amount and zp in ("requested", "approved"):
         try:
-            parts.append(f"💵 {float(zp_amount):,.0f}₽")
+            text += f"💵 ЗП выплачено: <b>{float(zp_amount):,.0f}₽</b>\n"
         except (ValueError, TypeError):
             pass
-    if parts:
-        text += " · ".join(parts) + "\n"
 
     # Дата окончания сроков
     deadline = inv.get("deadline_end_date")
@@ -1162,8 +1163,11 @@ def _build_archive_stats(invoices: list[dict]) -> str:
     def _line(label: str, invs: list[dict]) -> str:
         cnt = len(invs)
         zp = sum(float(i.get("zp_installer_amount") or 0) for i in invs)
-        amounts = sum(float(i.get("amount") or 0) for i in invs)
-        pct = (zp / amounts * 100) if amounts > 0 else 0
+        est_total = sum(
+            int(float(i.get("estimated_installation") or 0) * 0.77) // 1000 * 1000
+            for i in invs
+        )
+        pct = (zp / est_total * 100) if est_total > 0 else 0
         return f"{label}: {cnt} шт. · {zp:,.0f}₽ · {pct:.1f}%"
 
     lines = [
@@ -1182,13 +1186,6 @@ def _build_archive_card(inv: dict) -> str:
     num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
     text = f"📄 <b>№{num}</b> · 📦 Архив\n"
     text += f"📍 {inv.get('object_address', '—')}\n"
-
-    amount = inv.get("amount")
-    if amount:
-        try:
-            text += f"💰 Сумма: {float(amount):,.0f}₽\n"
-        except (ValueError, TypeError):
-            pass
 
     est_inst = inv.get("estimated_installation")
     est_val = 0
