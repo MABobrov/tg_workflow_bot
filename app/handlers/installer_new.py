@@ -21,7 +21,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
 from ..db import Database
-from ..enums import InvoiceStatus, MontazhStage, Role, TaskStatus, TaskType
+from ..enums import InvoiceStatus, MontazhStage, Role, TaskStatus, TaskType, parse_roles
 from ..keyboards import (
     INST_BTN_DAILY_REPORT,
     INST_BTN_IN_WORK,
@@ -54,6 +54,48 @@ log = logging.getLogger(__name__)
 router = Router()
 router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
+
+
+@router.message.outer_middleware()
+async def _installer_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
+    """При каждом сообщении от монтажника — обновляем reply-клавиатуру."""
+    result = await handler(event, data)
+    u = event.from_user
+    if not u:
+        return result
+    # Не обновлять если монтажник в FSM-состоянии
+    fsm: FSMContext | None = data.get("state")
+    if fsm:
+        cur_state = await fsm.get_state()
+        if cur_state is not None:
+            return result
+    db_inst: Database | None = data.get("db")
+    cfg = data.get("config")
+    if not db_inst or not cfg:
+        return result
+    try:
+        user = await db_inst.get_user_optional(u.id)
+        if not user or not user.role:
+            return result
+        if Role.INSTALLER not in set(parse_roles(user.role)):
+            return result
+        menu_role, isolated = resolve_menu_scope(u.id, user.role)
+        if menu_role != Role.INSTALLER:
+            return result
+        unread = await db_inst.count_unread_tasks(u.id)
+        uc = await db_inst.count_unread_by_channel(u.id)
+        is_admin = u.id in (cfg.admin_ids or set())
+        kb = main_menu(
+            menu_role,
+            is_admin=is_admin,
+            unread=unread,
+            unread_channels=uc,
+            isolated_role=isolated,
+        )
+        await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)
+    except Exception:
+        log.debug("installer auto-refresh failed", exc_info=True)
+    return result
 
 
 async def _current_role(db: Database, user_id: int) -> str | None:
@@ -1860,31 +1902,65 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
         )
         return
 
-    # --- Стандартный поток (после инициализации) ---
+    # --- Стандартный поток: карточки всех счетов со статусом ЗП ---
     cur = await db.conn.execute(
         "SELECT * FROM invoices "
-        "WHERE (zp_installer_status IS NULL OR zp_installer_status = 'not_requested') "
-        "  AND montazh_stage IN ('in_work', 'razmery_ok', 'invoice_ok') "
-        "  AND status IN ('in_progress', 'paid') "
+        "WHERE montazh_stage IN ('in_work', 'razmery_ok', 'invoice_ok') "
+        "  AND status IN ('in_progress', 'paid', 'ended') "
         "  AND parent_invoice_id IS NULL "
-        "ORDER BY id DESC LIMIT 20",
+        "  AND (zp_installer_status IS NULL OR zp_installer_status != 'not_applicable') "
+        "ORDER BY id DESC LIMIT 30",
     )
     rows = await cur.fetchall()
     invoices = [dict(r) for r in rows]
     if not invoices:
-        await message.answer("✅ Нет счетов, по которым можно запросить ЗП.")
+        await message.answer("📭 Нет счетов.")
         return
-    b = InlineKeyboardBuilder()
+
+    # Статистика
+    not_req = [i for i in invoices if (i.get("zp_installer_status") or "not_requested") == "not_requested"]
+    requested = [i for i in invoices if i.get("zp_installer_status") == "requested"]
+    approved = [i for i in invoices if i.get("zp_installer_status") == "approved"]
+    sum_approved = sum(float(i.get("zp_installer_amount") or 0) for i in approved)
+
+    header = f"💰 <b>Запрос ЗП</b> · {len(invoices)} счетов\n"
+    parts = []
+    if not_req:
+        parts.append(f"❌ {len(not_req)} не запрошено")
+    if requested:
+        parts.append(f"⏳ {len(requested)} на проверке")
+    if approved:
+        parts.append(f"✅ {len(approved)} оплачено · {sum_approved:,.0f}₽")
+    if parts:
+        header += " | ".join(parts)
+    await message.answer(header)
+
+    # Карточки
     for inv in invoices:
-        label = f"№{inv['invoice_number'] or '—'} / {(inv.get('object_address') or '—')[:30]}"
-        b.button(text=label, callback_data=f"instzp:pick:{inv['id']}")
-    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
-    b.adjust(1)
-    await state.set_state(InstallerZpSG.select_invoice)
-    await message.answer(
-        "💰 <b>Запрос ЗП</b>\n\nВыберите счёт:",
-        reply_markup=b.as_markup(),
-    )
+        zp_st = inv.get("zp_installer_status") or "not_requested"
+        zp_icon = {"not_requested": "❌", "requested": "⏳", "approved": "✅"}.get(zp_st, "❌")
+        zp_label = {"not_requested": "Не запрошена", "requested": "На проверке", "approved": "Оплачена"}.get(zp_st, "—")
+
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = inv.get("object_address") or "—"
+        est_val = _calc_est_montazh(inv)
+
+        card = f"{zp_icon} <b>№{num}</b> · {zp_label}\n"
+        card += f"📍 {addr}\n"
+        if est_val:
+            card += f"🔧 Расч. монтаж: {est_val:,}₽\n"
+        zp_amount = inv.get("zp_installer_amount")
+        if zp_amount and zp_st in ("requested", "approved"):
+            try:
+                card += f"💵 ЗП: <b>{float(zp_amount):,.0f}₽</b>\n"
+            except (ValueError, TypeError):
+                pass
+
+        b = InlineKeyboardBuilder()
+        if zp_st == "not_requested":
+            b.button(text="💰 Запросить ЗП", callback_data=f"instzpadj:start:{inv['id']}")
+        b.adjust(1)
+        await message.answer(card, reply_markup=b.as_markup() if b.export() else None)
 
 
 # --- ZP init: toggle / done ---
