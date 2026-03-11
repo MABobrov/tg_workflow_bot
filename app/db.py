@@ -322,6 +322,16 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_zamery_req_by ON zamery_requests(requested_by);
             CREATE INDEX IF NOT EXISTS idx_zamery_req_to ON zamery_requests(assigned_to, status);
 
+            CREATE TABLE IF NOT EXISTS zamery_blackout_dates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                blackout_date TEXT NOT NULL,
+                comment TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_zam_blackout_user
+                ON zamery_blackout_dates(user_id, blackout_date);
+
             CREATE TABLE IF NOT EXISTS razmery_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 invoice_id INTEGER NOT NULL,
@@ -2899,6 +2909,89 @@ class Database:
             "total_with_invoice": total_with_invoice,
             "conversion_pct": conversion_pct,
             "by_role": by_role,
+        }
+
+    # ----- График замеров (schedule / blackout) ----- #
+
+    async def list_zamery_for_schedule(
+        self,
+        assigned_to: int,
+        date_from: str,
+        date_to: str,
+    ) -> list[dict[str, Any]]:
+        """Замеры с датой в диапазоне + имя менеджера."""
+        cur = await self.conn.execute(
+            "SELECT zr.*, u.full_name AS manager_name "
+            "FROM zamery_requests zr "
+            "LEFT JOIN users u ON u.telegram_id = zr.requested_by "
+            "WHERE zr.assigned_to = ? "
+            "  AND zr.scheduled_date IS NOT NULL "
+            "  AND zr.scheduled_date BETWEEN ? AND ? "
+            "  AND zr.status IN ('open', 'in_progress', 'done') "
+            "ORDER BY zr.scheduled_date, zr.scheduled_time_interval",
+            (assigned_to, date_from, date_to),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def list_zamery_blackout_dates(
+        self,
+        user_id: int,
+        date_from: str,
+        date_to: str,
+    ) -> list[dict[str, Any]]:
+        cur = await self.conn.execute(
+            "SELECT * FROM zamery_blackout_dates "
+            "WHERE user_id = ? AND blackout_date BETWEEN ? AND ? "
+            "ORDER BY blackout_date",
+            (user_id, date_from, date_to),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def add_zamery_blackout_date(
+        self,
+        user_id: int,
+        blackout_date: str,
+        comment: str | None = None,
+    ) -> int:
+        now = to_iso(utcnow())
+        cur = await self.conn.execute(
+            "INSERT INTO zamery_blackout_dates (user_id, blackout_date, comment, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (user_id, blackout_date, comment, now),
+        )
+        await self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def remove_zamery_blackout_date(self, blackout_id: int) -> None:
+        await self.conn.execute(
+            "DELETE FROM zamery_blackout_dates WHERE id = ?", (blackout_id,),
+        )
+        await self.conn.commit()
+
+    async def get_zamery_schedule_summary(
+        self,
+        assigned_to: int,
+        date_from: str,
+        date_to: str,
+    ) -> dict[str, Any]:
+        """Сводка графика для менеджера: занятые слоты + blackout."""
+        zamery = await self.list_zamery_for_schedule(assigned_to, date_from, date_to)
+        # Resolve zamery user_id for blackouts
+        blackouts = await self.list_zamery_blackout_dates(assigned_to, date_from, date_to)
+
+        busy: dict[str, list[str]] = {}  # date → [intervals]
+        for z in zamery:
+            d = z["scheduled_date"]
+            interval = z.get("scheduled_time_interval") or "—"
+            busy.setdefault(d, []).append(interval)
+
+        blackout_set = {b["blackout_date"] for b in blackouts}
+
+        return {
+            "busy": busy,
+            "blackout_dates": blackout_set,
+            "zamery": zamery,
+            "blackouts": blackouts,
         }
 
     async def import_zamery_invoices(

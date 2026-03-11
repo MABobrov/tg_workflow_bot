@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from aiogram import Router, F
@@ -26,6 +27,7 @@ from ..enums import (
 from ..keyboards import (
     ZAM_BTN_MY_OBJECTS,
     ZAM_BTN_PAYMENT,
+    ZAM_BTN_SCHEDULE,
     ZAM_BTN_ZAMERY,
     main_menu,
     zamery_incoming_kb,
@@ -33,7 +35,7 @@ from ..keyboards import (
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import ZameryAcceptSG, ZameryCompleteSG, ZameryCostEditSG, ZameryZpSG
+from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryCostEditSG, ZameryZpSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
@@ -1222,6 +1224,309 @@ async def zamery_batch_gd_reject(
             f"Свяжитесь с ГД для уточнения.",
         )
         await refresh_recipient_keyboard(notifier, db, config, int(zamery_uid))
+
+
+# =====================================================================
+# 📅 ГРАФИК ЗАМЕРОВ (Schedule)
+# =====================================================================
+
+_RU_WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+_RU_MONTHS = [
+    "", "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+]
+
+
+def _week_range(base: date, offset_weeks: int = 0) -> tuple[date, date]:
+    """Return (monday, sunday) for the week containing base + offset_weeks."""
+    monday = base - timedelta(days=base.weekday()) + timedelta(weeks=offset_weeks)
+    sunday = monday + timedelta(days=6)
+    return monday, sunday
+
+
+def _format_date_short(d: date) -> str:
+    return f"{d.day} {_RU_MONTHS[d.month]}"
+
+
+@router.message(F.text == ZAM_BTN_SCHEDULE)
+async def zamery_schedule_main(message: Message, db: Database) -> None:
+    """📅 График замеров — главный экран с 5 неделями."""
+    if not await require_role_message(message, db, roles=[Role.ZAMERY]):
+        return
+    uid = message.from_user.id  # type: ignore[union-attr]
+    await _render_schedule_main(message, db, uid, edit_existing=False)
+
+
+async def _render_schedule_main(
+    target: Message | CallbackQuery,
+    db: Database,
+    uid: int,
+    edit_existing: bool = True,
+) -> None:
+    """Render 5-week schedule overview."""
+    today = date.today()
+    weeks_data = []
+    # Show current week + 4 next weeks
+    for w in range(5):
+        mon, sun = _week_range(today, w)
+        d_from = mon.isoformat()
+        d_to = sun.isoformat()
+        zamery = await db.list_zamery_for_schedule(uid, d_from, d_to)
+        blackouts = await db.list_zamery_blackout_dates(uid, d_from, d_to)
+        weeks_data.append((w, mon, sun, zamery, blackouts))
+
+    # Header
+    text = "📅 <b>График замеров</b>\n\n"
+
+    # Total stats
+    total_zamery = sum(len(z) for _, _, _, z, _ in weeks_data)
+    total_blackout = sum(len(b) for _, _, _, _, b in weeks_data)
+    text += f"📊 Замеров: <b>{total_zamery}</b> | 🚫 Выходных: <b>{total_blackout}</b>\n\n"
+
+    b = InlineKeyboardBuilder()
+    for w, mon, sun, zamery, blackouts in weeks_data:
+        # Week label
+        label = f"{_format_date_short(mon)} — {_format_date_short(sun)}"
+        if w == 0:
+            label = f"📍 {label}"  # current week marker
+
+        # Stats
+        cnt = len(zamery)
+        bl = len(blackouts)
+        badge = ""
+        if cnt > 0:
+            badge += f" · 📐{cnt}"
+        if bl > 0:
+            badge += f" · 🚫{bl}"
+        if cnt == 0 and bl == 0:
+            badge = " · свободна"
+
+        b.button(
+            text=f"{label}{badge}",
+            callback_data=f"zamsched:week:{w}",
+        )
+
+    b.button(text="🚫 Добавить выходной", callback_data="zamsched:blackout:add")
+    b.adjust(1)
+
+    msg = target.message if isinstance(target, CallbackQuery) else target
+    if edit_existing and isinstance(target, CallbackQuery):
+        try:
+            await msg.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+            return
+        except Exception:
+            pass
+    await msg.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.startswith("zamsched:week:"))
+async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
+    """Detailed week view — 7 days with zamery, blackouts, free."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+
+    uid = cb.from_user.id
+    week_offset = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    today = date.today()
+    mon, sun = _week_range(today, week_offset)
+    d_from = mon.isoformat()
+    d_to = sun.isoformat()
+
+    zamery = await db.list_zamery_for_schedule(uid, d_from, d_to)
+    blackouts = await db.list_zamery_blackout_dates(uid, d_from, d_to)
+
+    # Group zamery by date
+    zam_by_date: dict[str, list[dict]] = {}
+    for z in zamery:
+        d = z["scheduled_date"]
+        zam_by_date.setdefault(d, []).append(z)
+
+    blackout_set = {bl["blackout_date"] for bl in blackouts}
+    blackout_map = {bl["blackout_date"]: bl for bl in blackouts}
+
+    text = f"📅 <b>{_format_date_short(mon)} — {_format_date_short(sun)}</b>\n\n"
+
+    for i in range(7):
+        day = mon + timedelta(days=i)
+        ds = day.isoformat()
+        wd = _RU_WEEKDAYS[day.weekday()]
+        day_label = f"{day.day} {_RU_MONTHS[day.month]} ({wd})"
+
+        if ds in blackout_set:
+            text += f"🚫 <b>{day_label}</b> — выходной\n"
+            bl = blackout_map.get(ds)
+            if bl and bl.get("comment"):
+                text += f"    <i>{bl['comment']}</i>\n"
+        elif ds in zam_by_date:
+            day_zamery = zam_by_date[ds]
+            text += f"📐 <b>{day_label}</b> — {len(day_zamery)} замер(ов)\n"
+            for z in day_zamery:
+                interval = z.get("scheduled_time_interval") or ""
+                mgr = z.get("manager_name") or "—"
+                addr = z.get("address") or "—"
+                text += f"    ⏰ {interval}  👤 {mgr}\n"
+                text += f"    📍 {addr}\n"
+        else:
+            if day < today:
+                text += f"▫️ <b>{day_label}</b>\n"
+            else:
+                text += f"🟢 <b>{day_label}</b> — свободен\n"
+        text += "\n"
+
+    b = InlineKeyboardBuilder()
+    # Nav buttons
+    if week_offset > 0:
+        b.button(text="⬅️ Пред. неделя", callback_data=f"zamsched:week:{week_offset - 1}")
+    if week_offset < 8:
+        b.button(text="След. неделя ➡️", callback_data=f"zamsched:week:{week_offset + 1}")
+    b.button(text="🚫 Добавить выходной", callback_data="zamsched:blackout:add")
+    # Show removable blackouts for this week
+    for bl in blackouts:
+        bd = date.fromisoformat(bl["blackout_date"])
+        b.button(
+            text=f"❌ Убрать выходной {bd.day} {_RU_MONTHS[bd.month]}",
+            callback_data=f"zamsched:blackout:rm:{bl['id']}:{week_offset}",
+        )
+    b.button(text="⬅️ К списку недель", callback_data="zamsched:main")
+    b.adjust(2, 1, 1, 1, 1, 1)
+
+    try:
+        await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    except Exception:
+        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "zamsched:main")
+async def zamery_schedule_back(cb: CallbackQuery, db: Database) -> None:
+    """Back to main schedule view."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    await _render_schedule_main(cb, db, cb.from_user.id, edit_existing=True)
+
+
+# --- Blackout: добавить ---
+
+@router.callback_query(F.data == "zamsched:blackout:add")
+async def zamery_blackout_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Start blackout date input."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    await state.clear()
+    await state.set_state(ZameryBlackoutSG.pick_dates)
+
+    # Show next 14 days as inline buttons for quick pick
+    today = date.today()
+    b = InlineKeyboardBuilder()
+    for i in range(1, 15):
+        d = today + timedelta(days=i)
+        wd = _RU_WEEKDAYS[d.weekday()]
+        b.button(
+            text=f"{d.day} {_RU_MONTHS[d.month]} ({wd})",
+            callback_data=f"zamsched:blackout:pick:{d.isoformat()}",
+        )
+    b.button(text="⬅️ Назад", callback_data="zamsched:blackout:cancel")
+    b.adjust(2, 2, 2, 2, 2, 2, 2, 1)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        "🚫 <b>Добавить выходной</b>\n\n"
+        "Выберите дату или введите вручную (ДД.ММ.ГГГГ):",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("zamsched:blackout:pick:"))
+async def zamery_blackout_pick(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Quick-pick a blackout date from inline buttons."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+
+    ds = cb.data.split(":")[-1]  # type: ignore[union-attr]
+    uid = cb.from_user.id
+
+    try:
+        d = date.fromisoformat(ds)
+    except ValueError:
+        await cb.message.answer("❌ Некорректная дата.")  # type: ignore[union-attr]
+        return
+
+    await db.add_zamery_blackout_date(uid, ds)
+    await state.clear()
+
+    wd = _RU_WEEKDAYS[d.weekday()]
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Выходной добавлен: <b>{d.day} {_RU_MONTHS[d.month]} ({wd})</b>"
+    )
+    # Refresh main schedule
+    await _render_schedule_main(cb, db, uid, edit_existing=False)
+
+
+@router.message(ZameryBlackoutSG.pick_dates)
+async def zamery_blackout_manual(message: Message, state: FSMContext, db: Database) -> None:
+    """Manual date entry for blackout (DD.MM.YYYY)."""
+    uid = message.from_user.id  # type: ignore[union-attr]
+    text = (message.text or "").strip()
+
+    # Parse DD.MM.YYYY
+    try:
+        d = datetime.strptime(text, "%d.%m.%Y").date()
+    except ValueError:
+        await message.answer("⚠️ Формат: ДД.ММ.ГГГГ (например 15.03.2026)")
+        return
+
+    if d <= date.today():
+        await message.answer("⚠️ Дата должна быть в будущем.")
+        return
+
+    await db.add_zamery_blackout_date(uid, d.isoformat())
+    await state.clear()
+
+    wd = _RU_WEEKDAYS[d.weekday()]
+    await message.answer(
+        f"✅ Выходной добавлен: <b>{d.day} {_RU_MONTHS[d.month]} ({wd})</b>"
+    )
+    await _render_schedule_main(message, db, uid, edit_existing=False)
+
+
+@router.callback_query(F.data == "zamsched:blackout:cancel")
+async def zamery_blackout_cancel(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Cancel blackout entry."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    await state.clear()
+    await _render_schedule_main(cb, db, cb.from_user.id, edit_existing=True)
+
+
+# --- Blackout: удалить ---
+
+@router.callback_query(F.data.startswith("zamsched:blackout:rm:"))
+async def zamery_blackout_remove(cb: CallbackQuery, db: Database) -> None:
+    """Remove a blackout date."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+
+    parts = cb.data.split(":")  # type: ignore[union-attr]
+    bl_id = int(parts[3])
+    week_offset = int(parts[4]) if len(parts) > 4 else 0
+
+    await db.remove_zamery_blackout_date(bl_id)
+
+    # Refresh week view
+    uid = cb.from_user.id
+    today = date.today()
+    mon, sun = _week_range(today, week_offset)
+
+    # Re-render the week
+    await cb.message.answer("✅ Выходной удалён.")  # type: ignore[union-attr]
+
+    # Simulate going back to that week
+    cb.data = f"zamsched:week:{week_offset}"  # type: ignore[assignment]
+    await zamery_schedule_week(cb, db)
 
 
 # =====================================================================

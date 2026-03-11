@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import logging
+from datetime import date, timedelta
 from typing import Any
 
 from aiogram import Router, F
@@ -2119,7 +2120,7 @@ async def zamery_client_contact(message: Message, state: FSMContext) -> None:
 
 
 @router.message(ZameryRequestSG.mkad_km)
-async def zamery_mkad_km(message: Message, state: FSMContext) -> None:
+async def zamery_mkad_km(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     text = (message.text or "").strip().replace(",", ".")
     try:
         km = float(text)
@@ -2129,8 +2130,169 @@ async def zamery_mkad_km(message: Message, state: FSMContext) -> None:
         await message.answer("⚠️ Введите число ≥ 0 (км от МКАД):")
         return
     await state.update_data(mkad_km=km)
+
+    # Show zamerschik schedule for date picking
+    zamery_uid = await resolve_default_assignee(db, config, Role.ZAMERY)
+    if not zamery_uid:
+        # Fallback: skip schedule, go to volume
+        await state.set_state(ZameryRequestSG.volume_m2)
+        await message.answer("📐 Введите <b>примерный объём</b> (площадь) в м²:")
+        return
+
+    await state.update_data(zamery_uid=int(zamery_uid))
+    await state.set_state(ZameryRequestSG.pick_schedule_date)
+    await _show_schedule_date_picker(message, db, int(zamery_uid))
+
+
+# --- Schedule date/time picker for manager ---
+
+_RU_WEEKDAYS_M = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+_RU_MONTHS_M = [
+    "", "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+]
+
+_TIME_INTERVALS = [
+    "09:00–12:00",
+    "12:00–15:00",
+    "15:00–18:00",
+    "18:00–21:00",
+]
+
+
+async def _show_schedule_date_picker(
+    target: Message,
+    db: Database,
+    zamery_uid: int,
+) -> None:
+    """Show 2-week zamerschik schedule with date pick buttons."""
+    today = date.today()
+    d_from = today.isoformat()
+    d_to = (today + timedelta(days=13)).isoformat()
+
+    summary = await db.get_zamery_schedule_summary(zamery_uid, d_from, d_to)
+    busy = summary["busy"]  # date_str → [intervals]
+    blackout_set = summary["blackout_set"]  # set of date_str
+
+    text = "📅 <b>График замерщика</b> (2 недели)\n\n"
+    text += "Выберите дату замера:\n\n"
+
+    b = InlineKeyboardBuilder()
+    for i in range(14):
+        d = today + timedelta(days=i)
+        ds = d.isoformat()
+        wd = _RU_WEEKDAYS_M[d.weekday()]
+        label = f"{d.day} {_RU_MONTHS_M[d.month]} ({wd})"
+
+        if ds in blackout_set:
+            text += f"🚫 {label} — <b>выходной</b>\n"
+            # No button for blackout days
+        elif ds in busy:
+            intervals = busy[ds]
+            cnt = len(intervals)
+            text += f"🔴 {label} — {cnt} замер(ов): {', '.join(intervals)}\n"
+            # Still allow picking busy days (different interval)
+            b.button(text=f"🔴 {d.day} {_RU_MONTHS_M[d.month]} ({wd})", callback_data=f"zamsched_mgr:date:{ds}")
+        else:
+            text += f"🟢 {label} — свободен\n"
+            b.button(text=f"🟢 {d.day} {_RU_MONTHS_M[d.month]} ({wd})", callback_data=f"zamsched_mgr:date:{ds}")
+
+    b.button(text="⏭ Пропустить", callback_data="zamsched_mgr:skip")
+    b.adjust(2, 2, 2, 2, 2, 2, 2, 1)
+    await target.answer(text, reply_markup=b.as_markup())
+
+
+@router.callback_query(ZameryRequestSG.pick_schedule_date, F.data.startswith("zamsched_mgr:date:"))
+async def zamery_pick_date(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Manager picks a date from the schedule."""
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
+    await cb.answer()
+
+    ds = cb.data.split(":")[-1]  # type: ignore[union-attr]
+    data = await state.get_data()
+    zamery_uid = data.get("zamery_uid")
+    await state.update_data(scheduled_date=ds)
+    await state.set_state(ZameryRequestSG.pick_schedule_time)
+
+    # Show busy intervals for this date
+    d = date.fromisoformat(ds)
+    d_from = ds
+    d_to = ds
+    busy_intervals: list[str] = []
+    if zamery_uid:
+        summary = await db.get_zamery_schedule_summary(zamery_uid, d_from, d_to)
+        busy_intervals = summary["busy"].get(ds, [])
+
+    wd = _RU_WEEKDAYS_M[d.weekday()]
+    text = f"📅 <b>{d.day} {_RU_MONTHS_M[d.month]} ({wd})</b>\n\n"
+    if busy_intervals:
+        text += f"⚠️ Занятые интервалы: {', '.join(busy_intervals)}\n\n"
+    text += "Выберите временной интервал:"
+
+    b = InlineKeyboardBuilder()
+    for interval in _TIME_INTERVALS:
+        if interval in busy_intervals:
+            b.button(text=f"🔴 {interval}", callback_data=f"zamsched_mgr:time:{interval}")
+        else:
+            b.button(text=f"🟢 {interval}", callback_data=f"zamsched_mgr:time:{interval}")
+    b.button(text="⬅️ Назад к датам", callback_data="zamsched_mgr:back_dates")
+    b.adjust(2, 2, 1)
+
+    try:
+        await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    except Exception:
+        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(ZameryRequestSG.pick_schedule_time, F.data.startswith("zamsched_mgr:time:"))
+async def zamery_pick_time(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Manager picks a time interval."""
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
+    await cb.answer()
+
+    interval = cb.data.split(":", 2)[-1]  # type: ignore[union-attr]
+    await state.update_data(scheduled_time_interval=interval)
     await state.set_state(ZameryRequestSG.volume_m2)
-    await message.answer("📐 Введите <b>примерный объём</b> (площадь) в м²:")
+
+    data = await state.get_data()
+    ds = data.get("scheduled_date", "")
+    try:
+        d = date.fromisoformat(ds)
+        wd = _RU_WEEKDAYS_M[d.weekday()]
+        date_label = f"{d.day} {_RU_MONTHS_M[d.month]} ({wd})"
+    except Exception:
+        date_label = ds
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Замер запланирован: <b>{date_label}</b>, {interval}\n\n"
+        "📐 Введите <b>примерный объём</b> (площадь) в м²:",
+    )
+
+
+@router.callback_query(ZameryRequestSG.pick_schedule_date, F.data == "zamsched_mgr:skip")
+async def zamery_skip_schedule(cb: CallbackQuery, state: FSMContext) -> None:
+    """Skip schedule picking."""
+    await cb.answer()
+    await state.set_state(ZameryRequestSG.volume_m2)
+    await cb.message.answer("📐 Введите <b>примерный объём</b> (площадь) в м²:")  # type: ignore[union-attr]
+
+
+@router.callback_query(ZameryRequestSG.pick_schedule_time, F.data == "zamsched_mgr:back_dates")
+async def zamery_back_to_dates(cb: CallbackQuery, state: FSMContext, db: Database, config: Config) -> None:
+    """Back to date picker."""
+    await cb.answer()
+    data = await state.get_data()
+    zamery_uid = data.get("zamery_uid")
+    if not zamery_uid:
+        zamery_uid = await resolve_default_assignee(db, config, Role.ZAMERY)
+    if not zamery_uid:
+        await state.set_state(ZameryRequestSG.volume_m2)
+        await cb.message.answer("📐 Введите <b>примерный объём</b> (площадь) в м²:")  # type: ignore[union-attr]
+        return
+    await state.set_state(ZameryRequestSG.pick_schedule_date)
+    await _show_schedule_date_picker(cb.message, db, int(zamery_uid))  # type: ignore[arg-type]
 
 
 @router.message(ZameryRequestSG.volume_m2)
@@ -2220,6 +2382,9 @@ async def zamery_finalize(
     base_cost = data.get("base_cost", 2500)
     mkad_surcharge = data.get("mkad_surcharge", 0)
     total_cost = data.get("total_cost", 2500)
+    scheduled_date = data.get("scheduled_date")
+    scheduled_time_interval = data.get("scheduled_time_interval")
+
     import json
     zam_req_id = await db.create_zamery_request(
         source_type=source_type,
@@ -2238,6 +2403,13 @@ async def zamery_finalize(
         mkad_surcharge=mkad_surcharge,
         total_cost=total_cost,
     )
+    # Save scheduled date/time
+    if scheduled_date:
+        await db.update_zamery_request(
+            zam_req_id,
+            scheduled_date=scheduled_date,
+            scheduled_time_interval=scheduled_time_interval,
+        )
 
     task = await db.create_task(
         project_id=None,
@@ -2296,6 +2468,16 @@ async def zamery_finalize(
     else:
         msg += "📍 МКАД: внутри МКАД\n"
     msg += f"💰 Стоимость замера: <b>{total_cost}₽</b>\n"
+    if scheduled_date:
+        try:
+            sd = date.fromisoformat(scheduled_date)
+            _wd = _RU_WEEKDAYS_M[sd.weekday()]
+            msg += f"📅 Дата: <b>{sd.day} {_RU_MONTHS_M[sd.month]} ({_wd})</b>"
+            if scheduled_time_interval:
+                msg += f" ⏰ {scheduled_time_interval}"
+            msg += "\n"
+        except Exception:
+            pass
     if description:
         msg += f"\n📝 Описание: {description}\n"
     msg += f"📌 Источник: {source_label}\n"

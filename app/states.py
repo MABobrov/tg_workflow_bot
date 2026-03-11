@@ -390,6 +390,8 @@ class ZameryRequestSG(StatesGroup):
     description = State()        # описание работ
     client_contact = State()     # контакт клиента (телефон/имя)
     mkad_km = State()            # расстояние от МКАД в км
+    pick_schedule_date = State() # менеджер выбирает дату из графика замерщика
+    pick_schedule_time = State() # менеджер выбирает интервал
     volume_m2 = State()          # примерный объём в м²
     attachments = State()        # вложения (фото, документы)
 
@@ -411,6 +413,11 @@ class ZameryCompleteSG(StatesGroup):
 class ZameryCostEditSG(StatesGroup):
     """Замерщик: редактирование стоимости замера."""
     enter_cost = State()       # ввод новой стоимости
+
+
+class ZameryBlackoutSG(StatesGroup):
+    """Замерщик: добавление дней 'Не ставить замер'."""
+    pick_dates = State()       # выбор дат для blackout
 
 
 class ZameryZpSG(StatesGroup):

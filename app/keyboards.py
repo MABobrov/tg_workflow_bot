@@ -134,6 +134,7 @@ ZAM_BTN_URGENT = "🚨 Срочно ГД"
 ZAM_BTN_NOT_URGENT = "📩 Не срочно ГД"
 ZAM_BTN_SYNC = "🔄 Синхронизация данных"
 ZAM_BTN_PAYMENT = "💰 Оплата замеров"
+ZAM_BTN_SCHEDULE = "📅 График замеров"
 
 ROLE_SELECTOR_PREFIX = "🎭 "
 ROLE_SELECTOR_LABELS: dict[str, str] = {
@@ -258,8 +259,9 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
     if role == Role.ZAMERY:
         return [
             [ZAM_BTN_ZAMERY, ZAM_BTN_MY_OBJECTS],
-            [ZAM_BTN_URGENT, ZAM_BTN_PAYMENT],
-            [ZAM_BTN_SYNC, OPEN_HELP],
+            [ZAM_BTN_SCHEDULE, ZAM_BTN_PAYMENT],
+            [ZAM_BTN_URGENT, ZAM_BTN_SYNC],
+            [OPEN_HELP],
         ]
     return []
 
