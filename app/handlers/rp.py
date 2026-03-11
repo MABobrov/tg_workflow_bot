@@ -88,7 +88,8 @@ async def start_order_material(message: Message, state: FSMContext, db: Database
     if message.from_user:
         _u = await db.get_user_optional(message.from_user.id)
         if _u and _u.role and Role.INSTALLER in set(parse_roles(_u.role)):
-            return
+            from aiogram.dispatcher.event.handler import ContinuePropagation
+            raise ContinuePropagation
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
