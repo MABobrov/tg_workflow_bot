@@ -45,6 +45,44 @@ router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 
 
+@router.message.outer_middleware()
+async def _zamery_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
+    """При каждом сообщении от замерщика — обновляем reply-клавиатуру."""
+    result = await handler(event, data)
+    u = event.from_user
+    if not u:
+        return result
+    db_inst: Database | None = data.get("db")
+    cfg = data.get("config")
+    if not db_inst or not cfg:
+        return result
+    try:
+        user = await db_inst.get_user_optional(u.id)
+        if not user or not user.role:
+            return result
+        from ..enums import parse_roles
+        if Role.ZAMERSCHIK not in parse_roles(user.role):
+            return result
+        menu_role, isolated = resolve_menu_scope(u.id, user.role)
+        if menu_role != Role.ZAMERSCHIK:
+            return result
+        unread = await db_inst.count_unread_tasks(u.id)
+        uc = await db_inst.count_unread_by_channel(u.id)
+        is_admin = u.id in (cfg.admin_ids or set())
+        kb = main_menu(
+            menu_role,
+            is_admin=is_admin,
+            unread=unread,
+            unread_channels=uc,
+            isolated_role=isolated,
+        )
+        # Тихое обновление — сообщение удалится через 1сек, reply_markup обновится
+        await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)
+    except Exception:
+        log.debug("zamery auto-refresh failed", exc_info=True)
+    return result
+
+
 async def _current_role(db: Database, user_id: int) -> str | None:
     user = await db.get_user_optional(user_id)
     return resolve_active_menu_role(user_id, user.role if user else None)
