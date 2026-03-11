@@ -1260,22 +1260,16 @@ async def _render_schedule_main(
     cur_d, cur_s = cur_month
 
     # --- Карточка статистики ---
-    text = "┌─────────────────────────\n"
-    text += "│ 📅 <b>График замеров</b>\n"
-    text += "├─────────────────────────\n"
-    text += f"│ 📆 {_RU_MONTH_NAMES[cur_d.month]} {cur_d.year}\n"
-    text += f"│ 📐 Замеров в этом месяце: <b>{cur_s['zamery']}</b>\n"
-    text += f"│ 🚫 Выходных: <b>{cur_s['blackouts']}</b>\n"
-    text += "│\n"
-    text += "│ 📊 <b>Статистика по месяцам:</b>\n"
+    text = f"📅 <b>График замеров</b> · {_RU_MONTH_NAMES[cur_d.month]} {cur_d.year}\n"
+    text += f"📐 {cur_s['zamery']} замеров · 🚫 {cur_s['blackouts']} выходных\n\n"
     for d, s in months_stats:
         is_cur = d.month == today.month and d.year == today.year
         icon = "▶️" if is_cur else "▫️"
-        text += f"│ {icon} {_RU_MONTH_NAMES[d.month]}: <b>{s['zamery']}</b> замеров"
+        text += f"{icon} {_RU_MONTH_NAMES[d.month]}: <b>{s['zamery']}</b>"
         if s["blackouts"]:
             text += f" · 🚫{s['blackouts']}"
         text += "\n"
-    text += "└─────────────────────────\n\n"
+    text += "\n"
 
     # --- Недели ---
     weeks_data = []
@@ -1356,25 +1350,22 @@ async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
         day_label = f"{day.day} {_RU_MONTHS[day.month]} ({wd})"
 
         if ds in blackout_set:
-            text += f"🚫 <b>{day_label}</b> — выходной\n"
             bl = blackout_map.get(ds)
-            if bl and bl.get("comment"):
-                text += f"    <i>{bl['comment']}</i>\n"
+            cmt = f" ({bl['comment']})" if bl and bl.get("comment") else ""
+            text += f"🚫 <b>{day_label}</b> — выходной{cmt}\n"
         elif ds in zam_by_date:
             day_zamery = zam_by_date[ds]
-            text += f"📐 <b>{day_label}</b> — {len(day_zamery)} замер(ов)\n"
+            text += f"📐 <b>{day_label}</b> · {len(day_zamery)} замер(ов)\n"
             for z in day_zamery:
                 interval = z.get("scheduled_time_interval") or ""
                 mgr = z.get("manager_name") or "—"
                 addr = z.get("address") or "—"
-                text += f"    ⏰ {interval}  👤 {mgr}\n"
-                text += f"    📍 {addr}\n"
+                text += f"  ⏰ {interval} · 👤 {mgr} · 📍 {addr}\n"
         else:
             if day < today:
-                text += f"▫️ <b>{day_label}</b>\n"
+                text += f"▫️ {day_label}\n"
             else:
                 text += f"🟢 <b>{day_label}</b> — свободен\n"
-        text += "\n"
 
     b = InlineKeyboardBuilder()
     # Кнопки свободных дней → заказать замер
@@ -1459,16 +1450,10 @@ async def zamery_book_pick_time(cb: CallbackQuery, db: Database) -> None:
     summary = await db.get_zamery_schedule_summary(uid, ds, ds)
     busy_intervals = summary["busy"].get(ds, [])
 
-    text = (
-        f"┌─────────────────────────\n"
-        f"│ 📐 <b>Записать замер</b>\n"
-        f"├─────────────────────────\n"
-        f"│ 📅 {d.day} {_RU_MONTHS[d.month]} ({wd})\n"
-    )
+    text = f"📐 <b>Записать замер</b> · {d.day} {_RU_MONTHS[d.month]} ({wd})\n"
     if busy_intervals:
-        text += f"│ ⚠️ Занято: {', '.join(busy_intervals)}\n"
-    text += f"└─────────────────────────\n\n"
-    text += "Выберите интервал:"
+        text += f"⚠️ Занято: {', '.join(busy_intervals)}\n"
+    text += "\nВыберите интервал:"
 
     b = InlineKeyboardBuilder()
     for interval in _BOOK_INTERVALS:
@@ -1797,26 +1782,22 @@ async def _finalize_schedule_book(
     msg_target = event.message if isinstance(event, CallbackQuery) else event
 
     # Confirmation card
-    text = (
-        f"┌─────────────────────────\n"
-        f"│ ✅ <b>Замер записан</b>\n"
-        f"├─────────────────────────\n"
-        f"│ 📅 {d.day} {_RU_MONTHS[d.month]} ({wd})\n"
-        f"│ ⏰ {interval}\n"
-        f"│ 📍 {address}\n"
-    )
+    text = f"✅ <b>Замер записан</b>\n"
+    text += f"📅 {d.day} {_RU_MONTHS[d.month]} ({wd}) · ⏰ {interval}\n"
+    text += f"📍 {address}\n"
     if description:
-        text += f"│ 📝 {description}\n"
+        text += f"📝 {description}\n"
     if client_contact:
-        text += f"│ 📞 {client_contact}\n"
+        text += f"📞 {client_contact}\n"
+    parts_line = []
     if mkad_km:
-        text += f"│ 🚗 {mkad_km} км от МКАД\n"
+        parts_line.append(f"🚗 {mkad_km} км")
     if volume_m2:
-        text += f"│ 📐 {volume_m2} м²\n"
-    text += f"│ 💰 {total_cost} ₽\n"
+        parts_line.append(f"📐 {volume_m2} м²")
+    parts_line.append(f"💰 {total_cost} ₽")
     if attachments:
-        text += f"│ 📎 {len(attachments)} вложений\n"
-    text += f"└─────────────────────────\n\n"
+        parts_line.append(f"📎 {len(attachments)}")
+    text += " · ".join(parts_line) + "\n\n"
     text += "Задача создана в «📐 Замеры»."
 
     await msg_target.answer(text)  # type: ignore[union-attr]
