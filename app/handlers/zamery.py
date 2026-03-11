@@ -779,10 +779,9 @@ async def _render_payment_list(
     db: Database,
     user_id: int,
 ) -> None:
-    """Отрисовка «Оплата замеров» — карточки + статистика + отправить."""
+    """Отрисовка «Оплата замеров» — только карточка-статистика + кнопки."""
     invoices = await db.list_invoices(assigned_to=user_id, limit=50)
     unpaid = _get_unpaid_invoices(invoices)
-    # Также подсчитаем уже оплаченные для статистики
     paid_list = [
         i for i in invoices
         if i.get("zp_status") == "approved"
@@ -808,66 +807,49 @@ async def _render_payment_list(
 
     no_cost = [i for i in not_requested if not i.get("zp_zamery_total")]
 
-    # --- Статистическая карточка ---
-    text = "💰 <b>Оплата замеров</b>\n"
-    text += "━━━━━━━━━━━━━━━━━━━━\n\n"
-
-    # Сводка
-    text += "📊 <b>Статистика:</b>\n"
-    text += f"   Всего замеров: <b>{len(unpaid) + len(paid_list)}</b>\n"
+    # --- Карточка ---
+    text = "┌─────────────────────────\n"
+    text += "│ 💰 <b>Оплата замеров</b>\n"
+    text += "├─────────────────────────\n"
+    text += f"│ 📊 Всего замеров: <b>{len(unpaid) + len(paid_list)}</b>\n"
     if total_all:
-        text += f"   Общая сумма: <b>{int(total_all)}₽</b>\n"
-    text += "\n"
+        text += f"│ 💵 Общая сумма: <b>{int(total_all)}₽</b>\n"
+    text += "│\n"
 
-    # Не оплачены
     if not_requested:
-        text += f"❌ Не оплачено: <b>{len(not_requested)}</b>"
+        text += f"│ ❌ Не оплачено: <b>{len(not_requested)}</b>"
         if sum_not_req:
-            text += f" — <b>{int(sum_not_req)}₽</b>"
+            text += f" — {int(sum_not_req)}₽"
         text += "\n"
 
-    # На проверке
     if requested:
-        text += f"⏳ На проверке: <b>{len(requested)}</b>"
+        text += f"│ ⏳ На проверке: <b>{len(requested)}</b>"
         if sum_requested:
-            text += f" — <b>{int(sum_requested)}₽</b>"
+            text += f" — {int(sum_requested)}₽"
         text += "\n"
 
-    # Оплачено
     if paid_list:
-        text += f"✅ Оплачено: <b>{len(paid_list)}</b>"
+        text += f"│ ✅ Оплачено: <b>{len(paid_list)}</b>"
         if sum_paid:
-            text += f" — <b>{int(sum_paid)}₽</b>"
+            text += f" — {int(sum_paid)}₽"
         text += "\n"
 
-    # Без стоимости
     if no_cost:
-        text += f"\n⚠️ <i>Без стоимости: {len(no_cost)} шт. (укажите цену)</i>\n"
+        text += f"│\n│ ⚠️ <i>Без стоимости: {len(no_cost)} шт.</i>\n"
 
-    text += "\n━━━━━━━━━━━━━━━━━━━━\n"
+    text += "└─────────────────────────\n\n"
+    text += "Нажмите на замер, чтобы изменить стоимость:"
 
-    # --- Карточки замеров ---
-    if unpaid:
-        text += "\n"
-        for inv in unpaid[:15]:
-            zp = inv.get("zp_status", "not_requested")
-            cost = inv.get("zp_zamery_total")
-            icon = {"requested": "⏳", "approved": "✅"}.get(zp, "❌")
-            addr = (inv.get("object_address") or "—")[:35]
-            cost_str = f" · <b>{int(cost)}₽</b>" if cost else " · <i>нет цены</i>"
-            text += f"{icon} <b>№{inv['invoice_number']}</b>{cost_str}\n"
-            text += f"     📍 {addr}\n"
-
-    # --- Кнопки ---
+    # --- Кнопки: каждый замер → редактировать стоимость ---
     b = InlineKeyboardBuilder()
     for inv in unpaid[:20]:
         zp = inv.get("zp_status", "not_requested")
         cost = inv.get("zp_zamery_total")
         icon = {"requested": "⏳", "approved": "✅"}.get(zp, "❌")
-        cost_str = f" {int(cost)}₽" if cost else ""
-        num = inv["invoice_number"]
+        addr = (inv.get("object_address") or "—")[:18]
+        cost_str = f"{int(cost)}₽" if cost else "—₽"
         b.button(
-            text=f"{icon} {num}{cost_str}",
+            text=f"{icon} №{inv['invoice_number']} · {addr} · {cost_str}",
             callback_data=f"zampay:view:{inv['id']}",
         )
 
@@ -885,7 +867,7 @@ async def _render_payment_list(
         )
 
     b.button(text="⬅️ Назад", callback_data="nav:home")
-    b.adjust(2)  # карточки по 2 в ряд, отправка и назад — по 1
+    b.adjust(1)
     await msg.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
@@ -908,8 +890,8 @@ async def zamery_payment_back(cb: CallbackQuery, db: Database) -> None:
 
 
 @router.callback_query(F.data.startswith("zampay:view:"))
-async def zamery_payment_card(cb: CallbackQuery, db: Database) -> None:
-    """Карточка замера в «Оплата замеров»."""
+async def zamery_payment_card(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Карточка замера — нажатие сразу открывает ввод стоимости."""
     if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
         return
     await cb.answer()
@@ -921,67 +903,54 @@ async def zamery_payment_card(cb: CallbackQuery, db: Database) -> None:
         return
 
     zp = inv.get("zp_status", "not_requested")
-    zp_icon = {"requested": "⏳", "approved": "✅"}.get(zp, "❌")
-    zp_label = {
-        "not_requested": "Не оплачен",
-        "requested": "На проверке",
-        "approved": "ЗП оплачена",
-    }.get(zp, "Не оплачен")
 
-    cost = inv.get("zp_zamery_total")
-
-    text = f"┌─────────────────────────\n"
-    text += f"│ 💰 <b>Замер №{inv['invoice_number']}</b>\n"
-    text += f"├─────────────────────────\n"
-    text += f"│ 📍 {inv.get('object_address', '—')}\n"
-    if inv.get("client_contact"):
-        text += f"│ 📞 <code>{inv['client_contact']}</code>\n"
-    text += f"│\n"
-    if cost and cost > 0:
-        text += f"│ 💵 Стоимость: <b>{int(cost)}₽</b>\n"
-    else:
-        text += f"│ 💵 Стоимость: <b>не указана</b>\n"
-    text += f"│ {zp_icon} Статус: <b>{zp_label}</b>\n"
-    text += f"│ ✅ Замер выполнен\n"
-    text += f"└─────────────────────────"
-
-    b = InlineKeyboardBuilder()
-    if zp not in ("approved", "requested"):
-        b.button(text="✏️ Изменить стоимость", callback_data=f"zampay:edit_cost:{inv['id']}")
-    b.button(text="⬅️ Назад к списку", callback_data="zampay:back")
-    b.adjust(1)
-    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
-
-
-# --- Редактирование стоимости замера ---
-
-@router.callback_query(F.data.startswith("zampay:edit_cost:"))
-async def zamery_edit_cost_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Начать редактирование стоимости замера."""
-    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
-        return
-    await cb.answer()
-    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    inv = await db.get_invoice(inv_id)
-    if not inv:
-        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+    # Если уже оплачен или на проверке — показать инфо, без редактирования
+    if zp in ("approved", "requested"):
+        zp_label = {"requested": "⏳ На проверке", "approved": "✅ Оплачена"}.get(zp, "")
+        cost = inv.get("zp_zamery_total")
+        text = (
+            f"┌─────────────────────────\n"
+            f"│ 💰 <b>Замер №{inv['invoice_number']}</b>\n"
+            f"├─────────────────────────\n"
+            f"│ 📍 {inv.get('object_address', '—')}\n"
+            f"│ 💵 Стоимость: <b>{int(cost)}₽</b>\n" if cost else
+            f"│ 💵 Стоимость: <b>—</b>\n"
+        )
+        text += f"│ {zp_label}\n"
+        text += f"└─────────────────────────"
+        b = InlineKeyboardBuilder()
+        b.button(text="⬅️ Назад", callback_data="zampay:back")
+        b.adjust(1)
+        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
         return
 
+    # Сразу открываем редактирование стоимости
     await state.clear()
     await state.update_data(edit_cost_inv_id=inv_id)
     await state.set_state(ZameryCostEditSG.enter_cost)
 
-    current = inv.get("zp_zamery_total")
-    hint = f"\nТекущая: {int(current)}₽" if current else ""
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"✏️ <b>Замер №{inv['invoice_number']}</b>{hint}\n\n"
-        "Введите стоимость замера в ₽:",
+    cost = inv.get("zp_zamery_total")
+    addr = inv.get("object_address") or "—"
+    hint = f"Текущая: <b>{int(cost)}₽</b>" if cost else "<i>не указана</i>"
+
+    text = (
+        f"┌─────────────────────────\n"
+        f"│ ✏️ <b>Замер №{inv['invoice_number']}</b>\n"
+        f"├─────────────────────────\n"
+        f"│ 📍 {addr}\n"
+        f"│ 💵 {hint}\n"
+        f"└─────────────────────────\n\n"
+        f"Введите новую стоимость замера в ₽:"
     )
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Отмена", callback_data="zampay:back")
+    b.adjust(1)
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 @router.message(ZameryCostEditSG.enter_cost)
 async def zamery_edit_cost_value(message: Message, state: FSMContext, db: Database) -> None:
-    """Сохранить новую стоимость."""
+    """Сохранить новую стоимость и вернуться к списку."""
     text = (message.text or "").strip().replace(",", ".")
     try:
         cost = float(text)
@@ -1002,9 +971,11 @@ async def zamery_edit_cost_value(message: Message, state: FSMContext, db: Databa
 
     inv = await db.get_invoice(inv_id)
     await message.answer(
-        f"✅ Стоимость замера №{inv['invoice_number'] if inv else inv_id} "
-        f"установлена: <b>{int(cost)}₽</b>"
+        f"✅ №{inv['invoice_number'] if inv else inv_id} — <b>{int(cost)}₽</b>"
     )
+    # Вернуть обновлённый список с пересчитанными итогами
+    uid = message.from_user.id  # type: ignore[union-attr]
+    await _render_payment_list(message, db, uid)
 
 
 # --- Пакетная отправка в оплату ГД ---
