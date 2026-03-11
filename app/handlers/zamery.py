@@ -66,8 +66,8 @@ async def _zamery_auto_refresh(handler, event: Message, data: dict):  # type: ig
         user = await db_inst.get_user_optional(u.id)
         if not user or not user.role:
             return result
-        from ..enums import parse_roles
-        if Role.ZAMERSCHIK not in parse_roles(user.role):
+        from ..utils import parse_roles as _pr
+        if Role.ZAMERSCHIK not in _pr(user.role):
             return result
         menu_role, isolated = resolve_menu_scope(u.id, user.role)
         if menu_role != Role.ZAMERSCHIK:
