@@ -1919,9 +1919,13 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
         return
 
     # --- Стандартный поток: карточки всех счетов со статусом ЗП ---
+    # Include invoices in active montazh stages OR already approved ZP (ended invoices)
     cur = await db.conn.execute(
         "SELECT * FROM invoices "
-        "WHERE montazh_stage IN ('in_work', 'razmery_ok', 'invoice_ok') "
+        "WHERE ("
+        "  montazh_stage IN ('in_work', 'razmery_ok', 'invoice_ok') "
+        "  OR zp_installer_status = 'approved'"
+        ") "
         "  AND status IN ('in_progress', 'paid', 'ended') "
         "  AND parent_invoice_id IS NULL "
         "  AND (zp_installer_status IS NULL OR zp_installer_status != 'not_applicable') "
