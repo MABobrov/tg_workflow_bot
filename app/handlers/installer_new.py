@@ -100,8 +100,7 @@ async def start_order_materials(message: Message, state: FSMContext, db: Databas
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_installer_confirmed_invoices(user_id)
+    invoices = await db.list_installer_confirmed_invoices()
     b = InlineKeyboardBuilder()
     for inv in invoices:
         num = inv.get("invoice_number") or f"#{inv['id']}"
@@ -282,8 +281,7 @@ async def start_order_extra(message: Message, state: FSMContext, db: Database) -
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
     await state.clear()
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_installer_confirmed_invoices(user_id)
+    invoices = await db.list_installer_confirmed_invoices()
     b = InlineKeyboardBuilder()
     for inv in invoices:
         num = inv.get("invoice_number") or f"#{inv['id']}"
@@ -468,7 +466,7 @@ async def start_razmery_ok(message: Message, state: FSMContext, db: Database) ->
 
     # --- Первый заход: инициализация «материал заказан» ---
     if not await db.is_installer_razmery_initialized(installer_id):
-        confirmed = await db.list_installer_confirmed_invoices(installer_id)
+        confirmed = await db.list_installer_confirmed_invoices()
         if not confirmed:
             await db.set_installer_razmery_initialized(installer_id)
             # Продолжить к стандартному потоку ниже
@@ -1303,7 +1301,7 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
 
     # --- Первый заход: инициализация ---
     if not await db.is_installer_zp_initialized(user_id):
-        invoices = await db.list_installer_confirmed_invoices(user_id)
+        invoices = await db.list_installer_confirmed_invoices()
         if not invoices:
             await db.set_installer_zp_initialized(user_id)
             await message.answer("✅ Нет счетов в работе. Инициализация завершена.")
@@ -1326,12 +1324,10 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
     cur = await db.conn.execute(
         "SELECT * FROM invoices "
         "WHERE (zp_installer_status IS NULL OR zp_installer_status = 'not_requested') "
-        "  AND assigned_to = ? "
         "  AND montazh_stage IN ('in_work', 'razmery_ok', 'invoice_ok') "
         "  AND status IN ('in_progress', 'paid') "
         "  AND parent_invoice_id IS NULL "
         "ORDER BY id DESC LIMIT 20",
-        (user_id,),
     )
     rows = await cur.fetchall()
     invoices = [dict(r) for r in rows]
