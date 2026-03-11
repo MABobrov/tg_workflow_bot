@@ -1016,6 +1016,11 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
     for inv in filtered[:15]:
         card_text = card_fn(inv)
         b = InlineKeyboardBuilder()
+        # Кнопка "Запрос ЗП" для карточек "Ожидает расчёт"
+        if cat == "waiting":
+            zp_st = inv.get("zp_installer_status") or "not_requested"
+            if zp_st not in ("approved", "requested"):
+                b.button(text="💰 Запрос ЗП", callback_data=f"instzpadj:start:{inv['id']}")
         b.button(text="⬅️ Назад", callback_data="instobj:back")
         b.adjust(1)
         await cb.message.answer(card_text, reply_markup=b.as_markup())  # type: ignore[union-attr]
