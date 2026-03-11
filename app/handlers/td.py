@@ -177,7 +177,7 @@ async def gd_supplier_pay_dashboard(message: Message, state: FSMContext, db: Dat
             )
     else:
         # --- No ZP: show full invoices-in-work list ---
-        invoices = await db.list_invoices_in_work(limit=50)
+        invoices = await db.list_invoices_in_work(limit=50, exclude_zm=True)
 
         user_id = message.from_user.id  # type: ignore[union-attr]
         invoice_tasks = await db.list_tasks_for_user(

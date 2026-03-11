@@ -1079,6 +1079,7 @@ class Database:
 
     async def list_invoices_in_work(
         self, limit: int = 50, *, exclude_no_digit: bool = False,
+        exclude_zm: bool = False,
     ) -> list[dict[str, Any]]:
         """List invoices 'in work' (pending/in_progress/paid, excluding credit).
 
@@ -1086,13 +1087,16 @@ class Database:
             exclude_no_digit: if True, also exclude invoices whose number
                 contains no digits (letter-only like КВ/КИА — treated as
                 credit). Used for accounting dashboard.
+            exclude_zm: if True, exclude ЗМ-prefixed invoices (credit/zamery).
         """
         digit_clause = "AND invoice_number GLOB '*[0-9]*' " if exclude_no_digit else ""
+        zm_clause = "AND invoice_number NOT LIKE 'ЗМ%' " if exclude_zm else ""
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid') "
             "AND (is_credit = 0 OR is_credit IS NULL) "
             f"{digit_clause}"
+            f"{zm_clause}"
             "ORDER BY updated_at DESC LIMIT ?",
             (limit,),
         )
@@ -2255,6 +2259,7 @@ class Database:
         limit: int = 50,
         *,
         exclude_no_digit: bool = False,
+        exclude_zm: bool = False,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -2272,6 +2277,8 @@ class Database:
             params.append(f"%{marker}%")
         if exclude_no_digit:
             clauses.append("invoice_number GLOB '*[0-9]*'")
+        if exclude_zm:
+            clauses.append("invoice_number NOT LIKE 'ЗМ%'")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(limit)
         cur = await self.conn.execute(
