@@ -451,6 +451,15 @@ class InstallerZpInitSG(StatesGroup):
     selecting = State()
 
 
+class InstallerZpAdjustSG(StatesGroup):
+    """Монтажник: корректировка стоимости монтажа из 'Ожидает расчёт'."""
+    comment = State()        # почему? (обязательно)
+    attachments = State()    # фото/видео (можно пропустить)
+    mode = State()           # ➕ добавить к расч. / 🔄 заменить сумму
+    amount = State()         # сумма ₽
+    confirm = State()        # подтверждение
+
+
 class InstallerMatInitSG(StatesGroup):
     """Монтажник: инициализация «Размеры ОК» — по каким счетам материал заказан."""
     selecting = State()

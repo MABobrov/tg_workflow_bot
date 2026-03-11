@@ -43,6 +43,7 @@ from ..states import (
     InstallerMatInitSG,
     InstallerOrderMaterialsSG,
     InstallerRazmerySG,
+    InstallerZpAdjustSG,
     InstallerZpInitSG,
     InstallerZpSG,
 )
@@ -1253,6 +1254,10 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
     stage = inv.get("montazh_stage") or "none"
     cat = "waiting" if stage == "invoice_ok" else "work"
     b = InlineKeyboardBuilder()
+    # Кнопка "Запрос ЗП" для карточек в "Ожидает расчёт"
+    zp_st = inv.get("zp_installer_status") or "not_requested"
+    if cat == "waiting" and zp_st not in ("approved", "requested"):
+        b.button(text="💰 Запрос ЗП", callback_data=f"instzpadj:start:{invoice_id}")
     b.button(text="⬅️ Назад", callback_data=f"instobj:cat:{cat}")
     b.adjust(1)
 
@@ -1260,6 +1265,289 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
         await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
     except Exception:
         await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+# =====================================================================
+# ЗАПРОС ЗП из «Ожидает расчёт» (InstallerZpAdjustSG)
+# =====================================================================
+
+
+def _calc_est_montazh(inv: dict) -> int:
+    """Расчётная стоимость монтажа: ×0.77 ⌊1000."""
+    est = inv.get("estimated_installation")
+    if not est:
+        return 0
+    try:
+        return int(float(est) * 0.77) // 1000 * 1000
+    except (ValueError, TypeError):
+        return 0
+
+
+@router.callback_query(F.data.startswith("instzpadj:start:"))
+async def zpadj_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Шаг 1: старт — показать расч. стоимость, спросить комментарий."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    est_val = _calc_est_montazh(inv)
+    num = inv.get("invoice_number") or f"#{inv['id']}"
+    addr = inv.get("object_address") or "—"
+
+    await state.clear()
+    await state.update_data(zpadj_invoice_id=invoice_id, zpadj_est=est_val, attachments=[])
+
+    b = InlineKeyboardBuilder()
+    b.button(text="❌ Отмена", callback_data=f"instobj:view:{invoice_id}")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💰 <b>Запрос ЗП</b>\n\n"
+        f"📄 №{num}\n"
+        f"📍 {addr}\n"
+        f"🔧 Расч. монтаж: <b>{est_val:,}₽</b>\n\n"
+        f"📝 Напишите комментарий — почему запрашиваете оплату? (обязательно)",
+        reply_markup=b.as_markup(),
+    )
+    await state.set_state(InstallerZpAdjustSG.comment)
+
+
+@router.message(InstallerZpAdjustSG.comment)
+async def zpadj_comment(message: Message, state: FSMContext) -> None:
+    """Шаг 2: комментарий → предложить вложения."""
+    text = (message.text or "").strip()
+    if len(text) < 5:
+        await message.answer("⚠️ Комментарий слишком короткий (мин. 5 символов):")
+        return
+    await state.update_data(zpadj_comment=text)
+    await state.set_state(InstallerZpAdjustSG.attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⏩ Пропустить", callback_data="instzpadj:skip_attach")
+    b.adjust(1)
+    await message.answer(
+        "📎 Приложите фото/видео (можно несколько) или нажмите Пропустить:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(InstallerZpAdjustSG.attachments)
+async def zpadj_attachments(message: Message, state: FSMContext) -> None:
+    """Шаг 3: приём вложений."""
+    data = await state.get_data()
+    attachments: list[dict[str, Any]] = data.get("attachments", [])
+    if message.document:
+        attachments.append({
+            "file_type": "document",
+            "file_id": message.document.file_id,
+            "file_unique_id": message.document.file_unique_id,
+            "caption": message.caption,
+        })
+    elif message.photo:
+        ph = message.photo[-1]
+        attachments.append({
+            "file_type": "photo",
+            "file_id": ph.file_id,
+            "file_unique_id": ph.file_unique_id,
+            "caption": message.caption,
+        })
+    elif message.video:
+        attachments.append({
+            "file_type": "video",
+            "file_id": message.video.file_id,
+            "file_unique_id": message.video.file_unique_id,
+            "caption": message.caption,
+        })
+    else:
+        await message.answer("Пришлите фото/видео/документ или нажмите кнопку.")
+        return
+    await state.update_data(attachments=attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⏩ Готово", callback_data="instzpadj:skip_attach")
+    b.adjust(1)
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.", reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data == "instzpadj:skip_attach")
+async def zpadj_to_mode(cb: CallbackQuery, state: FSMContext) -> None:
+    """Шаг 4: выбор режима — добавить / заменить."""
+    await cb.answer()
+    data = await state.get_data()
+    est_val = data.get("zpadj_est", 0)
+    await state.set_state(InstallerZpAdjustSG.mode)
+
+    b = InlineKeyboardBuilder()
+    b.button(text=f"➕ Добавить к расч. ({est_val:,}₽)", callback_data="instzpadj:mode:add")
+    b.button(text="🔄 Указать свою сумму", callback_data="instzpadj:mode:replace")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "Выберите как рассчитать сумму ЗП:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(InstallerZpAdjustSG.mode, F.data.startswith("instzpadj:mode:"))
+async def zpadj_mode_pick(cb: CallbackQuery, state: FSMContext) -> None:
+    """Шаг 4b: выбран режим → запросить сумму."""
+    await cb.answer()
+    mode = (cb.data or "").split(":")[-1]  # add / replace
+    await state.update_data(zpadj_mode=mode)
+    await state.set_state(InstallerZpAdjustSG.amount)
+
+    data = await state.get_data()
+    est_val = data.get("zpadj_est", 0)
+    if mode == "add":
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"Введите сумму, которую нужно <b>добавить</b> к {est_val:,}₽ (₽):"
+        )
+    else:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "Введите итоговую сумму ЗП (₽):"
+        )
+
+
+@router.message(InstallerZpAdjustSG.amount)
+async def zpadj_amount(message: Message, state: FSMContext) -> None:
+    """Шаг 5: ввод суммы → подтверждение."""
+    raw = (message.text or "").strip().replace(",", ".").replace(" ", "")
+    try:
+        val = float(raw)
+        if val <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("⚠️ Введите число больше 0:")
+        return
+
+    data = await state.get_data()
+    est_val = data.get("zpadj_est", 0)
+    mode = data.get("zpadj_mode", "replace")
+
+    if mode == "add":
+        total = est_val + int(val)
+    else:
+        total = int(val)
+
+    await state.update_data(zpadj_total=total, zpadj_input=int(val))
+    await state.set_state(InstallerZpAdjustSG.confirm)
+
+    comment = data.get("zpadj_comment", "")
+    att_count = len(data.get("attachments", []))
+
+    text = (
+        f"📋 <b>Подтверждение запроса ЗП</b>\n\n"
+        f"🔧 Расч. монтаж: {est_val:,}₽\n"
+    )
+    if mode == "add":
+        text += f"➕ Доплата: {int(val):,}₽\n"
+    text += (
+        f"💵 <b>Итого ЗП: {total:,}₽</b>\n\n"
+        f"💬 Комментарий: {comment}\n"
+        f"📎 Вложений: {att_count}\n"
+    )
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Подтвердить", callback_data="instzpadj:confirm")
+    b.button(text="❌ Отмена", callback_data="instzpadj:cancel")
+    b.adjust(2)
+    await message.answer(text, reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data == "instzpadj:confirm")
+async def zpadj_finalize(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Подтверждение: обновить DB + задача ГД."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+
+    data = await state.get_data()
+    invoice_id = data["zpadj_invoice_id"]
+    total = data["zpadj_total"]
+    est_val = data.get("zpadj_est", 0)
+    comment = data.get("zpadj_comment", "")
+    attachments: list[dict[str, Any]] = data.get("attachments", [])
+    mode = data.get("zpadj_mode", "replace")
+
+    # Обновить invoice
+    await db.set_invoice_zp_installer_status(invoice_id, "requested", amount=total, requested_by=u.id)
+
+    inv = await db.get_invoice(invoice_id)
+    inv_number = inv["invoice_number"] if inv else "—"
+    addr = inv.get("object_address", "—") if inv else "—"
+
+    # Создать задачу для ГД
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
+    if gd_id:
+        task = await db.create_task(
+            project_id=None,
+            type_=TaskType.ZP_INSTALLER,
+            status=TaskStatus.OPEN,
+            created_by=u.id,
+            assigned_to=int(gd_id),
+            due_at_iso=None,
+            payload={
+                "invoice_id": invoice_id,
+                "invoice_number": inv_number,
+                "amount": total,
+                "comment": comment,
+                "source": "installer_zp_adjust",
+            },
+        )
+        # Сохранить вложения к задаче
+        for a in attachments:
+            await db.add_attachment(
+                task_id=int(task["id"]),
+                file_id=a["file_id"],
+                file_unique_id=a.get("file_unique_id"),
+                file_type=a["file_type"],
+                caption=a.get("caption"),
+            )
+
+        initiator = await get_initiator_label(db, u.id)
+        mode_label = "добавить к расч." if mode == "add" else "своя сумма"
+
+        notify_text = (
+            f"💰 <b>Запрос ЗП монтажника</b>\n\n"
+            f"👤 От: {initiator}\n"
+            f"🔢 Счёт: №{inv_number}\n"
+            f"📍 {addr}\n"
+            f"🔧 Расч. монтаж: {est_val:,}₽\n"
+            f"💵 Запрошено: <b>{total:,}₽</b> ({mode_label})\n\n"
+            f"💬 {comment}"
+        )
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
+        b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
+        b.adjust(2)
+        await notifier.safe_send(int(gd_id), notify_text, reply_markup=b.as_markup())
+        # Переслать вложения
+        for a in attachments:
+            await notifier.safe_send_media(int(gd_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+        await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+
+    await state.clear()
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Запрос ЗП отправлен ГД.\n"
+        f"Счёт: №{inv_number}, сумма: {total:,}₽",
+    )
+
+
+@router.callback_query(F.data == "instzpadj:cancel")
+async def zpadj_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    """Отмена запроса ЗП."""
+    await cb.answer()
+    await state.clear()
+    await cb.message.answer("❌ Запрос ЗП отменён.")  # type: ignore[union-attr]
 
 
 # =====================================================================
