@@ -1122,6 +1122,8 @@ def invoice_select_kb(
     invoices: list[dict[str, Any]],
     prefix: str = "selinv",
     allow_skip: bool = True,
+    *,
+    back_callback: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Inline-пикер счетов «в работе» для привязки задач/сообщений к счёту."""
     b = InlineKeyboardBuilder()
@@ -1134,6 +1136,8 @@ def invoice_select_kb(
         b.button(text=label, callback_data=f"{prefix}:{inv['id']}")
     if allow_skip:
         b.button(text="➡️ Без привязки к счёту", callback_data=f"{prefix}:skip")
+    if back_callback:
+        b.button(text="⬅️ Назад", callback_data=back_callback)
     b.adjust(1)
     return b.as_markup()
 

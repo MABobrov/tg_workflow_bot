@@ -466,12 +466,12 @@ async def supplier_pay_pick_project(cb: CallbackQuery, callback_data: ProjectCb,
 
     # Show parent invoice picker
     from ..keyboards import invoice_select_kb
-    invoices = await db.list_invoices_for_selection(limit=15)
+    invoices = await db.list_invoices_for_selection(limit=15, exclude_zm=True)
     if invoices:
         await state.set_state(SupplierPaymentSG.parent_invoice)
         await cb.message.answer(  # type: ignore
             "Шаг 2/8: привязка к счёту объекта (или пропустите):",
-            reply_markup=invoice_select_kb(invoices, prefix="suppl_parent"),
+            reply_markup=invoice_select_kb(invoices, prefix="suppl_parent", back_callback="nav:home"),
         )
     else:
         await state.update_data(parent_invoice_id=None)

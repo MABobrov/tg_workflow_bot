@@ -585,7 +585,7 @@ async def _show_task_invoice_picker_or_desc(
     label: str,
 ) -> None:
     """Показать invoice picker перед описанием задачи, или пропустить."""
-    invoices = await db.list_invoices_for_selection(limit=15)
+    invoices = await db.list_invoices_for_selection(limit=15, exclude_zm=True)
     msg_target = source.message
     if invoices:
         await state.set_state(GdTaskCreateSG.invoice_pick)
@@ -593,7 +593,7 @@ async def _show_task_invoice_picker_or_desc(
             f"📝 <b>Новая задача → {label}</b>\n\n"
             "По какому счёту задача?\n"
             "Для отмены: «❌ Отмена».",
-            reply_markup=invoice_select_kb(invoices, prefix=_GDTASK_INV_PREFIX),
+            reply_markup=invoice_select_kb(invoices, prefix=_GDTASK_INV_PREFIX, back_callback="nav:home"),
         )
     else:
         await state.update_data(linked_invoice_id=None)

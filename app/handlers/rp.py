@@ -855,12 +855,12 @@ async def invoice_pick_project(cb: CallbackQuery, state: FSMContext, db: Databas
 
     # Show parent invoice picker
     from ..keyboards import invoice_select_kb
-    invoices = await db.list_invoices_for_selection(limit=15)
+    invoices = await db.list_invoices_for_selection(limit=15, exclude_zm=True)
     if invoices:
         await state.set_state(InvoiceCreateSG.parent_invoice)
         await cb.message.answer(  # type: ignore[union-attr]
             "Шаг 1: привязка к счёту объекта (или пропустите):",
-            reply_markup=invoice_select_kb(invoices, prefix="inv_create_parent"),
+            reply_markup=invoice_select_kb(invoices, prefix="inv_create_parent", back_callback="nav:home"),
         )
     else:
         # No invoices — skip to material type

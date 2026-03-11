@@ -312,7 +312,7 @@ async def rp_invoices_pay_create(cb: CallbackQuery, state: FSMContext, db: Datab
     from ..states import InvoiceCreateSG
     from ..keyboards import invoice_select_kb
 
-    invoices = await db.list_invoices_in_work(limit=20)
+    invoices = await db.list_invoices_in_work(limit=20, exclude_zm=True)
     if not invoices:
         await cb.message.answer(  # type: ignore[union-attr]
             "⚠️ Нет счетов в работе."
@@ -324,7 +324,7 @@ async def rp_invoices_pay_create(cb: CallbackQuery, state: FSMContext, db: Datab
     await cb.message.answer(  # type: ignore[union-attr]
         "💳 <b>Счёт на оплату ГД</b>\n"
         "Шаг 1: выберите счёт объекта (№, адрес):",
-        reply_markup=invoice_select_kb(invoices, prefix="inv_create_parent", allow_skip=True),
+        reply_markup=invoice_select_kb(invoices, prefix="inv_create_parent", allow_skip=True, back_callback="nav:home"),
     )
 
 

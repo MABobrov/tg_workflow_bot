@@ -68,13 +68,13 @@ async def _show_invoice_picker_or_skip(
     desc_state: str,
 ) -> None:
     """Show invoice picker if invoices exist, otherwise skip to description."""
-    invoices = await db.list_invoices_for_selection(limit=15)
+    invoices = await db.list_invoices_for_selection(limit=15, exclude_zm=True)
     if invoices:
         await message.answer(
             f"{title}\n"
             f"Шаг 1: По какому счёту вопрос?\n"
             "Для отмены: <code>/cancel</code>.",
-            reply_markup=invoice_select_kb(invoices, prefix=inv_prefix),
+            reply_markup=invoice_select_kb(invoices, prefix=inv_prefix, back_callback="nav:home"),
         )
     else:
         # No invoices in work — skip to description

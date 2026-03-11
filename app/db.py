@@ -1117,12 +1117,14 @@ class Database:
     # Invoice hierarchy & cost statistics
     # ------------------------------------------------------------------
 
-    async def list_invoices_for_selection(self, limit: int = 30) -> list[dict[str, Any]]:
+    async def list_invoices_for_selection(self, limit: int = 30, *, exclude_zm: bool = False) -> list[dict[str, Any]]:
         """Счета «в работе» + «Счёт End» для inline-пикера (NOT credit)."""
+        zm_clause = "AND invoice_number NOT LIKE 'ЗМ%' " if exclude_zm else ""
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid', 'ended') "
             "AND (is_credit = 0 OR is_credit IS NULL) "
+            f"{zm_clause}"
             "ORDER BY updated_at DESC LIMIT ?",
             (limit,),
         )

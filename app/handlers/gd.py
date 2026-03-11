@@ -665,14 +665,14 @@ async def _show_sales_invoice_picker_or_write(
     label: str,
 ) -> None:
     """Показать invoice picker перед вводом сообщения, или сразу перейти к writing."""
-    invoices = await db.list_invoices_for_selection(limit=15)
+    invoices = await db.list_invoices_for_selection(limit=15, exclude_zm=True)
     if invoices:
         await state.set_state(SalesWriteSG.invoice_pick)
         await message.answer(
             f"✏️ <b>Написать → {label}</b>\n"
             "По какому счёту вопрос?\n"
             "Для отмены: <code>/cancel</code>.",
-            reply_markup=invoice_select_kb(invoices, prefix=_SALES_INV_PREFIX),
+            reply_markup=invoice_select_kb(invoices, prefix=_SALES_INV_PREFIX, back_callback="nav:home"),
         )
     else:
         await state.update_data(linked_invoice_id=None)
