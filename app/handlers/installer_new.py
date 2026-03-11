@@ -934,28 +934,77 @@ async def installer_my_objects(message: Message, db: Database) -> None:
         await answer_service(message, "📌 Нет объектов.", delay_seconds=60)
         return
 
-    # Сортировка: активные (по montazh_stage) → ended
-    all_inv.sort(key=lambda i: (
-        0 if i["status"] != InvoiceStatus.ENDED else 1,
-        _STAGE_ORDER.get(i.get("montazh_stage") or "none", 99),
-    ))
+    # Разделение: в работе / завершённые
+    in_work = [i for i in all_inv if i["status"] != InvoiceStatus.ENDED]
+    ended = [i for i in all_inv if i["status"] == InvoiceStatus.ENDED]
+
+    # Сортировка по montazh_stage
+    in_work.sort(key=lambda i: _STAGE_ORDER.get(i.get("montazh_stage") or "none", 99))
+    ended.sort(key=lambda i: i.get("created_at") or "", reverse=True)
+
+    text = f"📌 <b>Мои объекты</b> · {len(all_inv)} шт.\n\n"
+
+    if in_work:
+        text += f"🔨 <b>В работе</b> ({len(in_work)})\n"
+        for inv in in_work[:15]:
+            text += _format_inst_object_card(inv)
+        text += "\n"
+
+    if ended:
+        text += f"🏁 <b>Работы ОК</b> ({len(ended)})\n"
+        for inv in ended[:10]:
+            text += _format_inst_object_card(inv)
 
     b = InlineKeyboardBuilder()
-    for inv in all_inv[:20]:
-        stage = inv.get("montazh_stage") or "none"
-        stage_lbl = _STAGE_LABEL.get(stage, "")
-        status_emoji = "🏁" if inv["status"] == InvoiceStatus.ENDED else ""
+    for inv in in_work[:15]:
         num = inv.get("invoice_number") or f"#{inv['id']}"
-        addr = (inv.get("object_address") or "")[:20]
-        label = f"{status_emoji}{stage_lbl} №{num} — {addr}"
-        b.button(text=label[:60], callback_data=f"instobj:view:{inv['id']}")
+        addr = (inv.get("object_address") or "")[:18]
+        stage = inv.get("montazh_stage") or "none"
+        stage_icon = {"in_work": "🔨", "razmery_ok": "📐", "invoice_ok": "✅"}.get(stage, "⏳")
+        b.button(text=f"{stage_icon} №{num} · {addr}", callback_data=f"instobj:view:{inv['id']}")
+    for inv in ended[:5]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:18]
+        b.button(text=f"🏁 №{num} · {addr}", callback_data=f"instobj:view:{inv['id']}")
     b.adjust(1)
 
-    await message.answer(
-        f"📌 <b>Мои объекты</b> ({len(all_inv)})\n\n"
-        "Нажмите на счёт для просмотра карточки:",
-        reply_markup=b.as_markup(),
-    )
+    await message.answer(text, reply_markup=b.as_markup())
+
+
+def _format_inst_object_card(inv: dict) -> str:
+    """Compact card line for installer's object list."""
+    num = inv.get("invoice_number") or f"#{inv['id']}"
+    addr = inv.get("object_address") or "—"
+    stage = inv.get("montazh_stage") or "none"
+    stage_lbl = _STAGE_LABEL.get(stage, "⏳")
+
+    # Main line
+    line = f"  №{num} · {addr}\n"
+
+    # Details line
+    parts = [stage_lbl]
+
+    area = inv.get("area_m2")
+    if area:
+        try:
+            parts.append(f"{float(area):,.1f}м²")
+        except (ValueError, TypeError):
+            pass
+
+    if inv.get("materials_ordered"):
+        parts.append("📦 мат.")
+
+    zp = inv.get("zp_installer_status") or "not_requested"
+    if zp == "approved":
+        zp_s = "💸✅"
+    elif zp == "requested":
+        zp_s = "💸⏳"
+    else:
+        zp_s = "💸—"
+    parts.append(zp_s)
+
+    line += f"  {' · '.join(parts)}\n"
+    return line
 
 
 @router.callback_query(F.data.startswith("instobj:view:"))
@@ -980,37 +1029,35 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
     }.get(inv["status"], inv["status"])
 
     zp = inv.get("zp_installer_status") or "not_requested"
-    zp_lbl = "✅ Получена" if zp == "approved" else ("⏳ Запрошена" if zp == "requested" else "— Не запрошена")
+    zp_lbl = "✅ Получена" if zp == "approved" else ("⏳ Запрошена" if zp == "requested" else "—")
 
-    text = (
-        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
-        f"📍 Адрес: {inv.get('object_address', '—')}\n"
-        f"📊 Статус: {status_label}\n"
-        f"🔧 Этап: {stage_lbl}\n"
-    )
-    if inv.get("materials_ordered"):
-        text += "📦 Материал заказан\n"
+    num = inv["invoice_number"]
+    text = f"📄 <b>№{num}</b> · {status_label} · {stage_lbl}\n"
+    text += f"📍 {inv.get('object_address', '—')}\n"
 
+    parts = []
     area = inv.get("area_m2")
     if area:
         try:
-            text += f"📐 Площадь: {float(area):,.1f} м²\n"
+            parts.append(f"📐 {float(area):,.1f} м²")
         except (ValueError, TypeError):
             pass
-
-    text += f"💸 ЗП: {zp_lbl}\n"
-
+    if inv.get("materials_ordered"):
+        parts.append("📦 Материал заказан")
+    parts.append(f"💸 ЗП: {zp_lbl}")
     zp_amount = inv.get("zp_installer_amount")
     if zp_amount and zp in ("requested", "approved"):
         try:
-            text += f"💵 Сумма ЗП: {float(zp_amount):,.0f}₽\n"
+            parts.append(f"💵 {float(zp_amount):,.0f}₽")
         except (ValueError, TypeError):
             pass
+    text += " · ".join(parts) + "\n"
 
-    text += f"📅 Создан: {(inv.get('created_at') or '—')[:10]}\n"
-
+    created = (inv.get("created_at") or "—")[:10]
+    text += f"📅 {created}"
     if inv.get("description"):
-        text += f"💬 Комментарий: {inv['description']}\n"
+        text += f" · 💬 {inv['description'][:50]}"
+    text += "\n"
 
     await cb.message.answer(text)  # type: ignore[union-attr]
 
