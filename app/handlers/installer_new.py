@@ -934,10 +934,14 @@ async def installer_my_objects(message: Message, db: Database) -> None:
         await answer_service(message, "📌 Нет объектов.", delay_seconds=60)
         return
 
-    # В работе: montazh_stage in_work / razmery_ok (не invoice_ok)
-    in_work = [i for i in all_inv if i.get("montazh_stage") in ("in_work", "razmery_ok")]
-    # Ожидает расчёт: montazh_stage = invoice_ok
-    waiting = [i for i in all_inv if i.get("montazh_stage") == "invoice_ok"]
+    work_stages = ("in_work", "razmery_ok")
+    in_work = [i for i in all_inv if i.get("montazh_stage") in work_stages]
+    # Ожидает расчёт: не в работе + ЗП не approved
+    waiting = [
+        i for i in all_inv
+        if i.get("montazh_stage") not in work_stages
+        and (i.get("zp_installer_status") or "not_requested") != "approved"
+    ]
 
     text = f"📌 <b>Мои объекты</b> · {len(all_inv)} шт.\n"
 
@@ -970,12 +974,18 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
         InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
     ) and not i.get("parent_invoice_id")]
 
+    work_stages = ("in_work", "razmery_ok")
     if cat == "work":
-        filtered = [i for i in all_inv if i.get("montazh_stage") in ("in_work", "razmery_ok")]
+        filtered = [i for i in all_inv if i.get("montazh_stage") in work_stages]
         filtered.sort(key=lambda i: _STAGE_ORDER.get(i.get("montazh_stage") or "none", 99))
         title = "🔨 В работе"
     else:
-        filtered = [i for i in all_inv if i.get("montazh_stage") == "invoice_ok"]
+        # Все счета НЕ в работе и с ЗП != approved
+        filtered = [
+            i for i in all_inv
+            if i.get("montazh_stage") not in work_stages
+            and (i.get("zp_installer_status") or "not_requested") != "approved"
+        ]
         filtered.sort(key=lambda i: i.get("created_at") or "", reverse=True)
         title = "✅ Ожидает расчёт"
 
@@ -1007,8 +1017,13 @@ async def installer_objects_back(cb: CallbackQuery, db: Database) -> None:
         InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
     ) and not i.get("parent_invoice_id")]
 
-    in_work = [i for i in all_inv if i.get("montazh_stage") in ("in_work", "razmery_ok")]
-    waiting = [i for i in all_inv if i.get("montazh_stage") == "invoice_ok"]
+    work_stages = ("in_work", "razmery_ok")
+    in_work = [i for i in all_inv if i.get("montazh_stage") in work_stages]
+    waiting = [
+        i for i in all_inv
+        if i.get("montazh_stage") not in work_stages
+        and (i.get("zp_installer_status") or "not_requested") != "approved"
+    ]
 
     text = f"📌 <b>Мои объекты</b> · {len(all_inv)} шт.\n"
 
