@@ -65,7 +65,6 @@ from ..states import (
     IssueSG,
     ManagerChatProxySG,
     ManagerZpSG,
-    MgrQuickBookSG,
     ZameryRequestSG,
 )
 from ..utils import answer_service, format_materials_list, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
@@ -2221,8 +2220,8 @@ async def mgr_book_pick_time(cb: CallbackQuery, db: Database, config: Config) ->
 
 
 @router.callback_query(F.data.startswith("mgr_sched:time:"))
-async def mgr_book_enter_address(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Менеджер: интервал выбран → ввод адреса."""
+async def mgr_book_start_full_flow(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Менеджер: интервал выбран → запуск полного flow заявки на замер."""
     if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
         return
     await cb.answer()
@@ -2230,154 +2229,26 @@ async def mgr_book_enter_address(cb: CallbackQuery, state: FSMContext, db: Datab
     parts = cb.data.split(":")  # type: ignore[union-attr]
     ds = parts[2]
     interval = parts[3]
-    week_offset = int(parts[4])
 
     d = date.fromisoformat(ds)
     wd = _MGR_RU_WEEKDAYS[d.weekday()]
 
+    # Pre-fill date/time into FSM and start normal zamery request flow
     await state.clear()
-    await state.set_state(MgrQuickBookSG.enter_address)
+    await state.set_state(ZameryRequestSG.source_type)
     await state.update_data(
-        book_date=ds,
-        book_interval=interval,
-        book_week_offset=week_offset,
-        book_source="manager",
-    )
-
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"📐 <b>Запись замера</b>\n"
-        f"📅 {d.day} {_MGR_RU_MONTHS[d.month]} ({wd})  ⏰ {interval}\n\n"
-        f"Введите <b>адрес</b> замера:",
-    )
-
-
-@router.message(MgrQuickBookSG.enter_address)
-async def mgr_book_address(message: Message, state: FSMContext) -> None:
-    """Адрес введён → описание."""
-    text = (message.text or "").strip()
-    if not text:
-        await message.answer("⚠️ Введите адрес:")
-        return
-    await state.update_data(book_address=text)
-    await state.set_state(MgrQuickBookSG.enter_description)
-
-    b = InlineKeyboardBuilder()
-    b.button(text="⏭ Без описания — сохранить", callback_data="mgr_sched:bookskip")
-    b.adjust(1)
-    await message.answer(
-        "📝 Введите <b>описание</b> или нажмите кнопку:",
-        reply_markup=b.as_markup(),
-    )
-
-
-@router.callback_query(MgrQuickBookSG.enter_description, F.data == "mgr_sched:bookskip")
-async def mgr_book_skip_desc(
-    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
-) -> None:
-    await cb.answer()
-    await _finalize_mgr_quick_book(cb, state, db, config, notifier, description=None)
-
-
-@router.message(MgrQuickBookSG.enter_description)
-async def mgr_book_description(
-    message: Message, state: FSMContext, db: Database, config: Config, notifier: Notifier,
-) -> None:
-    text = (message.text or "").strip() or None
-    await _finalize_mgr_quick_book(message, state, db, config, notifier, description=text)
-
-
-async def _finalize_mgr_quick_book(
-    event: Message | CallbackQuery,
-    state: FSMContext,
-    db: Database,
-    config: Config,
-    notifier: Notifier,
-    description: str | None,
-) -> None:
-    """Сохранить запись замера от менеджера."""
-    data = await state.get_data()
-    ds = data["book_date"]
-    interval = data["book_interval"]
-    address = data["book_address"]
-
-    uid = event.from_user.id if event.from_user else 0
-    d = date.fromisoformat(ds)
-    wd = _MGR_RU_WEEKDAYS[d.weekday()]
-
-    zamery_uid = await resolve_default_assignee(db, config, Role.ZAMERY)
-    assigned_to = int(zamery_uid) if zamery_uid else uid
-
-    requester_role = await _current_role(db, uid) or "manager_kv"
-
-    zam_req_id = await db.create_zamery_request(
-        source_type="schedule",
-        address=address,
-        description=description,
-        requested_by=uid,
-        requester_role=requester_role,
-        assigned_to=assigned_to,
-        base_cost=2500,
-        total_cost=2500,
-    )
-    from datetime import datetime as _dt
-    await db.update_zamery_request(
-        zam_req_id,
+        attachments=[],
         scheduled_date=ds,
         scheduled_time_interval=interval,
-        status="open",
     )
 
-    task = await db.create_task(
-        project_id=None,
-        type_=TaskType.ZAMERY_REQUEST,
-        status=TaskStatus.OPEN,
-        created_by=uid,
-        assigned_to=assigned_to,
-        due_at_iso=None,
-        payload={
-            "zamery_request_id": zam_req_id,
-            "source_type": "schedule",
-            "address": address,
-            "description": description,
-            "scheduled_date": ds,
-            "scheduled_time_interval": interval,
-        },
+    from ..keyboards import zamery_source_kb
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📐 <b>Заявка на замер</b>\n"
+        f"📅 {d.day} {_MGR_RU_MONTHS[d.month]} ({wd})  ⏰ {interval}\n\n"
+        f"Выберите источник:",
+        reply_markup=zamery_source_kb(),
     )
-    await db.update_zamery_request(zam_req_id, task_id=int(task["id"]))
-
-    await state.clear()
-
-    msg_target = event.message if isinstance(event, CallbackQuery) else event
-
-    text = (
-        f"┌─────────────────────────\n"
-        f"│ ✅ <b>Замер записан</b>\n"
-        f"├─────────────────────────\n"
-        f"│ 📅 {d.day} {_MGR_RU_MONTHS[d.month]} ({wd})\n"
-        f"│ ⏰ {interval}\n"
-        f"│ 📍 {address}\n"
-    )
-    if description:
-        text += f"│ 📝 {description}\n"
-    text += f"└─────────────────────────"
-
-    await msg_target.answer(text)  # type: ignore[union-attr]
-
-    # Уведомить замерщика
-    initiator = await get_initiator_label(db, uid)
-    notify_text = (
-        f"📐 <b>Новый замер в графике</b>\n\n"
-        f"👤 Менеджер: {initiator}\n"
-        f"📅 {d.day} {_MGR_RU_MONTHS[d.month]} ({wd})  ⏰ {interval}\n"
-        f"📍 {address}\n"
-    )
-    if description:
-        notify_text += f"📝 {description}\n"
-
-    from ..keyboards import task_actions_kb
-    task_kb = task_actions_kb(task)
-    await notifier.safe_send(assigned_to, notify_text, reply_markup=task_kb)
-    await refresh_recipient_keyboard(notifier, db, config, assigned_to)
 
 
 # --- Замер: создание новой заявки (FSM) ---
@@ -2482,10 +2353,16 @@ async def zamery_mkad_km(message: Message, state: FSMContext, db: Database, conf
         return
     await state.update_data(mkad_km=km)
 
+    # Если дата уже выбрана (из графика) — пропустить пикер
+    data = await state.get_data()
+    if data.get("scheduled_date") and data.get("scheduled_time_interval"):
+        await state.set_state(ZameryRequestSG.volume_m2)
+        await message.answer("📐 Введите <b>примерный объём</b> (площадь) в м²:")
+        return
+
     # Show zamerschik schedule for date picking
     zamery_uid = await resolve_default_assignee(db, config, Role.ZAMERY)
     if not zamery_uid:
-        # Fallback: skip schedule, go to volume
         await state.set_state(ZameryRequestSG.volume_m2)
         await message.answer("📐 Введите <b>примерный объём</b> (площадь) в м²:")
         return

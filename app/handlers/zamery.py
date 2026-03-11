@@ -1517,7 +1517,7 @@ async def zamery_book_pick_time(cb: CallbackQuery, db: Database) -> None:
 
 @router.callback_query(F.data.startswith("zamsched:booktime:"))
 async def zamery_book_enter_address(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Выбран интервал → ввод адреса."""
+    """Выбран интервал → ввод адреса (начало полного сбора данных)."""
     if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
         return
     await cb.answer()
@@ -1536,19 +1536,19 @@ async def zamery_book_enter_address(cb: CallbackQuery, state: FSMContext, db: Da
         book_date=ds,
         book_interval=interval,
         book_week_offset=week_offset,
-        book_source="zamery",  # кто записывает
+        book_source="zamery",
     )
 
     await cb.message.answer(  # type: ignore[union-attr]
         f"📐 <b>Запись замера</b>\n"
         f"📅 {d.day} {_RU_MONTHS[d.month]} ({wd})  ⏰ {interval}\n\n"
-        f"Введите <b>адрес</b> замера:",
+        f"<b>Шаг 1/6.</b> Введите <b>адрес</b> замера:",
     )
 
 
 @router.message(ZameryQuickBookSG.enter_address)
 async def zamery_book_address(message: Message, state: FSMContext) -> None:
-    """Адрес введён → запрос описания."""
+    """Адрес → описание."""
     text = (message.text or "").strip()
     if not text:
         await message.answer("⚠️ Введите адрес:")
@@ -1557,46 +1557,198 @@ async def zamery_book_address(message: Message, state: FSMContext) -> None:
     await state.set_state(ZameryQuickBookSG.enter_description)
 
     b = InlineKeyboardBuilder()
-    b.button(text="⏭ Без описания — сохранить", callback_data="zamsched:bookskip")
+    b.button(text="⏭ Пропустить", callback_data="zamsched:skip:desc")
     b.adjust(1)
     await message.answer(
-        "📝 Введите <b>описание</b> (комментарий) или нажмите кнопку:",
+        "📝 <b>Шаг 2/6.</b> Введите <b>описание работ</b> или пропустите:",
         reply_markup=b.as_markup(),
     )
 
 
-@router.callback_query(ZameryQuickBookSG.enter_description, F.data == "zamsched:bookskip")
-async def zamery_book_skip_desc(
-    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
-) -> None:
-    """Пропустить описание → сохранить."""
+@router.callback_query(ZameryQuickBookSG.enter_description, F.data == "zamsched:skip:desc")
+async def zamery_book_skip_desc(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
-    await _finalize_quick_book(cb, state, db, config, notifier, description=None)
+    await state.update_data(book_description=None)
+    await state.set_state(ZameryQuickBookSG.enter_client_contact)
+    b = InlineKeyboardBuilder()
+    b.button(text="⏭ Пропустить", callback_data="zamsched:skip:contact")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📞 <b>Шаг 3/6.</b> Введите <b>контакт клиента</b> (телефон/имя) или пропустите:",
+        reply_markup=b.as_markup(),
+    )
 
 
 @router.message(ZameryQuickBookSG.enter_description)
-async def zamery_book_description(
-    message: Message, state: FSMContext, db: Database, config: Config, notifier: Notifier,
-) -> None:
-    """Описание введено → сохранить."""
+async def zamery_book_description(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip() or None
-    await _finalize_quick_book(message, state, db, config, notifier, description=text)
+    await state.update_data(book_description=text)
+    await state.set_state(ZameryQuickBookSG.enter_client_contact)
+    b = InlineKeyboardBuilder()
+    b.button(text="⏭ Пропустить", callback_data="zamsched:skip:contact")
+    b.adjust(1)
+    await message.answer(
+        "📞 <b>Шаг 3/6.</b> Введите <b>контакт клиента</b> (телефон/имя) или пропустите:",
+        reply_markup=b.as_markup(),
+    )
 
 
-async def _finalize_quick_book(
+@router.callback_query(ZameryQuickBookSG.enter_client_contact, F.data == "zamsched:skip:contact")
+async def zamery_book_skip_contact(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    await state.update_data(book_client_contact=None)
+    await state.set_state(ZameryQuickBookSG.enter_mkad_km)
+    b = InlineKeyboardBuilder()
+    b.button(text="0 (в пределах МКАД)", callback_data="zamsched:mkad:0")
+    b.button(text="⏭ Пропустить", callback_data="zamsched:skip:mkad")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "🚗 <b>Шаг 4/6.</b> Введите <b>расстояние от МКАД</b> (км, число) или выберите:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(ZameryQuickBookSG.enter_client_contact)
+async def zamery_book_client_contact(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip() or None
+    await state.update_data(book_client_contact=text)
+    await state.set_state(ZameryQuickBookSG.enter_mkad_km)
+    b = InlineKeyboardBuilder()
+    b.button(text="0 (в пределах МКАД)", callback_data="zamsched:mkad:0")
+    b.button(text="⏭ Пропустить", callback_data="zamsched:skip:mkad")
+    b.adjust(1)
+    await message.answer(
+        "🚗 <b>Шаг 4/6.</b> Введите <b>расстояние от МКАД</b> (км, число) или выберите:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(ZameryQuickBookSG.enter_mkad_km, F.data == "zamsched:mkad:0")
+async def zamery_book_mkad_zero(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    await state.update_data(book_mkad_km=0)
+    await _ask_volume(cb.message, state)  # type: ignore[arg-type]
+
+
+@router.callback_query(ZameryQuickBookSG.enter_mkad_km, F.data == "zamsched:skip:mkad")
+async def zamery_book_skip_mkad(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    await state.update_data(book_mkad_km=0)
+    await _ask_volume(cb.message, state)  # type: ignore[arg-type]
+
+
+@router.message(ZameryQuickBookSG.enter_mkad_km)
+async def zamery_book_mkad_km(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    try:
+        km = float(text.replace(",", "."))
+    except (ValueError, TypeError):
+        await message.answer("⚠️ Введите число (км от МКАД):")
+        return
+    await state.update_data(book_mkad_km=km)
+    await _ask_volume(message, state)
+
+
+async def _ask_volume(target: Any, state: FSMContext) -> None:
+    await state.set_state(ZameryQuickBookSG.enter_volume)
+    b = InlineKeyboardBuilder()
+    b.button(text="⏭ Пропустить", callback_data="zamsched:skip:volume")
+    b.adjust(1)
+    await target.answer(  # type: ignore[union-attr]
+        "📐 <b>Шаг 5/6.</b> Введите <b>примерный объём</b> (м²) или пропустите:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(ZameryQuickBookSG.enter_volume, F.data == "zamsched:skip:volume")
+async def zamery_book_skip_volume(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    await state.update_data(book_volume=None)
+    await _ask_attachments(cb.message, state)  # type: ignore[arg-type]
+
+
+@router.message(ZameryQuickBookSG.enter_volume)
+async def zamery_book_volume(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    try:
+        vol = float(text.replace(",", "."))
+    except (ValueError, TypeError):
+        await message.answer("⚠️ Введите число (м²):")
+        return
+    await state.update_data(book_volume=vol)
+    await _ask_attachments(message, state)
+
+
+async def _ask_attachments(target: Any, state: FSMContext) -> None:
+    await state.set_state(ZameryQuickBookSG.attachments)
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Сохранить замер", callback_data="zamsched:book:finalize")
+    b.adjust(1)
+    await target.answer(  # type: ignore[union-attr]
+        "📎 <b>Шаг 6/6.</b> Отправьте <b>фото/документы</b> или нажмите для сохранения:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(ZameryQuickBookSG.attachments, F.content_type.in_({"photo", "document"}))
+async def zamery_book_attachment(message: Message, state: FSMContext) -> None:
+    """Получен файл — сохраняем и ждём ещё."""
+    data = await state.get_data()
+    attachments = data.get("book_attachments", [])
+    if message.photo:
+        biggest = message.photo[-1]
+        attachments.append({
+            "file_id": biggest.file_id,
+            "file_unique_id": biggest.file_unique_id,
+            "file_type": "photo",
+            "caption": message.caption,
+        })
+    elif message.document:
+        attachments.append({
+            "file_id": message.document.file_id,
+            "file_unique_id": message.document.file_unique_id,
+            "file_type": "document",
+            "caption": message.caption,
+        })
+    await state.update_data(book_attachments=attachments)
+    b = InlineKeyboardBuilder()
+    b.button(text=f"✅ Сохранить замер ({len(attachments)} вл.)", callback_data="zamsched:book:finalize")
+    b.adjust(1)
+    await message.answer(
+        f"📎 Добавлено: {len(attachments)}. Отправьте ещё или сохраните:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(ZameryQuickBookSG.attachments, F.data == "zamsched:book:finalize")
+async def zamery_book_finalize_cb(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    await cb.answer()
+    await _finalize_schedule_book(cb, state, db, config, notifier)
+
+
+async def _finalize_schedule_book(
     event: Message | CallbackQuery,
     state: FSMContext,
     db: Database,
     config: Config,
     notifier: Notifier,
-    description: str | None,
 ) -> None:
-    """Сохранить быструю запись замера."""
+    """Сохранить полную запись замера из графика."""
+    import json as _json
     from ..enums import TaskType
+    from ..keyboards import task_actions_kb
+
     data = await state.get_data()
     ds = data["book_date"]
     interval = data["book_interval"]
     address = data["book_address"]
+    description = data.get("book_description")
+    client_contact = data.get("book_client_contact")
+    mkad_km = data.get("book_mkad_km", 0)
+    volume_m2 = data.get("book_volume")
+    attachments = data.get("book_attachments", [])
     week_offset = data.get("book_week_offset", 0)
 
     uid = event.from_user.id if event.from_user else 0
@@ -1611,31 +1763,39 @@ async def _finalize_quick_book(
     user = await db.get_user_optional(uid)
     requester_role = resolve_active_menu_role(uid, user.role if user else None) or "zamery"
 
+    # Cost calculation
+    base_cost = 2500
+    mkad_surcharge = int(mkad_km * 30) if mkad_km else 0
+    total_cost = base_cost + mkad_surcharge
+
     # Create zamery request
     zam_req_id = await db.create_zamery_request(
         source_type="schedule",
         address=address,
         description=description,
+        client_contact=client_contact,
         requested_by=uid,
         requester_role=requester_role,
         assigned_to=assigned_to,
-        base_cost=2500,
-        total_cost=2500,
+        mkad_km=mkad_km,
+        volume_m2=volume_m2,
+        base_cost=base_cost,
+        mkad_surcharge=mkad_surcharge,
+        total_cost=total_cost,
+        attachments_json=_json.dumps([{"file_id": a["file_id"], "file_type": a["file_type"]} for a in attachments]) if attachments else None,
     )
     # Set schedule
     await db.update_zamery_request(
         zam_req_id,
         scheduled_date=ds,
         scheduled_time_interval=interval,
-        status="in_progress",
-        accepted_at=datetime.now().isoformat(),
     )
 
-    # Create generic task
+    # Create generic task for zamerschik inbox
     task = await db.create_task(
         project_id=None,
         type_=TaskType.ZAMERY_REQUEST,
-        status=TaskStatus.IN_PROGRESS,
+        status=TaskStatus.OPEN,
         created_by=uid,
         assigned_to=assigned_to,
         due_at_iso=None,
@@ -1644,15 +1804,29 @@ async def _finalize_quick_book(
             "source_type": "schedule",
             "address": address,
             "description": description,
+            "client_contact": client_contact,
+            "mkad_km": mkad_km,
+            "volume_m2": volume_m2,
+            "total_cost": total_cost,
         },
     )
-    await db.accept_task(int(task["id"]))
     await db.update_zamery_request(zam_req_id, task_id=int(task["id"]))
+
+    # Save attachments
+    for a in attachments:
+        await db.add_attachment(
+            task_id=int(task["id"]),
+            file_id=a["file_id"],
+            file_unique_id=a.get("file_unique_id"),
+            file_type=a["file_type"],
+            caption=a.get("caption"),
+        )
 
     await state.clear()
 
     msg_target = event.message if isinstance(event, CallbackQuery) else event
 
+    # Confirmation card
     text = (
         f"┌─────────────────────────\n"
         f"│ ✅ <b>Замер записан</b>\n"
@@ -1663,11 +1837,46 @@ async def _finalize_quick_book(
     )
     if description:
         text += f"│ 📝 {description}\n"
-    text += f"└─────────────────────────"
+    if client_contact:
+        text += f"│ 📞 {client_contact}\n"
+    if mkad_km:
+        text += f"│ 🚗 {mkad_km} км от МКАД\n"
+    if volume_m2:
+        text += f"│ 📐 {volume_m2} м²\n"
+    text += f"│ 💰 {total_cost} ₽\n"
+    if attachments:
+        text += f"│ 📎 {len(attachments)} вложений\n"
+    text += f"└─────────────────────────\n\n"
+    text += "Задача создана в «📐 Замеры»."
 
     await msg_target.answer(text)  # type: ignore[union-attr]
+
+    # Send notification to zamerschik with action buttons
+    initiator = await get_initiator_label(db, uid)
+    notify_text = (
+        f"📐 <b>Заявка на замер #{zam_req_id}</b>\n\n"
+        f"📅 {d.day} {_RU_MONTHS[d.month]} ({wd})  ⏰ {interval}\n"
+        f"📍 {address}\n"
+    )
+    if description:
+        notify_text += f"📝 {description}\n"
+    if client_contact:
+        notify_text += f"📞 {client_contact}\n"
+    if mkad_km:
+        notify_text += f"🚗 {mkad_km} км от МКАД\n"
+    if volume_m2:
+        notify_text += f"📐 {volume_m2} м²\n"
+    notify_text += f"💰 {total_cost} ₽\n"
+    notify_text += f"\nОт: {initiator}"
+
+    task_kb = task_actions_kb(task)
+    await notifier.safe_send(assigned_to, notify_text, reply_markup=task_kb)
+    await notifier.notify_workchat(notify_text)
+
     # Обновить бейдж
-    await refresh_recipient_keyboard(notifier, db, config, uid)
+    await refresh_recipient_keyboard(notifier, db, config, assigned_to)
+    if uid != assigned_to:
+        await refresh_recipient_keyboard(notifier, db, config, uid)
 
 
 # --- Blackout: добавить ---

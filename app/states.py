@@ -421,15 +421,13 @@ class ZameryBlackoutSG(StatesGroup):
 
 
 class ZameryQuickBookSG(StatesGroup):
-    """Быстрая запись замера из графика (замерщик)."""
+    """Запись замера из графика (замерщик) — полный сбор данных."""
     enter_address = State()
     enter_description = State()
-
-
-class MgrQuickBookSG(StatesGroup):
-    """Быстрая запись замера из графика (менеджер)."""
-    enter_address = State()
-    enter_description = State()
+    enter_client_contact = State()
+    enter_mkad_km = State()
+    enter_volume = State()
+    attachments = State()
 
 
 class ZameryZpSG(StatesGroup):
