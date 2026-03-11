@@ -697,6 +697,14 @@ def task_actions_kb(task: dict[str, Any]) -> InlineKeyboardMarkup:
             b.button(text="⏸ Отложить", callback_data=TaskCb(task_id=tid, action="inv_hold").pack())
             b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="inv_reject").pack())
 
+    # Пакетный запрос ЗП замерщика → ГД
+    if ttype == TaskType.ZP_ZAMERY_BATCH and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ ЗП ОК", callback_data=f"zampay_gd:ok:{tid}")
+        b.button(text="❌ Отклонить", callback_data=f"zampay_gd:no:{tid}")
+        b.adjust(2)
+        return b.as_markup()
+
     # Задачи монтажной группы — Да/Нет/Комментарий
     if ttype == TaskType.GD_TASK and status == TaskStatus.OPEN:
         _payload = try_json_loads(task.get("payload_json"))

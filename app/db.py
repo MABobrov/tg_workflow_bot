@@ -428,6 +428,20 @@ class Database:
             ("invoices", "materials_ordered", "INTEGER DEFAULT 0"),
             ("users", "zp_init_done", "INTEGER DEFAULT 0"),
             ("users", "razmery_init_done", "INTEGER DEFAULT 0"),
+            # --- Замеры: расширенная карточка ---
+            ("zamery_requests", "mkad_km", "REAL"),
+            ("zamery_requests", "volume_m2", "REAL"),
+            ("zamery_requests", "base_cost", "INTEGER"),
+            ("zamery_requests", "mkad_surcharge", "INTEGER"),
+            ("zamery_requests", "total_cost", "INTEGER"),
+            # --- Замеры: полный цикл (принятие + завершение) ---
+            ("zamery_requests", "scheduled_date", "TEXT"),
+            ("zamery_requests", "scheduled_time_interval", "TEXT"),
+            ("zamery_requests", "accept_comment", "TEXT"),
+            ("zamery_requests", "accepted_at", "TEXT"),
+            ("zamery_requests", "completion_comment", "TEXT"),
+            ("zamery_requests", "completion_attachments_json", "TEXT"),
+            ("zamery_requests", "completed_at", "TEXT"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -2740,6 +2754,11 @@ class Database:
         lead_task_id: int | None = None,
         task_id: int | None = None,
         attachments_json: str | None = None,
+        mkad_km: float | None = None,
+        volume_m2: float | None = None,
+        base_cost: int | None = None,
+        mkad_surcharge: int | None = None,
+        total_cost: int | None = None,
     ) -> int:
         now = to_iso(utcnow())
         cur = await self.conn.execute(
@@ -2747,11 +2766,13 @@ class Database:
             "(source_type, address, description, client_contact, "
             " requested_by, requester_role, assigned_to, "
             " lead_id, lead_task_id, task_id, attachments_json, "
+            " mkad_km, volume_m2, base_cost, mkad_surcharge, total_cost, "
             " status, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (source_type, address, description, client_contact,
              requested_by, requester_role, assigned_to,
              lead_id, lead_task_id, task_id, attachments_json,
+             mkad_km, volume_m2, base_cost, mkad_surcharge, total_cost,
              "open", now),
         )
         await self.conn.commit()
@@ -2815,6 +2836,68 @@ class Database:
             (assigned_to,),
         )
         return [dict(r) for r in await cur.fetchall()]
+
+    async def get_zamery_conversion_stats(
+        self, assigned_to: int,
+    ) -> dict[str, Any]:
+        """Конверсия замеров → счета.
+
+        Возвращает:
+        - total_done: всего завершённых замеров
+        - total_with_invoice: из них привязаны к счёту в работе
+        - conversion_pct: процент конверсии
+        - by_role: [{requester_role, done, with_invoice, pct}]
+        """
+        # Общая статистика
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) AS total_done FROM zamery_requests "
+            "WHERE assigned_to = ? AND status = 'done'",
+            (assigned_to,),
+        )
+        row = await cur.fetchone()
+        total_done = dict(row)["total_done"] if row else 0
+
+        # Замеры привязанные к лиду → лид стал счётом
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM zamery_requests zr "
+            "WHERE zr.assigned_to = ? AND zr.status = 'done' "
+            "AND zr.lead_id IS NOT NULL "
+            "AND EXISTS (SELECT 1 FROM lead_tracking lt "
+            "  JOIN invoices i ON i.lead_id = lt.id "
+            "  WHERE lt.id = zr.lead_id "
+            "  AND i.status IN ('in_progress','paid','closing','ended'))",
+            (assigned_to,),
+        )
+        row = await cur.fetchone()
+        total_with_invoice = dict(row)["cnt"] if row else 0
+
+        conversion_pct = round(total_with_invoice / total_done * 100) if total_done else 0
+
+        # По ролям менеджеров
+        cur = await self.conn.execute(
+            "SELECT requester_role, "
+            "  COUNT(*) AS done, "
+            "  SUM(CASE WHEN lead_id IS NOT NULL AND EXISTS ("
+            "    SELECT 1 FROM lead_tracking lt JOIN invoices i ON i.lead_id = lt.id "
+            "    WHERE lt.id = zr.lead_id AND i.status IN ('in_progress','paid','closing','ended')"
+            "  ) THEN 1 ELSE 0 END) AS with_invoice "
+            "FROM zamery_requests zr "
+            "WHERE zr.assigned_to = ? AND zr.status = 'done' "
+            "GROUP BY requester_role",
+            (assigned_to,),
+        )
+        by_role = []
+        for r in await cur.fetchall():
+            rd = dict(r)
+            rd["pct"] = round(rd["with_invoice"] / rd["done"] * 100) if rd["done"] else 0
+            by_role.append(rd)
+
+        return {
+            "total_done": total_done,
+            "total_with_invoice": total_with_invoice,
+            "conversion_pct": conversion_pct,
+            "by_role": by_role,
+        }
 
     async def import_zamery_invoices(
         self,

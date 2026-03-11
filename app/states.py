@@ -389,7 +389,28 @@ class ZameryRequestSG(StatesGroup):
     address = State()            # адрес замера
     description = State()        # описание работ
     client_contact = State()     # контакт клиента (телефон/имя)
+    mkad_km = State()            # расстояние от МКАД в км
+    volume_m2 = State()          # примерный объём в м²
     attachments = State()        # вложения (фото, документы)
+
+
+class ZameryAcceptSG(StatesGroup):
+    """Замерщик: принятие заявки с комментарием/календарём."""
+    choose_action = State()    # 📅 Дата | 💬 Комментарий | ⏭ Без комментария
+    pick_date = State()        # выбор дня (inline-кнопки 7 дней)
+    pick_time = State()        # выбор интервала (08-10, 10-12, ...)
+    comment = State()          # ввод комментария
+
+
+class ZameryCompleteSG(StatesGroup):
+    """Замерщик: завершение замера — отправка результата менеджеру."""
+    attachments = State()      # вложения (фото, видео, документы)
+    comment = State()          # комментарий к результату
+
+
+class ZameryCostEditSG(StatesGroup):
+    """Замерщик: редактирование стоимости замера."""
+    enter_cost = State()       # ввод новой стоимости
 
 
 class ZameryZpSG(StatesGroup):

@@ -414,10 +414,11 @@ async def refresh_recipient_keyboard(
     gd_unread = await db.count_gd_inbox_tasks(user_id) if user.role and Role.GD in _parsed_r else None
     gd_inv = await db.count_gd_invoice_tasks(user_id) if user.role and Role.GD in _parsed_r else None
     gd_ie = await db.count_gd_invoice_end_tasks(user_id) if user.role and Role.GD in _parsed_r else None
+    gd_sp = await db.count_gd_supplier_pay_tasks(user_id) if user.role and Role.GD in _parsed_r else None
     _is_rp_r = Role.RP in _parsed_r or Role.MANAGER_NPN in _parsed_r
     rp_t_r = await db.count_rp_role_tasks(user_id) if _is_rp_r else 0
     rp_m_r = await db.count_rp_role_messages(user_id) if _is_rp_r else 0
-    kb = main_menu(user.role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_unread, gd_invoice_unread=gd_inv, gd_invoice_end_unread=gd_ie, rp_tasks=rp_t_r, rp_messages=rp_m_r)
+    kb = main_menu(user.role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_unread, gd_invoice_unread=gd_inv, gd_invoice_end_unread=gd_ie, gd_supplier_pay_unread=gd_sp, rp_tasks=rp_t_r, rp_messages=rp_m_r)
     text = f"📥 У вас {unread} активных задач." if unread else "📥 Нет активных задач."
     await notifier.safe_send(user_id, text, reply_markup=kb)
 

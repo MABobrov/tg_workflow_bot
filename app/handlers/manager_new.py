@@ -2000,16 +2000,26 @@ async def zamery_my_view(cb: CallbackQuery, db: Database) -> None:
         return
     source_label = ZAMERY_SOURCE_LABELS.get(req["source_type"], req["source_type"])
     status_label = {"open": "⏳ Ожидает", "in_progress": "🔄 В работе", "done": "✅ Выполнено", "rejected": "❌ Отклонено"}.get(req["status"], req["status"])
-    text = (
-        f"📐 <b>Заявка #{req['id']}</b>\n\n"
-        f"📌 Источник: {source_label}\n"
-        f"📍 Адрес: {req['address']}\n"
-        f"📊 Статус: {status_label}\n"
-    )
-    if req.get("description"):
-        text += f"📝 Описание: {req['description']}\n"
+    text = f"📐 <b>Заявка #{req['id']}</b>\n\n"
+    text += f"📍 Адрес: {req['address']}\n"
     if req.get("client_contact"):
-        text += f"📞 Контакт: {req['client_contact']}\n"
+        text += f"📞 Контакт: <code>{req['client_contact']}</code>\n"
+    if req.get("volume_m2"):
+        text += f"📊 Объём: {req['volume_m2']} м²\n"
+    mkad_km = req.get("mkad_km") or 0
+    mkad_surcharge = req.get("mkad_surcharge") or 0
+    if mkad_km and mkad_km > 0:
+        if mkad_surcharge:
+            text += f"📍 МКАД: {mkad_km} км (наценка: {mkad_surcharge}₽)\n"
+        else:
+            text += f"📍 МКАД: {mkad_km} км\n"
+    total_cost = req.get("total_cost")
+    if total_cost:
+        text += f"💰 Стоимость замера: <b>{total_cost}₽</b>\n"
+    if req.get("description"):
+        text += f"\n📝 Описание: {req['description']}\n"
+    text += f"📌 Источник: {source_label}\n"
+    text += f"📊 Статус: {status_label}\n"
     if req.get("response_comment"):
         text += f"\n💬 Ответ замерщика: {req['response_comment']}\n"
     b = InlineKeyboardBuilder()
@@ -2101,12 +2111,59 @@ async def zamery_client_contact(message: Message, state: FSMContext) -> None:
         await message.answer("Введите контакт клиента:")
         return
     await state.update_data(client_contact=text)
+    await state.set_state(ZameryRequestSG.mkad_km)
+    await message.answer(
+        "📍 Введите <b>расстояние от МКАД</b> в км\n"
+        "(0 — если внутри МКАД):",
+    )
+
+
+@router.message(ZameryRequestSG.mkad_km)
+async def zamery_mkad_km(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip().replace(",", ".")
+    try:
+        km = float(text)
+        if km < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("⚠️ Введите число ≥ 0 (км от МКАД):")
+        return
+    await state.update_data(mkad_km=km)
+    await state.set_state(ZameryRequestSG.volume_m2)
+    await message.answer("📐 Введите <b>примерный объём</b> (площадь) в м²:")
+
+
+@router.message(ZameryRequestSG.volume_m2)
+async def zamery_volume(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip().replace(",", ".")
+    try:
+        vol = float(text)
+        if vol <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("⚠️ Введите число > 0 (объём в м²):")
+        return
+    data = await state.get_data()
+    mkad_km = data.get("mkad_km", 0)
+    base_cost = 2500
+    mkad_surcharge = max(0, int((mkad_km - 5) * 40)) if mkad_km > 5 else 0
+    total_cost = base_cost + mkad_surcharge
+    await state.update_data(
+        volume_m2=vol,
+        base_cost=base_cost,
+        mkad_surcharge=mkad_surcharge,
+        total_cost=total_cost,
+    )
+    cost_text = f"💰 Стоимость замера: <b>{total_cost}₽</b>"
+    if mkad_surcharge:
+        cost_text += f" (база 2500₽ + МКАД {mkad_surcharge}₽)"
     await state.set_state(ZameryRequestSG.attachments)
     b = InlineKeyboardBuilder()
     b.button(text="✅ Отправить замерщику", callback_data="zam:create")
     b.button(text="⏭ Без вложений", callback_data="zam:create")
     b.adjust(1)
     await message.answer(
+        f"{cost_text}\n\n"
         "Прикрепите файл/фото или нажмите кнопку:",
         reply_markup=b.as_markup(),
     )
@@ -2158,6 +2215,11 @@ async def zamery_finalize(
         return
 
     requester_role = await _current_role(db, u.id) or "manager_kv"
+    mkad_km = data.get("mkad_km", 0)
+    volume_m2 = data.get("volume_m2")
+    base_cost = data.get("base_cost", 2500)
+    mkad_surcharge = data.get("mkad_surcharge", 0)
+    total_cost = data.get("total_cost", 2500)
     import json
     zam_req_id = await db.create_zamery_request(
         source_type=source_type,
@@ -2170,6 +2232,11 @@ async def zamery_finalize(
         lead_id=lead_id,
         lead_task_id=lead_task_id,
         attachments_json=json.dumps([{"file_id": a["file_id"], "file_type": a["file_type"]} for a in attachments]) if attachments else None,
+        mkad_km=mkad_km,
+        volume_m2=volume_m2,
+        base_cost=base_cost,
+        mkad_surcharge=mkad_surcharge,
+        total_cost=total_cost,
     )
 
     task = await db.create_task(
@@ -2185,6 +2252,9 @@ async def zamery_finalize(
             "address": address,
             "description": description,
             "client_contact": client_contact,
+            "mkad_km": mkad_km,
+            "volume_m2": volume_m2,
+            "total_cost": total_cost,
         },
     )
     await db.update_zamery_request(zam_req_id, task_id=int(task["id"]))
@@ -2199,19 +2269,36 @@ async def zamery_finalize(
         )
 
     source_label = ZAMERY_SOURCE_LABELS.get(source_type, source_type)
+    role_short = {
+        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+    }.get(requester_role, "")
     initiator = await get_initiator_label(db, u.id)
     from ..keyboards import task_actions_kb
     task_kb = task_actions_kb(task)
     msg = (
-        f"📐 <b>Заявка на замер #{zam_req_id}</b>\n"
-        f"👤 От: {initiator}\n\n"
-        f"📌 Источник: {source_label}\n"
-        f"📍 Адрес: {address}\n"
+        f"📐 <b>Заявка на замер #{zam_req_id}</b>\n\n"
+        f"👤 Менеджер: {initiator}"
     )
-    if description:
-        msg += f"📝 Описание: {description}\n"
+    if role_short:
+        msg += f" ({role_short})"
+    msg += (
+        f"\n📍 Адрес: {address}\n"
+    )
     if client_contact:
-        msg += f"📞 Контакт: {client_contact}\n"
+        msg += f"📞 Контакт: <code>{client_contact}</code>\n"
+    if volume_m2:
+        msg += f"📊 Объём: {volume_m2} м²\n"
+    if mkad_km and mkad_km > 0:
+        if mkad_surcharge:
+            msg += f"📍 МКАД: {mkad_km} км (наценка: {mkad_surcharge}₽)\n"
+        else:
+            msg += f"📍 МКАД: {mkad_km} км\n"
+    else:
+        msg += "📍 МКАД: внутри МКАД\n"
+    msg += f"💰 Стоимость замера: <b>{total_cost}₽</b>\n"
+    if description:
+        msg += f"\n📝 Описание: {description}\n"
+    msg += f"📌 Источник: {source_label}\n"
 
     await notifier.safe_send(int(zamery_id_user), msg, reply_markup=task_kb)
     for a in attachments:

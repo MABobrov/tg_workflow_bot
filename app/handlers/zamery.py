@@ -33,7 +33,7 @@ from ..keyboards import (
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import ZameryZpSG
+from ..states import ZameryAcceptSG, ZameryCompleteSG, ZameryCostEditSG, ZameryZpSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
@@ -120,15 +120,31 @@ async def zamery_view_request(
 
     text = (
         f"📐 <b>Заявка на замер #{req['id']}</b>\n\n"
-        f"👤 От: {initiator} ({role_short})\n"
-        f"📌 Источник: {source_label}\n"
-        f"📍 Адрес: {req.get('address', '—')}\n"
+        f"👤 Менеджер: {initiator}"
     )
-    if req.get("description"):
-        text += f"📝 Описание: {req['description']}\n"
+    if role_short:
+        text += f" ({role_short})"
+    text += f"\n📍 Адрес: {req.get('address', '—')}\n"
     if req.get("client_contact"):
-        text += f"📞 Контакт: {req['client_contact']}\n"
-    text += f"Статус: {status_label}\n"
+        text += f"📞 Контакт: <code>{req['client_contact']}</code>\n"
+    if req.get("volume_m2"):
+        text += f"📊 Объём: {req['volume_m2']} м²\n"
+    mkad_km = req.get("mkad_km") or 0
+    mkad_surcharge = req.get("mkad_surcharge") or 0
+    if mkad_km and mkad_km > 0:
+        if mkad_surcharge:
+            text += f"📍 МКАД: {mkad_km} км (наценка: {mkad_surcharge}₽)\n"
+        else:
+            text += f"📍 МКАД: {mkad_km} км\n"
+    else:
+        text += "📍 МКАД: внутри МКАД\n"
+    total_cost = req.get("total_cost")
+    if total_cost:
+        text += f"💰 Стоимость замера: <b>{total_cost}₽</b>\n"
+    if req.get("description"):
+        text += f"\n📝 Описание: {req['description']}\n"
+    text += f"📌 Источник: {source_label}\n"
+    text += f"📊 Статус: {status_label}\n"
     text += f"📅 Создана: {req.get('created_at', '—')[:16]}\n"
 
     b = InlineKeyboardBuilder()
@@ -158,12 +174,12 @@ async def zamery_view_request(
 
 @router.callback_query(F.data.startswith("zam_in:accept:"))
 async def zamery_accept_request(
-    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+    cb: CallbackQuery, state: FSMContext, db: Database,
 ) -> None:
-    """Замерщик: принять заявку на замер."""
+    """Замерщик: начало принятия заявки → выбор действия."""
     if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
         return
-    await cb.answer("✅ Принято")
+    await cb.answer()
 
     req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     req = await db.get_zamery_request(req_id)
@@ -171,22 +187,159 @@ async def zamery_accept_request(
         await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
         return
 
-    await db.update_zamery_request(req_id, status="in_progress")
-    # Обновить задачу
+    await state.clear()
+    await state.update_data(accept_req_id=req_id)
+    await state.set_state(ZameryAcceptSG.choose_action)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="📅 Назначить дату", callback_data="zam_acc:date")
+    b.button(text="💬 Комментарий", callback_data="zam_acc:comment")
+    b.button(text="⏭ Принять без комментария", callback_data="zam_acc:skip")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📐 <b>Принятие заявки #{req_id}</b>\n\n"
+        "Выберите действие:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(ZameryAcceptSG.choose_action, F.data == "zam_acc:date")
+async def zamery_acc_pick_date(cb: CallbackQuery, state: FSMContext) -> None:
+    """Показать 7 дней для выбора."""
+    await cb.answer()
+    from datetime import date, timedelta
+    today = date.today()
+    day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    b = InlineKeyboardBuilder()
+    for i in range(7):
+        d = today + timedelta(days=i)
+        label = f"{day_names[d.weekday()]} {d.strftime('%d.%m')}"
+        b.button(text=label, callback_data=f"zam_date:{d.isoformat()}")
+    b.adjust(4, 3)
+    await state.set_state(ZameryAcceptSG.pick_date)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📅 Выберите дату замера:", reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(ZameryAcceptSG.pick_date, F.data.startswith("zam_date:"))
+async def zamery_acc_pick_time(cb: CallbackQuery, state: FSMContext) -> None:
+    """Показать интервалы времени (2 часа)."""
+    await cb.answer()
+    chosen_date = cb.data.split(":")[-1]  # type: ignore[union-attr]
+    await state.update_data(scheduled_date=chosen_date)
+    await state.set_state(ZameryAcceptSG.pick_time)
+
+    b = InlineKeyboardBuilder()
+    intervals = ["08:00-10:00", "10:00-12:00", "12:00-14:00", "14:00-16:00", "16:00-18:00"]
+    for interval in intervals:
+        b.button(text=interval, callback_data=f"zam_time:{interval}")
+    b.adjust(3, 2)
+    from datetime import date as date_cls
+    d = date_cls.fromisoformat(chosen_date)
+    day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📅 {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}\n\n"
+        "⏰ Выберите временной интервал:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(ZameryAcceptSG.pick_time, F.data.startswith("zam_time:"))
+async def zamery_acc_time_chosen(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Время выбрано → финализировать принятие."""
+    await cb.answer()
+    interval = cb.data.split(":", 1)[-1]  # type: ignore[union-attr]
+    await state.update_data(scheduled_time_interval=interval)
+    await _finalize_accept(cb, state, db, config, notifier)
+
+
+@router.callback_query(ZameryAcceptSG.choose_action, F.data == "zam_acc:comment")
+async def zamery_acc_enter_comment(cb: CallbackQuery, state: FSMContext) -> None:
+    """Переход к вводу комментария."""
+    await cb.answer()
+    await state.set_state(ZameryAcceptSG.comment)
+    await cb.message.answer("💬 Введите комментарий:")  # type: ignore[union-attr]
+
+
+@router.message(ZameryAcceptSG.comment)
+async def zamery_acc_comment_text(
+    message: Message, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Получен комментарий → финализировать принятие."""
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Введите комментарий:")
+        return
+    await state.update_data(accept_comment=text)
+    await _finalize_accept(message, state, db, config, notifier)
+
+
+@router.callback_query(ZameryAcceptSG.choose_action, F.data == "zam_acc:skip")
+async def zamery_acc_skip(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Принять без комментария."""
+    await cb.answer()
+    await _finalize_accept(cb, state, db, config, notifier)
+
+
+async def _finalize_accept(
+    event: Message | CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+) -> None:
+    """Общая функция финализации принятия заявки."""
+    from ..utils import to_iso, utcnow
+    data = await state.get_data()
+    req_id = data["accept_req_id"]
+    req = await db.get_zamery_request(req_id)
+    if not req:
+        msg = event.message if isinstance(event, CallbackQuery) else event
+        await msg.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+
+    update_fields: dict[str, Any] = {
+        "status": "in_progress",
+        "accepted_at": to_iso(utcnow()),
+    }
+    if data.get("scheduled_date"):
+        update_fields["scheduled_date"] = data["scheduled_date"]
+    if data.get("scheduled_time_interval"):
+        update_fields["scheduled_time_interval"] = data["scheduled_time_interval"]
+    if data.get("accept_comment"):
+        update_fields["accept_comment"] = data["accept_comment"]
+
+    await db.update_zamery_request(req_id, **update_fields)
     if req.get("task_id"):
         await db.update_task_status(req["task_id"], TaskStatus.IN_PROGRESS)
 
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ Заявка #{req_id} принята в работу."
-    )
+    msg_target = event.message if isinstance(event, CallbackQuery) else event
+    await msg_target.answer(f"✅ Заявка #{req_id} принята в работу.")  # type: ignore[union-attr]
 
     # Уведомить менеджера
-    await notifier.safe_send(
-        req["requested_by"],
+    notify_text = (
         f"✅ <b>Заявка на замер #{req_id} принята</b>\n\n"
-        f"📍 {req.get('address', '—')}",
+        f"📍 {req.get('address', '—')}\n"
     )
+    if data.get("scheduled_date"):
+        from datetime import date as date_cls
+        d = date_cls.fromisoformat(data["scheduled_date"])
+        day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+        notify_text += f"📅 Дата: {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}\n"
+    if data.get("scheduled_time_interval"):
+        notify_text += f"⏰ Время: {data['scheduled_time_interval']}\n"
+    if data.get("accept_comment"):
+        notify_text += f"💬 Комментарий: {data['accept_comment']}\n"
+
+    await notifier.safe_send(req["requested_by"], notify_text)
     await refresh_recipient_keyboard(notifier, db, config, req["requested_by"])
+    await state.clear()
 
 
 @router.callback_query(F.data.startswith("zam_in:reject:"))
@@ -228,54 +381,388 @@ async def zamery_reject_request(
 
 @router.message(F.text == ZAM_BTN_MY_OBJECTS)
 async def zamery_my_objects(message: Message, db: Database) -> None:
+    """📋 Мои замеры — дашборд: конверсия + подменю."""
     if not await require_role_message(message, db, roles=[Role.ZAMERY]):
         return
 
-    # Show invoices assigned to this zamery worker with relevant statuses
     user_id = message.from_user.id  # type: ignore[union-attr]
+
+    # Конверсия
+    conv = await db.get_zamery_conversion_stats(user_id)
+    role_short = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}
+
+    text = "📋 <b>Мои замеры</b>\n\n"
+    text += f"📊 <b>Конверсия:</b> {conv['conversion_pct']}% "
+    text += f"({conv['total_with_invoice']} счетов из {conv['total_done']} замеров)\n"
+    if conv["by_role"]:
+        parts = []
+        for r in conv["by_role"]:
+            rn = role_short.get(r.get("requester_role", ""), "?")
+            parts.append(f"{rn}: {r['pct']}%")
+        text += "По менеджерам: " + " | ".join(parts) + "\n"
+
+    # Кол-во активных заявок и счетов
+    active_reqs = await db.list_zamery_requests(assigned_to=user_id, status="in_progress", limit=50)
+    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
+    active_inv = [i for i in invoices if i["status"] in (
+        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
+    )]
+
+    b = InlineKeyboardBuilder()
+    b.button(
+        text=f"📐 Заявки на замер ({len(active_reqs)})",
+        callback_data="zam_my:requests",
+    )
+    b.button(
+        text=f"📋 Счета в работе ({len(active_inv)})",
+        callback_data="zam_my:invoices",
+    )
+    b.adjust(1)
+    await message.answer(text, reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data == "zam_my:requests")
+async def zamery_my_requests(cb: CallbackQuery, db: Database) -> None:
+    """Подменю: заявки на замер (in_progress)."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    user_id = cb.from_user.id
+    reqs = await db.list_zamery_requests(assigned_to=user_id, status="in_progress", limit=30)
+    # Также показать done для истории (последние 10)
+    done_reqs = await db.list_zamery_requests(assigned_to=user_id, status="done", limit=10)
+
+    all_reqs = reqs + done_reqs
+    if not all_reqs:
+        await cb.message.answer("📐 Нет активных заявок на замер.")  # type: ignore[union-attr]
+        return
+
+    b = InlineKeyboardBuilder()
+    for req in all_reqs:
+        icon = {"in_progress": "🔄", "done": "✅"}.get(req.get("status", ""), "❓")
+        addr = (req.get("address") or "")[:25]
+        b.button(
+            text=f"{icon} #{req['id']} — {addr}"[:55],
+            callback_data=f"zam_myreq:view:{req['id']}",
+        )
+    b.button(text="⬅️ Назад", callback_data="zam_my:back")
+    b.adjust(1)
+    text = f"📐 <b>Заявки на замер</b> (🔄 {len(reqs)} активных)"
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "zam_my:invoices")
+async def zamery_my_invoices(cb: CallbackQuery, db: Database) -> None:
+    """Подменю: счета в работе."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    user_id = cb.from_user.id
     invoices = await db.list_invoices(assigned_to=user_id, limit=50)
     active = [i for i in invoices if i["status"] in (
         InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
-        InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
     )]
-
     if not active:
-        await answer_service(message, "📌 Нет активных замеров.", delay_seconds=60)
+        await cb.message.answer("📋 Нет счетов в работе.")  # type: ignore[union-attr]
         return
 
     lines = []
     for inv in active[:20]:
-        zp = inv.get("zp_status", "not_requested")
-        zp_label = {"approved": "✅ ЗП ОК", "requested": "⏳ ЗП запрошена"}.get(
-            zp, "❌ Не оплачен",
-        )
-        status_emoji = {
-            "in_progress": "🔄", "paid": "✅",
-            "closing": "📌", "ended": "🏁",
-        }.get(inv["status"], "❓")
+        status_emoji = {"in_progress": "🔄", "paid": "✅"}.get(inv["status"], "❓")
         lines.append(
             f"{status_emoji} №{inv['invoice_number']} — "
-            f"{(inv.get('object_address') or '-')[:30]} "
-            f"[{zp_label}]"
+            f"{(inv.get('object_address') or '-')[:30]}"
         )
+    text = f"📋 <b>Счета в работе</b> ({len(active)}):\n\n" + "\n".join(lines)
+    await cb.message.answer(text)  # type: ignore[union-attr]
 
-    text = f"📋 <b>Мои замеры</b> ({len(active)}):\n\n" + "\n".join(lines)
-    await message.answer(text)
+
+@router.callback_query(F.data == "zam_my:back")
+async def zamery_my_back(cb: CallbackQuery, db: Database) -> None:
+    """Назад к дашборду «Мои замеры»."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    # Переиспользуем логику через фейковое сообщение нельзя — просто показываем заново
+    user_id = cb.from_user.id
+    conv = await db.get_zamery_conversion_stats(user_id)
+    role_short = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}
+
+    text = "📋 <b>Мои замеры</b>\n\n"
+    text += f"📊 <b>Конверсия:</b> {conv['conversion_pct']}% "
+    text += f"({conv['total_with_invoice']} счетов из {conv['total_done']} замеров)\n"
+    if conv["by_role"]:
+        parts = []
+        for r in conv["by_role"]:
+            rn = role_short.get(r.get("requester_role", ""), "?")
+            parts.append(f"{rn}: {r['pct']}%")
+        text += "По менеджерам: " + " | ".join(parts) + "\n"
+
+    active_reqs = await db.list_zamery_requests(assigned_to=user_id, status="in_progress", limit=50)
+    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
+    active_inv = [i for i in invoices if i["status"] in (
+        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
+    )]
+
+    b = InlineKeyboardBuilder()
+    b.button(text=f"📐 Заявки на замер ({len(active_reqs)})", callback_data="zam_my:requests")
+    b.button(text=f"📋 Счета в работе ({len(active_inv)})", callback_data="zam_my:invoices")
+    b.adjust(1)
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.startswith("zam_myreq:view:"))
+async def zamery_myreq_view(cb: CallbackQuery, db: Database) -> None:
+    """Просмотр заявки из «Мои замеры» + кнопка отправки."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req = await db.get_zamery_request(req_id)
+    if not req:
+        await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        return
+
+    source_label = ZAMERY_SOURCE_LABELS.get(req.get("source_type", ""), "—")
+    role_short = {
+        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+    }.get(req.get("requester_role", ""), "?")
+    initiator = await get_initiator_label(db, req["requested_by"])
+    status_label = {
+        "open": "⏳ Новая", "in_progress": "🔄 В работе",
+        "done": "✅ Выполнена", "rejected": "❌ Отклонена",
+    }.get(req.get("status", ""), "❓")
+
+    text = f"📐 <b>Заявка на замер #{req['id']}</b>\n\n"
+    text += f"👤 Менеджер: {initiator}"
+    if role_short:
+        text += f" ({role_short})"
+    text += f"\n📍 Адрес: {req.get('address', '—')}\n"
+    if req.get("client_contact"):
+        text += f"📞 Контакт: <code>{req['client_contact']}</code>\n"
+    if req.get("volume_m2"):
+        text += f"📊 Объём: {req['volume_m2']} м²\n"
+    mkad_km = req.get("mkad_km") or 0
+    mkad_surcharge = req.get("mkad_surcharge") or 0
+    if mkad_km and mkad_km > 0:
+        if mkad_surcharge:
+            text += f"📍 МКАД: {mkad_km} км (наценка: {mkad_surcharge}₽)\n"
+        else:
+            text += f"📍 МКАД: {mkad_km} км\n"
+    else:
+        text += "📍 МКАД: внутри МКАД\n"
+    total_cost = req.get("total_cost")
+    if total_cost:
+        text += f"💰 Стоимость замера: <b>{total_cost}₽</b>\n"
+    # Дата/время если назначены
+    if req.get("scheduled_date"):
+        from datetime import date as date_cls
+        try:
+            d = date_cls.fromisoformat(req["scheduled_date"])
+            day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            text += f"📅 Дата: {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}\n"
+        except ValueError:
+            pass
+    if req.get("scheduled_time_interval"):
+        text += f"⏰ Время: {req['scheduled_time_interval']}\n"
+    if req.get("accept_comment"):
+        text += f"💬 Комментарий: {req['accept_comment']}\n"
+    if req.get("description"):
+        text += f"\n📝 Описание: {req['description']}\n"
+    text += f"📌 Источник: {source_label}\n"
+    text += f"📊 Статус: {status_label}\n"
+    text += f"📅 Создана: {req.get('created_at', '—')[:16]}\n"
+
+    b = InlineKeyboardBuilder()
+    if req.get("status") == "in_progress":
+        b.button(text="📤 Отправить замер", callback_data=f"zam_complete:start:{req_id}")
+    b.button(text="⬅️ Назад", callback_data="zam_my:requests")
+    b.adjust(1)
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+# =====================================================================
+# ОТПРАВИТЬ ЗАМЕР — завершение заявки
+# =====================================================================
+
+@router.callback_query(F.data.startswith("zam_complete:start:"))
+async def zamery_complete_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Начало завершения замера — сбор вложений."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    req = await db.get_zamery_request(req_id)
+    if not req or req.get("status") != "in_progress":
+        await cb.message.answer("❌ Заявка не найдена или уже завершена.")  # type: ignore[union-attr]
+        return
+
+    await state.clear()
+    await state.update_data(complete_req_id=req_id, complete_attachments=[])
+    await state.set_state(ZameryCompleteSG.attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="➡️ Далее", callback_data="zam_complete:next")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📤 <b>Отправка замера #{req_id}</b>\n\n"
+        "📎 Прикрепите файлы (фото, видео, документы).\n"
+        "Когда закончите — нажмите «Далее».",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(ZameryCompleteSG.attachments)
+async def zamery_complete_file(message: Message, state: FSMContext) -> None:
+    """Приём файлов: фото, видео, документы."""
+    data = await state.get_data()
+    attachments: list[dict[str, Any]] = data.get("complete_attachments", [])
+
+    if message.photo:
+        ph = message.photo[-1]
+        attachments.append({"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id, "caption": message.caption})
+    elif message.video:
+        attachments.append({"file_type": "video", "file_id": message.video.file_id, "file_unique_id": message.video.file_unique_id, "caption": message.caption})
+    elif message.document:
+        attachments.append({"file_type": "document", "file_id": message.document.file_id, "file_unique_id": message.document.file_unique_id, "caption": message.caption})
+    else:
+        await message.answer("Пришлите файл, фото или видео. Или нажмите «Далее».")
+        return
+
+    await state.update_data(complete_attachments=attachments)
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+
+
+@router.callback_query(ZameryCompleteSG.attachments, F.data == "zam_complete:next")
+async def zamery_complete_to_comment(cb: CallbackQuery, state: FSMContext) -> None:
+    """Переход к комментарию."""
+    await cb.answer()
+    await state.set_state(ZameryCompleteSG.comment)
+    b = InlineKeyboardBuilder()
+    b.button(text="⏭ Без комментария", callback_data="zam_complete:finish")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "💬 Добавьте комментарий к замеру:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(ZameryCompleteSG.comment)
+async def zamery_complete_comment_text(
+    message: Message, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Получен комментарий → финализировать."""
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Введите комментарий или нажмите «Без комментария».")
+        return
+    await state.update_data(completion_comment=text)
+    await _finalize_complete(message, state, db, config, notifier)
+
+
+@router.callback_query(ZameryCompleteSG.comment, F.data == "zam_complete:finish")
+async def zamery_complete_skip_comment(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Без комментария → финализировать."""
+    await cb.answer()
+    await _finalize_complete(cb, state, db, config, notifier)
+
+
+async def _finalize_complete(
+    event: Message | CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+) -> None:
+    """Общая функция завершения замера."""
+    from ..utils import to_iso, utcnow
+    from datetime import datetime
+    data = await state.get_data()
+    req_id = data["complete_req_id"]
+    req = await db.get_zamery_request(req_id)
+    msg_target = event.message if isinstance(event, CallbackQuery) else event
+
+    if not req:
+        await msg_target.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+
+    now = utcnow()
+    attachments = data.get("complete_attachments", [])
+    comment = data.get("completion_comment")
+
+    # Время выполнения
+    time_label = ""
+    if req.get("accepted_at"):
+        try:
+            accepted = datetime.fromisoformat(req["accepted_at"])
+            delta = now - accepted
+            hours = int(delta.total_seconds() // 3600)
+            minutes = int((delta.total_seconds() % 3600) // 60)
+            if hours > 0:
+                time_label = f"{hours} ч {minutes} мин"
+            else:
+                time_label = f"{minutes} мин"
+        except (ValueError, TypeError):
+            pass
+
+    # Обновить БД
+    att_json = json.dumps([{"file_id": a["file_id"], "file_type": a["file_type"]} for a in attachments]) if attachments else None
+    await db.update_zamery_request(
+        req_id,
+        status="done",
+        completed_at=to_iso(now),
+        completion_comment=comment,
+        completion_attachments_json=att_json,
+    )
+    if req.get("task_id"):
+        await db.update_task_status(req["task_id"], TaskStatus.DONE)
+
+    await msg_target.answer(f"✅ Замер #{req_id} отправлен менеджеру.")  # type: ignore[union-attr]
+
+    # Уведомить менеджера
+    initiator = await get_initiator_label(db, req.get("assigned_to", 0))
+    notify_text = (
+        f"✅ <b>Замер #{req_id} выполнен</b>\n\n"
+        f"📍 Адрес: {req.get('address', '—')}\n"
+    )
+    if time_label:
+        notify_text += f"⏱ Время выполнения: {time_label}\n"
+    if req.get("scheduled_date"):
+        from datetime import date as date_cls
+        try:
+            d = date_cls.fromisoformat(req["scheduled_date"])
+            day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            notify_text += f"📅 Дата замера: {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}"
+            if req.get("scheduled_time_interval"):
+                notify_text += f" {req['scheduled_time_interval']}"
+            notify_text += "\n"
+        except ValueError:
+            pass
+    if comment:
+        notify_text += f"💬 Комментарий: {comment}\n"
+
+    await notifier.safe_send(req["requested_by"], notify_text)
+    # Отправить вложения
+    for a in attachments:
+        ft = a.get("file_type", "document")
+        fid = a.get("file_id")
+        if fid:
+            await notifier.safe_send_media(req["requested_by"], ft, fid, caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, req["requested_by"])
+    await state.clear()
 
 
 # =====================================================================
 # ОПЛАТА ЗАМЕРОВ (список неоплаченных + кнопки ЗП)
 # =====================================================================
 
-@router.message(F.text == ZAM_BTN_PAYMENT)
-async def zamery_payment(message: Message, db: Database) -> None:
-    """Замерщик: Оплата замеров — список неоплаченных замеров с расчётом ЗП."""
-    if not await require_role_message(message, db, roles=[Role.ZAMERY]):
-        return
-
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
-    unpaid = [
+def _get_unpaid_invoices(invoices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Фильтр: неоплаченные замеры."""
+    return [
         i for i in invoices
         if i.get("zp_status", "not_requested") != "approved"
         and i["status"] in (
@@ -284,36 +771,394 @@ async def zamery_payment(message: Message, db: Database) -> None:
         )
     ]
 
+
+async def _render_payment_list(
+    target: Message | CallbackQuery,
+    db: Database,
+    user_id: int,
+) -> None:
+    """Отрисовка списка «Оплата замеров» с итогом и кнопкой отправки."""
+    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
+    unpaid = _get_unpaid_invoices(invoices)
+    msg = target.message if isinstance(target, CallbackQuery) else target
+
     if not unpaid:
-        await answer_service(message, "✅ Все замеры оплачены.", delay_seconds=60)
+        await msg.answer("✅ Все замеры оплачены.")  # type: ignore[union-attr]
         return
 
-    lines = []
-    b = InlineKeyboardBuilder()
-    has_buttons = False
+    # Итоговый расчёт
+    total_sum = 0
+    ready_count = 0
+    not_ready = []
+    for inv in unpaid:
+        cost = inv.get("zp_zamery_total")
+        if cost and cost > 0:
+            total_sum += cost
+            if inv.get("zp_status") != "requested":
+                ready_count += 1
+        else:
+            not_ready.append(inv["invoice_number"])
 
+    text = f"💰 <b>Оплата замеров</b> ({len(unpaid)})\n\n"
+    if total_sum:
+        text += f"💵 <b>Итого: {int(total_sum)}₽</b> ({ready_count} замеров)\n"
+    if not_ready:
+        text += f"⚠️ Без стоимости: {len(not_ready)} шт.\n"
+
+    # Проверка: есть ли уже отправленные на проверку
+    requested = [i for i in unpaid if i.get("zp_status") == "requested"]
+    if requested:
+        text += f"⏳ На проверке: {len(requested)} шт.\n"
+    text += "\nНажмите на карточку для просмотра:"
+
+    b = InlineKeyboardBuilder()
     for inv in unpaid[:20]:
         zp = inv.get("zp_status", "not_requested")
-        zp_label = {"requested": "⏳ ЗП запрошена"}.get(zp, "❌ Не оплачен")
-        addr = (inv.get("object_address") or "-")[:30]
-        lines.append(f"📍 №{inv['invoice_number']} — {addr} [{zp_label}]")
-
-        # Кнопка расчёта ЗП — только для ещё не запрошенных
-        if zp not in ("approved", "requested"):
-            inv_num_short = inv["invoice_number"][:15]
-            b.button(
-                text=f"💰 ЗП: №{inv_num_short}",
-                callback_data=f"zamzp:start:{inv['id']}",
-            )
-            has_buttons = True
-
+        cost = inv.get("zp_zamery_total")
+        icon = {"requested": "⏳", "approved": "✅"}.get(zp, "❌")
+        cost_str = f" {int(cost)}₽" if cost else ""
+        addr = (inv.get("object_address") or "-")[:20]
+        b.button(
+            text=f"{icon} №{inv['invoice_number']} — {addr}{cost_str}"[:55],
+            callback_data=f"zampay:view:{inv['id']}",
+        )
+    # Кнопка «Отправить в оплату» — только если есть замеры с ценой и не на проверке
+    sendable = [
+        i for i in unpaid
+        if i.get("zp_zamery_total") and i.get("zp_zamery_total") > 0
+        and i.get("zp_status") == "not_requested"
+    ]
+    if sendable:
+        b.button(
+            text=f"📤 Отправить в оплату ({len(sendable)} зам. / {int(sum(i['zp_zamery_total'] for i in sendable))}₽)",
+            callback_data="zampay:send_batch",
+        )
     b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
-    text = f"💰 <b>Оплата замеров</b> ({len(unpaid)}):\n\n" + "\n".join(lines)
+    await msg.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
-    if has_buttons:
-        text += "\n\n💰 Нажмите для расчёта ЗП:"
-    await message.answer(text, reply_markup=b.as_markup())
+
+@router.message(F.text == ZAM_BTN_PAYMENT)
+async def zamery_payment(message: Message, db: Database) -> None:
+    """Замерщик: Оплата замеров — карточки с итогом."""
+    if not await require_role_message(message, db, roles=[Role.ZAMERY]):
+        return
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    await _render_payment_list(message, db, user_id)
+
+
+@router.callback_query(F.data == "zampay:back")
+async def zamery_payment_back(cb: CallbackQuery, db: Database) -> None:
+    """Назад к списку оплаты."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    await _render_payment_list(cb, db, cb.from_user.id)
+
+
+@router.callback_query(F.data.startswith("zampay:view:"))
+async def zamery_payment_card(cb: CallbackQuery, db: Database) -> None:
+    """Карточка замера в «Оплата замеров»."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    zp = inv.get("zp_status", "not_requested")
+    zp_label = {
+        "not_requested": "❌ Не оплачен",
+        "requested": "⏳ На проверке",
+        "approved": "✅ ЗП оплачена",
+    }.get(zp, "❌ Не оплачен")
+
+    cost = inv.get("zp_zamery_total")
+    text = (
+        f"💰 <b>Замер №{inv['invoice_number']}</b>\n\n"
+        f"📍 Адрес: {inv.get('object_address', '—')}\n"
+    )
+    if inv.get("client_contact"):
+        text += f"📞 Контакт: <code>{inv['client_contact']}</code>\n"
+    text += f"✅ Замер ОК\n"
+    if cost and cost > 0:
+        text += f"💵 Стоимость: <b>{int(cost)}₽</b>\n"
+    else:
+        text += "💵 Стоимость: <b>не указана</b>\n"
+    text += f"📊 Статус: {zp_label}\n"
+
+    b = InlineKeyboardBuilder()
+    if zp not in ("approved", "requested"):
+        b.button(text="✏️ Изменить стоимость", callback_data=f"zampay:edit_cost:{inv['id']}")
+    b.button(text="⬅️ Назад", callback_data="zampay:back")
+    b.adjust(1)
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+# --- Редактирование стоимости замера ---
+
+@router.callback_query(F.data.startswith("zampay:edit_cost:"))
+async def zamery_edit_cost_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Начать редактирование стоимости замера."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    await state.clear()
+    await state.update_data(edit_cost_inv_id=inv_id)
+    await state.set_state(ZameryCostEditSG.enter_cost)
+
+    current = inv.get("zp_zamery_total")
+    hint = f"\nТекущая: {int(current)}₽" if current else ""
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✏️ <b>Замер №{inv['invoice_number']}</b>{hint}\n\n"
+        "Введите стоимость замера в ₽:",
+    )
+
+
+@router.message(ZameryCostEditSG.enter_cost)
+async def zamery_edit_cost_value(message: Message, state: FSMContext, db: Database) -> None:
+    """Сохранить новую стоимость."""
+    text = (message.text or "").strip().replace(",", ".")
+    try:
+        cost = float(text)
+        if cost <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("⚠️ Введите число > 0:")
+        return
+
+    data = await state.get_data()
+    inv_id = data["edit_cost_inv_id"]
+    await db.update_invoice(
+        inv_id,
+        zp_zamery_total=cost,
+        zp_zamery_details_json=json.dumps([{"description": "Замер", "cost": cost, "count": 1}]),
+    )
+    await state.clear()
+
+    inv = await db.get_invoice(inv_id)
+    await message.answer(
+        f"✅ Стоимость замера №{inv['invoice_number'] if inv else inv_id} "
+        f"установлена: <b>{int(cost)}₽</b>"
+    )
+
+
+# --- Пакетная отправка в оплату ГД ---
+
+@router.callback_query(F.data == "zampay:send_batch")
+async def zamery_send_batch(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Отправить все неоплаченные замеры с ценой → задача ГД."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    user_id = cb.from_user.id
+
+    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
+    unpaid = _get_unpaid_invoices(invoices)
+    sendable = [
+        i for i in unpaid
+        if i.get("zp_zamery_total") and i.get("zp_zamery_total") > 0
+        and i.get("zp_status") == "not_requested"
+    ]
+
+    if not sendable:
+        await cb.message.answer("⚠️ Нет замеров для отправки.")  # type: ignore[union-attr]
+        return
+
+    # Показать итоговый расчёт
+    total = sum(i["zp_zamery_total"] for i in sendable)
+    lines = []
+    for inv in sendable:
+        lines.append(f"• №{inv['invoice_number']} — {int(inv['zp_zamery_total'])}₽")
+
+    b = InlineKeyboardBuilder()
+    b.button(text=f"✅ Подтвердить отправку ({int(total)}₽)", callback_data="zampay:confirm_batch")
+    b.button(text="⬅️ Назад", callback_data="zampay:back")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📋 <b>Итоговый расчёт по замерам</b>\n\n"
+        + "\n".join(lines) + "\n\n"
+        f"💵 <b>Итого: {int(total)}₽</b>\n\n"
+        "Подтвердите отправку в оплату:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "zampay:confirm_batch")
+async def zamery_confirm_batch(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Подтверждение → создать задачу ГД, обновить статусы."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    user_id = cb.from_user.id
+
+    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
+    unpaid = _get_unpaid_invoices(invoices)
+    sendable = [
+        i for i in unpaid
+        if i.get("zp_zamery_total") and i.get("zp_zamery_total") > 0
+        and i.get("zp_status") == "not_requested"
+    ]
+    if not sendable:
+        await cb.message.answer("⚠️ Нет замеров для отправки.")  # type: ignore[union-attr]
+        return
+
+    total = sum(i["zp_zamery_total"] for i in sendable)
+    inv_ids = [i["id"] for i in sendable]
+
+    # Обновить статусы → requested
+    for inv in sendable:
+        await db.set_invoice_zp_status(inv["id"], "requested")
+
+    # Создать задачу для ГД
+    from ..enums import TaskType
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
+    if not gd_id:
+        await cb.message.answer("⚠️ ГД не найден.")  # type: ignore[union-attr]
+        return
+
+    initiator = await get_initiator_label(db, user_id)
+    task = await db.create_task(
+        project_id=None,
+        type_=TaskType.ZP_ZAMERY_BATCH,
+        status=TaskStatus.OPEN,
+        created_by=user_id,
+        assigned_to=int(gd_id),
+        due_at_iso=None,
+        payload={
+            "invoice_ids": inv_ids,
+            "total": total,
+            "count": len(sendable),
+            "zamery_user_id": user_id,
+        },
+    )
+
+    # Уведомить ГД
+    lines = []
+    for inv in sendable:
+        lines.append(f"• №{inv['invoice_number']} — {int(inv['zp_zamery_total'])}₽")
+    gd_text = (
+        f"💰 <b>ЗП Замерщика</b>\n"
+        f"👤 От: {initiator}\n\n"
+        + "\n".join(lines) + "\n\n"
+        f"💵 <b>Итого: {int(total)}₽</b> ({len(sendable)} замеров)\n"
+    )
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ ЗП ОК", callback_data=f"zampay_gd:ok:{task['id']}")
+    b.button(text="❌ Отклонить", callback_data=f"zampay_gd:no:{task['id']}")
+    b.adjust(2)
+    await notifier.safe_send(int(gd_id), gd_text, reply_markup=b.as_markup())
+    await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Запрос на оплату отправлен ГД.\n"
+        f"💵 {len(sendable)} замеров на сумму {int(total)}₽"
+    )
+
+
+# --- ГД: одобрение / отклонение пакетной ЗП замерщика ---
+
+@router.callback_query(F.data.startswith("zampay_gd:ok:"))
+async def zamery_batch_gd_approve(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """ГД: одобрить пакетную ЗП замерщика."""
+    from .auth import require_role_callback as _rrc
+    if not await _rrc(cb, db, roles=[Role.GD]):
+        return
+    await cb.answer("✅ ЗП ОК")
+
+    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    task = await db.get_task(task_id)
+    if not task:
+        await cb.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
+        return
+
+    from ..utils import try_json_loads
+    payload = try_json_loads(task.get("payload_json"))
+    inv_ids = payload.get("invoice_ids", [])
+    zamery_uid = payload.get("zamery_user_id")
+    total = payload.get("total", 0)
+
+    # Одобрить все
+    for inv_id in inv_ids:
+        await db.set_invoice_zp_status(inv_id, "approved")
+
+    # Закрыть задачу
+    await db.update_task_status(task_id, TaskStatus.DONE)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ ЗП замерщика одобрена: {int(total)}₽ ({len(inv_ids)} замеров)"
+    )
+
+    # Обновить клавиатуру ГД (badge «Оплата поставщику»)
+    await refresh_recipient_keyboard(notifier, db, config, cb.from_user.id)
+
+    # Уведомить замерщика
+    if zamery_uid:
+        await notifier.safe_send(
+            int(zamery_uid),
+            f"✅ <b>ЗП одобрена!</b>\n\n"
+            f"💵 Сумма: {int(total)}₽ ({len(inv_ids)} замеров)",
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(zamery_uid))
+
+
+@router.callback_query(F.data.startswith("zampay_gd:no:"))
+async def zamery_batch_gd_reject(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """ГД: отклонить пакетную ЗП замерщика."""
+    from .auth import require_role_callback as _rrc
+    if not await _rrc(cb, db, roles=[Role.GD]):
+        return
+    await cb.answer("❌ Отклонено")
+
+    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    task = await db.get_task(task_id)
+    if not task:
+        await cb.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
+        return
+
+    from ..utils import try_json_loads
+    payload = try_json_loads(task.get("payload_json"))
+    inv_ids = payload.get("invoice_ids", [])
+    zamery_uid = payload.get("zamery_user_id")
+
+    # Вернуть статусы
+    for inv_id in inv_ids:
+        await db.set_invoice_zp_status(inv_id, "not_requested")
+
+    # Закрыть задачу
+    await db.update_task_status(task_id, TaskStatus.REJECTED)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"❌ ЗП замерщика отклонена ({len(inv_ids)} замеров)"
+    )
+
+    # Обновить клавиатуру ГД
+    await refresh_recipient_keyboard(notifier, db, config, cb.from_user.id)
+
+    if zamery_uid:
+        await notifier.safe_send(
+            int(zamery_uid),
+            f"❌ <b>ЗП отклонена</b>\n\n"
+            f"Свяжитесь с ГД для уточнения.",
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(zamery_uid))
 
 
 # =====================================================================

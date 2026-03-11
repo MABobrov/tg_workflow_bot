@@ -113,9 +113,22 @@ class Notifier:
             log.exception("Unexpected error sending photo")
             return False
 
+    async def safe_send_video(self, chat_id: int, file_id: str, caption: str | None = None) -> bool:
+        try:
+            await self.bot.send_video(chat_id=chat_id, video=file_id, caption=caption)
+            return True
+        except TelegramForbiddenError:
+            log.warning("Cannot send video to chat_id=%s: forbidden", chat_id)
+            return False
+        except Exception:
+            log.exception("Error sending video to chat_id=%s", chat_id)
+            return False
+
     async def safe_send_media(self, chat_id: int, file_type: str, file_id: str, caption: str | None = None) -> bool:
         if file_type == "photo":
             return await self.safe_send_photo(chat_id, file_id, caption=caption)
+        if file_type == "video":
+            return await self.safe_send_video(chat_id, file_id, caption=caption)
         return await self.safe_send_document(chat_id, file_id, caption=caption)
 
     async def notify_workchat(self, text: str, reply_markup: Any | None = None) -> None:
