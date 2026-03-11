@@ -1049,11 +1049,12 @@ def _build_inst_detail_card(inv: dict) -> str:
     text = f"📄 <b>№{num}</b> · {stage_lbl}\n"
     text += f"📍 {inv.get('object_address', '—')}\n"
 
-    # Расчётная стоимость монтажа × 0.7
+    # Расчётная стоимость монтажа × 0.77, округление вниз кратно 1000
     est_inst = inv.get("estimated_installation")
     if est_inst:
         try:
-            text += f"🔧 Расч. монтаж: <b>{float(est_inst) * 0.7:,.0f}₽</b>\n"
+            val = int(float(est_inst) * 0.77) // 1000 * 1000
+            text += f"🔧 Расч. монтаж: <b>{val:,}₽</b>\n"
         except (ValueError, TypeError):
             pass
 
