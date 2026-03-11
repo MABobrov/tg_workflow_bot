@@ -1003,6 +1003,12 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
                 parts.append(f"{float(area):,.1f}м²")
             except (ValueError, TypeError):
                 pass
+        est_inst = inv.get("estimated_installation")
+        if est_inst:
+            try:
+                parts.append(f"🔧{float(est_inst):,.0f}₽")
+            except (ValueError, TypeError):
+                pass
         if inv.get("materials_ordered"):
             parts.append("📦 мат.")
         zp = inv.get("zp_installer_status") or "not_requested"
@@ -1076,6 +1082,14 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
     num = inv["invoice_number"]
     text = f"📄 <b>№{num}</b> · {stage_lbl}\n"
     text += f"📍 {inv.get('object_address', '—')}\n"
+
+    # Расчётная стоимость монтажа (от менеджера)
+    est_inst = inv.get("estimated_installation")
+    if est_inst:
+        try:
+            text += f"🔧 Расч. монтаж: <b>{float(est_inst):,.0f}₽</b>\n"
+        except (ValueError, TypeError):
+            pass
 
     parts = []
     area = inv.get("area_m2")
