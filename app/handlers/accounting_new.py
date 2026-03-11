@@ -26,6 +26,7 @@ from ..enums import InvoiceStatus, Role, TaskStatus
 from ..keyboards import (
     ACC_BTN_INVOICE_END,
     ACC_BTN_INVOICES_WORK,
+    ACC_BTN_SYNC,
     main_menu,
 )
 from ..services.assignment import resolve_default_assignee
@@ -103,6 +104,69 @@ async def acc_inbox_tasks(message: Message, db: Database) -> None:
     footer.button(text="⬅️ Назад", callback_data="nav:home")
     footer.adjust(1)
     await message.answer("—", reply_markup=footer.as_markup())
+
+
+# =====================================================================
+# СИНХРОНИЗАЦИЯ ДАННЫХ (обновление меню + сводка для бухгалтерии)
+# =====================================================================
+
+@router.message(F.text == ACC_BTN_SYNC)
+async def acc_sync_data(message: Message, db: Database, config: Config) -> None:
+    """Синхронизация данных для бухгалтерии — обновить меню + показать сводку."""
+    if not await require_role_message(message, db, roles=[Role.ACCOUNTING]):
+        return
+    user_id = message.from_user.id  # type: ignore[union-attr]
+
+    # Собираем статистику
+    invoices_work = await db.list_invoices_in_work(limit=500, only_regular=True)
+    invoices_ended = await db.list_invoices(status=InvoiceStatus.ENDED, limit=500, only_regular=True)
+    tasks = await db.list_tasks_for_user(user_id, limit=100)
+    unconfirmed = [t for t in tasks if not t.get("accepted_at")]
+
+    # Документы без подписания
+    docs_pending = sum(
+        1 for inv in invoices_work
+        if not (inv.get("docs_edo_signed") and inv.get("edo_signed")
+                and inv.get("docs_originals_holder") and inv.get("closing_originals_holder"))
+    )
+
+    # Просроченные сроки
+    overdue = 0
+    for inv in invoices_work:
+        dl = inv.get("deadline_end_date")
+        if dl:
+            try:
+                end = datetime.fromisoformat(dl).date()
+                if (end - date.today()).days < 0:
+                    overdue += 1
+            except (ValueError, TypeError):
+                pass
+
+    text = (
+        "🔄 <b>Синхронизация данных</b>\n\n"
+        f"📊 Счетов в работе: <b>{len(invoices_work)}</b>\n"
+        f"🏁 Закрытых счетов: <b>{len(invoices_ended)}</b>\n"
+        f"📥 Непринятых задач: <b>{len(unconfirmed)}</b>\n"
+        f"📋 Документы не заполнены: <b>{docs_pending}</b>\n"
+        f"🔴 Просрочено сроков: <b>{overdue}</b>\n\n"
+        "✅ Меню обновлено."
+    )
+
+    is_admin = user_id in (config.admin_ids or set())
+    unread = await db.count_unread_tasks(user_id)
+    role, isolated_role = await _current_menu(db, user_id)
+    await message.answer(
+        text,
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                role,
+                is_admin=is_admin,
+                unread=unread,
+                isolated_role=isolated_role,
+            ),
+        ),
+    )
 
 
 # =====================================================================
