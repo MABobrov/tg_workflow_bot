@@ -189,7 +189,7 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
 
     user_id = message.from_user.id  # type: ignore[union-attr]
 
-    invoices = await db.list_invoices_in_work(limit=50, exclude_zm=True)
+    invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
 
     # Pending INVOICE_PAYMENT tasks — to mark invoices
     invoice_tasks = await db.list_tasks_for_user(
@@ -258,7 +258,7 @@ async def gd_invoices_refresh(cb: CallbackQuery, db: Database) -> None:
     await cb.answer("🔄 Обновлено")
 
     user_id = cb.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_invoices_in_work(limit=50, exclude_zm=True)
+    invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
 
     invoice_tasks = await db.list_tasks_for_user(
         assigned_to=user_id,
@@ -315,7 +315,7 @@ async def gd_invoices_work(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
 
-    invoices = await db.list_invoices_in_work(limit=50, exclude_zm=True)
+    invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
 
     if not invoices:
         await answer_service(message, "✅ Нет счетов в работе.", delay_seconds=60)
@@ -367,7 +367,7 @@ async def gd_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer("🔄 Обновлено")
 
-    invoices = await db.list_invoices_in_work(limit=50, exclude_zm=True)
+    invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
     if not invoices:
         await cb.message.answer("✅ Нет счетов в работе.")  # type: ignore[union-attr]
         return
@@ -665,7 +665,7 @@ async def _show_sales_invoice_picker_or_write(
     label: str,
 ) -> None:
     """Показать invoice picker перед вводом сообщения, или сразу перейти к writing."""
-    invoices = await db.list_invoices_for_selection(limit=15, exclude_zm=True)
+    invoices = await db.list_invoices_for_selection(limit=15, only_regular=True)
     if invoices:
         await state.set_state(SalesWriteSG.invoice_pick)
         await message.answer(

@@ -312,7 +312,7 @@ async def rp_invoices_pay_create(cb: CallbackQuery, state: FSMContext, db: Datab
     from ..states import InvoiceCreateSG
     from ..keyboards import invoice_select_kb
 
-    invoices = await db.list_invoices_in_work(limit=20, exclude_zm=True)
+    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
     if not invoices:
         await cb.message.answer(  # type: ignore[union-attr]
             "⚠️ Нет счетов в работе."

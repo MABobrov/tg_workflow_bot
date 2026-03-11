@@ -377,7 +377,9 @@ async def cmd_help(message: Message, db: Database, config: Config) -> None:
         role = user.role if user else None
         is_admin = message.from_user.id in (config.admin_ids or set())
     menu_role, isolated_role = _menu_scope(message.from_user.id if message.from_user else None, role)
-    text = _role_guide(role)
+    # ГД и РП видят справку по всем ролям; остальные — только по активной роли меню
+    guide_role = role if (set(parse_roles(role)) & {Role.GD, Role.RP}) else menu_role
+    text = _role_guide(guide_role)
     if is_admin:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
     _uid_help = message.from_user.id if message.from_user else None
@@ -659,7 +661,9 @@ async def menu_help(message: Message, db: Database, config: Config) -> None:
         role = user.role if user else None
         is_admin = message.from_user.id in (config.admin_ids or set())
     menu_role, isolated_role = _menu_scope(message.from_user.id if message.from_user else None, role)
-    text = _role_guide(role)
+    # ГД и РП видят справку по всем ролям; остальные — только по активной роли меню
+    guide_role = role if (set(parse_roles(role)) & {Role.GD, Role.RP}) else menu_role
+    text = _role_guide(guide_role)
     if is_admin:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
     _uid_info = message.from_user.id if message.from_user else None

@@ -855,7 +855,7 @@ async def invoice_pick_project(cb: CallbackQuery, state: FSMContext, db: Databas
 
     # Show parent invoice picker
     from ..keyboards import invoice_select_kb
-    invoices = await db.list_invoices_for_selection(limit=15, exclude_zm=True)
+    invoices = await db.list_invoices_for_selection(limit=15, only_regular=True)
     if invoices:
         await state.set_state(InvoiceCreateSG.parent_invoice)
         await cb.message.answer(  # type: ignore[union-attr]

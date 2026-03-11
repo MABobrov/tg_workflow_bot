@@ -585,7 +585,7 @@ async def _show_task_invoice_picker_or_desc(
     label: str,
 ) -> None:
     """Показать invoice picker перед описанием задачи, или пропустить."""
-    invoices = await db.list_invoices_for_selection(limit=15, exclude_zm=True)
+    invoices = await db.list_invoices_for_selection(limit=15, only_regular=True)
     msg_target = source.message
     if invoices:
         await state.set_state(GdTaskCreateSG.invoice_pick)

@@ -74,7 +74,7 @@ async def _show_acc_invoices_work(
     db: Database,
 ) -> None:
     """Общий хелпер: показать список счетов в работе для бухгалтерии."""
-    invoices = await db.list_invoices_in_work(limit=50, exclude_no_digit=True, exclude_zm=True)
+    invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
 
     if not invoices:
         msg = target.message if isinstance(target, CallbackQuery) else target
@@ -386,7 +386,7 @@ async def acc_work_request_cancel(
 async def acc_invoice_end(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.ACCOUNTING]):
         return
-    invoices = await db.list_invoices(status=InvoiceStatus.ENDED, limit=30, exclude_no_digit=True, exclude_zm=True)
+    invoices = await db.list_invoices(status=InvoiceStatus.ENDED, limit=30, only_regular=True)
     if not invoices:
         await answer_service(message, "🏁 Нет закрытых счетов.", delay_seconds=60)
         return

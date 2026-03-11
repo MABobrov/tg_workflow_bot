@@ -177,7 +177,7 @@ async def gd_supplier_pay_dashboard(message: Message, state: FSMContext, db: Dat
             )
     else:
         # --- No ZP: show full invoices-in-work list ---
-        invoices = await db.list_invoices_in_work(limit=50, exclude_zm=True)
+        invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
 
         user_id = message.from_user.id  # type: ignore[union-attr]
         invoice_tasks = await db.list_tasks_for_user(
@@ -466,7 +466,7 @@ async def supplier_pay_pick_project(cb: CallbackQuery, callback_data: ProjectCb,
 
     # Show parent invoice picker
     from ..keyboards import invoice_select_kb
-    invoices = await db.list_invoices_for_selection(limit=15, exclude_zm=True)
+    invoices = await db.list_invoices_for_selection(limit=15, only_regular=True)
     if invoices:
         await state.set_state(SupplierPaymentSG.parent_invoice)
         await cb.message.answer(  # type: ignore
