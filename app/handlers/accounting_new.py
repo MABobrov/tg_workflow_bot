@@ -69,44 +69,92 @@ async def acc_invoices_work(message: Message, state: FSMContext, db: Database) -
     await _show_acc_invoices_work(message, db)
 
 
+def _doc_status_line(edo_signed: bool, originals_holder: str | None) -> str:
+    """Format document status indicators."""
+    edo = "✅ЭДО" if edo_signed else "⏳ЭДО"
+    if originals_holder == "gd":
+        orig = "✅Ориг (у ГД)"
+    elif originals_holder == "manager":
+        orig = "✅Ориг (у менеджера)"
+    else:
+        orig = "⏳Ориг"
+    return f"{edo}  {orig}"
+
+
+async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
+    """Build a compact card text for one invoice."""
+    num = inv.get("invoice_number") or f"#{inv['id']}"
+    date = (inv.get("created_at") or "-")[:10]
+    status_icon = {
+        "pending": "⏳", "in_progress": "🔄", "paid": "✅",
+        "on_hold": "⏸", "closing": "📌",
+    }.get(inv.get("status", ""), "❓")
+
+    try:
+        amt = f"{float(inv.get('amount', 0)):,.0f}₽"
+    except (ValueError, TypeError):
+        amt = "—"
+
+    debt_val = inv.get("outstanding_debt")
+    try:
+        debt = f"{float(debt_val):,.0f}₽" if debt_val else "0₽"
+    except (ValueError, TypeError):
+        debt = "0₽"
+
+    creator_label = "—"
+    if inv.get("created_by"):
+        creator_label = await get_initiator_label(db, int(inv["created_by"]))
+    role_label = {
+        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+    }.get(inv.get("creator_role", ""), inv.get("creator_role") or "")
+
+    supplier = inv.get("supplier") or "—"
+
+    primary = _doc_status_line(
+        bool(inv.get("docs_edo_signed")),
+        inv.get("docs_originals_holder"),
+    )
+    secondary = _doc_status_line(
+        bool(inv.get("edo_signed")),
+        inv.get("closing_originals_holder"),
+    )
+
+    return (
+        f"{status_icon} <b>№{num}</b> | {date}\n"
+        f"👤 {creator_label} ({role_label}) | 🏢 {supplier}\n"
+        f"💰 {amt} | 💳 Долг: {debt}\n"
+        f"\n"
+        f"📋 Первичка: {primary}\n"
+        f"📋 Вторичка: {secondary}"
+    )
+
+
 async def _show_acc_invoices_work(
     target: Message | CallbackQuery,
     db: Database,
 ) -> None:
-    """Общий хелпер: показать список счетов в работе для бухгалтерии."""
+    """Показать карточки счетов в работе для бухгалтерии."""
     invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
 
+    msg = target.message if isinstance(target, CallbackQuery) else target
     if not invoices:
-        msg = target.message if isinstance(target, CallbackQuery) else target
         await msg.answer("✅ Нет счетов в работе.")  # type: ignore[union-attr]
         return
 
-    b = InlineKeyboardBuilder()
-    for inv in invoices[:20]:
-        num = inv.get("invoice_number") or f"#{inv['id']}"
-        addr = (inv.get("object_address") or "")[:25]
-        status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
-        try:
-            amt = f"{float(inv.get('amount', 0)):,.0f}₽"
-        except (ValueError, TypeError):
-            amt = ""
-        label = f"{status_icon} №{num}"
-        if addr:
-            label += f" — {addr}"
-        if amt:
-            label += f" ({amt})"
-        b.button(text=label[:60], callback_data=f"acc_work:view:{inv['id']}")
-    b.button(text="🔄 Обновить", callback_data="acc_work:refresh")
-    b.button(text="⬅️ Назад", callback_data="nav:home")
-    b.adjust(1)
+    await msg.answer(f"📊 <b>Счета в работе</b> ({len(invoices)})")  # type: ignore[union-attr]
 
-    n_total = len(invoices)
-    msg = target.message if isinstance(target, CallbackQuery) else target
-    await msg.answer(  # type: ignore[union-attr]
-        f"📊 <b>Счета в работе</b> ({n_total})\n\n"
-        "Нажмите на счёт для просмотра / отправки запроса менеджеру:",
-        reply_markup=b.as_markup(),
-    )
+    for inv in invoices[:15]:
+        text = await _format_acc_card(inv, db)
+        b = InlineKeyboardBuilder()
+        b.button(text="📨 Запрос менеджеру", callback_data=f"acc_work:req:{inv['id']}")
+        b.adjust(1)
+        await msg.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+    footer = InlineKeyboardBuilder()
+    footer.button(text="🔄 Обновить", callback_data="acc_work:refresh")
+    footer.button(text="⬅️ Назад", callback_data="nav:home")
+    footer.adjust(2)
+    await msg.answer("—", reply_markup=footer.as_markup())  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data == "acc_work:refresh")
@@ -119,7 +167,7 @@ async def acc_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
 
 @router.callback_query(F.data.regexp(r"^acc_work:view:\d+$"))
 async def acc_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
-    """Карточка счёта в работе — бухгалтерия."""
+    """Карточка счёта в работе — бухгалтерия (legacy fallback)."""
     if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
         return
     await cb.answer()
@@ -130,37 +178,9 @@ async def acc_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    status_label = {
-        "new": "🆕 Новый", "pending": "⏳ Ждёт подтверждения",
-        "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
-        "on_hold": "⏸ Отложен", "closing": "📌 Закрытие",
-        "ended": "🏁 Счет End",
-    }.get(inv["status"], inv["status"])
-
-    try:
-        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
-    except (ValueError, TypeError):
-        amount_str = f"{inv.get('amount', 0)}₽"
-
-    creator_label = "—"
-    if inv.get("created_by"):
-        creator_label = await get_initiator_label(db, int(inv["created_by"]))
-    creator_role_label = {
-        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
-    }.get(inv.get("creator_role", ""), inv.get("creator_role", ""))
-
-    text = (
-        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
-        f"📍 Адрес: {inv.get('object_address', '-')}\n"
-        f"💰 Сумма: {amount_str}\n"
-        f"📊 Статус: {status_label}\n"
-        f"👤 Менеджер: {creator_label} ({creator_role_label})\n"
-        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
-    )
-
+    text = await _format_acc_card(inv, db)
     b = InlineKeyboardBuilder()
-    b.button(text="📨 Запрос менеджеру", callback_data=f"acc_work:req:{invoice_id}")
-    b.button(text="📊 Себестоимость", callback_data=f"acc_cost:{invoice_id}")
+    b.button(text="📨 Запрос менеджеру", callback_data=f"acc_work:req:{inv['id']}")
     b.button(text="⬅️ Назад к списку", callback_data="acc_work:refresh")
     b.adjust(1)
 
