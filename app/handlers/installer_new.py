@@ -34,7 +34,7 @@ from ..keyboards import (
     invoice_list_kb,
     main_menu,
 )
-from ..integrations import IntegrationHub
+from ..services.integration_hub import IntegrationHub
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
