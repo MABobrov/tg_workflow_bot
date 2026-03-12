@@ -2211,8 +2211,9 @@ class Database:
             "estimated_loaders", "estimated_logistics",
             "nds_amount", "outstanding_debt", "surcharge_amount",
             "final_surcharge_amount", "surcharge_date",
-            "final_surcharge_date", "contract_signed", "agent_fee",
+            "final_surcharge_date", "agent_fee",
             "manager_zp_blank", "npn_amount",
+            "profit_tax", "rentability_calc", "payment_terms",
         }
 
         if existing:
@@ -2440,6 +2441,63 @@ class Database:
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    async def upsert_invoice_from_op(self, data: dict) -> tuple[int, bool]:
+        """Upsert invoice from ОП sheet data.
+
+        Returns (invoice_id, is_new).
+        ОП data is authoritative — overwrites DB values for mapped fields.
+        """
+        inv_num = data.get("invoice_number")
+        if not inv_num:
+            return (0, False)
+
+        # Find existing by invoice_number
+        cur = await self.conn.execute(
+            "SELECT id FROM invoices WHERE invoice_number = ?", (inv_num,)
+        )
+        row = await cur.fetchone()
+
+        # Determine manager role from invoice_number suffix
+        creator_role = "manager"
+        if inv_num.upper().endswith("КВ"):
+            creator_role = "КВ"
+        elif inv_num.upper().endswith("КИА"):
+            creator_role = "КИА"
+        elif inv_num.upper().endswith("НПН"):
+            creator_role = "НПН"
+
+        if row:
+            # UPDATE existing — ОП is authoritative
+            inv_id = row[0]
+            sets = []
+            vals = []
+            for field, value in data.items():
+                if field == "invoice_number":
+                    continue  # don't update key
+                sets.append(f"{field} = ?")
+                vals.append(value)
+            if sets:
+                vals.append(inv_id)
+                await self.conn.execute(
+                    f"UPDATE invoices SET {', '.join(sets)} WHERE id = ?", vals
+                )
+                await self.conn.commit()
+            return (inv_id, False)
+        else:
+            # INSERT new invoice
+            data["creator_role"] = creator_role
+            if "status" not in data:
+                data["status"] = "in_progress"
+            cols = list(data.keys())
+            placeholders = ", ".join("?" for _ in cols)
+            col_names = ", ".join(cols)
+            vals = [data[c] for c in cols]
+            cur2 = await self.conn.execute(
+                f"INSERT INTO invoices ({col_names}) VALUES ({placeholders})", vals
+            )
+            await self.conn.commit()
+            return (cur2.lastrowid or 0, True)
 
     async def check_close_conditions(self, invoice_id: int) -> dict[str, bool]:
         """Return dict with close-condition flags."""

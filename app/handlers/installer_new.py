@@ -34,6 +34,7 @@ from ..keyboards import (
     invoice_list_kb,
     main_menu,
 )
+from ..integrations import IntegrationHub
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
@@ -410,6 +411,7 @@ async def invoice_ok_comment(
     db: Database,
     config: Config,
     notifier: Notifier,
+    integrations: IntegrationHub,
 ) -> None:
     if not message.from_user:
         return
@@ -466,6 +468,15 @@ async def invoice_ok_comment(
     )
     if comment:
         msg += f"💬 {comment}\n"
+
+    # Write Дата Факт back to source ОП spreadsheet
+    try:
+        if integrations and integrations.sheets:
+            await integrations.sheets.write_date_fact_to_op(
+                inv["invoice_number"], today_iso,
+            )
+    except Exception as e:
+        log.warning("Failed to write Дата Факт to ОП: %s", e)
 
     # Notify manager + RP (deduplicated to avoid double-sending when same person)
     manager_id = inv.get("created_by")

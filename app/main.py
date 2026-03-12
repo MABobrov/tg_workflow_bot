@@ -237,6 +237,28 @@ async def main() -> None:
         acceptance_reminders_loop(db=db, notifier=notifier, interval_seconds=60)
     )
 
+    # --- Auto-sync from ОП sheet at startup + periodically ---
+    async def _op_sync_loop(interval: int = 900) -> None:
+        """Sync from source ОП sheet → SQLite every `interval` seconds."""
+        while True:
+            try:
+                if integrations.sheets:
+                    op_rows = await asyncio.to_thread(integrations.sheets.read_op_sheet_sync)
+                    ok = 0
+                    for row_data in op_rows:
+                        try:
+                            await db.import_invoice_from_sheet(row_data)
+                            ok += 1
+                        except Exception:
+                            pass
+                    if ok:
+                        log.info("ОП auto-sync: imported/updated %d invoices", ok)
+            except Exception as e:
+                log.error("ОП auto-sync error: %s", e)
+            await asyncio.sleep(interval)
+
+    op_sync_task = asyncio.create_task(_op_sync_loop(interval=900))
+
     lead_poller_task: asyncio.Task | None = None
     if config.amocrm_enabled and amocrm_service is not None:
         lead_poller_task = asyncio.create_task(
@@ -258,6 +280,11 @@ async def main() -> None:
             integrations=integrations,
         )
     finally:
+        op_sync_task.cancel()
+        try:
+            await op_sync_task
+        except (asyncio.CancelledError, Exception):
+            pass
         if lead_poller_task:
             lead_poller_task.cancel()
             try:

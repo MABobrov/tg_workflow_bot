@@ -489,15 +489,18 @@ class GoogleSheetsService:
         14: "estimated_loaders",    # Грузчики
         15: "estimated_logistics",  # Логистика
         17: "nds_amount",           # НДС
-        21: "surcharge_amount",     # Сумма допл
-        22: "final_surcharge_amount", # Допл подтв
-        23: "surcharge_date",       # Дата допл
-        24: "final_surcharge_date", # Оконч допл
-        26: "outstanding_debt",     # Долг
-        27: "contract_signed",      # Договор
-        29: "agent_fee",            # Агентское
-        30: "manager_zp_blank",     # Мен.ЗП
-        35: "npn_amount",          # НПН 10%
+        16: "profit_tax",           # Q: Прибыль
+        17: "nds_amount",           # R: НДС
+        19: "rentability_calc",     # T: Рент-ть расч
+        21: "surcharge_amount",     # V: Сумма допл
+        22: "surcharge_date",       # W: Дата допл
+        23: "final_surcharge_amount", # X: Оконч допл
+        24: "final_surcharge_date", # Y: Дата оконч
+        25: "outstanding_debt",     # Z: Долг
+        26: "payment_terms",        # AA: Пояснения
+        27: "agent_fee",            # AB: Агентское
+        28: "manager_zp_blank",     # AC: Мен.ЗП
+        33: "npn_amount",           # AH: НПН 10%
     }
 
     def _parse_num(self, val: str) -> float | None:
@@ -568,7 +571,8 @@ class GoogleSheetsService:
                              "estimated_installation", "estimated_loaders",
                              "estimated_logistics", "nds_amount", "outstanding_debt",
                              "surcharge_amount", "final_surcharge_amount",
-                             "agent_fee", "manager_zp_blank", "npn_amount"):
+                             "agent_fee", "manager_zp_blank", "npn_amount",
+                             "profit_tax", "rentability_calc"):
                     num = self._parse_num(val)
                     if num is not None:
                         parsed[field] = num
@@ -606,3 +610,43 @@ class GoogleSheetsService:
         if not self.cfg.enabled:
             return []
         return await asyncio.to_thread(self.read_op_sheet_sync)
+
+    def write_date_fact_to_op_sync(self, invoice_number: str, date_iso: str) -> bool:
+        """Write Дата Факт (col J/9) back to source ОП sheet by invoice_number."""
+        if not self.cfg.source_spreadsheet_id:
+            return False
+        gc = self._get_client()
+        try:
+            source_sh = gc.open_by_key(self.cfg.source_spreadsheet_id)
+            ws = source_sh.worksheet(self.cfg.source_sheet_name)
+        except Exception as e:
+            log.error("Cannot open source sheet for write-back: %s", e)
+            return False
+
+        # Find row by invoice_number (col E, index 4, 1-based col 5)
+        try:
+            cell = ws.find(invoice_number, in_column=5)
+        except gspread.CellNotFound:
+            log.warning("Invoice %s not found in ОП sheet", invoice_number)
+            return False
+
+        if not cell:
+            return False
+
+        # Convert ISO date to DD.MM.YYYY
+        parts = date_iso.split("-")
+        if len(parts) == 3:
+            date_dmy = f"{parts[2]}.{parts[1]}.{parts[0]}"
+        else:
+            date_dmy = date_iso
+
+        # Col J = column 10 (1-based)
+        ws.update_cell(cell.row, 10, date_dmy)
+        log.info("Wrote Дата Факт %s for %s to ОП row %d", date_dmy, invoice_number, cell.row)
+        return True
+
+    async def write_date_fact_to_op(self, invoice_number: str, date_iso: str) -> bool:
+        """Async wrapper."""
+        if not self.cfg.enabled:
+            return False
+        return await asyncio.to_thread(self.write_date_fact_to_op_sync, invoice_number, date_iso)
