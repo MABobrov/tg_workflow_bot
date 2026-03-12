@@ -286,7 +286,7 @@ async def urgent_gd_finalize(
 # "📩 Не срочно ГД" — задача с пониженным приоритетом
 # ===========================================================================
 
-@router.message(F.text == "📩 Не срочно ГД")
+@router.message(lambda m: (m.text or "").strip() in {"📩 Не срочно ГД", "Не срочно ГД"})
 async def start_not_urgent_gd(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=ALLOWED_ROLES):
         return

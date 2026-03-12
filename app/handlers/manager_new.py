@@ -34,11 +34,13 @@ from ..enums import (
 )
 from ..keyboards import (
     MGR_BTN_CHECK_KP,
+    MGR_BTN_CHAT_RP,
     MGR_BTN_CRED,
     MGR_BTN_EDO,
     MGR_BTN_INVOICE_END,
     MGR_BTN_INVOICE_START,
     MGR_BTN_ISSUE,
+    MGR_BTN_MONTAZH,
     MGR_BTN_MY_INVOICES,
     MGR_BTN_SEARCH_INVOICE,
     MGR_BTN_ZAMERY,
@@ -2771,6 +2773,91 @@ async def mgr_cred_chat(message: Message, state: FSMContext, db: Database) -> No
         "Выберите действие:",
         reply_markup=manager_chat_submenu("⬅️ Назад"),
     )
+
+
+# =====================================================================
+# МОНТАЖНАЯ ГР. / ЧАТ С РП — chat-proxy with invoice binding
+# =====================================================================
+
+async def _chat_proxy_invoice_pick(
+    message: Message, state: FSMContext, db: Database,
+    channel: str, title: str, emoji: str,
+) -> None:
+    """Show invoice picker before entering chat-proxy."""
+    uid = message.from_user.id  # type: ignore[union-attr]
+    invoices = await db.list_invoices_for_user(uid, limit=50)
+    active = [i for i in invoices if i.get("status") not in ("ended", "cancelled")]
+
+    b = InlineKeyboardBuilder()
+    for inv in active:
+        num = inv.get("invoice_number", "?")
+        addr = inv.get("object_address", "")[:25]
+        label = f"📄 {num}"
+        if addr:
+            label += f" · {addr}"
+        b.button(text=label, callback_data=f"mgrchat:{channel}:{inv['id']}")
+    b.button(text="💬 Без привязки к счёту", callback_data=f"mgrchat:{channel}:0")
+    b.button(text="⬅️ Назад", callback_data="mgrchat:cancel")
+    b.adjust(1)
+
+    await state.clear()
+    await state.set_state(ManagerChatProxySG.menu)
+    await state.update_data(channel=channel)
+    count = len(active)
+    await message.answer(
+        f"{emoji} <b>{title}</b>\n\n"
+        f"Привязать к счёту? ({count} в работе)",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(F.text == MGR_BTN_MONTAZH)
+async def mgr_montazh_chat(message: Message, state: FSMContext, db: Database) -> None:
+    if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
+        return
+    await _chat_proxy_invoice_pick(message, state, db, "montazh", "Монтажная гр.", "🔧")
+
+
+@router.message(F.text == MGR_BTN_CHAT_RP)
+async def mgr_rp_chat(message: Message, state: FSMContext, db: Database) -> None:
+    if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
+        return
+    await _chat_proxy_invoice_pick(message, state, db, "rp", "Чат с РП", "📋")
+
+
+@router.callback_query(F.data.startswith("mgrchat:"))
+async def mgr_chat_invoice_picked(cb: CallbackQuery, state: FSMContext) -> None:
+    parts = (cb.data or "").split(":")
+    if len(parts) < 3:
+        await cb.answer()
+        return
+    channel = parts[1]
+    invoice_id = parts[2]
+
+    if invoice_id == "cancel":
+        await state.clear()
+        await cb.message.delete()  # type: ignore[union-attr]
+        await cb.answer()
+        return
+
+    await state.set_state(ManagerChatProxySG.menu)
+    inv_ref = ""
+    if invoice_id != "0":
+        await state.update_data(channel=channel, invoice_id=int(invoice_id))
+        inv_ref = f" (счёт #{invoice_id})"
+    else:
+        await state.update_data(channel=channel, invoice_id=None)
+
+    title = "Монтажная гр." if channel == "montazh" else "Чат с РП"
+    await cb.message.edit_text(  # type: ignore[union-attr]
+        f"💬 <b>{title}</b>{inv_ref}\n\n"
+        "Выберите действие:",
+    )
+    await cb.message.answer(  # type: ignore[union-attr]
+        "Выберите действие:",
+        reply_markup=manager_chat_submenu("⬅️ Назад"),
+    )
+    await cb.answer()
 
 
 # =====================================================================

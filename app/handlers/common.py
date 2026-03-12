@@ -732,9 +732,9 @@ async def universal_back_home(
 # ВХОДЯЩИЕ ЗАДАЧИ (универсальный обработчик для всех ролей)
 # =====================================================================
 
-@router.message(lambda m: (m.text or "").strip().startswith("📥 Входящие задачи"))
+@router.message(lambda m: (m.text or "").strip().startswith("📥 Входящие задачи") or (m.text or "").strip().startswith("Задачи / Лид в проект"))
 async def inbox_tasks_universal(message: Message, db: Database) -> None:
-    """Universal inbox handler for all roles that use '📥 Входящие задачи' button."""
+    """Universal inbox handler for all roles that use inbox button."""
     if not message.from_user:
         return
     if not await _guard_blocked_message(message, db):
@@ -882,7 +882,7 @@ async def sync_data_non_gd(
 
 
 @router.message(Command("cancel"))
-@router.message(lambda m: (m.text or "").strip() == "❌ Отмена")
+@router.message(lambda m: (m.text or "").strip() in {"❌ Отмена", "Отмена"})
 async def cmd_cancel(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     await state.clear()
     if not await _guard_blocked_message(message, db):

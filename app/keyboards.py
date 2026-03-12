@@ -50,25 +50,28 @@ GD_BTN_REFRESH = "🔄 Обновить меню"
 GD_BTN_HELP = "📚 Справка"
 
 # --- Manager-specific buttons (КВ / КИА / НПН) ---
-MGR_BTN_INBOX = "📥 Входящие задачи"
-MGR_BTN_NOT_URGENT = "📩 Не срочно ГД"
-MGR_BTN_INVOICE_START = "💼 Счет в Работу"
-MGR_BTN_INVOICE_END = "🏁 Счет End"
-MGR_BTN_ZAMERY = "📐 Замеры"
-MGR_BTN_EDO = "📄 Бухгалтерия (ЭДО)"
-MGR_BTN_CHECK_KP = "📋 Проверить КП/Счет"
-MGR_BTN_SYNC = "🔄 Синхронизация данных"
-MGR_BTN_MORE = "📂 Ещё"
-MGR_BTN_CANCEL = "❌ Отмена"
+MGR_BTN_INBOX = "Задачи / Лид в проект"
+MGR_BTN_CHECK_KP = "Проверить КП / Счет"
+MGR_BTN_INVOICE_START = "Счет в Работу"
+MGR_BTN_INVOICE_END = "Счет End"
+MGR_BTN_ZAMERY = "Замеры"
+MGR_BTN_EDO = "Бухгалтерия (Док./ЭДО)"
+MGR_BTN_MONTAZH = "Монтажная гр."
+MGR_BTN_CHAT_RP = "Чат с РП"
+MGR_BTN_MY_INVOICES = "Мои Счета"
+MGR_BTN_MORE = "Еще"
+MGR_BTN_SYNC = "Синхронизация данных"
+MGR_BTN_CANCEL = "Отмена"
 # --- Manager "Еще" submenu ---
-MGR_BTN_CRED = "💬 Менеджер (кред)"
-MGR_BTN_URGENT = "🚨 Срочно ГД"
-MGR_BTN_MY_INVOICES = "📑 Мои Счета"
-MGR_BTN_ISSUE = "🆘 Проблема/Вопрос"
-MGR_BTN_SEARCH_INVOICE = "🔍 Поиск счёта"
-MGR_BTN_ZP = "💰 Запрос ЗП"
-MGR_BTN_HELP = "📚 Справка"
+MGR_BTN_CRED = "Менеджер (кред)"
+MGR_BTN_NOT_URGENT = "Не срочно ГД"
+MGR_BTN_SEARCH_INVOICE = "Поиск Счета КВ / КИА / НПН"
+MGR_BTN_HELP = "Справка"
 MGR_BTN_BACK_HOME = BACK_TO_HOME
+# --- Legacy constants (kept for handler compatibility) ---
+MGR_BTN_URGENT = "🚨 Срочно ГД"
+MGR_BTN_ZP = "💰 Запрос ЗП"
+MGR_BTN_ISSUE = "🆘 Проблема/Вопрос"
 
 # --- RP-specific buttons (new layout March 2026) ---
 RP_BTN_CHECK_KP = "Проверка КП / Выставление Счета"
@@ -184,22 +187,14 @@ def role_selector_menu(role_value: str | None, is_admin: bool = False) -> ReplyK
 
 def _role_primary_action_rows(role: str | None) -> list[list[str]]:
     # --- 3 менеджера (КВ / КИА / НПН) — единое меню ---
-    if role in MANAGER_ROLES:
+    if role in MANAGER_ROLES or role == Role.MANAGER:
         return [
-            [MGR_BTN_INBOX, MGR_BTN_NOT_URGENT],
+            [MGR_BTN_INBOX, MGR_BTN_CHECK_KP],
             [MGR_BTN_INVOICE_START, MGR_BTN_INVOICE_END],
             [MGR_BTN_ZAMERY, MGR_BTN_EDO],
-            [MGR_BTN_CHECK_KP, MGR_BTN_SYNC],
-            [MGR_BTN_MORE, MGR_BTN_CANCEL],
-        ]
-    # --- legacy MANAGER (обратная совместимость) ---
-    if role == Role.MANAGER:
-        return [
-            [MGR_BTN_INBOX, MGR_BTN_NOT_URGENT],
-            [MGR_BTN_INVOICE_START, MGR_BTN_INVOICE_END],
-            [MGR_BTN_ZAMERY, MGR_BTN_EDO],
-            [MGR_BTN_CHECK_KP, MGR_BTN_SYNC],
-            [MGR_BTN_MORE, MGR_BTN_CANCEL],
+            [MGR_BTN_MONTAZH, MGR_BTN_CHAT_RP],
+            [MGR_BTN_MY_INVOICES, MGR_BTN_MORE],
+            [MGR_BTN_SYNC, MGR_BTN_CANCEL],
         ]
     if role == Role.RP:
         return [
@@ -420,9 +415,9 @@ def main_menu(
     if not isolated_role and len(parsed_roles) > 1:
         return role_selector_menu(role, is_admin=is_admin)
 
-    inbox_label = "📥 Входящие задачи"
+    inbox_label = MGR_BTN_INBOX
     if unread > 0:
-        inbox_label += f" 🔴{unread}"
+        inbox_label = f"{MGR_BTN_INBOX} 🔴{unread}"
 
     rp_inbox_label = RP_BTN_INBOX_SALES
     if unread > 0:
@@ -478,7 +473,7 @@ def main_menu(
         for row in rows:
             for i, btn in enumerate(row):
                 if unread > 0:
-                    if btn == MGR_BTN_INBOX or btn == ACC_BTN_INBOX or btn == "📥 Входящие задачи":
+                    if btn == MGR_BTN_INBOX or btn == ACC_BTN_INBOX or btn == INST_BTN_INBOX or btn == "📥 Входящие задачи":
                         row[i] = inbox_label
                     elif btn == RP_BTN_INBOX_SALES:
                         row[i] = rp_inbox_label
@@ -820,11 +815,9 @@ def gd_chat_write_to_kb_universal(
 
 def manager_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
     """Подменю 'Еще' для менеджеров (КВ / КИА / НПН)."""
-    rows = [
-        [MGR_BTN_CRED, MGR_BTN_URGENT],
-        [MGR_BTN_MY_INVOICES, MGR_BTN_ZP],
-        [MGR_BTN_SEARCH_INVOICE, MGR_BTN_ISSUE],
-        [MGR_BTN_HELP],
+    rows: list[list[str]] = [
+        [MGR_BTN_CRED, MGR_BTN_NOT_URGENT],
+        [MGR_BTN_SEARCH_INVOICE, MGR_BTN_HELP],
     ]
     if show_role_selector_back:
         rows.append([BACK_TO_ROLE_SELECTOR])
