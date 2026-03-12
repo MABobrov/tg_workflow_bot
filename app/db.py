@@ -2235,6 +2235,11 @@ class Database:
                 except (ValueError, TypeError):
                     pass
 
+            # Auto-determine status from actual_completion_date
+            acd = updates.get("actual_completion_date") or existing.get("actual_completion_date")
+            if acd:
+                updates["status"] = "ended"
+
             sets = ", ".join(f"{k} = ?" for k in updates)
             vals = list(updates.values())
             vals.append(existing["id"])
@@ -2243,9 +2248,10 @@ class Database:
             return int(existing["id"])
 
         # New invoice — insert
+        init_status = "ended" if data.get("actual_completion_date") else "in_progress"
         fields_to_insert = {
             "invoice_number": inv_num,
-            "status": "in_progress",
+            "status": init_status,
             "created_at": now,
             "updated_at": now,
         }
@@ -2477,6 +2483,12 @@ class Database:
                     continue  # don't update key
                 sets.append(f"{field} = ?")
                 vals.append(value)
+            # Auto-determine status from actual_completion_date
+            acd = data.get("actual_completion_date")
+            if acd:
+                sets.append("status = ?")
+                vals.append("ended")
+
             if sets:
                 vals.append(inv_id)
                 await self.conn.execute(
@@ -2488,7 +2500,7 @@ class Database:
             # INSERT new invoice
             data["creator_role"] = creator_role
             if "status" not in data:
-                data["status"] = "in_progress"
+                data["status"] = "ended" if data.get("actual_completion_date") else "in_progress"
             cols = list(data.keys())
             placeholders = ", ".join("?" for _ in cols)
             col_names = ", ".join(cols)
