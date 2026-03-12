@@ -504,10 +504,20 @@ class GoogleSheetsService:
     }
 
     def _parse_num(self, val: str) -> float | None:
-        """Parse number from string, handling spaces/commas."""
+        """Parse number from string, handling spaces/commas as thousand separators."""
         if not val or not val.strip():
             return None
-        v = val.strip().replace(" ", "").replace(",", ".").rstrip("%")
+        v = val.strip().replace("\u00a0", "").replace(" ", "").rstrip("%")
+        # Google Sheets uses comma as thousand separator (257,000 = 257000)
+        # If comma exists AND digits after comma are exactly 3 → thousand separator
+        if "," in v:
+            parts = v.split(",")
+            if all(len(p) == 3 for p in parts[1:]) and all(p.isdigit() for p in parts[1:]):
+                # Thousand separator: "257,000" → "257000"
+                v = v.replace(",", "")
+            else:
+                # Decimal comma: "26.5%" already stripped %, just replace
+                v = v.replace(",", ".")
         try:
             return float(v)
         except ValueError:
