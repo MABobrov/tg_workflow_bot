@@ -2939,6 +2939,14 @@ _MGR_ROLES = [Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN]
 @router.message(F.text == MGR_BTN_ZP)
 async def manager_zp_start(message: Message, state: FSMContext, db: Database) -> None:
     """Show ended invoices eligible for manager ZP request."""
+    # If user is in installer menu, delegate to installer handler
+    if message.from_user:
+        _u = await db.get_user_optional(message.from_user.id)
+        if _u and _u.role:
+            _menu_role = resolve_active_menu_role(message.from_user.id, _u.role)
+            if _menu_role == Role.INSTALLER:
+                from .installer_new import installer_zp_start
+                return await installer_zp_start(message, state, db)
     if not await require_role_message(message, db, roles=_MGR_ROLES):
         return
     user_id = message.from_user.id  # type: ignore[union-attr]
