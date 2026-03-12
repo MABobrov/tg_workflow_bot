@@ -201,15 +201,15 @@ def _deadline_indicator(deadline_end_date: str | None) -> str:
 
 
 def _doc_status_line(edo_signed: bool, originals_holder: str | None) -> str:
-    """Format document status indicators."""
-    edo = "✅ЭДО" if edo_signed else "⏳ЭДО"
+    """Format document status indicators (compact)."""
+    edo = "✅" if edo_signed else "⏳"
     if originals_holder == "gd":
-        orig = "✅Ориг (у ГД)"
+        orig = "✅ГД"
     elif originals_holder == "manager":
-        orig = "✅Ориг (у менеджера)"
+        orig = "✅Мнж"
     else:
-        orig = "⏳Ориг"
-    return f"{edo}  {orig}"
+        orig = "⏳"
+    return f"{edo}эдо {orig}ориг"
 
 
 async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
@@ -256,9 +256,7 @@ async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
         f"{status_icon} <b>№{num}</b> | {date}{dl}\n"
         f"👤 {creator_label} ({role_label}) | 🏢 {supplier}\n"
         f"💰 {amt} | 💳 Долг: {debt}\n"
-        f"\n"
-        f"📋 Первичка: {primary}\n"
-        f"📋 Вторичка: {secondary}"
+        f"📋 П: {primary} | З: {secondary}"
     )
 
 
@@ -367,20 +365,30 @@ def _build_doc_menu_kb(inv: dict[str, Any]) -> InlineKeyboardMarkup:
 async def _notify_manager_doc_change(
     db: Database, notifier: Notifier, inv: dict[str, Any], field: str, new_label: str,
 ) -> None:
-    """Send notification to the invoice manager about doc status change."""
+    """Send notification to the invoice manager about doc status change.
+    Also auto-closes any pending doc-status tasks (EDO_REQUEST) for this invoice."""
     manager_id = inv.get("created_by")
     if not manager_id:
         return
     num = inv.get("invoice_number") or f"#{inv['id']}"
+    inv_id = inv.get("id") or inv.get("invoice_id")
     try:
         await notifier.safe_send(
             int(manager_id),
             f"📋 <b>Статус документов изменён</b>\n"
             f"Счёт №{num}\n"
-            f"Бухгалтерия: {field} → {new_label}",
+            f"Бухгалтерия: {field} → {new_label}\n\n"
+            f"✅ Задача по документам выполнена.",
         )
     except Exception:
         log.exception("Failed to notify manager %s about doc change", manager_id)
+    # Auto-close pending EDO_REQUEST tasks for this invoice
+    if inv_id:
+        try:
+            from ..enums import TaskType
+            await db.close_tasks_by_invoice(int(inv_id), TaskType.EDO_REQUEST)
+        except Exception:
+            log.exception("Failed to close doc tasks for invoice %s", inv_id)
 
 
 @router.callback_query(F.data.regexp(r"^acc_doc:menu:\d+$"))
@@ -770,20 +778,11 @@ async def acc_invoice_end(message: Message, db: Database) -> None:
 
     for inv in invoices[:15]:
         text = await _format_acc_card(inv, db)
-        # Кнопка "Документы" если ещё не все 4 поля заполнены (однократное редактирование)
-        all_filled = (
-            inv.get("docs_edo_signed")
-            and inv.get("edo_signed")
-            and inv.get("docs_originals_holder")
-            and inv.get("closing_originals_holder")
-        )
-        if all_filled:
-            await message.answer(text)
-        else:
-            b = InlineKeyboardBuilder()
-            b.button(text="✏️ Документы", callback_data=f"acc_doc:menu:{inv['id']}")
-            b.adjust(1)
-            await message.answer(text, reply_markup=b.as_markup())
+        b = InlineKeyboardBuilder()
+        b.button(text="📨 Запрос менеджеру", callback_data=f"acc_work:req:{inv['id']}")
+        b.button(text="✏️ Документы", callback_data=f"acc_doc:menu:{inv['id']}")
+        b.adjust(2)
+        await message.answer(text, reply_markup=b.as_markup())
 
     footer = InlineKeyboardBuilder()
     footer.button(text="⬅️ Назад", callback_data="nav:home")
