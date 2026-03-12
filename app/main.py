@@ -141,6 +141,8 @@ async def main() -> None:
                 timezone_name=config.timezone,
                 service_account_json=config.google_sa_json,
                 service_account_file=config.google_sa_file,
+                source_spreadsheet_id=config.gsheet_sales_spreadsheet_id,
+                source_sheet_name=config.gsheet_sales_tab,
             )
         )
 

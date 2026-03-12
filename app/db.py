@@ -2186,78 +2186,88 @@ class Database:
 
     async def import_invoice_from_sheet(
         self,
-        invoice_number: str,
-        created_by: int,
-        creator_role: str,
-        status: str,
-        *,
-        object_address: str = "",
-        amount: float = 0.0,
-        is_credit: bool = False,
-        client_name: str | None = None,
-        traffic_source: str | None = None,
-        receipt_date: str | None = None,
-        deadline_days: int | None = None,
-        actual_completion_date: str | None = None,
-        first_payment_amount: float | None = None,
-        outstanding_debt: float | None = None,
-        contract_type: str | None = None,
-        closing_docs_status: str | None = None,
-        payment_terms: str | None = None,
-        description: str | None = None,
+        data: dict[str, Any],
     ) -> int:
-        """Import invoice from external sheet (arbitrary status, new fields)."""
-        inv_num = (invoice_number or "").strip()
+        """Import/update invoice from ОП sheet data.
+
+        Uses invoice_number as unique key. Updates existing rows,
+        inserts new ones with status='in_progress'.
+        Only overwrites DB fields that the sheet is source-of-truth for.
+        Does NOT overwrite bot-managed fields (montazh_stage, zp_*, etc).
+        """
+        inv_num = (data.get("invoice_number") or "").strip()
         if not inv_num:
             raise ValueError("invoice_number is required")
+
         existing = await self.get_invoice_by_number(inv_num)
         now = to_iso(utcnow())
+
+        # Fields that ОП sheet is source-of-truth for
+        sheet_fields = {
+            "client_name", "traffic_source", "is_credit", "client_source",
+            "object_address", "receipt_date", "deadline_days",
+            "actual_completion_date", "amount", "first_payment_amount",
+            "estimated_materials", "estimated_installation",
+            "estimated_loaders", "estimated_logistics",
+            "nds_amount", "outstanding_debt", "surcharge_amount",
+            "final_surcharge_amount", "surcharge_date",
+            "final_surcharge_date", "contract_signed", "agent_fee",
+            "manager_zp_blank", "npn_amount",
+        }
+
         if existing:
-            # Sheet import is the source of truth for these fields, so sync them on every run.
-            updates: dict[str, Any] = {
-                "status": status,
-                "is_credit": int(is_credit),
-                "object_address": object_address,
-                "amount": amount,
-                "description": description,
-                "client_name": client_name,
-                "traffic_source": traffic_source,
-                "receipt_date": receipt_date,
-                "deadline_days": deadline_days,
-                "actual_completion_date": actual_completion_date,
-                "first_payment_amount": first_payment_amount,
-                "outstanding_debt": outstanding_debt,
-                "contract_type": contract_type,
-                "closing_docs_status": closing_docs_status,
-                "payment_terms": payment_terms,
-                "updated_at": now,
-            }
+            updates: dict[str, Any] = {"updated_at": now}
+            for field in sheet_fields:
+                if field in data:
+                    updates[field] = data[field]
+            # Compute deadline_end_date if we have receipt_date + deadline_days
+            rd = data.get("receipt_date") or existing.get("receipt_date")
+            dd = data.get("deadline_days")
+            if dd is None:
+                dd = existing.get("deadline_days")
+            if rd and dd:
+                from datetime import datetime, timedelta
+                try:
+                    dt = datetime.strptime(str(rd), "%Y-%m-%d")
+                    end = dt + timedelta(days=int(dd))
+                    updates["deadline_end_date"] = end.strftime("%Y-%m-%d")
+                except (ValueError, TypeError):
+                    pass
+
             sets = ", ".join(f"{k} = ?" for k in updates)
             vals = list(updates.values())
             vals.append(existing["id"])
-            await self.conn.execute(
-                f"UPDATE invoices SET {sets} WHERE id = ?", vals,
-            )
+            await self.conn.execute(f"UPDATE invoices SET {sets} WHERE id = ?", vals)
             await self.conn.commit()
             return int(existing["id"])
 
+        # New invoice — insert
+        fields_to_insert = {
+            "invoice_number": inv_num,
+            "status": "in_progress",
+            "created_at": now,
+            "updated_at": now,
+        }
+        for field in sheet_fields:
+            if field in data:
+                fields_to_insert[field] = data[field]
+        # deadline_end_date
+        rd = data.get("receipt_date")
+        dd = data.get("deadline_days")
+        if rd and dd:
+            from datetime import datetime, timedelta
+            try:
+                dt = datetime.strptime(str(rd), "%Y-%m-%d")
+                end = dt + timedelta(days=int(dd))
+                fields_to_insert["deadline_end_date"] = end.strftime("%Y-%m-%d")
+            except (ValueError, TypeError):
+                pass
+
+        cols = ", ".join(fields_to_insert.keys())
+        placeholders = ", ".join("?" * len(fields_to_insert))
         cur = await self.conn.execute(
-            """
-            INSERT INTO invoices
-                (invoice_number, created_by, creator_role, status, is_credit,
-                 object_address, amount, description,
-                 client_name, traffic_source, receipt_date, deadline_days,
-                 actual_completion_date, first_payment_amount,
-                 outstanding_debt, contract_type, closing_docs_status,
-                 payment_terms, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (inv_num, created_by, creator_role, status, int(is_credit),
-             object_address, amount, description,
-             client_name, traffic_source, receipt_date, deadline_days,
-             actual_completion_date, first_payment_amount,
-             outstanding_debt, contract_type, closing_docs_status,
-             payment_terms, now, now),
+            f"INSERT INTO invoices ({cols}) VALUES ({placeholders})",
+            list(fields_to_insert.values()),
         )
         await self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]

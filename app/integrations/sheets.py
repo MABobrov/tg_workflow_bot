@@ -144,6 +144,9 @@ class SheetsConfig:
     timezone_name: str = "Europe/Moscow"
     service_account_json: str | None = None
     service_account_file: str | None = None
+    # Source spreadsheet for importing (Отдел Продаж)
+    source_spreadsheet_id: str | None = None
+    source_sheet_name: str = "Отдел продаж"
 
 
 class GoogleSheetsService:
@@ -456,3 +459,141 @@ class GoogleSheetsService:
         if not self.cfg.enabled:
             return
         await asyncio.to_thread(self.upsert_invoice_sync, invoice, manager_label, cost)
+
+    # ---------- IMPORT from source spreadsheet (Отдел Продаж → SQLite) ----------
+
+    # Column mapping: source sheet col index → field name
+    _OP_COL_MAP: dict[int, str] = {
+        0: "client_name",           # Контрагент
+        1: "traffic_source",        # Ист.трафика
+        2: "is_credit",             # Б.Н./Кред (0=кредит, 1=б.н.)
+        3: "client_source",         # Свой/Атм (1=Свой, 2=Атм)
+        4: "invoice_number",        # Номер счета (KEY)
+        5: "object_address",        # Адрес
+        6: "receipt_date",          # Дата пост.
+        7: "deadline_days",         # Сроки (дни)
+        9: "actual_completion_date", # Дата Факт
+        10: "amount",              # Сумма
+        11: "first_payment_amount", # Сумма 1пл
+        12: "estimated_materials",  # Расч.мат.
+        13: "estimated_installation", # Установка
+        14: "estimated_loaders",    # Грузчики
+        15: "estimated_logistics",  # Логистика
+        17: "nds_amount",           # НДС
+        21: "surcharge_amount",     # Сумма допл
+        22: "final_surcharge_amount", # Допл подтв
+        23: "surcharge_date",       # Дата допл
+        24: "final_surcharge_date", # Оконч допл
+        26: "outstanding_debt",     # Долг
+        27: "contract_signed",      # Договор
+        29: "agent_fee",            # Агентское
+        30: "manager_zp_blank",     # Мен.ЗП
+        35: "npn_amount",          # НПН 10%
+    }
+
+    def _parse_num(self, val: str) -> float | None:
+        """Parse number from string, handling spaces/commas."""
+        if not val or not val.strip():
+            return None
+        v = val.strip().replace(" ", "").replace(",", ".").rstrip("%")
+        try:
+            return float(v)
+        except ValueError:
+            return None
+
+    def _parse_date_dmy(self, val: str) -> str | None:
+        """Parse DD.MM.YYYY → YYYY-MM-DD ISO."""
+        if not val or not val.strip():
+            return None
+        parts = val.strip().split(".")
+        if len(parts) != 3:
+            return None
+        try:
+            d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+            return f"{y:04d}-{m:02d}-{d:02d}"
+        except (ValueError, IndexError):
+            return None
+
+    def read_op_sheet_sync(self) -> list[dict[str, Any]]:
+        """Read all rows from source 'Отдел продаж' sheet, return parsed dicts."""
+        if not self.cfg.source_spreadsheet_id:
+            log.warning("source_spreadsheet_id not configured")
+            return []
+
+        gc = self._get_client()
+        try:
+            source_sh = gc.open_by_key(self.cfg.source_spreadsheet_id)
+        except Exception as e:
+            log.error("Cannot open source spreadsheet: %s", e)
+            return []
+
+        try:
+            ws = source_sh.worksheet(self.cfg.source_sheet_name)
+        except gspread.WorksheetNotFound:
+            log.error("Sheet '%s' not found in source spreadsheet", self.cfg.source_sheet_name)
+            return []
+
+        all_data = ws.get_all_values()
+        if len(all_data) < 2:
+            return []
+
+        # Skip header (row 0), skip empty row 1 if exists
+        results: list[dict[str, Any]] = []
+        for row_idx in range(1, len(all_data)):
+            row = all_data[row_idx]
+            # Skip empty rows (no invoice number)
+            inv_num = row[4].strip() if len(row) > 4 else ""
+            if not inv_num:
+                continue
+
+            parsed: dict[str, Any] = {}
+            for col_idx, field in self._OP_COL_MAP.items():
+                if col_idx >= len(row):
+                    continue
+                val = row[col_idx].strip()
+                if not val:
+                    continue
+
+                # Type-specific parsing
+                if field in ("amount", "first_payment_amount", "estimated_materials",
+                             "estimated_installation", "estimated_loaders",
+                             "estimated_logistics", "nds_amount", "outstanding_debt",
+                             "surcharge_amount", "final_surcharge_amount",
+                             "agent_fee", "manager_zp_blank", "npn_amount"):
+                    num = self._parse_num(val)
+                    if num is not None:
+                        parsed[field] = num
+                elif field in ("receipt_date", "actual_completion_date",
+                               "surcharge_date", "final_surcharge_date"):
+                    d = self._parse_date_dmy(val)
+                    if d:
+                        parsed[field] = d
+                elif field == "deadline_days":
+                    num = self._parse_num(val)
+                    if num is not None:
+                        parsed[field] = int(num)
+                elif field == "is_credit":
+                    # Source: 0 = кредит, 1 = б.н.
+                    parsed[field] = 1 if val == "0" else 0
+                elif field == "client_source":
+                    # 1 = Свой (own), 2 = Атм (gd_lead)
+                    if val == "1":
+                        parsed[field] = "own"
+                    elif val == "2":
+                        parsed[field] = "gd_lead"
+                    else:
+                        parsed[field] = val
+                else:
+                    parsed[field] = val
+
+            if "invoice_number" in parsed:
+                results.append(parsed)
+
+        log.info("Read %d invoices from source ОП sheet", len(results))
+        return results
+
+    async def read_op_sheet(self) -> list[dict[str, Any]]:
+        """Async wrapper for reading source ОП sheet."""
+        if not self.cfg.enabled:
+            return []
+        return await asyncio.to_thread(self.read_op_sheet_sync)

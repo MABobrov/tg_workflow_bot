@@ -799,6 +799,19 @@ async def sync_data_non_gd(
 
     await answer_service(message, "⏳ Запускаю синхронизацию данных с Google Sheets...")
 
+    # --- IMPORT from source ОП sheet → SQLite ---
+    imported_ok = 0
+    try:
+        op_rows = await integrations.sheets.read_op_sheet()
+        for row_data in op_rows:
+            try:
+                await db.import_invoice_from_sheet(row_data)
+                imported_ok += 1
+            except Exception as e:
+                log.warning("Import row error: %s — %s", row_data.get("invoice_number"), e)
+    except Exception as e:
+        log.error("read_op_sheet failed: %s", e)
+
     projects = await db.list_recent_projects(limit=10000)
     tasks = await db.list_recent_tasks(limit=50000)
 
@@ -851,6 +864,7 @@ async def sync_data_non_gd(
     await answer_service(
         message,
         "✅ Синхронизация завершена.\n"
+        f"📥 Импорт из ОП: <b>{imported_ok}</b>\n"
         f"Проектов: <b>{projects_ok}</b>\n"
         f"Задач: <b>{tasks_ok}</b>\n"
         f"Счетов: <b>{invoices_ok}</b>",
