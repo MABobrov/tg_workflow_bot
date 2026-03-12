@@ -1003,6 +1003,7 @@ async def installer_my_objects(message: Message, db: Database) -> None:
     b.button(text=f"🔨 В работе ({len(in_work)})", callback_data="instobj:cat:work")
     b.button(text=f"✅ Ожидает расчёт ({len(waiting)})", callback_data="instobj:cat:waiting")
     b.button(text=f"📦 Архив ({len(archive)})", callback_data="instobj:cat:archive")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
 
     await message.answer(text, reply_markup=b.as_markup())
@@ -1103,6 +1104,7 @@ async def installer_objects_back(cb: CallbackQuery, db: Database) -> None:
     b.button(text=f"🔨 В работе ({len(in_work)})", callback_data="instobj:cat:work")
     b.button(text=f"✅ Ожидает расчёт ({len(waiting)})", callback_data="instobj:cat:waiting")
     b.button(text=f"📦 Архив ({len(archive)})", callback_data="instobj:cat:archive")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
 
     try:
@@ -1971,6 +1973,13 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
         card += f"📍 {addr}\n"
         if est_val:
             card += f"🔧 Расч. монтаж: {est_val:,}₽\n"
+        # Сумма счёта
+        inv_amount = inv.get("amount")
+        if inv_amount:
+            try:
+                card += f"💰 Сумма: {float(inv_amount):,.0f}₽\n"
+            except (ValueError, TypeError):
+                pass
         zp_amount = inv.get("zp_installer_amount")
         if zp_amount and zp_st in ("requested", "approved"):
             try:
@@ -1981,8 +1990,9 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
         b = InlineKeyboardBuilder()
         if zp_st == "not_requested":
             b.button(text="💰 Запросить ЗП", callback_data=f"instzpadj:start:{inv['id']}")
+        b.button(text="⬅️ Назад", callback_data="inst_nav:home")
         b.adjust(1)
-        await message.answer(card, reply_markup=b.as_markup() if b.export() else None)
+        await message.answer(card, reply_markup=b.as_markup())
 
 
 # --- ZP init: toggle / done ---
