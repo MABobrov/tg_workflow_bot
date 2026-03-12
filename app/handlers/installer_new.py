@@ -359,16 +359,18 @@ async def start_invoice_ok(message: Message, state: FSMContext, db: Database) ->
     await state.clear()
 
     invoices = await db.list_installer_confirmed_invoices()
+    # Только in_work и razmery_ok (invoice_ok уже завершены)
+    invoices = [i for i in invoices if i.get("montazh_stage") in ("in_work", "razmery_ok")]
     if not invoices:
-        await answer_service(message, "Нет подтверждённых счетов «В работе».", delay_seconds=60)
+        await answer_service(message, "Нет счетов для завершения.", delay_seconds=60)
         return
 
     await state.set_state(InstallerInvoiceOkSG.select_invoice)
-    await message.answer(
-        "✅ <b>Счет ОК</b>\n\n"
-        "Выберите счёт, по которому работы выполнены:",
-        reply_markup=invoice_list_kb(invoices, action_prefix="instok", back_callback="nav:home", hide_amount=True),
-    )
+    for inv in invoices:
+        card = _build_inst_detail_card(inv)
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Счёт ОК", callback_data=f"instok:view:{inv['id']}")
+        await message.answer(card, reply_markup=kb.as_markup())
 
 
 @router.callback_query(F.data.startswith("instok:view:"))
