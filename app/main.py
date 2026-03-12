@@ -19,6 +19,7 @@ from .middlewares.usage_audit import UsageAuditMiddleware
 from .services.assignment import get_work_chat_id
 from .services.integration_hub import IntegrationHub
 from .services.notifier import Notifier
+from aiohttp import web
 from .services.lead_poller import lead_poller_loop
 from .services.reminders import acceptance_reminders_loop, reminders_loop
 
@@ -237,27 +238,56 @@ async def main() -> None:
         acceptance_reminders_loop(db=db, notifier=notifier, interval_seconds=60)
     )
 
-    # --- Auto-sync from ОП sheet at startup + periodically ---
-    async def _op_sync_loop(interval: int = 900) -> None:
-        """Sync from source ОП sheet → SQLite every `interval` seconds."""
-        while True:
-            try:
-                if integrations.sheets:
-                    op_rows = await asyncio.to_thread(integrations.sheets.read_op_sheet_sync)
-                    ok = 0
-                    for row_data in op_rows:
-                        try:
-                            await db.import_invoice_from_sheet(row_data)
-                            ok += 1
-                        except Exception:
-                            pass
-                    if ok:
-                        log.info("ОП auto-sync: imported/updated %d invoices", ok)
-            except Exception as e:
-                log.error("ОП auto-sync error: %s", e)
-            await asyncio.sleep(interval)
+    # --- One-time full sync from ОП sheet at startup ---
+    log = logging.getLogger(__name__)
+    if integrations.sheets:
+        try:
+            op_rows = await asyncio.to_thread(integrations.sheets.read_op_sheet_sync)
+            ok = 0
+            for row_data in op_rows:
+                try:
+                    await db.import_invoice_from_sheet(row_data)
+                    ok += 1
+                except Exception:
+                    pass
+            if ok:
+                log.info("ОП startup sync: imported/updated %d invoices", ok)
+        except Exception as e:
+            log.error("ОП startup sync error: %s", e)
 
-    op_sync_task = asyncio.create_task(_op_sync_loop(interval=900))
+    # --- Webhook server for Google Sheets onEdit events ---
+    async def _handle_sheets_webhook(request: web.Request) -> web.Response:
+        """POST /webhooks/sheets — triggered by Google Apps Script onEdit."""
+        secret = request.headers.get("X-Webhook-Secret", "")
+        if config.sheets_webhook_secret and secret != config.sheets_webhook_secret:
+            return web.Response(status=403, text="Forbidden")
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.Response(status=400, text="Bad JSON")
+
+        row_values = payload.get("row_values")
+        if not row_values or not integrations.sheets:
+            return web.Response(status=200, text="OK (no data)")
+
+        parsed = integrations.sheets.parse_op_row_from_webhook(row_values)
+        if parsed:
+            try:
+                await db.import_invoice_from_sheet(parsed)
+                inv_num = parsed.get("invoice_number", "?")
+                log.info("Sheets webhook: synced invoice %s", inv_num)
+            except Exception as e:
+                log.error("Sheets webhook import error: %s", e)
+        return web.Response(status=200, text="OK")
+
+    webhook_app = web.Application()
+    webhook_app.router.add_post("/webhooks/sheets", _handle_sheets_webhook)
+    webhook_runner = web.AppRunner(webhook_app)
+    await webhook_runner.setup()
+    webhook_port = config.sheets_webhook_port
+    webhook_site = web.TCPSite(webhook_runner, "0.0.0.0", webhook_port)
+    await webhook_site.start()
+    log.info("Sheets webhook server started on port %d", webhook_port)
 
     lead_poller_task: asyncio.Task | None = None
     if config.amocrm_enabled and amocrm_service is not None:
@@ -280,11 +310,7 @@ async def main() -> None:
             integrations=integrations,
         )
     finally:
-        op_sync_task.cancel()
-        try:
-            await op_sync_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        await webhook_runner.cleanup()
         if lead_poller_task:
             lead_poller_task.cancel()
             try:

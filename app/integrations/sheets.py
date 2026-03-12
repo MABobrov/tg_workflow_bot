@@ -615,6 +615,56 @@ class GoogleSheetsService:
         log.info("Read %d invoices from source ОП sheet", len(results))
         return results
 
+    def parse_op_row_from_webhook(self, row_values: list[str]) -> dict[str, Any] | None:
+        """Parse a single row from webhook payload (same column order as ОП sheet).
+
+        row_values: list of string cell values, index = column index.
+        Returns parsed dict compatible with db.import_invoice_from_sheet(), or None.
+        """
+        inv_num = row_values[4].strip() if len(row_values) > 4 else ""
+        if not inv_num:
+            return None
+
+        parsed: dict[str, Any] = {}
+        for col_idx, field in self._OP_COL_MAP.items():
+            if col_idx >= len(row_values):
+                continue
+            val = str(row_values[col_idx]).strip()
+            if not val:
+                continue
+
+            if field in ("amount", "first_payment_amount", "estimated_materials",
+                         "estimated_installation", "estimated_loaders",
+                         "estimated_logistics", "nds_amount", "outstanding_debt",
+                         "surcharge_amount", "final_surcharge_amount",
+                         "agent_fee", "manager_zp_blank", "npn_amount",
+                         "profit_tax", "rentability_calc"):
+                num = self._parse_num(val)
+                if num is not None:
+                    parsed[field] = num
+            elif field in ("receipt_date", "actual_completion_date",
+                           "surcharge_date", "final_surcharge_date"):
+                d = self._parse_date_dmy(val)
+                if d:
+                    parsed[field] = d
+            elif field == "deadline_days":
+                num = self._parse_num(val)
+                if num is not None:
+                    parsed[field] = int(num)
+            elif field == "is_credit":
+                parsed[field] = 1 if val == "0" else 0
+            elif field == "client_source":
+                if val == "1":
+                    parsed[field] = "own"
+                elif val == "2":
+                    parsed[field] = "gd_lead"
+                else:
+                    parsed[field] = val
+            else:
+                parsed[field] = val
+
+        return parsed if "invoice_number" in parsed else None
+
     async def read_op_sheet(self) -> list[dict[str, Any]]:
         """Async wrapper for reading source ОП sheet."""
         if not self.cfg.enabled:

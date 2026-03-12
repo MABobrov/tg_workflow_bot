@@ -103,6 +103,10 @@ class Config:
     webhook_url: Optional[str]
     webhook_secret: Optional[str]
 
+    # Sheets webhook (Google Apps Script onEdit → bot)
+    sheets_webhook_secret: str
+    sheets_webhook_port: int
+
     # Reminders
     reminders_enabled: bool
     remind_soon_minutes: int
@@ -198,6 +202,9 @@ def load_config() -> Config:
     webhook_url = os.getenv("WEBHOOK_URL")
     webhook_secret = os.getenv("WEBHOOK_SECRET")
 
+    sheets_webhook_secret = os.getenv("SHEETS_WEBHOOK_SECRET", "").strip()
+    sheets_webhook_port = int(os.getenv("SHEETS_WEBHOOK_PORT", "8443"))
+
     reminders_enabled = _parse_bool(os.getenv("REMINDERS_ENABLED"), default=True)
     remind_soon_minutes = int(os.getenv("REMIND_SOON_MINUTES", "60"))
     remind_overdue_minutes = int(os.getenv("REMIND_OVERDUE_MINUTES", "10"))
@@ -248,6 +255,8 @@ def load_config() -> Config:
         enable_webhook=enable_webhook,
         webhook_url=webhook_url,
         webhook_secret=webhook_secret,
+        sheets_webhook_secret=sheets_webhook_secret,
+        sheets_webhook_port=sheets_webhook_port,
         reminders_enabled=reminders_enabled,
         remind_soon_minutes=remind_soon_minutes,
         remind_overdue_minutes=remind_overdue_minutes,
