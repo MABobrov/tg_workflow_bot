@@ -6,8 +6,6 @@ services:
       - .env
     environment:
       - DB_PATH=/app/data/bot.sqlite3
-    ports:
-      - "8443:8443"
     volumes:
       - ./data:/app/data
       - ./secrets:/app/secrets:ro
