@@ -427,6 +427,15 @@ async def invoice_ok_comment(
     from ..enums import MontazhStage
     await db.update_montazh_stage(invoice_id, MontazhStage.INVOICE_OK)
 
+    # Set actual completion date (Дата Факт)
+    from datetime import datetime
+    today_iso = datetime.now().strftime("%Y-%m-%d")
+    await db.conn.execute(
+        "UPDATE invoices SET actual_completion_date = ? WHERE id = ? AND actual_completion_date IS NULL",
+        (today_iso, invoice_id),
+    )
+    await db.conn.commit()
+
     inv = await db.get_invoice(invoice_id)
     if not inv:
         await message.answer("❌ Счёт не найден.")

@@ -162,7 +162,7 @@ class GoogleSheetsService:
 
     def _fmt_amount(self, amount: Any) -> str:
         if isinstance(amount, (int, float)):
-            return f"{amount:,.0f}".replace(",", " ")
+            return f"{amount:.0f}"
         if amount is None:
             return ""
         return str(amount)
@@ -424,8 +424,17 @@ class GoogleSheetsService:
 
         # Set formulas for new rows only
         if is_new:
-            cells[12] = f'=IF(K{row}="","",K{row}+L{row})'
-            cells[45] = f'=IF(K{row}="","",TEXT(K{row},"MMMM"))'
+            cells[12] = (
+                f'=IF(OR(K{row}="",L{row}=""),"",TEXT('
+                f'DATEVALUE(MID(K{row},7,4)&"-"&MID(K{row},4,2)&"-"&LEFT(K{row},2))'
+                f'+L{row},"DD.MM.YYYY"))'
+            )
+            cells[45] = (
+                f'=IF(K{row}="","",SWITCH(VALUE(MID(K{row},4,2)),'
+                f'1,"Январь",2,"Февраль",3,"Март",4,"Апрель",'
+                f'5,"Май",6,"Июнь",7,"Июль",8,"Август",'
+                f'9,"Сентябрь",10,"Октябрь",11,"Ноябрь",12,"Декабрь"))'
+            )
 
         # Build batch update with A1 notation
         batch_data = []
