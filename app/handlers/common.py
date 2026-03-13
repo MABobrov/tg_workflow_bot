@@ -643,7 +643,7 @@ async def rp_menu_team(message: Message, state: FSMContext, db: Database, config
     )
 
 
-@router.message(lambda m: (m.text or "").strip() == OPEN_HELP)
+@router.message(lambda m: (m.text or "").strip() in {OPEN_HELP, "Справка"})
 async def menu_help_shortcut(message: Message, db: Database, config: Config) -> None:
     if not await _guard_blocked_message(message, db):
         return
