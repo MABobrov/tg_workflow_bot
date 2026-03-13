@@ -236,7 +236,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
             [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
-            [GD_BTN_SYNC, GD_BTN_SEARCH_INVOICE],
+            [GD_BTN_ZAMERY, GD_BTN_SEARCH_INVOICE],
             [GD_BTN_CANCEL, GD_BTN_MORE],
         ]
     if role == Role.DRIVER:
@@ -272,7 +272,6 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
         ]
     if role == Role.RP:
         return [
-            [RP_BTN_LEAD, RP_BTN_URGENT],
             [RP_BTN_SEARCH_INVOICE, RP_BTN_SYNC],
             [RP_BTN_HELP],
             [RP_BTN_CANCEL, RP_BTN_BACK_HOME],
@@ -760,7 +759,7 @@ def gd_more_menu(
 
     rows = [
         [_badge(GD_SUBBTN_KV_CRED, "manager_kv"), _badge(GD_SUBBTN_KIA_CRED, "manager_kia")],
-        [_badge(GD_SUBBTN_NPN_CRED, "manager_npn"), _badge(GD_BTN_ZAMERY, "zamery")],
+        [_badge(GD_SUBBTN_NPN_CRED, "manager_npn"), GD_BTN_SYNC],
     ]
     if is_admin:
         rows.append([GD_BTN_ADMIN, GD_BTN_REFRESH])
@@ -842,9 +841,8 @@ def manager_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMar
 
 
 def rp_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
-    """Подменю 'Еще' для РП: Лид, Срочно ГД, Поиск, Синхронизация, Справка."""
+    """Подменю 'Еще' для РП: Поиск, Синхронизация, Справка (#42/#43 убраны дубли)."""
     rows: list[list[str]] = [
-        [RP_BTN_LEAD, RP_BTN_URGENT],
         [RP_BTN_SEARCH_INVOICE, RP_BTN_SYNC],
         [RP_BTN_HELP],
     ]

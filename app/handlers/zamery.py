@@ -1376,6 +1376,7 @@ async def _render_schedule_main(
         )
 
     b.button(text="🚫 Добавить выходной", callback_data="zamsched:blackout:add")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     msg = target.message if isinstance(target, CallbackQuery) else target

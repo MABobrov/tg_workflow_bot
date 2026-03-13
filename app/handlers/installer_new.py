@@ -360,8 +360,12 @@ async def start_invoice_ok(message: Message, state: FSMContext, db: Database) ->
     await state.clear()
 
     invoices = await db.list_installer_confirmed_invoices()
-    # Только in_work и razmery_ok (invoice_ok уже завершены)
-    invoices = [i for i in invoices if i.get("montazh_stage") in ("in_work", "razmery_ok")]
+    # Счета без actual_completion_date (ещё не завершены), стадии in_work/razmery_ok
+    invoices = [
+        i for i in invoices
+        if i.get("montazh_stage") in ("in_work", "razmery_ok")
+        and not i.get("actual_completion_date")
+    ]
     if not invoices:
         await answer_service(message, "Нет счетов для завершения.", delay_seconds=60)
         return
@@ -993,11 +997,22 @@ async def installer_my_objects(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
 
-    invoices = await db.list_invoices(limit=100)
-    all_inv = [i for i in invoices if i["status"] in (
-        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
-        InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
-    ) and not i.get("parent_invoice_id")]
+    # Все счета с montazh_stage (назначены на монтаж) — без ограничения по assigned_to (#10)
+    invoices = await db.list_invoices(limit=200)
+    all_inv = [
+        i for i in invoices
+        if i.get("montazh_stage") and i["montazh_stage"] != "none"
+        and not i.get("parent_invoice_id")
+    ]
+    # Также включаем ENDED без montazh_stage, если ЗП approved
+    ended_with_zp = [
+        i for i in invoices
+        if i["status"] == InvoiceStatus.ENDED
+        and not i.get("parent_invoice_id")
+        and (i.get("zp_installer_status") or "not_requested") == "approved"
+        and i not in all_inv
+    ]
+    all_inv.extend(ended_with_zp)
 
     if not all_inv:
         await answer_service(message, "📌 Нет объектов.", delay_seconds=60)
@@ -1007,14 +1022,17 @@ async def installer_my_objects(message: Message, db: Database) -> None:
     in_work = [i for i in all_inv if i.get("montazh_stage") in work_stages]
     waiting = [
         i for i in all_inv
-        if i.get("montazh_stage") not in work_stages
-        and i["status"] != InvoiceStatus.ENDED
+        if i.get("montazh_stage") == "invoice_ok"
         and (i.get("zp_installer_status") or "not_requested") != "approved"
     ]
     archive = [
         i for i in all_inv
         if (i.get("zp_installer_status") or "not_requested") == "approved"
+        or i["status"] == InvoiceStatus.ENDED
     ]
+    # Убираем дубли: если в archive, не показывать в waiting
+    archive_ids = {i["id"] for i in archive}
+    waiting = [i for i in waiting if i["id"] not in archive_ids]
 
     total = len(in_work) + len(waiting) + len(archive)
     text = f"📌 <b>Мои объекты</b> · {total} шт.\n"
@@ -1038,11 +1056,14 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
 
     cat = cb.data.split(":")[-1]  # type: ignore[union-attr]
 
-    invoices = await db.list_invoices(limit=100)
-    all_inv = [i for i in invoices if i["status"] in (
-        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
-        InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
-    ) and not i.get("parent_invoice_id")]
+    invoices = await db.list_invoices(limit=200)
+    all_inv = [
+        i for i in invoices
+        if (i.get("montazh_stage") and i["montazh_stage"] != "none"
+            or (i["status"] == InvoiceStatus.ENDED
+                and (i.get("zp_installer_status") or "") == "approved"))
+        and not i.get("parent_invoice_id")
+    ]
 
     work_stages = ("in_work", "razmery_ok")
     if cat == "work":
@@ -1053,15 +1074,20 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
         filtered = [
             i for i in all_inv
             if (i.get("zp_installer_status") or "not_requested") == "approved"
+            or i["status"] == InvoiceStatus.ENDED
         ]
         filtered.sort(key=lambda i: i.get("zp_installer_approved_at") or "", reverse=True)
         title = "📦 Архив"
     else:
+        archive_ids = {
+            i["id"] for i in all_inv
+            if (i.get("zp_installer_status") or "not_requested") == "approved"
+            or i["status"] == InvoiceStatus.ENDED
+        }
         filtered = [
             i for i in all_inv
-            if i.get("montazh_stage") not in work_stages
-            and i["status"] != InvoiceStatus.ENDED
-            and (i.get("zp_installer_status") or "not_requested") != "approved"
+            if i.get("montazh_stage") == "invoice_ok"
+            and i["id"] not in archive_ids
         ]
         filtered.sort(key=lambda i: i.get("created_at") or "", reverse=True)
         title = "✅ Ожидает расчёт"
@@ -1098,23 +1124,27 @@ async def installer_objects_back(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
 
-    invoices = await db.list_invoices(limit=100)
-    all_inv = [i for i in invoices if i["status"] in (
-        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
-        InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
-    ) and not i.get("parent_invoice_id")]
+    invoices = await db.list_invoices(limit=200)
+    all_inv = [
+        i for i in invoices
+        if (i.get("montazh_stage") and i["montazh_stage"] != "none"
+            or (i["status"] == InvoiceStatus.ENDED
+                and (i.get("zp_installer_status") or "") == "approved"))
+        and not i.get("parent_invoice_id")
+    ]
 
     work_stages = ("in_work", "razmery_ok")
     in_work = [i for i in all_inv if i.get("montazh_stage") in work_stages]
-    waiting = [
-        i for i in all_inv
-        if i.get("montazh_stage") not in work_stages
-        and i["status"] != InvoiceStatus.ENDED
-        and (i.get("zp_installer_status") or "not_requested") != "approved"
-    ]
     archive = [
         i for i in all_inv
         if (i.get("zp_installer_status") or "not_requested") == "approved"
+        or i["status"] == InvoiceStatus.ENDED
+    ]
+    archive_ids = {i["id"] for i in archive}
+    waiting = [
+        i for i in all_inv
+        if i.get("montazh_stage") == "invoice_ok"
+        and i["id"] not in archive_ids
     ]
 
     total = len(in_work) + len(waiting) + len(archive)
@@ -1272,6 +1302,22 @@ def _build_archive_card(inv: dict) -> str:
         except (ValueError, TypeError):
             pass
 
+    # Площадь + Материал заказан + ЗП статус (как в detail card)
+    parts: list[str] = []
+    area = inv.get("area_m2")
+    if area:
+        try:
+            parts.append(f"📐 {float(area):,.1f} м²")
+        except (ValueError, TypeError):
+            pass
+    if inv.get("materials_ordered"):
+        parts.append("📦 Материал заказан")
+    zp_st = inv.get("zp_installer_status") or "not_requested"
+    zp_lbl = "✅" if zp_st == "approved" else ("⏳" if zp_st == "requested" else "—")
+    parts.append(f"💸 ЗП: {zp_lbl}")
+    if parts:
+        text += " · ".join(parts) + "\n"
+
     zp_amount = inv.get("zp_installer_amount")
     zp_val = 0.0
     if zp_amount:
@@ -1301,9 +1347,14 @@ def _build_archive_card(inv: dict) -> str:
         except (ValueError, TypeError):
             pass
 
+    # Дата создания
+    created = (inv.get("created_at") or "—")[:10]
+    text += f"📅 Создан: {created}"
+    # Дата закрытия/выдачи
     approved = inv.get("zp_installer_approved_at")
     if approved:
-        text += f"📅 Закрыт: {str(approved)[:10]}\n"
+        text += f" · Закрыт: {str(approved)[:10]}"
+    text += "\n"
 
     return text
 
@@ -1798,7 +1849,7 @@ async def installer_in_work(message: Message, state: FSMContext, db: Database) -
             text=f"📄 №{num} — {addr}"[:55],
             callback_data=f"inst_work:view:{inv['id']}",
         )
-    b.button(text="⬅️ Назад", callback_data="nav:home")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
 
     await message.answer(
