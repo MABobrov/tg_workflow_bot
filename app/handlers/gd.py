@@ -49,6 +49,7 @@ from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import get_active_menu_role
 from ..services.notifier import Notifier
 from ..states import ChatProxySG, InvoiceSearchSG, SalesWriteSG
+from .chat_proxy import channel_label, enter_chat_menu, gd_channel_menu
 from ..utils import (
     answer_service,
     format_dt_iso,
@@ -62,7 +63,6 @@ from ..utils import (
     try_json_loads,
 )
 from .auth import require_role_callback, require_role_message
-from .chat_proxy import enter_chat_menu
 
 log = logging.getLogger(__name__)
 
@@ -555,9 +555,60 @@ async def gd_search_execute(message: Message, state: FSMContext, db: Database, c
 
 @router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_CHAT_RP))
 async def gd_chat_rp(message: Message, state: FSMContext, db: Database) -> None:
+    """#51: Чат с РП — с привязкой к счёту."""
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
+    # Invoice picker перед чатом
+    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+    if invoices:
+        b = InlineKeyboardBuilder()
+        for inv in invoices[:10]:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = (inv.get("object_address") or "—")[:20]
+            b.button(text=f"📄 №{num} — {addr}"[:45], callback_data=f"gd_chat_inv:rp:{inv['id']}")
+        b.button(text="📝 Без привязки к счёту", callback_data="gd_chat_inv:rp:0")
+        b.button(text="⬅️ Назад", callback_data="nav:home")
+        b.adjust(1)
+        await message.answer(
+            "💬 <b>Чат с РП</b>\n\nВыберите счёт для привязки:",
+            reply_markup=b.as_markup(),
+        )
+        return
     await enter_chat_menu(message, state, channel="rp")
+
+
+@router.callback_query(F.data.startswith("gd_chat_inv:"))
+async def gd_chat_invoice_picked(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """ГД выбрал счёт для привязки к чату (#51)."""
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
+        return
+    await cb.answer()
+    parts = cb.data.split(":")  # type: ignore[union-attr]
+    channel = parts[1]  # rp, montazh, etc.
+    inv_id = int(parts[2])
+
+    await state.clear()
+    await state.set_state(ChatProxySG.menu)
+    await state.update_data(channel=channel, linked_invoice_id=inv_id if inv_id else None)
+
+    inv_text = ""
+    if inv_id:
+        inv = await db.get_invoice(inv_id)
+        if inv:
+            inv_text = f"\n📄 Привязан счёт: №{inv.get('invoice_number', '?')}"
+
+    label = channel_label(channel)
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            f"💬 <b>{label}</b>{inv_text}\n\nВыберите действие:",
+        )
+    except Exception:
+        pass
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💬 <b>{label}</b>{inv_text}\n\nВыберите действие:",
+        reply_markup=gd_channel_menu(channel),
+    )
 
 
 @router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_ZAMERY))

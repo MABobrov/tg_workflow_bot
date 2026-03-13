@@ -443,10 +443,28 @@ async def rp_chat_mgr_kv(message: Message, state: FSMContext, db: Database) -> N
     await state.clear()
     await state.set_state(ManagerChatProxySG.menu)
     await state.update_data(channel="rp_to_manager_kv")
-    await message.answer(
-        "👤 <b>Менеджер 1 (КВ)</b>\n\nВыберите действие:",
-        reply_markup=rp_chat_submenu("⬅️ Назад"),
-    )
+    # #38: Invoice picker перед чатом
+    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+    kv_invoices = [i for i in invoices if i.get("creator_role") == "manager_kv"]
+    if kv_invoices:
+        b = InlineKeyboardBuilder()
+        for inv in kv_invoices[:10]:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = (inv.get("object_address") or "—")[:20]
+            b.button(text=f"📄 №{num} — {addr}"[:45], callback_data=f"rp_chat_inv:kv:{inv['id']}")
+        b.button(text="📝 Без привязки к счёту", callback_data="rp_chat_inv:kv:0")
+        b.button(text="⬅️ Назад", callback_data="nav:home")
+        b.adjust(1)
+        await message.answer(
+            "👤 <b>Менеджер 1 (КВ)</b>\n\n"
+            "Выберите счёт для привязки к переписке:",
+            reply_markup=b.as_markup(),
+        )
+    else:
+        await message.answer(
+            "👤 <b>Менеджер 1 (КВ)</b>\n\nВыберите действие:",
+            reply_markup=rp_chat_submenu("⬅️ Назад"),
+        )
 
 
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_MGR_KIA) or (m.text or "").strip().startswith(RP_SUBBTN_MGR_KIA))
@@ -456,10 +474,75 @@ async def rp_chat_mgr_kia(message: Message, state: FSMContext, db: Database) -> 
     await state.clear()
     await state.set_state(ManagerChatProxySG.menu)
     await state.update_data(channel="rp_to_manager_kia")
-    await message.answer(
-        "👤 <b>Менеджер 2 (КИА)</b>\n\nВыберите действие:",
-        reply_markup=rp_chat_submenu("⬅️ Назад"),
-    )
+    # #38: Invoice picker перед чатом
+    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+    kia_invoices = [i for i in invoices if i.get("creator_role") == "manager_kia"]
+    if kia_invoices:
+        b = InlineKeyboardBuilder()
+        for inv in kia_invoices[:10]:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = (inv.get("object_address") or "—")[:20]
+            b.button(text=f"📄 №{num} — {addr}"[:45], callback_data=f"rp_chat_inv:kia:{inv['id']}")
+        b.button(text="📝 Без привязки к счёту", callback_data="rp_chat_inv:kia:0")
+        b.button(text="⬅️ Назад", callback_data="nav:home")
+        b.adjust(1)
+        await message.answer(
+            "👤 <b>Менеджер 2 (КИА)</b>\n\n"
+            "Выберите счёт для привязки к переписке:",
+            reply_markup=b.as_markup(),
+        )
+    else:
+        await message.answer(
+            "👤 <b>Менеджер 2 (КИА)</b>\n\nВыберите действие:",
+            reply_markup=rp_chat_submenu("⬅️ Назад"),
+        )
+
+
+# =====================================================================
+# INVOICE PICKER FOR CHAT (#38/#39)
+# =====================================================================
+
+@router.callback_query(F.data.startswith("rp_chat_inv:"))
+async def rp_chat_invoice_picked(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """РП выбрал счёт для привязки к чату с менеджером (#38)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    parts = cb.data.split(":")  # type: ignore[union-attr]
+    mgr_key = parts[1]  # kv, kia, montazh
+    inv_id = int(parts[2])
+
+    channel_map = {"kv": "rp_to_manager_kv", "kia": "rp_to_manager_kia", "montazh": "montazh"}
+    channel = channel_map.get(mgr_key, f"rp_to_manager_{mgr_key}")
+
+    await state.update_data(channel=channel, linked_invoice_id=inv_id if inv_id else None)
+
+    label_map = {"kv": "Менеджер 1 (КВ)", "kia": "Менеджер 2 (КИА)", "montazh": "Монтажная гр."}
+    label = label_map.get(mgr_key, mgr_key)
+
+    inv_text = ""
+    if inv_id:
+        inv = await db.get_invoice(inv_id)
+        if inv:
+            inv_text = f"\n📄 Привязан счёт: №{inv.get('invoice_number', '?')}"
+
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            f"👤 <b>{label}</b>{inv_text}\n\nВыберите действие:",
+        )
+    except Exception:
+        pass
+
+    if mgr_key == "montazh":
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"🔧 <b>Монтажная гр.</b>{inv_text}\n\nВыберите действие:",
+            reply_markup=rp_montazh_submenu("⬅️ Назад"),
+        )
+    else:
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"👤 <b>{label}</b>{inv_text}\n\nВыберите действие:",
+            reply_markup=rp_chat_submenu("⬅️ Назад"),
+        )
 
 
 # =====================================================================
@@ -481,6 +564,24 @@ async def rp_chat_montazh(message: Message, state: FSMContext, db: Database) -> 
     await state.clear()
     await state.set_state(ManagerChatProxySG.menu)
     await state.update_data(channel="montazh")
+    # #39: Invoice picker перед чатом с монтажником
+    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+    montazh_inv = [i for i in invoices if i.get("montazh_stage") and i["montazh_stage"] != "none"]
+    if montazh_inv:
+        b = InlineKeyboardBuilder()
+        for inv in montazh_inv[:10]:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = (inv.get("object_address") or "—")[:20]
+            b.button(text=f"📄 №{num} — {addr}"[:45], callback_data=f"rp_chat_inv:montazh:{inv['id']}")
+        b.button(text="📝 Без привязки к счёту", callback_data="rp_chat_inv:montazh:0")
+        b.button(text="⬅️ Назад", callback_data="nav:home")
+        b.adjust(1)
+        await message.answer(
+            "🔧 <b>Монтажная гр.</b>\n\n"
+            "Выберите счёт для привязки к переписке:",
+            reply_markup=b.as_markup(),
+        )
+        return
     await message.answer(
         "🔧 <b>Монтажная гр.</b>\n\nВыберите действие:",
         reply_markup=rp_montazh_submenu("⬅️ Назад"),
