@@ -14,6 +14,7 @@ Covers:
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, timedelta
 from typing import Any
@@ -431,6 +432,36 @@ async def check_kp_comment(
             ),
         ),
     )
+
+
+# =====================================================================
+# CHECK_KP — ПОДТВЕРЖДЕНИЕ МЕНЕДЖЕРОМ (#26/#27)
+# =====================================================================
+
+@router.callback_query(F.data.startswith("mgr_kp_ok:"))
+async def mgr_kp_ok_confirm(cb: CallbackQuery, db: Database) -> None:
+    """Менеджер подтверждает получение ответа РП по CHECK_KP."""
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
+    await cb.answer("✅ Задача подтверждена")
+    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+
+    # Закрываем кнопку — убираем inline keyboard
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+    except Exception:
+        pass
+
+    task = await db.get_task(task_id)
+    if task:
+        # Помечаем как подтверждённую менеджером
+        payload = json.loads(task.get("payload_json") or "{}")
+        payload["manager_confirmed"] = True
+        await db.conn.execute(
+            "UPDATE tasks SET payload_json = ? WHERE id = ?",
+            (json.dumps(payload, ensure_ascii=False), task_id),
+        )
+        await db.conn.commit()
 
 
 # =====================================================================

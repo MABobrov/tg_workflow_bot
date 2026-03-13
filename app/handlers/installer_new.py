@@ -1107,14 +1107,79 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
     for inv in filtered[:15]:
         card_text = card_fn(inv)
         b = InlineKeyboardBuilder()
-        # Кнопка "Запрос ЗП" для карточек "Ожидает расчёт"
         if cat == "waiting":
             zp_st = inv.get("zp_installer_status") or "not_requested"
-            if zp_st not in ("approved", "requested"):
-                b.button(text="💰 Запрос ЗП", callback_data=f"instzpadj:start:{inv['id']}")
+            # #18: Две кнопки вместо "Запрос ЗП"
+            if zp_st not in ("approved",):
+                b.button(text="✏️ Изменить стоимость", callback_data=f"instzpadj:start:{inv['id']}")
+            if zp_st == "not_requested":
+                b.button(text="✅ ЗП получено", callback_data=f"instzp_done:{inv['id']}")
+            # #20: Кнопка "Цена ок"
+            b.button(text="💲 Цена ок", callback_data=f"instzp_price_ok:{inv['id']}")
+        elif cat == "work":
+            zp_st = inv.get("zp_installer_status") or "not_requested"
+            if zp_st not in ("approved",):
+                b.button(text="✏️ Изменить стоимость", callback_data=f"instzpadj:start:{inv['id']}")
         b.button(text="⬅️ Назад", callback_data="instobj:back")
         b.adjust(1)
         await cb.message.answer(card_text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.startswith("instzp_done:"))
+async def installer_zp_done(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """#18: Монтажник подтвердил получение ЗП."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer("✅ ЗП подтверждено")
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        return
+    await db.update_invoice(inv_id, zp_installer_status="approved")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+    except Exception:
+        pass
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ ЗП по счёту №{inv.get('invoice_number', '?')} подтверждено.",
+    )
+
+
+@router.callback_query(F.data.startswith("instzp_price_ok:"))
+async def installer_zp_price_ok(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """#20: Монтажник подтвердил цену (Цена ок)."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer("💲 Цена подтверждена")
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        return
+    # Помечаем что монтажник согласен с ценой
+    await db.update_invoice(inv_id, montazh_stage="invoice_ok")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+    except Exception:
+        pass
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💲 Цена по счёту №{inv.get('invoice_number', '?')} подтверждена.",
+    )
+    # Уведомляем ГД
+    from ..services.assignment import resolve_default_assignee
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
+    if gd_id:
+        u = cb.from_user
+        initiator = await get_initiator_label(db, u.id)
+        await notifier.safe_send(
+            int(gd_id),
+            f"💲 <b>Цена подтверждена монтажником</b>\n"
+            f"📄 Счёт №{inv.get('invoice_number', '?')}\n"
+            f"👤 {initiator}",
+        )
 
 
 @router.callback_query(F.data == "instobj:back")

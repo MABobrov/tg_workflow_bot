@@ -2935,7 +2935,15 @@ async def kp_review_comment(
         if comment:
             msg += f"\n💬 Комментарий РП: {comment}"
 
-        await notifier.safe_send(int(manager_id), msg)
+        # Кнопка "Задача ок" для менеджера (#26/#27)
+        confirm_kb = InlineKeyboardBuilder()
+        confirm_kb.button(
+            text="✅ Задача ок",
+            callback_data=f"mgr_kp_ok:{task_id}",
+        )
+        await notifier.safe_send(
+            int(manager_id), msg, reply_markup=confirm_kb.as_markup(),
+        )
 
         # Send attached documents (only for б/н)
         if not is_credit:

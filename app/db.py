@@ -2724,11 +2724,12 @@ class Database:
     async def list_invoices_for_edo(
         self, created_by: int, limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Счета менеджера для ЭДО: в работе, не ended, не дочерние."""
+        """Счета менеджера для ЭДО: в работе, не ended, не дочерние, не кредитные (#22)."""
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
             "WHERE created_by = ? "
-            "AND status NOT IN ('new', 'rejected', 'ended') "
+            "AND status NOT IN ('new', 'rejected', 'ended', 'credit') "
+            "AND (is_credit = 0 OR is_credit IS NULL) "
             "AND parent_invoice_id IS NULL "
             "ORDER BY updated_at DESC LIMIT ?",
             (created_by, limit),

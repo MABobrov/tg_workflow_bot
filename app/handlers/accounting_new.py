@@ -253,9 +253,11 @@ async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
     dl = _deadline_indicator(inv.get("deadline_end_date"))
 
     return (
-        f"{status_icon} <b>№{num}</b> | {date}{dl}\n"
-        f"👤 {creator_label} ({role_label}) | 🏢 {supplier}\n"
-        f"💰 {amt} | 💳 Долг: {debt}\n"
+        f"{status_icon} <b>№{num}</b>\n"
+        f"📅 {date}{dl}\n"
+        f"👤 {creator_label} ({role_label})\n"
+        f"🏢 {supplier}\n"
+        f"💰 {amt} · 💳 Долг: {debt}\n"
         f"📋 П: {primary} | З: {secondary}"
     )
 
