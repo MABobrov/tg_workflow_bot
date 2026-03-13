@@ -85,13 +85,75 @@ from ..states import (
     RpRazmerySG,
     RpSupplierInvoiceSG,
 )
-from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
+from ..utils import answer_service, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
 router = Router()
 router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
+
+
+@router.message.outer_middleware()
+async def _rp_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
+    """При каждом сообщении от РП — обновляем reply-клавиатуру с бейджами."""
+    result = await handler(event, data)
+    u = event.from_user
+    if not u:
+        return result
+    # Не обновлять если РП в FSM-состоянии (чтобы не мешать вводу)
+    fsm: FSMContext | None = data.get("state")
+    if fsm:
+        cur_state = await fsm.get_state()
+        if cur_state is not None:
+            return result
+    db_rp: Database | None = data.get("db")
+    cfg = data.get("config")
+    if not db_rp or not cfg:
+        return result
+    try:
+        user = await db_rp.get_user_optional(u.id)
+        if not user or not user.role:
+            return result
+        if Role.RP not in set(parse_roles(user.role)):
+            return result
+        menu_role, isolated = resolve_menu_scope(u.id, user.role)
+        if menu_role != Role.RP:
+            return result
+        unread = await db_rp.count_unread_tasks(u.id)
+        uc = await db_rp.count_unread_by_channel(u.id)
+        is_admin = u.id in (cfg.admin_ids or set())
+        # RP-specific badge counts
+        rp_t = await db_rp.count_rp_role_tasks(u.id)
+        rp_m = await db_rp.count_rp_role_messages(u.id)
+        rp_ckp = await db_rp.count_rp_check_kp_tasks(u.id)
+        rp_ipay = await db_rp.count_rp_invoice_pay_tasks(u.id)
+        rp_ch_kv = await db_rp.count_rp_channel_unread(u.id, "rp_to_manager_kv")
+        rp_ch_kia = await db_rp.count_rp_channel_unread(u.id, "rp_to_manager_kia")
+        rp_ch_mont = await db_rp.count_rp_channel_unread(u.id, "montazh")
+        # NPN badge (for role-switcher)
+        npn_t = 0
+        npn_m = 0
+        if Role.MANAGER_NPN in set(parse_roles(user.role)):
+            npn_t = await db_rp.count_unread_tasks(u.id)
+            npn_uc = await db_rp.count_unread_by_channel(u.id)
+            npn_m = npn_uc.get("total", 0) if isinstance(npn_uc, dict) else 0
+        kb = main_menu(
+            menu_role,
+            is_admin=is_admin,
+            unread=unread,
+            unread_channels=uc,
+            isolated_role=isolated,
+            rp_tasks=rp_t, rp_messages=rp_m,
+            npn_tasks=npn_t, npn_messages=npn_m,
+            rp_check_kp=rp_ckp, rp_invoices_pay=rp_ipay,
+            rp_ch_mgr_kv=rp_ch_kv, rp_ch_mgr_kia=rp_ch_kia,
+            rp_ch_montazh=rp_ch_mont,
+        )
+        await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)
+    except Exception:
+        log.debug("rp auto-refresh failed", exc_info=True)
+    return result
 
 
 async def _current_role(db: Database, user_id: int) -> str | None:
@@ -217,6 +279,7 @@ def _invoices_pay_kb(
         b.button(text=text[:60], callback_data=f"rpinv:view:{inv['id']}")
     b.button(text="➕ Создать счёт на оплату", callback_data="rp_inv_pay:create")
     b.button(text="🔄 Обновить", callback_data="rp_inv_pay:refresh")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
     return b.as_markup()
 
@@ -1466,11 +1529,19 @@ async def rp_sinv_send_no_comment(
 
 
 @router.callback_query(F.data == "rp_sinv:cancel")
-async def rp_sinv_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+async def rp_sinv_cancel(cb: CallbackQuery, state: FSMContext, db: Database, config: Config) -> None:
     """Отменить отправку счёта."""
     await cb.answer("❌ Отменено")
     await state.clear()
-    await cb.message.answer("❌ Отправка счёта отменена.")  # type: ignore[union-attr]
+    u = cb.from_user
+    user = await db.get_user_optional(u.id) if u else None
+    role = user.role if user else None
+    menu_role, isolated = resolve_menu_scope(u.id, role) if u else (role, False)
+    is_admin = bool(u and u.id in (config.admin_ids or set()))
+    unread = await db.count_unread_tasks(u.id) if u else 0
+    uc = await db.count_unread_by_channel(u.id) if u else {}
+    kb = main_menu(menu_role or role, is_admin=is_admin, unread=unread, unread_channels=uc, isolated_role=isolated)
+    await cb.message.answer("❌ Отправка счёта отменена.", reply_markup=kb)  # type: ignore[union-attr]
 
 
 async def _rp_sinv_finalize(
@@ -1595,6 +1666,7 @@ def _edo_requests_list_kb(
         b.button(text=text[:60], callback_data=f"rp_edo:view:{r['id']}")
     b.button(text="➕ Новый запрос ЭДО", callback_data="rp_edo:create")
     b.button(text="🔄 Обновить", callback_data="rp_edo:refresh")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
     return b.as_markup()
 
@@ -1777,6 +1849,7 @@ def _ended_invoices_kb(
         b.button(text="📋 Все закрытые счета", callback_data="rp_closed:all")
     b.button(text="🔍 Поиск", callback_data="rp_closed:search")
     b.button(text="🔄 Обновить", callback_data="rp_closed:refresh")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
     return b.as_markup()
 
@@ -1990,7 +2063,8 @@ def _lead_source_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for label, key in _LEAD_SOURCES:
         b.button(text=label, callback_data=f"lead_src:{key}")
-    b.adjust(2, 2)
+    b.button(text="❌ Отмена", callback_data="lead:cancel")
+    b.adjust(2, 2, 1)
     return b.as_markup()
 
 
@@ -2234,6 +2308,22 @@ async def lead_description(message: Message, state: FSMContext) -> None:
         "Шаг 3/4: Выберите <b>источник лида</b>:",
         reply_markup=_lead_source_kb(),
     )
+
+
+@router.callback_query(F.data == "lead:cancel")
+async def lead_cancel(cb: CallbackQuery, state: FSMContext, db: Database, config: Config) -> None:
+    """Отмена создания лида."""
+    await cb.answer("❌ Отменено")
+    await state.clear()
+    u = cb.from_user
+    user = await db.get_user_optional(u.id) if u else None
+    role = user.role if user else None
+    menu_role, isolated = resolve_menu_scope(u.id, role) if u else (role, False)
+    is_admin = bool(u and u.id in (config.admin_ids or set()))
+    unread = await db.count_unread_tasks(u.id) if u else 0
+    uc = await db.count_unread_by_channel(u.id) if u else {}
+    kb = main_menu(menu_role or role, is_admin=is_admin, unread=unread, unread_channels=uc, isolated_role=isolated)
+    await cb.message.answer("❌ Создание лида отменено.", reply_markup=kb)  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data.startswith("lead_src:"))

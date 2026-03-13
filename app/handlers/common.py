@@ -65,7 +65,7 @@ async def _menu_context(db: Database, user_id: int | None, role: str | None) -> 
 
     roles = set(parse_roles(role))
     _is_rp = Role.RP in roles or Role.MANAGER_NPN in roles
-    return {
+    ctx: dict[str, object] = {
         "unread": await db.count_unread_tasks(user_id),
         "unread_channels": await db.count_unread_by_channel(user_id),
         "gd_inbox_unread": await db.count_gd_inbox_tasks(user_id) if Role.GD in roles else None,
@@ -74,6 +74,18 @@ async def _menu_context(db: Database, user_id: int | None, role: str | None) -> 
         "rp_tasks": await db.count_rp_role_tasks(user_id) if _is_rp else 0,
         "rp_messages": await db.count_rp_role_messages(user_id) if _is_rp else 0,
     }
+    # RP per-button badge counters
+    if Role.RP in roles:
+        ctx["rp_check_kp"] = await db.count_rp_check_kp_tasks(user_id)
+        ctx["rp_invoices_pay"] = await db.count_rp_invoice_pay_tasks(user_id)
+        ctx["rp_ch_mgr_kv"] = await db.count_rp_channel_unread(user_id, "rp_to_manager_kv")
+        ctx["rp_ch_mgr_kia"] = await db.count_rp_channel_unread(user_id, "rp_to_manager_kia")
+        ctx["rp_ch_montazh"] = await db.count_rp_channel_unread(user_id, "montazh")
+    # NPN badge counters (for RP role-switcher)
+    if Role.MANAGER_NPN in roles:
+        ctx["npn_tasks"] = await db.count_unread_tasks(user_id)
+        ctx["npn_messages"] = 0
+    return ctx
 
 
 def _menu_scope(user_id: int | None, role_value: str | None) -> tuple[str | None, bool]:

@@ -14,11 +14,13 @@ from .config import load_config
 from .db import Database
 from .integrations.amocrm import AmoCRMService, AmoConfig
 from .integrations.sheets import GoogleSheetsService, SheetsConfig
+from .middlewares.keep_menu import KeepMenuMiddleware
 from .middlewares.update_logger import UpdateLoggingMiddleware
 from .middlewares.usage_audit import UsageAuditMiddleware
 from .services.assignment import get_work_chat_id
 from .services.integration_hub import IntegrationHub
 from .services.notifier import Notifier
+from .services.daily_sync import daily_sync_loop
 from .services.lead_poller import lead_poller_loop
 from .services.reminders import acceptance_reminders_loop, reminders_loop
 
@@ -193,6 +195,7 @@ async def main() -> None:
     dp = Dispatcher()
     dp.update.outer_middleware(UpdateLoggingMiddleware())
     dp.update.outer_middleware(UsageAuditMiddleware())
+    dp.message.outer_middleware(KeepMenuMiddleware())
     dp.include_router(group_guard.router)
     dp.include_router(common.router)
     dp.include_router(admin.router)
@@ -254,6 +257,18 @@ async def main() -> None:
         except Exception as e:
             log.error("ОП startup sync error: %s", e)
 
+    # Daily auto-sync at 09:00 MSK for all roles
+    daily_sync_task: asyncio.Task | None = asyncio.create_task(
+        daily_sync_loop(
+            db=db,
+            notifier=notifier,
+            config=config,
+            integrations=integrations,
+            target_hour=9,
+            target_minute=0,
+        )
+    )
+
     lead_poller_task: asyncio.Task | None = None
     if config.amocrm_enabled and amocrm_service is not None:
         lead_poller_task = asyncio.create_task(
@@ -299,6 +314,14 @@ async def main() -> None:
                 pass
             except Exception:
                 logging.exception("Acceptance reminder task terminated with error")
+        if daily_sync_task:
+            daily_sync_task.cancel()
+            try:
+                await daily_sync_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logging.exception("Daily sync task terminated with error")
         await integrations.stop()
         await db.close()
         await bot.session.close()

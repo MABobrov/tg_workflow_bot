@@ -1630,11 +1630,19 @@ async def zpadj_finalize(
 
 
 @router.callback_query(F.data == "instzpadj:cancel")
-async def zpadj_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+async def zpadj_cancel(cb: CallbackQuery, state: FSMContext, db: Database, config: Config) -> None:
     """Отмена запроса ЗП."""
     await cb.answer()
     await state.clear()
-    await cb.message.answer("❌ Запрос ЗП отменён.")  # type: ignore[union-attr]
+    u = cb.from_user
+    user = await db.get_user_optional(u.id) if u else None
+    role = user.role if user else None
+    menu_role, isolated = resolve_menu_scope(u.id, role) if u else (role, False)
+    is_admin = bool(u and u.id in (config.admin_ids or set()))
+    unread = await db.count_unread_tasks(u.id) if u else 0
+    uc = await db.count_unread_by_channel(u.id) if u else {}
+    kb = main_menu(menu_role or role, is_admin=is_admin, unread=unread, unread_channels=uc, isolated_role=isolated)
+    await cb.message.answer("❌ Запрос ЗП отменён.", reply_markup=kb)  # type: ignore[union-attr]
 
 
 # =====================================================================

@@ -410,6 +410,11 @@ def main_menu(
     rp_messages: int = 0,
     npn_tasks: int = 0,
     npn_messages: int = 0,
+    rp_check_kp: int = 0,
+    rp_invoices_pay: int = 0,
+    rp_ch_mgr_kv: int = 0,
+    rp_ch_mgr_kia: int = 0,
+    rp_ch_montazh: int = 0,
 ) -> ReplyKeyboardMarkup:
     parsed_roles = parse_roles(role)
     if not isolated_role and len(parsed_roles) > 1:
@@ -490,9 +495,20 @@ def main_menu(
                 # GD "Оплата поставщику" badge
                 if btn == GD_BTN_SUPPLIER_PAY:
                     row[i] = gd_supplier_pay_label
-                # Per-channel chat badges
+                # Per-channel chat badges (GD)
                 if btn in _chan_labels:
                     row[i] = _chan_labels[btn]
+                # RP per-button badges
+                if btn == RP_BTN_CHECK_KP and rp_check_kp > 0:
+                    row[i] = f"{RP_BTN_CHECK_KP} 🔴{rp_check_kp}"
+                if btn == RP_BTN_INVOICES_PAY and rp_invoices_pay > 0:
+                    row[i] = f"{RP_BTN_INVOICES_PAY} 🔴{rp_invoices_pay}"
+                if btn == RP_BTN_MGR_KV and rp_ch_mgr_kv > 0:
+                    row[i] = f"{RP_BTN_MGR_KV} 🔴{rp_ch_mgr_kv}"
+                if btn == RP_BTN_MGR_KIA and rp_ch_mgr_kia > 0:
+                    row[i] = f"{RP_BTN_MGR_KIA} 🔴{rp_ch_mgr_kia}"
+                if btn == RP_BTN_MONTAZH and rp_ch_montazh > 0:
+                    row[i] = f"{RP_BTN_MONTAZH} 🔴{rp_ch_montazh}"
 
     # GD gets a custom layout — Отмена и Ещё уже в grid, админ в подменю
     if _is_pure_gd(role):

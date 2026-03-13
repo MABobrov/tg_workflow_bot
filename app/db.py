@@ -1043,6 +1043,40 @@ class Database:
         row = await cur.fetchone()
         return row[0] if row else 0
 
+    async def count_rp_check_kp_tasks(self, user_id: int) -> int:
+        """Count open/in_progress CHECK_KP tasks assigned to RP user."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM tasks "
+            "WHERE assigned_to = ? AND status IN ('open', 'in_progress') "
+            "AND type = 'check_kp'",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def count_rp_invoice_pay_tasks(self, user_id: int) -> int:
+        """Count open/in_progress ORDER_* tasks assigned to RP user."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM tasks "
+            "WHERE assigned_to = ? AND status IN ('open', 'in_progress') "
+            "AND type IN ('order_materials', 'order_profile', 'order_glass', "
+            "'delivery_request', 'tinting_request')",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def count_rp_channel_unread(self, user_id: int, channel: str) -> int:
+        """Count unread incoming chat messages for RP in a specific channel."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM chat_messages "
+            "WHERE receiver_id = ? AND direction = 'incoming' "
+            "AND is_read = 0 AND channel = ?",
+            (user_id, channel),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
     # -------------------- CHECK_KP task helpers (Этап 5) --------------------
 
     async def list_check_kp_tasks(self, user_id: int, limit: int = 30) -> list[dict[str, Any]]:

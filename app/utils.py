@@ -418,7 +418,34 @@ async def refresh_recipient_keyboard(
     _is_rp_r = Role.RP in _parsed_r or Role.MANAGER_NPN in _parsed_r
     rp_t_r = await db.count_rp_role_tasks(user_id) if _is_rp_r else 0
     rp_m_r = await db.count_rp_role_messages(user_id) if _is_rp_r else 0
-    kb = main_menu(user.role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_unread, gd_invoice_unread=gd_inv, gd_invoice_end_unread=gd_ie, gd_supplier_pay_unread=gd_sp, rp_tasks=rp_t_r, rp_messages=rp_m_r)
+    # RP per-button badge counters
+    rp_ckp = 0
+    rp_ipay = 0
+    rp_ch_kv = 0
+    rp_ch_kia = 0
+    rp_ch_mont = 0
+    if Role.RP in _parsed_r:
+        rp_ckp = await db.count_rp_check_kp_tasks(user_id)
+        rp_ipay = await db.count_rp_invoice_pay_tasks(user_id)
+        rp_ch_kv = await db.count_rp_channel_unread(user_id, "rp_to_manager_kv")
+        rp_ch_kia = await db.count_rp_channel_unread(user_id, "rp_to_manager_kia")
+        rp_ch_mont = await db.count_rp_channel_unread(user_id, "montazh")
+    # NPN badge counters (for role-switcher)
+    npn_t = 0
+    npn_m = 0
+    if Role.MANAGER_NPN in _parsed_r:
+        npn_t = await db.count_unread_tasks(user_id)
+        npn_m = 0  # NPN messages counted via general unread
+    kb = main_menu(
+        user.role, is_admin=is_admin, unread=unread, unread_channels=uc,
+        gd_inbox_unread=gd_unread, gd_invoice_unread=gd_inv,
+        gd_invoice_end_unread=gd_ie, gd_supplier_pay_unread=gd_sp,
+        rp_tasks=rp_t_r, rp_messages=rp_m_r,
+        npn_tasks=npn_t, npn_messages=npn_m,
+        rp_check_kp=rp_ckp, rp_invoices_pay=rp_ipay,
+        rp_ch_mgr_kv=rp_ch_kv, rp_ch_mgr_kia=rp_ch_kia,
+        rp_ch_montazh=rp_ch_mont,
+    )
     text = f"📥 У вас {unread} активных задач." if unread else "📥 Нет активных задач."
     await notifier.safe_send(user_id, text, reply_markup=kb)
 
