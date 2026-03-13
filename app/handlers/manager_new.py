@@ -1913,7 +1913,7 @@ async def start_manager_issue(message: Message, state: FSMContext, db: Database)
 # =====================================================================
 
 @router.message(
-    lambda m: (m.text or "").strip() in {MGR_BTN_SEARCH_INVOICE, "🔍 Поиск Счета", "🔍 Найти Счет №"}
+    lambda m: (m.text or "").strip() in {MGR_BTN_SEARCH_INVOICE, "🔍 Поиск Счета", "🔍 Найти Счет №", "🔍 Поиск счёта"}
     and get_active_menu_role(m.from_user.id if m.from_user else None) != Role.GD
 )
 async def search_invoice_start(message: Message, state: FSMContext, db: Database) -> None:
@@ -2818,20 +2818,21 @@ async def zamery_finalize(
         await notifier.safe_send_media(int(zamery_id_user), a["file_type"], a["file_id"], caption=a.get("caption"))
     await refresh_recipient_keyboard(notifier, db, config, int(zamery_id_user))
 
-    # Если привязан к лиду → уведомить РП
-    if source_type == "lead" and lead_task_id:
-        rp_id = await resolve_default_assignee(db, config, Role.RP)
-        if rp_id:
-            rp_msg = (
-                f"📐 <b>Заявка на замер по лиду</b>\n"
-                f"👤 От: {initiator}\n\n"
-                f"🎯 Лид #{lead_task_id}\n"
-                f"📍 Адрес: {address}\n"
-            )
-            if description:
-                rp_msg += f"📝 {description}\n"
-            await notifier.safe_send(int(rp_id), rp_msg)
-            await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
+    # Уведомить РП о новой заявке на замер (все источники)
+    rp_id = await resolve_default_assignee(db, config, Role.RP)
+    if rp_id:
+        rp_msg = f"📐 <b>Заявка на замер</b> #{zam_req_id}\n"
+        rp_msg += f"👤 От: {initiator}\n"
+        rp_msg += f"📌 Источник: {source_label}\n"
+        if source_type == "lead" and lead_task_id:
+            rp_msg += f"🎯 Лид #{lead_task_id}\n"
+        rp_msg += f"\n📍 Адрес: {address}\n"
+        if description:
+            rp_msg += f"📝 {description}\n"
+        if client_contact:
+            rp_msg += f"📞 Контакт: {client_contact}\n"
+        await notifier.safe_send(int(rp_id), rp_msg)
+        await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
     menu_role, isolated_role = await _current_menu(db, u.id)
     await state.clear()
@@ -3005,7 +3006,8 @@ async def mgr_chat_writing(
         await message.answer("Отправьте текст, файл или фото:")
         return
 
-    # Save chat message
+    # Save chat message (with invoice binding if selected)
+    linked_invoice_id = data.get("invoice_id")
     await db.save_chat_message(
         channel=channel,
         sender_id=message.from_user.id,
@@ -3013,6 +3015,7 @@ async def mgr_chat_writing(
         text=text or "[файл/фото]",
         tg_message_id=message.message_id,
         has_attachment=bool(message.document or message.photo),
+        invoice_id=linked_invoice_id if linked_invoice_id else None,
     )
 
     # Determine target by channel

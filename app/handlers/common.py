@@ -761,7 +761,7 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
 # =====================================================================
 
 @router.message(
-    lambda m: (m.text or "").strip() == MGR_BTN_SYNC
+    lambda m: (m.text or "").strip() in {MGR_BTN_SYNC, "🔄 Синхронизация данных"}
     and get_active_menu_role(m.from_user.id if m.from_user else None) != Role.GD
 )
 async def sync_data_non_gd(

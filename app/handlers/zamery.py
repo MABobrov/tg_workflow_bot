@@ -387,6 +387,17 @@ async def _finalize_accept(
     await notifier.safe_send(req["requested_by"], notify_text)
     await refresh_recipient_keyboard(notifier, db, config, req["requested_by"])
 
+    # Уведомить РП о принятии замера
+    rp_id = await resolve_default_assignee(db, config, Role.RP)
+    if rp_id and rp_id != req["requested_by"]:
+        rp_msg = (
+            f"✅ <b>Замер #{req_id} принят замерщиком</b>\n"
+            f"📍 {req.get('address', '—')}\n"
+        )
+        if data.get("scheduled_date"):
+            rp_msg += f"📅 Дата: {data['scheduled_date']}\n"
+        await notifier.safe_send(int(rp_id), rp_msg)
+
     # Обновить клавиатуру замерщика (бейдж на кнопке «Замеры»)
     uid = event.from_user.id if isinstance(event, (Message, CallbackQuery)) and event.from_user else None
     if uid:
@@ -807,6 +818,24 @@ async def _finalize_complete(
         if fid:
             await notifier.safe_send_media(req["requested_by"], ft, fid, caption=a.get("caption"))
     await refresh_recipient_keyboard(notifier, db, config, req["requested_by"])
+
+    # Уведомить РП о завершении замера
+    rp_id = await resolve_default_assignee(db, config, Role.RP)
+    if rp_id and rp_id != req["requested_by"]:
+        rp_msg = (
+            f"✅ <b>Замер #{req_id} выполнен</b>\n"
+            f"📍 {req.get('address', '—')}\n"
+        )
+        if time_label:
+            rp_msg += f"⏱ {time_label}\n"
+        await notifier.safe_send(int(rp_id), rp_msg)
+        # Отправить бланк замера РП
+        for a in attachments:
+            ft = a.get("file_type", "document")
+            fid = a.get("file_id")
+            if fid:
+                await notifier.safe_send_media(int(rp_id), ft, fid, caption=a.get("caption"))
+
     # Обновить бейдж замерщика
     uid = event.from_user.id if isinstance(event, (Message, CallbackQuery)) and event.from_user else None
     if uid:

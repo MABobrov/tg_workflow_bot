@@ -853,6 +853,19 @@ async def invoice_pp_finalize(
                 int(sender_id), a["file_type"], a["file_id"], caption=a.get("caption"),
             )
 
+    # Уведомить монтажника о поступлении оплаты (если счёт привязан)
+    if invoice_id is not None:
+        inv = await db.get_invoice(invoice_id)
+        if inv and inv.get("assigned_to"):
+            installer_id = inv["assigned_to"]
+            inst_msg = (
+                f"💰 <b>Оплата поступила</b>\n"
+                f"📄 Счёт №{inv.get('invoice_number', inv_num)}\n"
+                f"📍 {inv.get('object_address', '—')}\n"
+            )
+            await notifier.safe_send(int(installer_id), inst_msg)
+            await refresh_recipient_keyboard(notifier, db, config, int(installer_id))
+
     await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
     await state.clear()
 
