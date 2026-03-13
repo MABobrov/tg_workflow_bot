@@ -141,14 +141,52 @@ async def start_check_kp(message: Message, state: FSMContext, db: Database) -> N
 
 
 @router.message(CheckKpSG.invoice_number)
-async def check_kp_invoice_number(message: Message, state: FSMContext) -> None:
+async def check_kp_invoice_number(message: Message, state: FSMContext, db: Database) -> None:
     text = (message.text or "").strip()
     if not text:
         await message.answer("Введите номер счёта:")
         return
-    await state.update_data(invoice_number=text)
+
+    # Check if invoice already exists in DB
+    existing = await db.get_invoice_by_number(text)
+    if existing:
+        # Invoice found → skip to documents (short flow)
+        await state.update_data(
+            invoice_number=text,
+            existing_invoice_id=existing["id"],
+            client_name=existing.get("client_name", ""),
+            address=existing.get("object_address", ""),
+            amount=existing.get("amount", 0),
+            payment_type=existing.get("payment_terms", ""),
+            deadline_days=existing.get("deadline_days"),
+        )
+        await state.set_state(CheckKpSG.documents)
+        await message.answer(
+            f"📄 Счёт <b>№{text}</b> найден в базе.\n"
+            f"📍 {existing.get('object_address', '—')}\n"
+            f"💰 {existing.get('amount', 0):,.0f}₽\n\n"
+            "Прикрепите <b>КП</b> (файл или фото):"
+        )
+    else:
+        # Invoice NOT found → full form
+        await state.update_data(invoice_number=text, existing_invoice_id=None)
+        await state.set_state(CheckKpSG.client_name)
+        await message.answer(
+            f"Счёт №{text} <b>не найден</b> в базе.\n"
+            "Заполните данные для создания:\n\n"
+            "Шаг 2/7: Введите <b>контрагента</b> (название компании/ФИО):"
+        )
+
+
+@router.message(CheckKpSG.client_name)
+async def check_kp_client_name(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Введите контрагента:")
+        return
+    await state.update_data(client_name=text)
     await state.set_state(CheckKpSG.address)
-    await message.answer("Шаг 2/5: Введите <b>адрес установки</b>:")
+    await message.answer("Шаг 3/7: Введите <b>адрес установки</b>:")
 
 
 @router.message(CheckKpSG.address)
@@ -159,7 +197,7 @@ async def check_kp_address(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(address=text)
     await state.set_state(CheckKpSG.amount)
-    await message.answer("Шаг 3/5: Введите <b>полную сумму счёта</b> (число):")
+    await message.answer("Шаг 4/7: Введите <b>полную сумму счёта</b> (число):")
 
 
 @router.message(CheckKpSG.amount)
@@ -171,9 +209,47 @@ async def check_kp_amount(message: Message, state: FSMContext) -> None:
         await message.answer("Введите число (сумма счёта):")
         return
     await state.update_data(amount=amount)
+    await state.set_state(CheckKpSG.payment_type)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="100% предоплата", callback_data="kp_pay:100")
+    b.button(text="50/50", callback_data="kp_pay:5050")
+    b.button(text="Рассрочка", callback_data="kp_pay:installment")
+    b.button(text="Другое", callback_data="kp_pay:other")
+    b.adjust(2)
+    await message.answer(
+        "Шаг 5/7: Выберите <b>тип оплаты</b>:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(CheckKpSG.payment_type, F.data.startswith("kp_pay:"))
+async def check_kp_payment_type(cb: CallbackQuery, state: FSMContext) -> None:
+    pay_type = (cb.data or "").split(":", 1)[1]
+    labels = {"100": "100% предоплата", "5050": "50/50", "installment": "Рассрочка", "other": "Другое"}
+    await state.update_data(payment_type=labels.get(pay_type, pay_type))
+    await state.set_state(CheckKpSG.deadline_days)
+    await cb.message.edit_text(  # type: ignore[union-attr]
+        f"✅ Тип оплаты: <b>{labels.get(pay_type, pay_type)}</b>"
+    )
+    await cb.message.answer(  # type: ignore[union-attr]
+        "Шаг 6/7: Введите <b>срок по договору</b> (кол-во дней):"
+    )
+    await cb.answer()
+
+
+@router.message(CheckKpSG.deadline_days)
+async def check_kp_deadline(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    try:
+        days = int(text)
+    except (ValueError, TypeError):
+        await message.answer("Введите число (кол-во дней):")
+        return
+    await state.update_data(deadline_days=days)
     await state.set_state(CheckKpSG.documents)
     await message.answer(
-        "Шаг 4/5: Прикрепите <b>КП</b> (коммерческое предложение).\n"
+        "Шаг 7/7: Прикрепите <b>КП</b> (коммерческое предложение).\n"
         "Отправьте файл(ы) или фото."
     )
 
@@ -233,8 +309,12 @@ async def check_kp_comment(
     data = await state.get_data()
 
     invoice_number = data["invoice_number"]
-    address = data["address"]
-    amount = data["amount"]
+    existing_inv_id = data.get("existing_invoice_id")
+    client_name = data.get("client_name", "")
+    address = data.get("address", "")
+    amount = data.get("amount", 0)
+    payment_type = data.get("payment_type", "")
+    deadline_days = data.get("deadline_days")
     documents = data.get("documents", [])
 
     # Create task for RP
@@ -245,23 +325,30 @@ async def check_kp_comment(
         return
 
     role = await _current_role(db, message.from_user.id)
-    try:
-        inv_id = await db.create_invoice(
-            invoice_number=invoice_number,
-            project_id=None,
-            created_by=message.from_user.id,
-            creator_role=role or "manager",
-            object_address=address,
-            amount=amount,
-            description=comment,
-        )
-    except ValueError:
-        await state.clear()
-        await message.answer(
-            f"⚠️ Счёт №{invoice_number} уже существует в базе.\n"
-            "Проверьте номер счёта или используйте существующую карточку."
-        )
-        return
+    inv_id = existing_inv_id
+
+    if not existing_inv_id:
+        # New invoice — create in DB
+        try:
+            inv_id = await db.create_invoice(
+                invoice_number=invoice_number,
+                project_id=None,
+                created_by=message.from_user.id,
+                creator_role=role or "manager",
+                client_name=client_name,
+                object_address=address,
+                amount=amount,
+                description=comment,
+                payment_terms=payment_type,
+                deadline_days=deadline_days,
+            )
+        except ValueError:
+            await state.clear()
+            await message.answer(
+                f"⚠️ Счёт №{invoice_number} уже существует в базе.\n"
+                "Проверьте номер счёта или используйте существующую карточку."
+            )
+            return
 
     role_label = {"manager_kv": "Менеджер КВ", "manager_kia": "Менеджер КИА", "manager_npn": "Менеджер НПН"}.get(role or "", "Менеджер")
 
@@ -275,11 +362,15 @@ async def check_kp_comment(
         payload={
             "invoice_id": inv_id,
             "invoice_number": invoice_number,
+            "client_name": client_name,
             "address": address,
             "amount": amount,
+            "payment_type": payment_type,
+            "deadline_days": deadline_days,
             "comment": comment,
             "manager_role": role or "manager",
             "manager_id": message.from_user.id,
+            "is_new_invoice": not bool(existing_inv_id),
         },
     )
 
@@ -295,13 +386,22 @@ async def check_kp_comment(
 
     # Notify RP
     initiator = await get_initiator_label(db, message.from_user.id)
+    is_new = "🆕 Новый" if not existing_inv_id else "📄 Существующий"
     msg_text = (
-        f"📋 <b>Новый КП от {role_label}</b>\n"
+        f"📋 <b>КП от {role_label}</b> ({is_new})\n"
         f"👤 От: {initiator}\n\n"
         f"📄 Счёт №: <code>{invoice_number}</code>\n"
-        f"📍 Адрес: {address}\n"
-        f"💰 Сумма: {amount:,.0f}₽\n"
     )
+    if client_name:
+        msg_text += f"🏢 Контрагент: {client_name}\n"
+    if address:
+        msg_text += f"📍 Адрес: {address}\n"
+    if amount:
+        msg_text += f"💰 Сумма: {amount:,.0f}₽\n"
+    if payment_type:
+        msg_text += f"💳 Тип оплаты: {payment_type}\n"
+    if deadline_days:
+        msg_text += f"⏰ Срок: {deadline_days} дн.\n"
     if comment:
         msg_text += f"💬 Комментарий: {comment}\n"
 
@@ -315,11 +415,12 @@ async def check_kp_comment(
         await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
     await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
+    status_msg = "создан" if not existing_inv_id else "обновлён"
     menu_role, isolated_role = await _current_menu(db, message.from_user.id)
     await state.clear()
     await message.answer(
         f"✅ КП отправлено РП на проверку.\n"
-        f"Счёт №{invoice_number} создан в базе (статус: Новый).",
+        f"Счёт №{invoice_number} {status_msg}.",
         reply_markup=private_only_reply_markup(
             message,
             main_menu(

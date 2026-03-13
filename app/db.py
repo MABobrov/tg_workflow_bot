@@ -2163,23 +2163,36 @@ class Database:
         description: str | None = None,
         assigned_to: int | None = None,
         payment_deadline: str | None = None,
+        client_name: str = "",
+        payment_terms: str | None = None,
+        deadline_days: int | None = None,
     ) -> int:
         """Create a new invoice record (status = NEW)."""
         invoice_number_normalized = (invoice_number or "").strip()
         if not invoice_number_normalized:
             raise ValueError("invoice_number is required")
         now = to_iso(utcnow())
+
+        # Compute deadline_end_date from receipt_date + deadline_days
+        deadline_end_date: str | None = None
+        if deadline_days:
+            from datetime import datetime, timedelta
+            dt = datetime.strptime(now[:10], "%Y-%m-%d")
+            deadline_end_date = (dt + timedelta(days=deadline_days)).strftime("%Y-%m-%d")
+
         cur = await self.conn.execute(
             """
             INSERT INTO invoices
                 (invoice_number, project_id, created_by, creator_role,
                  object_address, amount, supplier, description,
-                 assigned_to, payment_deadline, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+                 assigned_to, payment_deadline, client_name, payment_terms,
+                 deadline_days, deadline_end_date, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
             """,
             (invoice_number_normalized, project_id, created_by, creator_role,
              object_address, amount, supplier, description,
-             assigned_to, payment_deadline, now, now),
+             assigned_to, payment_deadline, client_name, payment_terms,
+             deadline_days, deadline_end_date, now, now),
         )
         await self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
