@@ -1376,6 +1376,7 @@ async def _render_schedule_main(
         )
 
     b.button(text="🚫 Добавить выходной", callback_data="zamsched:blackout:add")
+    b.button(text="🔄 Обновить", callback_data="zamsched:refresh")
     b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
@@ -1387,6 +1388,16 @@ async def _render_schedule_main(
         except Exception:
             pass
     await msg.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "zamsched:refresh")
+async def zamery_schedule_refresh(cb: CallbackQuery, db: Database) -> None:
+    """#15: Обновить график замеров."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer("🔄 Обновлено")
+    uid = cb.from_user.id
+    await _render_schedule_main(cb, db, uid, edit_existing=True)
 
 
 @router.callback_query(F.data.startswith("zamsched:week:"))
