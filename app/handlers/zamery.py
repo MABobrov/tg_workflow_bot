@@ -789,7 +789,6 @@ async def _finalize_complete(
     await msg_target.answer(f"✅ Замер #{req_id} отправлен менеджеру.")  # type: ignore[union-attr]
 
     # Уведомить менеджера
-    initiator = await get_initiator_label(db, req.get("assigned_to", 0))
     notify_text = (
         f"✅ <b>Замер #{req_id} выполнен</b>\n\n"
         f"📍 Адрес: {req.get('address', '—')}\n"
@@ -1074,7 +1073,7 @@ async def zamery_send_batch(
     for idx, inv in enumerate(sendable, 1):
         addr = (inv.get("object_address") or "—")[:25]
         text += f"{idx}. №{inv['invoice_number']} · {addr} · {int(inv['zp_zamery_total'])}₽\n"
-    text += f"\nОтправить в оплату ГД?"
+    text += "\nОтправить в оплату ГД?"
 
     b = InlineKeyboardBuilder()
     b.button(
@@ -1246,8 +1245,8 @@ async def zamery_batch_gd_reject(
     if zamery_uid:
         await notifier.safe_send(
             int(zamery_uid),
-            f"❌ <b>ЗП отклонена</b>\n\n"
-            f"Свяжитесь с ГД для уточнения.",
+            "❌ <b>ЗП отклонена</b>\n\n"
+            "Свяжитесь с ГД для уточнения.",
         )
         await refresh_recipient_keyboard(notifier, db, config, int(zamery_uid))
 
@@ -1471,7 +1470,6 @@ async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
         ds = day.isoformat()
         if day >= today and ds not in blackout_set and ds in zam_by_date:
             wd = _RU_WEEKDAYS[day.weekday()]
-            cnt = len(zam_by_date[ds])
             b.button(
                 text=f"📐 {day.day} {_RU_MONTHS[day.month]} ({wd}) — доп. замер",
                 callback_data=f"zamsched:book:{ds}:{week_offset}",
@@ -1789,7 +1787,6 @@ async def _finalize_schedule_book(
     mkad_km = data.get("book_mkad_km", 0)
     volume_m2 = data.get("book_volume")
     attachments = data.get("book_attachments", [])
-    week_offset = data.get("book_week_offset", 0)
 
     uid = event.from_user.id if event.from_user else 0
     d = date.fromisoformat(ds)
@@ -1867,7 +1864,7 @@ async def _finalize_schedule_book(
     msg_target = event.message if isinstance(event, CallbackQuery) else event
 
     # Confirmation card
-    text = f"✅ <b>Замер записан</b>\n"
+    text = "✅ <b>Замер записан</b>\n"
     text += f"📅 {d.day} {_RU_MONTHS[d.month]} ({wd}) · ⏰ {interval}\n"
     text += f"📍 {address}\n"
     if description:
@@ -2026,7 +2023,6 @@ async def zamery_blackout_remove(cb: CallbackQuery, db: Database) -> None:
     await db.remove_zamery_blackout_date(bl_id)
 
     # Refresh week view
-    uid = cb.from_user.id
     today = date.today()
     mon, sun = _week_range(today, week_offset)
 
@@ -2145,8 +2141,8 @@ async def zamery_zp_confirm_count(
     data = await state.get_data()
 
     if not data.get("all_same"):
-        # Shouldn't reach here if all_same=False, but handle gracefully
-        await message.answer("Используйте /done для завершения ввода цен.")
+        await message.answer("⚠️ Ошибка состояния. Начните заново.")
+        await state.clear()
         return
 
     text = (message.text or "").strip()

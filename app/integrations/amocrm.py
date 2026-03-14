@@ -66,7 +66,8 @@ class AmoCRMService:
 
     async def _refresh_tokens(self, refresh_token: str) -> tuple[str, str]:
         """Refresh tokens via POST /oauth2/access_token"""
-        assert self._session is not None
+        if self._session is None:
+            raise RuntimeError("amoCRM session not started; call start() first")
         if not self.cfg.client_id or not self.cfg.client_secret or not self.cfg.redirect_uri:
             raise RuntimeError(
                 "amoCRM token refresh requires AMOCRM_CLIENT_ID/AMOCRM_CLIENT_SECRET/AMOCRM_REDIRECT_URI"
@@ -119,7 +120,8 @@ class AmoCRMService:
         if not self.cfg.enabled:
             raise RuntimeError("amoCRM integration disabled")
         await self.start()
-        assert self._session is not None
+        if self._session is None:
+            raise RuntimeError("amoCRM session not started; call start() first")
 
         token = await self.get_access_token()
         url = self._url(path)

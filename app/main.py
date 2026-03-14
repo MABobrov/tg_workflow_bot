@@ -23,6 +23,7 @@ from .services.notifier import Notifier
 from .services.daily_sync import daily_sync_loop
 from .services.lead_poller import lead_poller_loop
 from .services.reminders import acceptance_reminders_loop, reminders_loop
+from .services.sheets_sync import import_from_source_sheet
 
 from .handlers import (
     accounting_new,
@@ -244,18 +245,11 @@ async def main() -> None:
     log = logging.getLogger(__name__)
     if integrations.sheets:
         try:
-            op_rows = await asyncio.to_thread(integrations.sheets.read_op_sheet_sync)
-            ok = 0
-            for row_data in op_rows:
-                try:
-                    await db.import_invoice_from_sheet(row_data)
-                    ok += 1
-                except Exception:
-                    log.warning(
-                        "ОП startup sync: failed to import invoice %s",
-                        row_data.get("invoice_number"),
-                        exc_info=True,
-                    )
+            ok = await import_from_source_sheet(
+                db,
+                integrations.sheets,
+                log_prefix="ОП startup sync",
+            )
             if ok:
                 log.info("ОП startup sync: imported/updated %d invoices", ok)
         except Exception as e:

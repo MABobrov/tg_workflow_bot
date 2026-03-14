@@ -70,7 +70,6 @@ async def acc_inbox_tasks(message: Message, db: Database) -> None:
         await answer_service(message, "📥 Нет новых задач ✅", delay_seconds=60)
         return
 
-    from ..keyboards import task_actions_kb
     await message.answer(f"📥 <b>Входящие задачи</b> ({len(unconfirmed)}):")
     for t in unconfirmed[:15]:
         tid = int(t["id"])
@@ -82,14 +81,13 @@ async def acc_inbox_tasks(message: Message, db: Database) -> None:
                     if isinstance(t["payload_json"], str)
                     else t["payload_json"]
                 )
-            except Exception:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 pass
         inv_num = payload.get("invoice_number", "")
         req_text = str(payload.get("request_text") or payload.get("comment") or "")[:100]
-        text = (
-            f"📋 <b>Задача #{tid}</b>\n"
-            f"📄 Счёт: {inv_num}\n" if inv_num else f"📋 <b>Задача #{tid}</b>\n"
-        )
+        text = f"📋 <b>Задача #{tid}</b>\n"
+        if inv_num:
+            text += f"📄 Счёт: {inv_num}\n"
         text += f"💬 {req_text}\n" if req_text else ""
         text += f"📅 {(t.get('created_at') or '-')[:10]}"
 
@@ -721,12 +719,12 @@ async def acc_work_request_send(
     await notifier.safe_send(int(manager_id), mgr_text, reply_markup=task_actions_kb(task))
     for a in attachments:
         try:
-            if a["file_type"] == "document":
+            if a.get("file_type") == "document":
                 await notifier.bot.send_document(int(manager_id), a["file_id"])
-            elif a["file_type"] == "photo":
+            elif a.get("file_type") == "photo":
                 await notifier.bot.send_photo(int(manager_id), a["file_id"])
         except Exception:
-            pass
+            log.warning("Failed to send attachment to manager %s", manager_id, exc_info=True)
 
     u = cb.from_user
     role, isolated_role = await _current_menu(db, u.id) if u else (Role.ACCOUNTING, False)

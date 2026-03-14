@@ -61,10 +61,9 @@ class KeepMenuMiddleware(BaseMiddleware):
 
         try:
             from ..db import Database
-            from ..enums import Role
-            from ..keyboards import main_menu
+            from ..services.menu_context import build_main_menu_for_user
             from ..services.menu_scope import resolve_menu_scope
-            from ..utils import answer_service, parse_roles
+            from ..utils import answer_service
 
             if not isinstance(db, Database):
                 return result
@@ -83,28 +82,12 @@ class KeepMenuMiddleware(BaseMiddleware):
             if role_str in _ROLES_WITH_OWN_REFRESH:
                 return result
 
-            # Build fresh keyboard with badges
-            parsed_roles = set(parse_roles(user.role))
-            unread = await db.count_unread_tasks(u.id)
-            uc = await db.count_unread_by_channel(u.id)
-            is_admin = u.id in (config.admin_ids or set())
-
-            # GD-specific counters
-            gd_unread = await db.count_gd_inbox_tasks(u.id) if Role.GD in parsed_roles else None
-            gd_inv = await db.count_gd_invoice_tasks(u.id) if Role.GD in parsed_roles else None
-            gd_ie = await db.count_gd_invoice_end_tasks(u.id) if Role.GD in parsed_roles else None
-            gd_sp = await db.count_gd_supplier_pay_tasks(u.id) if Role.GD in parsed_roles else None
-
-            kb = main_menu(
+            kb = await build_main_menu_for_user(
+                db,
+                config,
+                u.id,
                 menu_role,
-                is_admin=is_admin,
-                unread=unread,
-                unread_channels=uc,
                 isolated_role=isolated,
-                gd_inbox_unread=gd_unread,
-                gd_invoice_unread=gd_inv,
-                gd_invoice_end_unread=gd_ie,
-                gd_supplier_pay_unread=gd_sp,
             )
 
             await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)

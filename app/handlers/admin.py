@@ -26,6 +26,7 @@ from ..keyboards import (
 )
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
+from ..services.sheets_sync import export_to_sheets
 from ..utils import (
     parse_roles,
     private_only_reply_markup,
@@ -909,46 +910,17 @@ async def cmd_resync_sheets(message: Message, db: Database, config: Config, inte
 
     await message.answer("⏳ Запускаю пересинхронизацию данных в Google Sheets...")
 
-    projects = await db.list_recent_projects(limit=10000)
-    tasks = await db.list_recent_tasks(limit=50000)
-
-    project_code_by_id: dict[int, str] = {}
-    projects_ok = 0
-    tasks_ok = 0
-
-    for p in sorted(projects, key=lambda x: int(x["id"])):
-        manager_label = ""
-        manager_id = p.get("manager_id")
-        if manager_id:
-            manager = await db.get_user_optional(int(manager_id))
-            if manager:
-                manager_label = f"@{manager.username}" if manager.username else str(manager.telegram_id)
-        await integrations.sheets.upsert_project(p, manager_label=manager_label)
-        project_code = str(p.get("code") or "")
-        if project_code:
-            project_code_by_id[int(p["id"])] = project_code
-        projects_ok += 1
-
-    for t in sorted(tasks, key=lambda x: int(x["id"])):
-        project_code = ""
-        project_id = t.get("project_id")
-        if project_id:
-            project_code = project_code_by_id.get(int(project_id), "")
-            if not project_code:
-                try:
-                    p = await db.get_project(int(project_id))
-                    project_code = str(p.get("code") or "")
-                    if project_code:
-                        project_code_by_id[int(project_id)] = project_code
-                except Exception:
-                    project_code = ""
-        await integrations.sheets.upsert_task(t, project_code=project_code)
-        tasks_ok += 1
+    stats = await export_to_sheets(
+        db,
+        integrations.sheets,
+        include_invoice_cost=False,
+        sync_invoices=False,
+    )
 
     await message.answer(
         "✅ Пересинхронизация завершена.\n"
-        f"Проектов: <b>{projects_ok}</b>\n"
-        f"Задач: <b>{tasks_ok}</b>"
+        f"Проектов: <b>{stats['projects']}</b>\n"
+        f"Задач: <b>{stats['tasks']}</b>"
     )
 
 

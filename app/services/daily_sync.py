@@ -13,6 +13,7 @@ from ..db import Database
 from ..utils import refresh_recipient_keyboard
 from .integration_hub import IntegrationHub
 from .notifier import Notifier
+from .sheets_sync import export_to_sheets, import_from_source_sheet
 
 log = logging.getLogger(__name__)
 
@@ -73,70 +74,31 @@ async def _run_sync(
     # --- 1. Google Sheets import/export ---
     if integrations.sheets:
         try:
-            op_rows = await integrations.sheets.read_op_sheet()
-            ok = 0
-            for row_data in op_rows:
-                try:
-                    await db.import_invoice_from_sheet(row_data)
-                    ok += 1
-                except Exception:
-                    log.warning(
-                        "daily_sync: failed to import invoice %s",
-                        row_data.get("invoice_number"),
-                        exc_info=True,
-                    )
+            ok = await import_from_source_sheet(
+                db,
+                integrations.sheets,
+                log_prefix="daily_sync",
+            )
             if ok:
                 log.info("daily_sync: imported %d invoices from ОП", ok)
         except Exception as e:
             log.error("daily_sync: read_op_sheet failed: %s", e)
 
-        # Export projects
         try:
-            projects = await db.list_recent_projects(limit=10000)
-            for p in sorted(projects, key=lambda x: int(x["id"])):
-                manager_label = ""
-                manager_id = p.get("manager_id")
-                if manager_id:
-                    mu = await db.get_user_optional(int(manager_id))
-                    if mu:
-                        manager_label = f"@{mu.username}" if mu.username else str(mu.telegram_id)
-                await integrations.sheets.upsert_project(p, manager_label=manager_label)
+            stats = await export_to_sheets(
+                db,
+                integrations.sheets,
+                include_invoice_cost=False,
+                sync_invoices=True,
+            )
+            log.info(
+                "daily_sync: exported %d projects, %d tasks, %d invoices",
+                stats["projects"],
+                stats["tasks"],
+                stats["invoices"],
+            )
         except Exception as e:
-            log.error("daily_sync: project export failed: %s", e)
-
-        # Export tasks
-        try:
-            tasks = await db.list_recent_tasks(limit=50000)
-            project_code_by_id: dict[int, str] = {}
-            for t in sorted(tasks, key=lambda x: int(x["id"])):
-                project_code = ""
-                project_id = t.get("project_id")
-                if project_id:
-                    project_code = project_code_by_id.get(int(project_id), "")
-                    if not project_code:
-                        try:
-                            proj = await db.get_project(int(project_id))
-                            project_code = str(proj.get("code") or "")
-                            if project_code:
-                                project_code_by_id[int(project_id)] = project_code
-                        except Exception:
-                            pass
-                await integrations.sheets.upsert_task(t, project_code=project_code)
-        except Exception as e:
-            log.error("daily_sync: task export failed: %s", e)
-
-        # Export invoices
-        try:
-            all_invoices = await db.list_invoices(limit=10000)
-            for inv in sorted(all_invoices, key=lambda x: int(x["id"])):
-                manager_label = ""
-                if inv.get("created_by"):
-                    u = await db.get_user_optional(int(inv["created_by"]))
-                    if u:
-                        manager_label = f"@{u.username}" if u.username else (u.full_name or str(u.telegram_id))
-                await integrations.sheets.upsert_invoice(inv, manager_label=manager_label, cost=None)
-        except Exception as e:
-            log.error("daily_sync: invoice export failed: %s", e)
+            log.error("daily_sync: sheets export failed: %s", e)
 
     # --- 2. Refresh keyboards for ALL active users ---
     all_users = await db.list_users(limit=10000)

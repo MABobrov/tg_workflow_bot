@@ -31,7 +31,6 @@ from ..keyboards import (
     INST_BTN_ORDER_MAT,
     INST_BTN_RAZMERY_OK,
     INST_BTN_ZP,
-    invoice_list_kb,
     main_menu,
 )
 from ..services.integration_hub import IntegrationHub
@@ -258,7 +257,7 @@ async def order_mat_finalize(
 
     rp_id = await resolve_default_assignee(db, config, Role.RP)
     if not rp_id:
-        await cb.message.answer("⚠️ РП не найден.")  # type: ignore[union-attr]
+        await cb.message.answer("⚠️ РП не найден. Попросите администратора назначить роль РП.")  # type: ignore[union-attr]
         await state.clear()
         return
 
@@ -397,6 +396,7 @@ async def invoice_ok_select(
     inv = await db.get_invoice(invoice_id)
     if not inv:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        await state.clear()
         return
 
     await state.update_data(invoice_id=invoice_id)
@@ -1673,8 +1673,12 @@ async def zpadj_finalize(
         return
 
     data = await state.get_data()
-    invoice_id = data["zpadj_invoice_id"]
-    total = data["zpadj_total"]
+    invoice_id = data.get("zpadj_invoice_id")
+    total = data.get("zpadj_total")
+    if not invoice_id or total is None:
+        await cb.message.answer("⚠️ Данные сессии утеряны, начните заново.")  # type: ignore[union-attr]
+        await state.clear()
+        return
     est_val = data.get("zpadj_est", 0)
     comment = data.get("zpadj_comment", "")
     attachments: list[dict[str, Any]] = data.get("attachments", [])
@@ -1848,7 +1852,7 @@ async def daily_report_finalize(
 
     rp_id = await resolve_default_assignee(db, config, Role.RP)
     if not rp_id:
-        await cb.message.answer("⚠️ РП не найден.")  # type: ignore[union-attr]
+        await cb.message.answer("⚠️ РП не найден. Попросите администратора назначить роль РП.")  # type: ignore[union-attr]
         await state.clear()
         return
 
@@ -2218,7 +2222,11 @@ async def installer_zp_amount(message: Message, state: FSMContext, db: Database)
         await message.answer("⚠️ Введите корректную сумму (положительное число):")
         return
     data = await state.get_data()
-    invoice_id = data["zp_invoice_id"]
+    invoice_id = data.get("zp_invoice_id")
+    if not invoice_id:
+        await message.answer("⚠️ Данные сессии утеряны, начните заново.")
+        await state.clear()
+        return
     inv = await db.get_invoice(invoice_id)
     await state.update_data(zp_amount=amount)
     await state.set_state(InstallerZpSG.confirm)
@@ -2251,8 +2259,12 @@ async def installer_zp_confirm(
     if not u:
         return
     data = await state.get_data()
-    invoice_id = data["zp_invoice_id"]
-    amount = data["zp_amount"]
+    invoice_id = data.get("zp_invoice_id")
+    amount = data.get("zp_amount")
+    if not invoice_id or amount is None:
+        await cb.message.answer("⚠️ Данные сессии утеряны, начните заново.")  # type: ignore[union-attr]
+        await state.clear()
+        return
 
     # Update invoice
     await db.set_invoice_zp_installer_status(invoice_id, "requested", amount=amount, requested_by=u.id)

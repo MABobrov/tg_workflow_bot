@@ -101,12 +101,14 @@ class IntegrationHub:
                 elif ev.kind == "amocrm_create_lead" and self.amocrm:
                     pid = int(ev.payload["project_id"])
                     project = await self.db.get_project(pid)
-                    if project.get("amo_lead_id"):
+                    if not project:
+                        log.warning("Skip amoCRM lead create: project %s not found", pid)
+                    elif project.get("amo_lead_id"):
                         log.info("Skip amoCRM lead create: project %s already has lead %s", pid, project.get("amo_lead_id"))
-                        continue
-                    lead_id = await self.amocrm.create_lead_for_project(project)
-                    await self.db.set_project_amo_lead(pid, lead_id)
-                    log.info("Created amoCRM lead %s for project %s", lead_id, pid)
+                    else:
+                        lead_id = await self.amocrm.create_lead_for_project(project)
+                        await self.db.set_project_amo_lead(pid, lead_id)
+                        log.info("Created amoCRM lead %s for project %s", lead_id, pid)
                 else:
                     # unknown or disabled
                     pass

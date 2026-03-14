@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from aiogram import Router, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -12,10 +13,11 @@ from ..callbacks import TaskCb
 from ..config import Config
 from ..db import Database
 from ..enums import InvoiceStatus, ProjectStatus, Role, TaskStatus, TaskType
-from ..keyboards import main_menu, manager_project_actions_kb, task_actions_kb
+from ..keyboards import manager_project_actions_kb, task_actions_kb
 from ..services.integration_hub import IntegrationHub
 from ..services.assignment import resolve_default_assignee
-from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
+from ..services.menu_context import build_main_menu_for_user
+from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCompleteSG
 from ..utils import answer_service, fmt_task_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
@@ -42,14 +44,66 @@ async def _can_manage_task(cb: CallbackQuery, db: Database, config: Config, task
     return False
 
 
-async def _current_role(db: Database, user_id: int) -> str | None:
-    u = await db.get_user_optional(user_id)
-    return resolve_active_menu_role(user_id, u.role if u else None)
-
-
 async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
     user = await db.get_user_optional(user_id)
     return resolve_menu_scope(user_id, user.role if user else None)
+
+
+def _ignorable_markup_error(exc: TelegramBadRequest) -> bool:
+    text = str(exc).lower()
+    return any(
+        needle in text
+        for needle in (
+            "message is not modified",
+            "message can't be edited",
+            "message to edit not found",
+            "there is no reply markup in the message",
+        )
+    )
+
+
+async def _safe_edit_task_markup(
+    message: Message | None,
+    *,
+    reply_markup: Any | None,
+) -> None:
+    if not message:
+        return
+    try:
+        await message.edit_reply_markup(reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        if _ignorable_markup_error(exc):
+            return
+        log.debug("Failed to refresh task callback markup", exc_info=True)
+    except Exception:
+        log.debug("Failed to refresh task callback markup", exc_info=True)
+
+
+async def _answer_with_menu(
+    message: Message | None,
+    db: Database,
+    config: Config,
+    user_id: int,
+    text: str,
+    *,
+    role: str | None,
+    isolated_role: bool = False,
+) -> None:
+    if not message:
+        return
+    await message.answer(
+        text,
+        reply_markup=private_only_reply_markup(
+            message,
+            await build_main_menu_for_user(
+                db,
+                config,
+                user_id,
+                role,
+                isolated_role=isolated_role,
+            ),
+        ),
+    )
 
 
 async def _maybe_mark_lead_tracking_response(db: Database, task: dict[str, Any] | None) -> None:
@@ -198,10 +252,7 @@ async def task_actions(
         task = await db.get_task(task_id)
         await _maybe_mark_lead_tracking_response(db, task)
         if task:
-            try:
-                await cb.message.edit_reply_markup(reply_markup=task_actions_kb(task))
-            except Exception:
-                pass
+            await _safe_edit_task_markup(cb.message, reply_markup=task_actions_kb(task))
         # Notify task creator
         created_by = task.get("created_by") if task else None
         if created_by:
@@ -263,10 +314,7 @@ async def task_actions(
         except Exception:
             log.exception("Failed to update montazh_stage on take")
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
-        try:
-            await cb.message.edit_reply_markup(reply_markup=task_actions_kb(task))  # type: ignore[union-attr]
-        except Exception:
-            pass
+        await _safe_edit_task_markup(cb.message, reply_markup=task_actions_kb(task))
         await answer_service(cb.message, _task_take_text(task, project))  # type: ignore[arg-type]
         return
 
@@ -278,21 +326,19 @@ async def task_actions(
         task = await db.update_task_status(task_id, TaskStatus.REJECTED)
         await _maybe_mark_lead_tracking_response(db, task)
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
-        _uid = cb.from_user.id if cb.from_user else 0
-        await cb.message.answer(
-            "❌ Задача отклонена.",
-            reply_markup=private_only_reply_markup(
+        if cb.from_user:
+            role_now, isolated_role = await _current_menu(db, cb.from_user.id)
+            await _answer_with_menu(
                 cb.message,
-                main_menu(
-                    (await _current_role(db, _uid)) if cb.from_user else None,
-                    is_admin=bool(cb.from_user and _uid in (config.admin_ids or set())),
-                    unread=await db.count_unread_tasks(_uid),
-                    rp_tasks=await db.count_rp_role_tasks(_uid),
-                    rp_messages=await db.count_rp_role_messages(_uid),
-                ),
-            ),
-        )  # type: ignore
+                db,
+                config,
+                cb.from_user.id,
+                "❌ Задача отклонена.",
+                role=role_now,
+                isolated_role=isolated_role,
+            )
 
         # notify creator
         created_by = task.get("created_by")
@@ -360,23 +406,19 @@ async def task_actions(
 
         await integrations.sync_project(project, manager_label="")
         await integrations.sync_task(task, project_code=project.get("code", ""))
-        role_now = (await _current_role(db, cb.from_user.id)) if cb.from_user else Role.GD
-
+        await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
-        _uid_done2 = cb.from_user.id if cb.from_user else 0
-        await cb.message.answer(
-            "Готово.",
-            reply_markup=private_only_reply_markup(
+        if cb.from_user:
+            role_now, isolated_role = await _current_menu(db, cb.from_user.id)
+            await _answer_with_menu(
                 cb.message,
-                main_menu(
-                    role_now,
-                    is_admin=bool(cb.from_user and _uid_done2 in (config.admin_ids or set())),
-                    unread=await db.count_unread_tasks(_uid_done2) if cb.from_user else 0,
-                    rp_tasks=await db.count_rp_role_tasks(_uid_done2),
-                    rp_messages=await db.count_rp_role_messages(_uid_done2),
-                ),
-            ),
-        )  # type: ignore
+                db,
+                config,
+                cb.from_user.id,
+                "Готово.",
+                role=role_now,
+                isolated_role=isolated_role,
+            )
         return
 
     # ORDER actions (TD) -> open supplier payment flow with project preselected
@@ -384,6 +426,7 @@ async def task_actions(
         if not project:
             await cb.message.answer("Проект не найден для этой задачи.")  # type: ignore
             return
+        await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
         await state.update_data(project_id=int(project["id"]), source_order_task_id=int(task_id))
         await state.set_state(SupplierPaymentSG.supplier)
@@ -430,9 +473,9 @@ async def task_actions(
             await notifier.safe_send(int(rp_id), rp_text)
             await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
         # Показать обновлённую карточку с новыми кнопками (Оплатить/Отложить/Отклонить)
-        _uid_rcv = cb.from_user.id if cb.from_user else 0
         card_text = fmt_task_card(task, project, config.timezone)
         kb = task_actions_kb(task)
         await cb.message.answer(  # type: ignore
@@ -440,14 +483,17 @@ async def task_actions(
             reply_markup=kb,
         )
         # Обновить main_menu (badge counters)
-        await cb.message.answer(  # type: ignore
-            "📋 Счёт принят в работу.",
-            reply_markup=private_only_reply_markup(
+        if cb.from_user:
+            role_now, isolated_role = await _current_menu(db, cb.from_user.id)
+            await _answer_with_menu(
                 cb.message,
-                main_menu(Role.GD, is_admin=bool(cb.from_user and _uid_rcv in (config.admin_ids or set())),
-                           unread=await db.count_unread_tasks(_uid_rcv), unread_channels=await db.count_unread_by_channel(_uid_rcv), gd_inbox_unread=await db.count_gd_inbox_tasks(_uid_rcv), gd_invoice_unread=await db.count_gd_invoice_tasks(_uid_rcv), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(_uid_rcv), gd_supplier_pay_unread=await db.count_gd_supplier_pay_tasks(_uid_rcv)),
-            ),
-        )
+                db,
+                config,
+                cb.from_user.id,
+                "📋 Счёт принят в работу.",
+                role=role_now,
+                isolated_role=isolated_role,
+            )
         return
 
     # INVOICE_PAYMENT actions (GD)
@@ -456,6 +502,7 @@ async def task_actions(
             await cb.answer("Этот счёт уже обработан.", show_alert=True)
             return
         # GD wants to pay — ask for payment order attachment
+        await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
         await state.set_state(InvoicePaymentSG.attaching_pp)
         await state.update_data(invoice_task_id=task_id)
@@ -493,16 +540,19 @@ async def task_actions(
                 f"💰 Сумма: {amount or '—'}",
             )
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
-        _uid_hold = cb.from_user.id if cb.from_user else 0
-        await cb.message.answer(  # type: ignore
-            "⏸ Счёт отложен.",
-            reply_markup=private_only_reply_markup(
+        if cb.from_user:
+            role_now, isolated_role = await _current_menu(db, cb.from_user.id)
+            await _answer_with_menu(
                 cb.message,
-                main_menu(Role.GD, is_admin=bool(cb.from_user and _uid_hold in (config.admin_ids or set())),
-                           unread=await db.count_unread_tasks(_uid_hold), unread_channels=await db.count_unread_by_channel(_uid_hold), gd_inbox_unread=await db.count_gd_inbox_tasks(_uid_hold), gd_invoice_unread=await db.count_gd_invoice_tasks(_uid_hold), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(_uid_hold), gd_supplier_pay_unread=await db.count_gd_supplier_pay_tasks(_uid_hold)),
-            ),
-        )
+                db,
+                config,
+                cb.from_user.id,
+                "⏸ Счёт отложен.",
+                role=role_now,
+                isolated_role=isolated_role,
+            )
         return
 
     if action == "inv_reject" and task.get("type") == TaskType.INVOICE_PAYMENT:
@@ -526,16 +576,19 @@ async def task_actions(
                 f"💰 Сумма: {amount or '—'}",
             )
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
-        _uid_rej = cb.from_user.id if cb.from_user else 0
-        await cb.message.answer(  # type: ignore
-            "❌ Счёт отклонён. РП уведомлён.",
-            reply_markup=private_only_reply_markup(
+        if cb.from_user:
+            role_now, isolated_role = await _current_menu(db, cb.from_user.id)
+            await _answer_with_menu(
                 cb.message,
-                main_menu(Role.GD, is_admin=bool(cb.from_user and _uid_rej in (config.admin_ids or set())),
-                           unread=await db.count_unread_tasks(_uid_rej), unread_channels=await db.count_unread_by_channel(_uid_rej), gd_inbox_unread=await db.count_gd_inbox_tasks(_uid_rej), gd_invoice_unread=await db.count_gd_invoice_tasks(_uid_rej), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(_uid_rej), gd_supplier_pay_unread=await db.count_gd_supplier_pay_tasks(_uid_rej)),
-            ),
-        )
+                db,
+                config,
+                cb.from_user.id,
+                "❌ Счёт отклонён. РП уведомлён.",
+                role=role_now,
+                isolated_role=isolated_role,
+            )
         return
 
     # MONTAZH — подтверждение задачи (Да/Нет/Комментарий)
@@ -562,6 +615,7 @@ async def task_actions(
         await state.clear()
         await cb.message.edit_text(  # type: ignore[union-attr]
             "✅ Задача подтверждена.",
+            reply_markup=None,
         )
         return
 
@@ -588,6 +642,7 @@ async def task_actions(
         await state.clear()
         await cb.message.edit_text(  # type: ignore[union-attr]
             "❌ Задача отклонена.",
+            reply_markup=None,
         )
         return
 
@@ -613,6 +668,7 @@ async def task_actions(
             target_user_id = project.get("manager_id")
             if task.get("type") == TaskType.CLOSING_DOCS:
                 target_user_id = project.get("manager_id")
+            await _safe_edit_task_markup(cb.message, reply_markup=None)
             await state.clear()
             await state.set_state(TaskCompleteSG.attachments)
             await state.update_data(task_id=task_id, target_user_id=target_user_id)
@@ -639,21 +695,19 @@ async def task_actions(
             cb.from_user.id if cb.from_user else None,
             task,
         )
+        await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
-        _uid_done = cb.from_user.id if cb.from_user else 0
-        await cb.message.answer(
-            "✅ Закрыл задачу.",
-            reply_markup=private_only_reply_markup(
+        if cb.from_user:
+            role_now, isolated_role = await _current_menu(db, cb.from_user.id)
+            await _answer_with_menu(
                 cb.message,
-                main_menu(
-                    (await _current_role(db, _uid_done)) if cb.from_user else None,
-                    is_admin=bool(cb.from_user and _uid_done in (config.admin_ids or set())),
-                    unread=await db.count_unread_tasks(_uid_done),
-                    rp_tasks=await db.count_rp_role_tasks(_uid_done),
-                    rp_messages=await db.count_rp_role_messages(_uid_done),
-                ),
-            ),
-        )  # type: ignore
+                db,
+                config,
+                cb.from_user.id,
+                "✅ Закрыл задачу.",
+                role=role_now,
+                isolated_role=isolated_role,
+            )
         return
 
 
@@ -756,20 +810,18 @@ async def taskcomplete_finalize(
         task,
     )
 
-    _uid_fin = cb.from_user.id if cb.from_user else 0
-    await cb.message.answer(
-        "✅ Готово.",
-        reply_markup=private_only_reply_markup(
+    await _safe_edit_task_markup(cb.message, reply_markup=None)
+    if cb.from_user:
+        role_now, isolated_role = await _current_menu(db, cb.from_user.id)
+        await _answer_with_menu(
             cb.message,
-            main_menu(
-                (await _current_role(db, _uid_fin)) if cb.from_user else None,
-                is_admin=bool(cb.from_user and _uid_fin in (config.admin_ids or set())),
-                unread=await db.count_unread_tasks(_uid_fin),
-                rp_tasks=await db.count_rp_role_tasks(_uid_fin),
-                rp_messages=await db.count_rp_role_messages(_uid_fin),
-            ),
-        ),
-    )  # type: ignore
+            db,
+            config,
+            cb.from_user.id,
+            "✅ Готово.",
+            role=role_now,
+            isolated_role=isolated_role,
+        )
     await state.clear()
 
 
@@ -859,7 +911,7 @@ async def invoice_pp_finalize(
         try:
             project = await db.get_project(int(task["project_id"]))
         except Exception:
-            pass
+            log.warning("Failed to get project %s for task %s", task.get("project_id"), task_id, exc_info=True)
 
     # Save PP attachments to task
     for a in pp_files:
@@ -902,15 +954,18 @@ async def invoice_pp_finalize(
             await refresh_recipient_keyboard(notifier, db, config, int(installer_id))
 
     await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+    await _safe_edit_task_markup(cb.message, reply_markup=None)
     await state.clear()
 
-    is_admin = u.id in (config.admin_ids or set())
-    await cb.message.answer(  # type: ignore[union-attr]
+    role_now, isolated_role = await _current_menu(db, u.id)
+    await _answer_with_menu(
+        cb.message,
+        db,
+        config,
+        u.id,
         "✅ Счёт оплачен. Платёжка отправлена РП.",
-        reply_markup=private_only_reply_markup(
-            cb.message,
-            main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(u.id), unread_channels=await db.count_unread_by_channel(u.id), gd_inbox_unread=await db.count_gd_inbox_tasks(u.id), gd_invoice_unread=await db.count_gd_invoice_tasks(u.id), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(u.id), gd_supplier_pay_unread=await db.count_gd_supplier_pay_tasks(u.id)),
-        ),
+        role=role_now,
+        isolated_role=isolated_role,
     )
 
 
@@ -918,25 +973,20 @@ async def invoice_pp_finalize(
 async def invoice_pp_cancel(cb: CallbackQuery, state: FSMContext, config: Config, db: Database) -> None:
     """Cancel payment order attachment."""
     await cb.answer()
+    await _safe_edit_task_markup(cb.message, reply_markup=None)
     await state.clear()
     u = cb.from_user
-    is_admin = bool(u and u.id in (config.admin_ids or set()))
-    role, isolated_role = (await _current_menu(db, u.id)) if u else (None, False)
-    _uid_cancel = u.id if u else 0
-    await cb.message.answer(  # type: ignore[union-attr]
-        "Отменено.",
-        reply_markup=private_only_reply_markup(
+    if u:
+        role, isolated_role = await _current_menu(db, u.id)
+        await _answer_with_menu(
             cb.message,
-            main_menu(
-                role,
-                is_admin=is_admin,
-                unread=await db.count_unread_tasks(_uid_cancel) if u else 0,
-                isolated_role=isolated_role,
-                rp_tasks=await db.count_rp_role_tasks(_uid_cancel) if u else 0,
-                rp_messages=await db.count_rp_role_messages(_uid_cancel) if u else 0,
-            ),
-        ),
-    )
+            db,
+            config,
+            u.id,
+            "Отменено.",
+            role=role,
+            isolated_role=isolated_role,
+        )
 
 
 # ---------------------------------------------------------------------------

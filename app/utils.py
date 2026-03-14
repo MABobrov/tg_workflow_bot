@@ -228,6 +228,20 @@ def parse_date(text: str, tz_name: str) -> Optional[datetime]:
     return None
 
 
+def parse_callback_int(cb_data: str | None, sep: str = ":", index: int = -1) -> int | None:
+    """Safely parse an integer from callback data split by separator.
+
+    Returns None if data is missing, index is out of bounds, or value is not a valid int.
+    """
+    if not cb_data:
+        return None
+    parts = cb_data.split(sep)
+    try:
+        return int(parts[index])
+    except (IndexError, ValueError):
+        return None
+
+
 def try_json_loads(s: str | None) -> dict[str, Any]:
     if not s:
         return {}
@@ -400,52 +414,13 @@ async def refresh_recipient_keyboard(
     user_id: int,
 ) -> None:
     """Send updated main_menu with unread counter to the recipient."""
-    from .keyboards import main_menu  # lazy import to avoid circular
-
-    from .enums import Role  # lazy import
+    from .services.menu_context import build_main_menu_for_user  # lazy import to avoid circular
 
     user = await db.get_user_optional(user_id)
     if not user:
         return
     unread = await db.count_unread_tasks(user_id)
-    uc = await db.count_unread_by_channel(user_id)
-    is_admin = user_id in (config.admin_ids or set())
-    _parsed_r = parse_roles(user.role) if user.role else []
-    gd_unread = await db.count_gd_inbox_tasks(user_id) if user.role and Role.GD in _parsed_r else None
-    gd_inv = await db.count_gd_invoice_tasks(user_id) if user.role and Role.GD in _parsed_r else None
-    gd_ie = await db.count_gd_invoice_end_tasks(user_id) if user.role and Role.GD in _parsed_r else None
-    gd_sp = await db.count_gd_supplier_pay_tasks(user_id) if user.role and Role.GD in _parsed_r else None
-    _is_rp_r = Role.RP in _parsed_r or Role.MANAGER_NPN in _parsed_r
-    rp_t_r = await db.count_rp_role_tasks(user_id) if _is_rp_r else 0
-    rp_m_r = await db.count_rp_role_messages(user_id) if _is_rp_r else 0
-    # RP per-button badge counters
-    rp_ckp = 0
-    rp_ipay = 0
-    rp_ch_kv = 0
-    rp_ch_kia = 0
-    rp_ch_mont = 0
-    if Role.RP in _parsed_r:
-        rp_ckp = await db.count_rp_check_kp_tasks(user_id)
-        rp_ipay = await db.count_rp_invoice_pay_tasks(user_id)
-        rp_ch_kv = await db.count_rp_channel_unread(user_id, "rp_to_manager_kv")
-        rp_ch_kia = await db.count_rp_channel_unread(user_id, "rp_to_manager_kia")
-        rp_ch_mont = await db.count_rp_channel_unread(user_id, "montazh")
-    # NPN badge counters (for role-switcher)
-    npn_t = 0
-    npn_m = 0
-    if Role.MANAGER_NPN in _parsed_r:
-        npn_t = await db.count_unread_tasks(user_id)
-        npn_m = 0  # NPN messages counted via general unread
-    kb = main_menu(
-        user.role, is_admin=is_admin, unread=unread, unread_channels=uc,
-        gd_inbox_unread=gd_unread, gd_invoice_unread=gd_inv,
-        gd_invoice_end_unread=gd_ie, gd_supplier_pay_unread=gd_sp,
-        rp_tasks=rp_t_r, rp_messages=rp_m_r,
-        npn_tasks=npn_t, npn_messages=npn_m,
-        rp_check_kp=rp_ckp, rp_invoices_pay=rp_ipay,
-        rp_ch_mgr_kv=rp_ch_kv, rp_ch_mgr_kia=rp_ch_kia,
-        rp_ch_montazh=rp_ch_mont,
-    )
+    kb = await build_main_menu_for_user(db, config, user_id, user.role)
     text = f"📥 У вас {unread} активных задач." if unread else "📥 Нет активных задач."
     await notifier.safe_send(user_id, text, reply_markup=kb)
 

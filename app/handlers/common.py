@@ -24,12 +24,14 @@ from ..keyboards import (
     tasks_kb,
 )
 from ..services.integration_hub import IntegrationHub
+from ..services.menu_context import build_menu_context
 from ..services.menu_scope import (
     clear_active_menu_role,
     get_active_menu_role,
     resolve_active_menu_role,
     set_active_menu_role,
 )
+from ..services.sheets_sync import export_to_sheets, import_from_source_sheet
 from ..utils import answer_service, parse_roles, private_only_reply_markup, role_label
 
 log = logging.getLogger(__name__)
@@ -52,40 +54,7 @@ async def _guard_blocked_message(message: Message, db: Database) -> bool:
 
 
 async def _menu_context(db: Database, user_id: int | None, role: str | None) -> dict[str, object]:
-    if not user_id:
-        return {
-            "unread": 0,
-            "unread_channels": {},
-            "gd_inbox_unread": None,
-            "gd_invoice_unread": None,
-            "gd_invoice_end_unread": None,
-            "rp_tasks": 0,
-            "rp_messages": 0,
-        }
-
-    roles = set(parse_roles(role))
-    _is_rp = Role.RP in roles or Role.MANAGER_NPN in roles
-    ctx: dict[str, object] = {
-        "unread": await db.count_unread_tasks(user_id),
-        "unread_channels": await db.count_unread_by_channel(user_id),
-        "gd_inbox_unread": await db.count_gd_inbox_tasks(user_id) if Role.GD in roles else None,
-        "gd_invoice_unread": await db.count_gd_invoice_tasks(user_id) if Role.GD in roles else None,
-        "gd_invoice_end_unread": await db.count_gd_invoice_end_tasks(user_id) if Role.GD in roles else None,
-        "rp_tasks": await db.count_rp_role_tasks(user_id) if _is_rp else 0,
-        "rp_messages": await db.count_rp_role_messages(user_id) if _is_rp else 0,
-    }
-    # RP per-button badge counters
-    if Role.RP in roles:
-        ctx["rp_check_kp"] = await db.count_rp_check_kp_tasks(user_id)
-        ctx["rp_invoices_pay"] = await db.count_rp_invoice_pay_tasks(user_id)
-        ctx["rp_ch_mgr_kv"] = await db.count_rp_channel_unread(user_id, "rp_to_manager_kv")
-        ctx["rp_ch_mgr_kia"] = await db.count_rp_channel_unread(user_id, "rp_to_manager_kia")
-        ctx["rp_ch_montazh"] = await db.count_rp_channel_unread(user_id, "montazh")
-    # NPN badge counters (for RP role-switcher)
-    if Role.MANAGER_NPN in roles:
-        ctx["npn_tasks"] = await db.count_unread_tasks(user_id)
-        ctx["npn_messages"] = 0
-    return ctx
+    return await build_menu_context(db, user_id, role)
 
 
 def _menu_scope(user_id: int | None, role_value: str | None) -> tuple[str | None, bool]:
@@ -297,15 +266,7 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
         )
 
     is_admin = u.id in (config.admin_ids or set())
-    unread = await db.count_unread_tasks(u.id)
-    uc = await db.count_unread_by_channel(u.id)
-    _parsed = parse_roles(role)
-    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and Role.GD in _parsed else None
-    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and Role.GD in _parsed else None
-    gd_ie = await db.count_gd_invoice_end_tasks(u.id) if role and Role.GD in _parsed else None
-    _is_rp = role and (Role.RP in _parsed or Role.MANAGER_NPN in _parsed)
-    rp_t = await db.count_rp_role_tasks(u.id) if _is_rp else 0
-    rp_m = await db.count_rp_role_messages(u.id) if _is_rp else 0
+    menu_context = await _menu_context(db, u.id, active_role or role)
     await message.answer(
         text,
         reply_markup=private_only_reply_markup(
@@ -313,14 +274,8 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
             main_menu(
                 active_role or role,
                 is_admin=is_admin,
-                unread=unread,
-                unread_channels=uc,
-                gd_inbox_unread=gd_ur,
-                gd_invoice_unread=gd_inv,
-                gd_invoice_end_unread=gd_ie,
                 isolated_role=bool(active_role and active_role != role),
-                rp_tasks=rp_t,
-                rp_messages=rp_m,
+                **menu_context,
             ),
         ),
     )
@@ -354,16 +309,8 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
     else:
         set_active_menu_role(u.id, role)
     is_admin = u.id in (config.admin_ids or set())
-    unread = await db.count_unread_tasks(u.id)
-    uc = await db.count_unread_by_channel(u.id)
-    _parsed_menu = parse_roles(role)
-    gd_ur = await db.count_gd_inbox_tasks(u.id) if role and Role.GD in _parsed_menu else None
-    gd_inv = await db.count_gd_invoice_tasks(u.id) if role and Role.GD in _parsed_menu else None
-    gd_ie = await db.count_gd_invoice_end_tasks(u.id) if role and Role.GD in _parsed_menu else None
-    _is_rp_menu = role and (Role.RP in _parsed_menu or Role.MANAGER_NPN in _parsed_menu)
-    rp_t_menu = await db.count_rp_role_tasks(u.id) if _is_rp_menu else 0
-    rp_m_menu = await db.count_rp_role_messages(u.id) if _is_rp_menu else 0
-    if len(_parsed_menu) > 1:
+    menu_context = await _menu_context(db, u.id, role)
+    if len(parse_roles(role)) > 1:
         text = "🎭 <b>Выберите роль</b>\n\nСначала выберите, в каком контексте открыть меню."
     else:
         text = "✅ Меню обновлено."
@@ -373,7 +320,7 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
         delay_seconds=60,
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(role, is_admin=is_admin, unread=unread, unread_channels=uc, gd_inbox_unread=gd_ur, gd_invoice_unread=gd_inv, gd_invoice_end_unread=gd_ie, rp_tasks=rp_t_menu, rp_messages=rp_m_menu),
+            main_menu(role, is_admin=is_admin, **menu_context),
         ),
     )
 
@@ -395,15 +342,7 @@ async def cmd_help(message: Message, db: Database, config: Config) -> None:
     if is_admin:
         text += "\n\n<b>Админ-команды</b>\n• <code>/admin_help</code> — инструкция администратора\n• <code>/stats</code> — статистика\n• <code>/users</code> — сотрудники"
     _uid_help = message.from_user.id if message.from_user else None
-    unread = await db.count_unread_tasks(_uid_help) if _uid_help else 0
-    uc = await db.count_unread_by_channel(_uid_help) if _uid_help else {}
-    _parsed_help = parse_roles(role) if role else []
-    gd_ur = await db.count_gd_inbox_tasks(_uid_help) if _uid_help and Role.GD in _parsed_help else None
-    gd_inv = await db.count_gd_invoice_tasks(_uid_help) if _uid_help and Role.GD in _parsed_help else None
-    gd_ie = await db.count_gd_invoice_end_tasks(_uid_help) if _uid_help and Role.GD in _parsed_help else None
-    _is_rp_help = _uid_help and (Role.RP in _parsed_help or Role.MANAGER_NPN in _parsed_help)
-    rp_t_help = await db.count_rp_role_tasks(_uid_help) if _is_rp_help else 0
-    rp_m_help = await db.count_rp_role_messages(_uid_help) if _is_rp_help else 0
+    menu_context = await _menu_context(db, _uid_help, menu_role)
     await message.answer(
         text,
         reply_markup=private_only_reply_markup(
@@ -411,14 +350,8 @@ async def cmd_help(message: Message, db: Database, config: Config) -> None:
             main_menu(
                 menu_role,
                 is_admin=is_admin,
-                unread=unread,
-                unread_channels=uc,
-                gd_inbox_unread=gd_ur,
-                gd_invoice_unread=gd_inv,
-                gd_invoice_end_unread=gd_ie,
                 isolated_role=isolated_role,
-                rp_tasks=rp_t_help,
-                rp_messages=rp_m_help,
+                **menu_context,
             ),
         ),
     )
@@ -621,21 +554,9 @@ async def menu_more_universal(message: Message, state: FSMContext, db: Database,
         )
 
 
-@router.message(lambda m: (m.text or "").strip() in {GD_BTN_BACK_HOME, "Назад в Гл.меню"})
-async def gd_back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    """GD: return from 'Еще' submenu to main menu."""
-    await cmd_menu(message, state, db, config)
-
-
-@router.message(lambda m: (m.text or "").strip() in {MGR_BTN_BACK_HOME, "Назад в Гл.меню"})
-async def mgr_back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    """Manager: return from 'Еще' submenu."""
-    await cmd_menu(message, state, db, config)
-
-
-@router.message(lambda m: (m.text or "").strip() in {RP_BTN_BACK_HOME, "Назад в Гл.меню"})
-async def rp_back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    """RP: return from 'Еще' submenu."""
+@router.message(lambda m: (m.text or "").strip() in {GD_BTN_BACK_HOME, MGR_BTN_BACK_HOME, RP_BTN_BACK_HOME, "Назад в Гл.меню"})
+async def role_back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    """Any role: return from 'Еще' submenu to main menu."""
     await cmd_menu(message, state, db, config)
 
 
@@ -814,75 +735,31 @@ async def sync_data_non_gd(
 
     await answer_service(message, "⏳ Запускаю синхронизацию данных с Google Sheets...")
 
-    # --- IMPORT from source ОП sheet → SQLite ---
     imported_ok = 0
     try:
-        op_rows = await integrations.sheets.read_op_sheet()
-        for row_data in op_rows:
-            try:
-                await db.import_invoice_from_sheet(row_data)
-                imported_ok += 1
-            except Exception as e:
-                log.warning("Import row error: %s — %s", row_data.get("invoice_number"), e)
+        imported_ok = await import_from_source_sheet(
+            db,
+            integrations.sheets,
+            log_prefix="manual_sync",
+        )
     except Exception as e:
         log.error("read_op_sheet failed: %s", e)
 
-    projects = await db.list_recent_projects(limit=10000)
-    tasks = await db.list_recent_tasks(limit=50000)
-
-    project_code_by_id: dict[int, str] = {}
-    projects_ok = 0
-    tasks_ok = 0
-
-    for p in sorted(projects, key=lambda x: int(x["id"])):
-        manager_label = ""
-        manager_id = p.get("manager_id")
-        if manager_id:
-            manager_user = await db.get_user_optional(int(manager_id))
-            if manager_user:
-                manager_label = f"@{manager_user.username}" if manager_user.username else str(manager_user.telegram_id)
-        await integrations.sheets.upsert_project(p, manager_label=manager_label)
-        project_code = str(p.get("code") or "")
-        if project_code:
-            project_code_by_id[int(p["id"])] = project_code
-        projects_ok += 1
-
-    for t in sorted(tasks, key=lambda x: int(x["id"])):
-        project_code = ""
-        project_id = t.get("project_id")
-        if project_id:
-            project_code = project_code_by_id.get(int(project_id), "")
-            if not project_code:
-                try:
-                    proj = await db.get_project(int(project_id))
-                    project_code = str(proj.get("code") or "")
-                    if project_code:
-                        project_code_by_id[int(project_id)] = project_code
-                except Exception:
-                    project_code = ""
-        await integrations.sheets.upsert_task(t, project_code=project_code)
-        tasks_ok += 1
-
-    # --- invoices (без себестоимости для не-ГД) ---
-    all_invoices = await db.list_invoices(limit=10000)
-    invoices_ok = 0
-    for inv in sorted(all_invoices, key=lambda x: int(x["id"])):
-        manager_label = ""
-        if inv.get("created_by"):
-            u = await db.get_user_optional(int(inv["created_by"]))
-            if u:
-                manager_label = f"@{u.username}" if u.username else (u.full_name or str(u.telegram_id))
-        await integrations.sheets.upsert_invoice(inv, manager_label=manager_label, cost=None)
-        invoices_ok += 1
+    stats = await export_to_sheets(
+        db,
+        integrations.sheets,
+        include_invoice_cost=False,
+        sync_invoices=True,
+    )
 
     menu_context = await _menu_context(db, message.from_user.id, active_role or role)
     await answer_service(
         message,
         "✅ Синхронизация завершена.\n"
         f"📥 Импорт из ОП: <b>{imported_ok}</b>\n"
-        f"Проектов: <b>{projects_ok}</b>\n"
-        f"Задач: <b>{tasks_ok}</b>\n"
-        f"Счетов: <b>{invoices_ok}</b>",
+        f"Проектов: <b>{stats['projects']}</b>\n"
+        f"Задач: <b>{stats['tasks']}</b>\n"
+        f"Счетов: <b>{stats['invoices']}</b>",
         delay_seconds=300,
         reply_markup=private_only_reply_markup(
             message,

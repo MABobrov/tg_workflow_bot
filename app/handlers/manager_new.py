@@ -244,8 +244,10 @@ async def check_kp_deadline(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     try:
         days = int(text)
+        if days <= 0:
+            raise ValueError
     except (ValueError, TypeError):
-        await message.answer("Введите число (кол-во дней):")
+        await message.answer("⚠️ Введите положительное число дней (например, 14):")
         return
     await state.update_data(deadline_days=days)
     await state.set_state(CheckKpSG.documents)
@@ -321,7 +323,7 @@ async def check_kp_comment(
     # Create task for RP
     rp_id = await resolve_default_assignee(db, config, Role.RP)
     if not rp_id:
-        await message.answer("⚠️ РП не найден. Назначьте роль RP.")
+        await message.answer("⚠️ РП не найден. Попросите администратора назначить роль РП.")
         await state.clear()
         return
 
@@ -683,7 +685,7 @@ async def invoice_start_est_logistics(message: Message, state: FSMContext) -> No
 
     b = InlineKeyboardBuilder()
     b.button(text="✅ Отправить ГД", callback_data="inv_start:send")
-    b.button(text="⏭ Без вложений", callback_data="inv_start:send")
+    b.button(text="⏭ Без вложений", callback_data="inv_start:send_no_attach")
     b.adjust(1)
 
     await message.answer(
@@ -702,8 +704,8 @@ async def invoice_start_est_logistics(message: Message, state: FSMContext) -> No
         f"💰 <b>Распределение ({split_label}):</b>\n"
         f"  ЗП РП (8%): {rp_zp:,.0f}₽\n"
         f"  Ваша доля: {mgr_share:,.0f}₽\n\n"
-        "📎 Прикрепите документы (счёт, договор, приложение)\n"
-        "или нажмите «Отправить ГД».",
+        "📎 Прикрепите документы (необязательно: счёт, договор, приложение)\n"
+        "или сразу нажмите «⏭ Без вложений».",
         reply_markup=b.as_markup(),
     )
 
@@ -736,7 +738,7 @@ async def invoice_start_attachments(message: Message, state: FSMContext) -> None
     await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
 
 
-@router.callback_query(F.data == "inv_start:send")
+@router.callback_query(F.data.in_({"inv_start:send", "inv_start:send_no_attach"}))
 async def invoice_start_send(
     cb: CallbackQuery,
     state: FSMContext,
@@ -1292,7 +1294,8 @@ async def invoice_end_comment(
     rp_id = await resolve_default_assignee(db, config, Role.RP)
 
     if not gd_id:
-        await message.answer("⚠️ ГД не найден. Назначьте роль GD через админ-панель.")
+        await message.answer("⚠️ ГД не найден. Попросите администратора назначить роль ГД.")
+        await state.clear()
         return
 
     await db.create_task(
@@ -2315,7 +2318,9 @@ async def mgr_book_pick_time(cb: CallbackQuery, db: Database, config: Config) ->
         return
     await cb.answer()
 
-    parts = cb.data.split(":")  # type: ignore[union-attr]
+    parts = (cb.data or "").split(":")
+    if len(parts) < 4:
+        return
     ds = parts[2]
     week_offset = int(parts[3])
 
@@ -2336,7 +2341,7 @@ async def mgr_book_pick_time(cb: CallbackQuery, db: Database, config: Config) ->
     )
     if busy_intervals:
         text += f"│ ⚠️ Занято: {', '.join(busy_intervals)}\n"
-    text += f"└─────────────────────────\n\nВыберите интервал:"
+    text += "└─────────────────────────\n\nВыберите интервал:"
 
     b = InlineKeyboardBuilder()
     for interval in _MGR_BOOK_INTERVALS:
@@ -2358,7 +2363,9 @@ async def mgr_book_start_full_flow(cb: CallbackQuery, state: FSMContext, db: Dat
         return
     await cb.answer()
 
-    parts = cb.data.split(":")  # type: ignore[union-attr]
+    parts = (cb.data or "").split(":")
+    if len(parts) < 4:
+        return
     ds = parts[2]
     interval = parts[3]
 

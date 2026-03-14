@@ -48,6 +48,7 @@ from ..keyboards import (
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import get_active_menu_role
 from ..services.notifier import Notifier
+from ..services.sheets_sync import export_to_sheets
 from ..states import ChatProxySG, InvoiceSearchSG, SalesWriteSG
 from .chat_proxy import channel_label, enter_chat_menu, gd_channel_menu
 from ..utils import (
@@ -931,66 +932,18 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
     # --- 1. Google Sheets sync (if enabled) ---
     if integrations.sheets:
         await message.answer("⏳ Запускаю синхронизацию данных с Google Sheets...")
-
-        all_projects = await db.list_recent_projects(limit=10000)
-        all_tasks_gs = await db.list_recent_tasks(limit=50000)
-
-        project_code_by_id: dict[int, str] = {}
-        projects_ok = 0
-        tasks_ok = 0
-
-        for p in sorted(all_projects, key=lambda x: int(x["id"])):
-            manager_label = ""
-            manager_id = p.get("manager_id")
-            if manager_id:
-                manager = await db.get_user_optional(int(manager_id))
-                if manager:
-                    manager_label = f"@{manager.username}" if manager.username else str(manager.telegram_id)
-            await integrations.sheets.upsert_project(p, manager_label=manager_label)
-            project_code = str(p.get("code") or "")
-            if project_code:
-                project_code_by_id[int(p["id"])] = project_code
-            projects_ok += 1
-
-        for t in sorted(all_tasks_gs, key=lambda x: int(x["id"])):
-            project_code = ""
-            project_id = t.get("project_id")
-            if project_id:
-                project_code = project_code_by_id.get(int(project_id), "")
-                if not project_code:
-                    try:
-                        proj = await db.get_project(int(project_id))
-                        project_code = str(proj.get("code") or "")
-                        if project_code:
-                            project_code_by_id[int(project_id)] = project_code
-                    except Exception:
-                        project_code = ""
-            await integrations.sheets.upsert_task(t, project_code=project_code)
-            tasks_ok += 1
-
-        # --- invoices ---
-        all_invoices = await db.list_invoices(limit=10000)
-        invoices_ok = 0
-        for inv in sorted(all_invoices, key=lambda x: int(x["id"])):
-            manager_label = ""
-            if inv.get("created_by"):
-                u = await db.get_user_optional(int(inv["created_by"]))
-                if u:
-                    manager_label = f"@{u.username}" if u.username else (u.full_name or str(u.telegram_id))
-
-            cost = None
-            if not inv.get("parent_invoice_id"):
-                try:
-                    cost = await db.get_full_invoice_cost_card(int(inv["id"]))
-                except Exception:
-                    cost = None
-
-            await integrations.sheets.upsert_invoice(inv, manager_label=manager_label, cost=cost)
-            invoices_ok += 1
+        stats = await export_to_sheets(
+            db,
+            integrations.sheets,
+            include_invoice_cost=True,
+            sync_invoices=True,
+        )
 
         await message.answer(
             "✅ Синхронизация Google Sheets завершена.\n"
-            f"Проектов: <b>{projects_ok}</b> | Задач: <b>{tasks_ok}</b> | Счетов: <b>{invoices_ok}</b>",
+            f"Проектов: <b>{stats['projects']}</b> | "
+            f"Задач: <b>{stats['tasks']}</b> | "
+            f"Счетов: <b>{stats['invoices']}</b>",
         )
 
     # --- 2. Detailed task report ---

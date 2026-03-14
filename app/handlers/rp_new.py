@@ -1708,12 +1708,12 @@ async def _rp_sinv_finalize(
 
     for a in attachments:
         try:
-            if a["file_type"] == "document":
+            if a.get("file_type") == "document":
                 await notifier.bot.send_document(int(gd_id), a["file_id"])
-            elif a["file_type"] == "photo":
+            elif a.get("file_type") == "photo":
                 await notifier.bot.send_photo(int(gd_id), a["file_id"])
         except Exception:
-            pass
+            log.warning("Failed to send attachment to GD %s", gd_id, exc_info=True)
 
     await event_msg.answer(
         f"✅ Счёт от поставщика отправлен ГД (счёт №{num}).\n"

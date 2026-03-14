@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from dataclasses import dataclass
+from threading import RLock
 from typing import Any
 
 import gspread
@@ -159,6 +161,11 @@ class GoogleSheetsService:
         self.cfg = cfg
         self._gc: gspread.Client | None = None
         self._spreadsheet: gspread.Spreadsheet | None = None
+        self._worksheets: dict[str, gspread.Worksheet] = {}
+        self._headers_ready: set[str] = set()
+        self._row_indexes: dict[str, dict[str, int]] = {}
+        self._next_rows: dict[str, int] = {}
+        self._sync_lock = RLock()
 
     def _fmt_amount(self, amount: Any) -> str:
         if isinstance(amount, (int, float)):
@@ -166,6 +173,19 @@ class GoogleSheetsService:
         if amount is None:
             return ""
         return str(amount)
+
+    @staticmethod
+    def _fmt_sheet_date(value: Any) -> str:
+        """Format DB ISO date/datetime for invoice sheet cells (DD.MM.YYYY)."""
+        if value in (None, ""):
+            return ""
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            return datetime.fromisoformat(text).strftime("%d.%m.%Y")
+        except ValueError:
+            return text
 
     def _task_payload_fields(self, task: dict[str, Any]) -> dict[str, str]:
         payload = try_json_loads(task.get("payload_json"))
@@ -224,26 +244,76 @@ class GoogleSheetsService:
         return self._spreadsheet
 
     def _get_or_create_ws(self, title: str, header: list[str]) -> gspread.Worksheet:
-        sh = self._get_spreadsheet()
-        try:
-            ws = sh.worksheet(title)
-        except gspread.WorksheetNotFound:
-            ws = sh.add_worksheet(title=title, rows=2000, cols=max(10, len(header) + 2))
-        # ensure header
-        values = ws.row_values(1)
-        if values[: len(header)] != header:
-            ws.update([header], "A1")
+        ws = self._worksheets.get(title)
+        if ws is None:
+            sh = self._get_spreadsheet()
+            try:
+                ws = sh.worksheet(title)
+            except gspread.WorksheetNotFound:
+                ws = sh.add_worksheet(title=title, rows=2000, cols=max(10, len(header) + 2))
+            self._worksheets[title] = ws
+
+        if title not in self._headers_ready:
+            values = ws.row_values(1)
+            if values[: len(header)] != header:
+                ws.update([header], "A1")
+            self._headers_ready.add(title)
         return ws
 
-    def upsert_project_sync(self, project: dict[str, Any], manager_label: str = "") -> None:
-        ws = self._get_or_create_ws(self.cfg.projects_tab, PROJECTS_HEADER)
+    def _get_row_index(self, title: str, ws: gspread.Worksheet) -> dict[str, int]:
+        row_index = self._row_indexes.get(title)
+        if row_index is not None:
+            return row_index
 
-        code = project.get("code")
-        if not code:
+        first_col = ws.col_values(1)
+        row_index = {}
+        for row_num, value in enumerate(first_col[1:], start=2):
+            key = str(value).strip()
+            if key and key not in row_index:
+                row_index[key] = row_num
+        self._row_indexes[title] = row_index
+        self._next_rows[title] = max(2, len(first_col) + 1)
+        return row_index
+
+    def _get_or_allocate_row(self, title: str, ws: gspread.Worksheet, key: Any) -> tuple[int, bool]:
+        key_str = str(key).strip()
+        if not key_str:
+            raise ValueError("sheet row key is required")
+
+        row_index = self._get_row_index(title, ws)
+        existing = row_index.get(key_str)
+        if existing is not None:
+            return existing, False
+
+        row = self._next_rows.get(title, 2)
+        row_index[key_str] = row
+        self._next_rows[title] = row + 1
+        return row, True
+
+    @staticmethod
+    def _chunked(items: list[dict[str, Any]], chunk_size: int) -> list[list[dict[str, Any]]]:
+        return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+    def _flush_batch_update(
+        self,
+        ws: gspread.Worksheet,
+        batch_data: list[dict[str, Any]],
+        *,
+        chunk_size: int = 200,
+    ) -> None:
+        if not batch_data:
             return
+        for chunk in self._chunked(batch_data, chunk_size):
+            ws.batch_update(chunk, value_input_option="USER_ENTERED")
 
-        row_values = [
-            code,
+    @staticmethod
+    def _row_range(row: int, width: int) -> str:
+        end_col = GoogleSheetsService._col_letter(width - 1)
+        return f"A{row}:{end_col}{row}"
+
+    def _project_row_values(self, project: dict[str, Any], manager_label: str = "") -> list[Any]:
+        return [
+            project.get("code") or "",
             project.get("title") or "",
             project.get("address") or "",
             project.get("client") or "",
@@ -257,26 +327,10 @@ class GoogleSheetsService:
             project.get("amo_lead_id") or "",
         ]
 
-        try:
-            cell = ws.find(str(code), in_column=1)  # 1-based column index
-        except gspread.CellNotFound:
-            cell = None
-        if cell:
-            row = cell.row
-            ws.update([row_values], f"A{row}")
-        else:
-            ws.append_row(row_values, value_input_option="USER_ENTERED")
-
-    def upsert_task_sync(self, task: dict[str, Any], project_code: str = "") -> None:
-        ws = self._get_or_create_ws(self.cfg.tasks_tab, TASKS_HEADER)
-
-        tid = task.get("id")
-        if not tid:
-            return
-
+    def _task_row_values(self, task: dict[str, Any], project_code: str = "") -> list[Any]:
         payload = self._task_payload_fields(task)
-        row_values = [
-            tid,
+        return [
+            task.get("id") or "",
             project_code,
             task_type_label(task.get("type")),
             task_status_label(task.get("status")),
@@ -300,15 +354,147 @@ class GoogleSheetsService:
             payload["sender"],
         ]
 
-        try:
-            cell = ws.find(str(tid), in_column=1)
-        except gspread.CellNotFound:
-            cell = None
-        if cell:
-            row = cell.row
-            ws.update([row_values], f"A{row}")
-        else:
-            ws.append_row(row_values, value_input_option="USER_ENTERED")
+    def _invoice_cells(
+        self,
+        invoice: dict[str, Any],
+        manager_label: str,
+        cost: dict[str, Any] | None,
+        *,
+        row: int,
+        is_new: bool,
+    ) -> dict[int, Any]:
+        _ROLE_LABELS = {
+            "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+        }
+        _c = cost or {}
+
+        cells: dict[int, Any] = {
+            0: invoice.get("id") or "",
+            2: manager_label,
+            3: "Да" if invoice.get("edo_signed") else "",
+            4: invoice.get("client_name") or "",
+            6: "0" if invoice.get("is_credit") else "1",
+            7: {"own": "Свой", "gd_lead": "Атм"}.get(invoice.get("client_source", ""), ""),
+            8: invoice.get("invoice_number") or "",
+            9: invoice.get("object_address") or "",
+            10: self._fmt_sheet_date(invoice.get("receipt_date")),
+            13: self._fmt_sheet_date(invoice.get("actual_completion_date")),
+            14: self._fmt_amount(invoice.get("amount")),
+            15: self._fmt_amount(invoice.get("first_payment_amount")),
+            30: self._fmt_amount(invoice.get("outstanding_debt")),
+            32: invoice.get("closing_docs_status") or "",
+            35: self._fmt_amount(invoice.get("zp_manager_amount")),
+            36: invoice.get("zp_manager_status") or "",
+            46: invoice.get("status") or "",
+            47: _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
+            48: invoice.get("supplier") or "",
+            49: invoice.get("material_type") or "",
+            50: invoice.get("parent_invoice_id") or "",
+            51: invoice.get("montazh_stage") or "",
+            52: "Да" if invoice.get("installer_ok") else "",
+            53: "Да" if invoice.get("no_debts") else "",
+            54: invoice.get("zp_status") or "",
+            55: self._fmt_amount(invoice.get("zp_zamery_total")),
+            56: invoice.get("zp_installer_status") or "",
+            59: format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),
+            60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
+        }
+
+        amount = float(invoice.get("amount") or 0)
+        est_glass = float(invoice.get("estimated_glass") or 0)
+        est_profile = float(invoice.get("estimated_profile") or 0)
+        est_mat_legacy = float(invoice.get("estimated_materials") or 0)
+        est_inst = float(invoice.get("estimated_installation") or 0)
+        est_load = float(invoice.get("estimated_loaders") or 0)
+        est_log = float(invoice.get("estimated_logistics") or 0)
+        materials_total = est_glass + est_profile + est_mat_legacy
+        est_total = materials_total + est_inst + est_load + est_log
+
+        refundable_base = est_glass + est_profile
+        output_vat = amount * 22 / 122 if amount > 0 else 0
+        input_vat = refundable_base * 22 / 122 if refundable_base > 0 else 0
+        net_vat = output_vat - input_vat
+        est_profit = amount - est_total - net_vat
+        est_pct = (est_profit / amount * 100) if amount > 0 else 0
+
+        if any([est_glass, est_profile, est_mat_legacy, est_inst, est_load, est_log]):
+            cells[16] = self._fmt_amount(materials_total)
+            cells[17] = self._fmt_amount(est_inst)
+            cells[18] = self._fmt_amount(est_load)
+            cells[19] = self._fmt_amount(est_log)
+            cells[20] = self._fmt_amount(est_profit)
+            cells[21] = self._fmt_amount(net_vat)
+            cells[23] = f"{est_pct:.1f}%"
+
+        if _c:
+            fact_pct = _c.get("margin_pct", 0)
+            cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""
+            cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
+            cells[58] = self._fmt_amount(_c.get("total_cost"))
+
+        if is_new:
+            cells[12] = (
+                f'=IF(OR(K{row}="",L{row}=""),"",TEXT('
+                f'DATEVALUE(MID(K{row},7,4)&"-"&MID(K{row},4,2)&"-"&LEFT(K{row},2))'
+                f'+L{row},"DD.MM.YYYY"))'
+            )
+            cells[45] = (
+                f'=IF(K{row}="","",SWITCH(VALUE(MID(K{row},4,2)),'
+                f'1,"Январь",2,"Февраль",3,"Март",4,"Апрель",'
+                f'5,"Май",6,"Июнь",7,"Июль",8,"Август",'
+                f'9,"Сентябрь",10,"Октябрь",11,"Ноябрь",12,"Декабрь"))'
+            )
+
+        return cells
+
+    def _invoice_batch_ranges(self, row: int, cells: dict[int, Any]) -> list[dict[str, Any]]:
+        ranges: list[dict[str, Any]] = []
+        current_cols: list[int] = []
+        current_values: list[Any] = []
+
+        for col_idx in sorted(cells):
+            value = cells[col_idx]
+            if current_cols and col_idx != current_cols[-1] + 1:
+                start = self._col_letter(current_cols[0])
+                end = self._col_letter(current_cols[-1])
+                ranges.append({
+                    "range": f"{start}{row}:{end}{row}",
+                    "values": [current_values],
+                })
+                current_cols = []
+                current_values = []
+
+            current_cols.append(col_idx)
+            current_values.append(value)
+
+        if current_cols:
+            start = self._col_letter(current_cols[0])
+            end = self._col_letter(current_cols[-1])
+            ranges.append({
+                "range": f"{start}{row}:{end}{row}",
+                "values": [current_values],
+            })
+        return ranges
+
+    def upsert_project_sync(self, project: dict[str, Any], manager_label: str = "") -> None:
+        code = project.get("code")
+        if not code:
+            return
+        with self._sync_lock:
+            ws = self._get_or_create_ws(self.cfg.projects_tab, PROJECTS_HEADER)
+            row, _ = self._get_or_allocate_row(self.cfg.projects_tab, ws, code)
+            row_values = self._project_row_values(project, manager_label)
+            ws.update([row_values], self._row_range(row, len(PROJECTS_HEADER)), value_input_option="USER_ENTERED")
+
+    def upsert_task_sync(self, task: dict[str, Any], project_code: str = "") -> None:
+        tid = task.get("id")
+        if not tid:
+            return
+        with self._sync_lock:
+            ws = self._get_or_create_ws(self.cfg.tasks_tab, TASKS_HEADER)
+            row, _ = self._get_or_allocate_row(self.cfg.tasks_tab, ws, tid)
+            row_values = self._task_row_values(task, project_code)
+            ws.update([row_values], self._row_range(row, len(TASKS_HEADER)), value_input_option="USER_ENTERED")
 
     @staticmethod
     def _col_letter(idx: int) -> str:
@@ -327,125 +513,80 @@ class GoogleSheetsService:
         manager_label: str = "",
         cost: dict[str, Any] | None = None,
     ) -> None:
-        ws = self._get_or_create_ws(self.cfg.invoices_tab, INVOICES_HEADER)
-
         inv_id = invoice.get("id")
         if not inv_id:
             return
+        with self._sync_lock:
+            ws = self._get_or_create_ws(self.cfg.invoices_tab, INVOICES_HEADER)
+            row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_id)
+            cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
+            batch_data = self._invoice_batch_ranges(row, cells)
+            self._flush_batch_update(ws, batch_data, chunk_size=200)
 
-        _ROLE_LABELS = {
-            "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
-        }
-        _c = cost or {}
+    def upsert_projects_bulk_sync(
+        self,
+        items: list[tuple[dict[str, Any], str]],
+    ) -> int:
+        with self._sync_lock:
+            ws = self._get_or_create_ws(self.cfg.projects_tab, PROJECTS_HEADER)
+            batch_data: list[dict[str, Any]] = []
+            count = 0
+            for project, manager_label in items:
+                code = project.get("code")
+                if not code:
+                    continue
+                row, _ = self._get_or_allocate_row(self.cfg.projects_tab, ws, code)
+                batch_data.append(
+                    {
+                        "range": self._row_range(row, len(PROJECTS_HEADER)),
+                        "values": [self._project_row_values(project, manager_label)],
+                    }
+                )
+                count += 1
+            self._flush_batch_update(ws, batch_data, chunk_size=200)
+            return count
 
-        # Build bot-managed cells: {col_index: value}
-        cells: dict[int, Any] = {
-            0: inv_id,                                                              # №
-            2: manager_label,                                                        # Менеджер
-            3: "Да" if invoice.get("edo_signed") else "",                           # Бухг.ЭДО
-            6: "0" if invoice.get("is_credit") else "1",                            # Б.Н./Кред
-            7: {"own": "Свой", "gd_lead": "Атм"}.get(invoice.get("client_source", ""), ""),  # Свой/Атм
-            8: invoice.get("invoice_number") or "",                                  # Номер счета
-            9: invoice.get("object_address") or "",                                  # Адрес
-            14: self._fmt_amount(invoice.get("amount")),                             # Сумма
-            30: self._fmt_amount(invoice.get("outstanding_debt")),                   # Долг
-            32: invoice.get("closing_docs_status") or "",                            # Закр.док
-            35: self._fmt_amount(invoice.get("zp_manager_amount")),                  # Мен.ЗП
-            36: invoice.get("zp_manager_status") or "",                              # Запрос
-            # Bot-specific (46+)
-            46: invoice.get("status") or "",                                         # Статус
-            47: _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
-            48: invoice.get("supplier") or "",                                       # Поставщик
-            49: invoice.get("material_type") or "",                                  # Тип материала
-            50: invoice.get("parent_invoice_id") or "",                              # Родит. счёт
-            51: invoice.get("montazh_stage") or "",                                  # Этап монтажа
-            52: "Да" if invoice.get("installer_ok") else "",                         # Монтажник ОК
-            53: "Да" if invoice.get("no_debts") else "",                             # Долгов нет
-            54: invoice.get("zp_status") or "",                                      # ЗП Замерщик
-            55: self._fmt_amount(invoice.get("zp_zamery_total")),                    # ЗП Замерщик сумма
-            56: invoice.get("zp_installer_status") or "",                            # ЗП Монтажник статус
-            59: format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),    # Создан
-            60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),    # Обновлён
-        }
+    def upsert_tasks_bulk_sync(
+        self,
+        items: list[tuple[dict[str, Any], str]],
+    ) -> int:
+        with self._sync_lock:
+            ws = self._get_or_create_ws(self.cfg.tasks_tab, TASKS_HEADER)
+            batch_data: list[dict[str, Any]] = []
+            count = 0
+            for task, project_code in items:
+                tid = task.get("id")
+                if not tid:
+                    continue
+                row, _ = self._get_or_allocate_row(self.cfg.tasks_tab, ws, tid)
+                batch_data.append(
+                    {
+                        "range": self._row_range(row, len(TASKS_HEADER)),
+                        "values": [self._task_row_values(task, project_code)],
+                    }
+                )
+                count += 1
+            self._flush_batch_update(ws, batch_data, chunk_size=200)
+            return count
 
-        # Conditional: write only if DB has a value
-        if invoice.get("client_name"):
-            cells[4] = invoice["client_name"]
-        if invoice.get("receipt_date"):
-            cells[10] = format_date_iso(invoice["receipt_date"], self.cfg.timezone_name)
-        if invoice.get("actual_completion_date"):
-            cells[13] = format_date_iso(invoice["actual_completion_date"], self.cfg.timezone_name)
-        if invoice.get("first_payment_amount") is not None:
-            cells[15] = self._fmt_amount(invoice["first_payment_amount"])
-
-        # Estimated (plan) columns — from manager input
-        amount = float(invoice.get("amount") or 0)
-        est_glass = float(invoice.get("estimated_glass") or 0)
-        est_profile = float(invoice.get("estimated_profile") or 0)
-        est_mat_legacy = float(invoice.get("estimated_materials") or 0)
-        est_inst = float(invoice.get("estimated_installation") or 0)
-        est_load = float(invoice.get("estimated_loaders") or 0)
-        est_log = float(invoice.get("estimated_logistics") or 0)
-        materials_total = est_glass + est_profile + est_mat_legacy
-        est_total = materials_total + est_inst + est_load + est_log
-
-        # НДС с возвратным
-        refundable_base = est_glass + est_profile
-        output_vat = amount * 22 / 122 if amount > 0 else 0
-        input_vat = refundable_base * 22 / 122 if refundable_base > 0 else 0
-        net_vat = output_vat - input_vat
-        est_profit = amount - est_total - net_vat
-        est_pct = (est_profit / amount * 100) if amount > 0 else 0
-
-        if any([est_glass, est_profile, est_mat_legacy, est_inst, est_load, est_log]):
-            cells[16] = self._fmt_amount(materials_total)                            # Расч.мат. (стекло+профиль)
-            cells[17] = self._fmt_amount(est_inst)                                   # Установка
-            cells[18] = self._fmt_amount(est_load)                                   # Грузчики
-            cells[19] = self._fmt_amount(est_log)                                    # Логистика
-            cells[20] = self._fmt_amount(est_profit)                                 # Прибыль
-            cells[21] = self._fmt_amount(net_vat)                                    # Чистый НДС (с возвратом)
-            cells[23] = f"{est_pct:.1f}%"                                            # Рент-ть расч
-
-        # Actual (fact) columns
-        if _c:
-            fact_pct = _c.get("margin_pct", 0)
-            cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""                       # Рент-ть факт
-            cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))           # Оплаты пост.
-            cells[58] = self._fmt_amount(_c.get("total_cost"))                        # Расходы итого
-
-        # Find or create row
-        try:
-            cell = ws.find(str(inv_id), in_column=1)
-            row = cell.row
-            is_new = False
-        except gspread.CellNotFound:
-            row = len(ws.get_all_values()) + 1
-            is_new = True
-
-        # Set formulas for new rows only
-        if is_new:
-            cells[12] = (
-                f'=IF(OR(K{row}="",L{row}=""),"",TEXT('
-                f'DATEVALUE(MID(K{row},7,4)&"-"&MID(K{row},4,2)&"-"&LEFT(K{row},2))'
-                f'+L{row},"DD.MM.YYYY"))'
-            )
-            cells[45] = (
-                f'=IF(K{row}="","",SWITCH(VALUE(MID(K{row},4,2)),'
-                f'1,"Январь",2,"Февраль",3,"Март",4,"Апрель",'
-                f'5,"Май",6,"Июнь",7,"Июль",8,"Август",'
-                f'9,"Сентябрь",10,"Октябрь",11,"Ноябрь",12,"Декабрь"))'
-            )
-
-        # Build batch update with A1 notation
-        batch_data = []
-        for col_idx, value in cells.items():
-            col_letter = self._col_letter(col_idx)
-            batch_data.append({
-                "range": f"{col_letter}{row}",
-                "values": [[value]],
-            })
-
-        ws.batch_update(batch_data, value_input_option="USER_ENTERED")
+    def upsert_invoices_bulk_sync(
+        self,
+        items: list[tuple[dict[str, Any], str, dict[str, Any] | None]],
+    ) -> int:
+        with self._sync_lock:
+            ws = self._get_or_create_ws(self.cfg.invoices_tab, INVOICES_HEADER)
+            batch_data: list[dict[str, Any]] = []
+            count = 0
+            for invoice, manager_label, cost in items:
+                inv_id = invoice.get("id")
+                if not inv_id:
+                    continue
+                row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_id)
+                cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
+                batch_data.extend(self._invoice_batch_ranges(row, cells))
+                count += 1
+            self._flush_batch_update(ws, batch_data, chunk_size=500)
+            return count
 
     # ---------- async wrappers ----------
 
@@ -468,6 +609,24 @@ class GoogleSheetsService:
         if not self.cfg.enabled:
             return
         await asyncio.to_thread(self.upsert_invoice_sync, invoice, manager_label, cost)
+
+    async def upsert_projects_bulk(self, items: list[tuple[dict[str, Any], str]]) -> int:
+        if not self.cfg.enabled or not items:
+            return 0
+        return await asyncio.to_thread(self.upsert_projects_bulk_sync, items)
+
+    async def upsert_tasks_bulk(self, items: list[tuple[dict[str, Any], str]]) -> int:
+        if not self.cfg.enabled or not items:
+            return 0
+        return await asyncio.to_thread(self.upsert_tasks_bulk_sync, items)
+
+    async def upsert_invoices_bulk(
+        self,
+        items: list[tuple[dict[str, Any], str, dict[str, Any] | None]],
+    ) -> int:
+        if not self.cfg.enabled or not items:
+            return 0
+        return await asyncio.to_thread(self.upsert_invoices_bulk_sync, items)
 
     # ---------- IMPORT from source spreadsheet (Отдел Продаж → SQLite) ----------
 
@@ -526,7 +685,10 @@ class GoogleSheetsService:
         """Parse DD.MM.YYYY → YYYY-MM-DD ISO."""
         if not val or not val.strip():
             return None
-        parts = val.strip().split(".")
+        raw = val.strip()
+        if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+            return raw
+        parts = raw.split(".")
         if len(parts) != 3:
             return None
         try:
@@ -534,6 +696,77 @@ class GoogleSheetsService:
             return f"{y:04d}-{m:02d}-{d:02d}"
         except (ValueError, IndexError):
             return None
+
+    _OP_NUMERIC_FIELDS = frozenset(
+        {
+            "amount",
+            "first_payment_amount",
+            "estimated_materials",
+            "estimated_installation",
+            "estimated_loaders",
+            "estimated_logistics",
+            "nds_amount",
+            "outstanding_debt",
+            "surcharge_amount",
+            "final_surcharge_amount",
+            "agent_fee",
+            "manager_zp_blank",
+            "npn_amount",
+            "profit_tax",
+            "rentability_calc",
+        }
+    )
+    _OP_DATE_FIELDS = frozenset(
+        {
+            "receipt_date",
+            "actual_completion_date",
+            "surcharge_date",
+            "final_surcharge_date",
+        }
+    )
+
+    def _parse_op_row(self, row_values: list[str]) -> dict[str, Any] | None:
+        inv_num = str(row_values[4]).strip() if len(row_values) > 4 else ""
+        if not inv_num:
+            return None
+
+        parsed: dict[str, Any] = {"invoice_number": inv_num}
+        for col_idx, field in self._OP_COL_MAP.items():
+            if field == "invoice_number":
+                continue
+
+            raw_value = str(row_values[col_idx]).strip() if col_idx < len(row_values) else ""
+            if not raw_value:
+                parsed[field] = None
+                continue
+
+            if field in self._OP_NUMERIC_FIELDS:
+                num = self._parse_num(raw_value)
+                if num is not None:
+                    parsed[field] = num
+            elif field in self._OP_DATE_FIELDS:
+                parsed_date = self._parse_date_dmy(raw_value)
+                if parsed_date:
+                    parsed[field] = parsed_date
+            elif field == "deadline_days":
+                num = self._parse_num(raw_value)
+                if num is not None:
+                    parsed[field] = int(num)
+            elif field == "is_credit":
+                # Source: 0 = кредит, 1 = б.н.
+                parsed[field] = 1 if raw_value == "0" else 0
+            elif field == "client_source":
+                # 1 = Свой (own), 2 = Атм (gd_lead)
+                if raw_value == "1":
+                    parsed[field] = "own"
+                elif raw_value == "2":
+                    parsed[field] = "gd_lead"
+                else:
+                    parsed[field] = raw_value
+            else:
+                parsed[field] = raw_value
+
+        return parsed
 
     def _detect_op_sheet_start_row(self, all_data: list[list[str]]) -> int:
         """Detect the header row in the source sheet and return the first data row."""
@@ -554,7 +787,6 @@ class GoogleSheetsService:
     def read_op_sheet_sync(self) -> list[dict[str, Any]]:
         """Read all rows from source 'Отдел продаж' sheet, return parsed dicts."""
         if not self.cfg.source_spreadsheet_id:
-            log.warning("source_spreadsheet_id not configured")
             return []
 
         gc = self._get_client()
@@ -577,54 +809,8 @@ class GoogleSheetsService:
         start_row = self._detect_op_sheet_start_row(all_data)
         results: list[dict[str, Any]] = []
         for row_idx in range(start_row, len(all_data)):
-            row = all_data[row_idx]
-            # Skip empty rows (no invoice number)
-            inv_num = row[4].strip() if len(row) > 4 else ""
-            if not inv_num:
-                continue
-
-            parsed: dict[str, Any] = {}
-            for col_idx, field in self._OP_COL_MAP.items():
-                if col_idx >= len(row):
-                    continue
-                val = row[col_idx].strip()
-                if not val:
-                    continue
-
-                # Type-specific parsing
-                if field in ("amount", "first_payment_amount", "estimated_materials",
-                             "estimated_installation", "estimated_loaders",
-                             "estimated_logistics", "nds_amount", "outstanding_debt",
-                             "surcharge_amount", "final_surcharge_amount",
-                             "agent_fee", "manager_zp_blank", "npn_amount",
-                             "profit_tax", "rentability_calc"):
-                    num = self._parse_num(val)
-                    if num is not None:
-                        parsed[field] = num
-                elif field in ("receipt_date", "actual_completion_date",
-                               "surcharge_date", "final_surcharge_date"):
-                    d = self._parse_date_dmy(val)
-                    if d:
-                        parsed[field] = d
-                elif field == "deadline_days":
-                    num = self._parse_num(val)
-                    if num is not None:
-                        parsed[field] = int(num)
-                elif field == "is_credit":
-                    # Source: 0 = кредит, 1 = б.н.
-                    parsed[field] = 1 if val == "0" else 0
-                elif field == "client_source":
-                    # 1 = Свой (own), 2 = Атм (gd_lead)
-                    if val == "1":
-                        parsed[field] = "own"
-                    elif val == "2":
-                        parsed[field] = "gd_lead"
-                    else:
-                        parsed[field] = val
-                else:
-                    parsed[field] = val
-
-            if "invoice_number" in parsed:
+            parsed = self._parse_op_row(all_data[row_idx])
+            if parsed:
                 results.append(parsed)
 
         log.info("Read %d invoices from source ОП sheet", len(results))
@@ -636,49 +822,7 @@ class GoogleSheetsService:
         row_values: list of string cell values, index = column index.
         Returns parsed dict compatible with db.import_invoice_from_sheet(), or None.
         """
-        inv_num = row_values[4].strip() if len(row_values) > 4 else ""
-        if not inv_num:
-            return None
-
-        parsed: dict[str, Any] = {}
-        for col_idx, field in self._OP_COL_MAP.items():
-            if col_idx >= len(row_values):
-                continue
-            val = str(row_values[col_idx]).strip()
-            if not val:
-                continue
-
-            if field in ("amount", "first_payment_amount", "estimated_materials",
-                         "estimated_installation", "estimated_loaders",
-                         "estimated_logistics", "nds_amount", "outstanding_debt",
-                         "surcharge_amount", "final_surcharge_amount",
-                         "agent_fee", "manager_zp_blank", "npn_amount",
-                         "profit_tax", "rentability_calc"):
-                num = self._parse_num(val)
-                if num is not None:
-                    parsed[field] = num
-            elif field in ("receipt_date", "actual_completion_date",
-                           "surcharge_date", "final_surcharge_date"):
-                d = self._parse_date_dmy(val)
-                if d:
-                    parsed[field] = d
-            elif field == "deadline_days":
-                num = self._parse_num(val)
-                if num is not None:
-                    parsed[field] = int(num)
-            elif field == "is_credit":
-                parsed[field] = 1 if val == "0" else 0
-            elif field == "client_source":
-                if val == "1":
-                    parsed[field] = "own"
-                elif val == "2":
-                    parsed[field] = "gd_lead"
-                else:
-                    parsed[field] = val
-            else:
-                parsed[field] = val
-
-        return parsed if "invoice_number" in parsed else None
+        return self._parse_op_row(row_values)
 
     async def read_op_sheet(self) -> list[dict[str, Any]]:
         """Async wrapper for reading source ОП sheet."""
@@ -708,8 +852,9 @@ class GoogleSheetsService:
         if not cell:
             return False
 
-        # Convert ISO date to DD.MM.YYYY
-        parts = date_iso.split("-")
+        # Convert ISO date (possibly with time) to DD.MM.YYYY
+        date_part = date_iso[:10]  # safely extract YYYY-MM-DD even if time/tz appended
+        parts = date_part.split("-")
         if len(parts) == 3:
             date_dmy = f"{parts[2]}.{parts[1]}.{parts[0]}"
         else:

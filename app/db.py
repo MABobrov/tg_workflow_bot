@@ -962,7 +962,11 @@ class Database:
         return row[0] if row else 0
 
     async def count_gd_supplier_pay_tasks(self, user_id: int) -> int:
-        """Count pending ZP requests (zamery/manager/installer) for 'Оплата поставщику' badge."""
+        """Count pending ZP requests (zamery/manager/installer) for 'Оплата поставщику' badge.
+
+        Note: ZP requests are global (not per-user), but the parameter is kept
+        for API consistency with other count_gd_* methods.
+        """
         cur = await self.conn.execute(
             "SELECT COUNT(*) FROM invoices "
             "WHERE zp_status = 'requested' "
@@ -2605,62 +2609,13 @@ class Database:
         Returns (invoice_id, is_new).
         ОП data is authoritative — overwrites DB values for mapped fields.
         """
-        inv_num = data.get("invoice_number")
+        inv_num = str(data.get("invoice_number") or "").strip()
         if not inv_num:
             return (0, False)
 
-        # Find existing by invoice_number
-        cur = await self.conn.execute(
-            "SELECT id FROM invoices WHERE invoice_number = ?", (inv_num,)
-        )
-        row = await cur.fetchone()
-
-        # Determine manager role from invoice_number suffix
-        creator_role = "manager"
-        if inv_num.upper().endswith("КВ"):
-            creator_role = "КВ"
-        elif inv_num.upper().endswith("КИА"):
-            creator_role = "КИА"
-        elif inv_num.upper().endswith("НПН"):
-            creator_role = "НПН"
-
-        if row:
-            # UPDATE existing — ОП is authoritative
-            inv_id = row[0]
-            sets = []
-            vals = []
-            for field, value in data.items():
-                if field == "invoice_number":
-                    continue  # don't update key
-                sets.append(f"{field} = ?")
-                vals.append(value)
-            # Auto-determine status from actual_completion_date
-            acd = data.get("actual_completion_date")
-            if acd:
-                sets.append("status = ?")
-                vals.append("ended")
-
-            if sets:
-                vals.append(inv_id)
-                await self.conn.execute(
-                    f"UPDATE invoices SET {', '.join(sets)} WHERE id = ?", vals
-                )
-                await self.conn.commit()
-            return (inv_id, False)
-        else:
-            # INSERT new invoice
-            data["creator_role"] = creator_role
-            if "status" not in data:
-                data["status"] = "ended" if data.get("actual_completion_date") else "in_progress"
-            cols = list(data.keys())
-            placeholders = ", ".join("?" for _ in cols)
-            col_names = ", ".join(cols)
-            vals = [data[c] for c in cols]
-            cur2 = await self.conn.execute(
-                f"INSERT INTO invoices ({col_names}) VALUES ({placeholders})", vals
-            )
-            await self.conn.commit()
-            return (cur2.lastrowid or 0, True)
+        existing = await self._get_invoice_for_sheet_import(inv_num)
+        invoice_id = await self.import_invoice_from_sheet(dict(data, invoice_number=inv_num))
+        return invoice_id, existing is None
 
     async def check_close_conditions(self, invoice_id: int) -> dict[str, bool]:
         """Return dict with close-condition flags."""
@@ -2871,12 +2826,14 @@ class Database:
         self, lead_id: int
     ) -> None:
         now = to_iso(utcnow())
+
+        # Atomic: only update rows where response_at IS NULL to avoid race conditions
         cur = await self.conn.execute(
-            "SELECT assigned_at, response_at FROM lead_tracking WHERE id = ?",
+            "SELECT assigned_at FROM lead_tracking WHERE id = ? AND response_at IS NULL",
             (lead_id,),
         )
         row = await cur.fetchone()
-        if not row or row["response_at"]:
+        if not row:
             return
 
         processing_time_minutes: int | None = None
@@ -2892,7 +2849,8 @@ class Database:
                 processing_time_minutes = None
 
         await self.conn.execute(
-            "UPDATE lead_tracking SET response_at = ?, processing_time_minutes = ? WHERE id = ?",
+            "UPDATE lead_tracking SET response_at = ?, processing_time_minutes = ? "
+            "WHERE id = ? AND response_at IS NULL",
             (now, processing_time_minutes, lead_id),
         )
         await self.conn.commit()
@@ -3304,15 +3262,17 @@ class Database:
         Returns number of updated rows.
         """
         total = 0
+        now = to_iso(utcnow())
         for marker, manager_id in marker_map.items():
             if not manager_id:
                 continue
+            creator_role = self._infer_invoice_creator_role(marker)
             cur = await self.conn.execute(
-                "UPDATE invoices SET created_by = ? "
+                "UPDATE invoices SET created_by = ?, creator_role = ?, updated_at = ? "
                 "WHERE invoice_number LIKE ? "
-                "AND created_by != ? "
-                "AND parent_invoice_id IS NULL",
-                (manager_id, f"%{marker}%", manager_id),
+                "AND parent_invoice_id IS NULL "
+                "AND (created_by IS NULL OR created_by != ? OR creator_role IS NULL OR creator_role != ?)",
+                (manager_id, creator_role, now, f"%{marker}%", manager_id, creator_role),
             )
             total += cur.rowcount
         if total:

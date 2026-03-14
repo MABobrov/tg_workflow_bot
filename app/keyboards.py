@@ -256,7 +256,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [ZAM_BTN_ZAMERY, ZAM_BTN_MY_OBJECTS],
             [ZAM_BTN_SCHEDULE, ZAM_BTN_PAYMENT],
             [ZAM_BTN_URGENT, ZAM_BTN_SYNC],
-            [OPEN_HELP],
+            [OPEN_HELP, BACK_TO_HOME],
         ]
     return []
 
