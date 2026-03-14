@@ -101,12 +101,7 @@ async def _rp_auto_refresh(handler, event: Message, data: dict):  # type: ignore
     u = event.from_user
     if not u:
         return result
-    # Не обновлять если РП в FSM-состоянии (чтобы не мешать вводу)
-    fsm: FSMContext | None = data.get("state")
-    if fsm:
-        cur_state = await fsm.get_state()
-        if cur_state is not None:
-            return result
+    # Обновляем клавиатуру ВСЕГДА (включая FSM) чтобы меню не пропадало
     db_rp: Database | None = data.get("db")
     cfg = data.get("config")
     if not db_rp or not cfg:

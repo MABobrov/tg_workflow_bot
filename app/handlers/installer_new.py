@@ -63,12 +63,7 @@ async def _installer_auto_refresh(handler, event: Message, data: dict):  # type:
     u = event.from_user
     if not u:
         return result
-    # Не обновлять если монтажник в FSM-состоянии
-    fsm: FSMContext | None = data.get("state")
-    if fsm:
-        cur_state = await fsm.get_state()
-        if cur_state is not None:
-            return result
+    # Обновляем клавиатуру ВСЕГДА (включая FSM) чтобы меню не пропадало
     db_inst: Database | None = data.get("db")
     cfg = data.get("config")
     if not db_inst or not cfg:

@@ -21,7 +21,10 @@ log = logging.getLogger(__name__)
 
 # Roles that have their OWN auto-refresh middleware on their routers
 # (to avoid double-refreshing)
-_ROLES_WITH_OWN_REFRESH = {"installer", "zamery", "rp"}
+_ROLES_WITH_OWN_REFRESH = {
+    "installer", "zamery", "rp",
+    "manager", "manager_kv", "manager_kia", "manager_npn",
+}
 
 
 class KeepMenuMiddleware(BaseMiddleware):
@@ -44,15 +47,9 @@ class KeepMenuMiddleware(BaseMiddleware):
         if not u:
             return result
 
-        # Don't refresh if user is in an active FSM state (would interfere with input)
-        fsm: FSMContext | None = data.get("state")
-        if fsm:
-            try:
-                cur_state = await fsm.get_state()
-                if cur_state is not None:
-                    return result
-            except Exception:
-                pass
+        # NOTE: НЕ пропускаем FSM-состояния!
+        # Клавиатура должна восстанавливаться ВСЕГДА,
+        # включая многошаговые формы, чтобы меню бота не исчезало.
 
         db = data.get("db")
         config = data.get("config")

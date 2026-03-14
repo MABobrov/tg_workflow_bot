@@ -28,6 +28,7 @@ from ..config import Config
 from ..db import Database
 from ..enums import (
     InvoiceStatus,
+    MANAGER_ROLES,
     Role,
     TaskStatus,
     TaskType,
@@ -70,7 +71,7 @@ from ..states import (
     ManagerZpSG,
     ZameryRequestSG,
 )
-from ..utils import answer_service, format_materials_list, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
+from ..utils import answer_service, format_materials_list, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -79,6 +80,51 @@ router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 
 ALL_MANAGER_ROLES = [Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN]
+
+
+# ---------------------------------------------------------------------------
+# Auto-refresh middleware — обновляет reply keyboard с бейджами на каждое сообщение
+# ---------------------------------------------------------------------------
+
+@router.message.outer_middleware()
+async def _manager_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
+    """При каждом сообщении от менеджера — обновляем reply-клавиатуру с бейджем."""
+    result = await handler(event, data)
+    u = event.from_user
+    if not u:
+        return result
+    # Не обновлять если в FSM-состоянии (чтобы не мешать вводу)
+    fsm: FSMContext | None = data.get("state")
+    if fsm:
+        cur_state = await fsm.get_state()
+        if cur_state is not None:
+            return result
+    db_inst: Database | None = data.get("db")
+    cfg = data.get("config")
+    if not db_inst or not cfg:
+        return result
+    try:
+        user = await db_inst.get_user_optional(u.id)
+        if not user or not user.role:
+            return result
+        user_roles = set(parse_roles(user.role))
+        if not user_roles & set(MANAGER_ROLES):
+            return result
+        menu_role, isolated = resolve_menu_scope(u.id, user.role)
+        if menu_role not in MANAGER_ROLES:
+            return result
+        unread = await db_inst.count_unread_tasks(u.id)
+        is_admin = u.id in (cfg.admin_ids or set())
+        kb = main_menu(
+            menu_role,
+            is_admin=is_admin,
+            unread=unread,
+            isolated_role=isolated,
+        )
+        await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)
+    except Exception:
+        log.debug("manager auto-refresh failed", exc_info=True)
+    return result
 
 
 async def _current_role(db: Database, user_id: int) -> str | None:

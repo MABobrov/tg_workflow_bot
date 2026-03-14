@@ -52,12 +52,7 @@ async def _zamery_auto_refresh(handler, event: Message, data: dict):  # type: ig
     u = event.from_user
     if not u:
         return result
-    # Не обновлять меню, если замерщик сейчас в FSM-состоянии (ввод стоимости и т.п.)
-    fsm: FSMContext | None = data.get("state")
-    if fsm:
-        cur_state = await fsm.get_state()
-        if cur_state is not None:
-            return result
+    # Обновляем клавиатуру ВСЕГДА (включая FSM) чтобы меню не пропадало
     db_inst: Database | None = data.get("db")
     cfg = data.get("config")
     if not db_inst or not cfg:

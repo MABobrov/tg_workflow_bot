@@ -228,7 +228,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [INST_BTN_INVOICE_OK, INST_BTN_RAZMERY_OK],
             [INST_BTN_MY_OBJECTS, INST_BTN_DAILY_REPORT],
             [INST_BTN_ZP, INST_BTN_NOT_URGENT],
-            [INST_BTN_SYNC],
+            [INST_BTN_URGENT, INST_BTN_SYNC],
         ]
     if role == Role.GD:
         return [
@@ -266,8 +266,8 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
     if role in MANAGER_ROLES or role == Role.MANAGER:
         return [
             [MGR_BTN_CRED, MGR_BTN_URGENT],
-            [MGR_BTN_MY_INVOICES, MGR_BTN_ISSUE],
-            [MGR_BTN_SEARCH_INVOICE, MGR_BTN_HELP],
+            [MGR_BTN_NOT_URGENT, MGR_BTN_SEARCH_INVOICE],
+            [MGR_BTN_HELP],
             [MGR_BTN_CANCEL, MGR_BTN_BACK_HOME],
         ]
     if role == Role.RP:
@@ -831,8 +831,9 @@ def gd_chat_write_to_kb_universal(
 def manager_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
     """Подменю 'Еще' для менеджеров (КВ / КИА / НПН)."""
     rows: list[list[str]] = [
-        [MGR_BTN_CRED, MGR_BTN_NOT_URGENT],
-        [MGR_BTN_SEARCH_INVOICE, MGR_BTN_HELP],
+        [MGR_BTN_CRED, MGR_BTN_URGENT],
+        [MGR_BTN_NOT_URGENT, MGR_BTN_SEARCH_INVOICE],
+        [MGR_BTN_HELP],
     ]
     if show_role_selector_back:
         rows.append([BACK_TO_ROLE_SELECTOR])
