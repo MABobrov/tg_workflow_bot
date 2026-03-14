@@ -314,10 +314,10 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
         text = "🎭 <b>Выберите роль</b>\n\nСначала выберите, в каком контексте открыть меню."
     else:
         text = "✅ Меню обновлено."
-    await answer_service(
-        message,
+    # Use message.answer() directly — NOT answer_service() which auto-deletes
+    # the message after 60s, taking the reply keyboard with it.
+    await message.answer(
         text,
-        delay_seconds=60,
         reply_markup=private_only_reply_markup(
             message,
             main_menu(role, is_admin=is_admin, **menu_context),
@@ -423,10 +423,8 @@ async def role_selector_pick(message: Message, db: Database, config: Config) -> 
 
     menu_context = await _menu_context(db, u.id, selected_role)
     is_admin = u.id in (config.admin_ids or set())
-    await answer_service(
-        message,
+    await message.answer(
         "🎭 <b>Выбрана роль</b>\n\nДоступны действия только этой роли.",
-        delay_seconds=60,
         reply_markup=private_only_reply_markup(
             message,
             main_menu(
@@ -452,10 +450,8 @@ async def back_to_home(message: Message, state: FSMContext, db: Database, config
     menu_role, isolated_role = _menu_scope(u.id, role)
     if isolated_role:
         menu_context = await _menu_context(db, u.id, menu_role)
-        await answer_service(
-            message,
+        await message.answer(
             "Главное меню выбранной роли.",
-            delay_seconds=60,
             reply_markup=private_only_reply_markup(
                 message,
                 main_menu(
@@ -485,10 +481,8 @@ async def back_to_role_selector(message: Message, state: FSMContext, db: Databas
         return
     clear_active_menu_role(u.id)
     menu_context = await _menu_context(db, u.id, role)
-    await answer_service(
-        message,
+    await message.answer(
         "🎭 <b>Выберите роль</b>\n\nВыберите, в каком контексте продолжить работу.",
-        delay_seconds=60,
         reply_markup=private_only_reply_markup(
             message,
             main_menu(
@@ -524,10 +518,8 @@ async def menu_more_universal(message: Message, state: FSMContext, db: Database,
     if active_role == Role.GD:
         _is_adm = bool(u.id in (config.admin_ids or set()))
         _uc = await db.count_unread_by_channel(u.id)
-        await answer_service(
-            message,
+        await message.answer(
             "Выберите действие:",
-            delay_seconds=60,
             reply_markup=private_only_reply_markup(
                 message,
                 gd_more_menu(
@@ -538,18 +530,14 @@ async def menu_more_universal(message: Message, state: FSMContext, db: Database,
             ),
         )
     elif active_role == Role.RP:
-        await answer_service(
-            message,
+        await message.answer(
             "Выберите действие:",
-            delay_seconds=60,
             reply_markup=private_only_reply_markup(message, rp_more_menu(show_role_selector_back=isolated_role)),
         )
     else:
         # Manager roles (KV / KIA / NPN) and legacy Manager
-        await answer_service(
-            message,
+        await message.answer(
             "Выберите действие:",
-            delay_seconds=60,
             reply_markup=private_only_reply_markup(message, manager_more_menu(show_role_selector_back=isolated_role)),
         )
 
@@ -568,10 +556,8 @@ async def rp_menu_team(message: Message, state: FSMContext, db: Database, config
         return
     user = await db.get_user_optional(message.from_user.id) if message.from_user else None
     _, isolated_role = _menu_scope(message.from_user.id if message.from_user else None, user.role if user else None)
-    await answer_service(
-        message,
+    await message.answer(
         "Выберите сотрудника:",
-        delay_seconds=60,
         reply_markup=private_only_reply_markup(message, rp_team_menu(show_role_selector_back=isolated_role)),
     )
 

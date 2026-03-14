@@ -415,12 +415,16 @@ async def refresh_recipient_keyboard(
 ) -> None:
     """Send updated main_menu with unread counter to the recipient."""
     from .services.menu_context import build_main_menu_for_user  # lazy import to avoid circular
+    from .services.menu_scope import resolve_menu_scope
 
     user = await db.get_user_optional(user_id)
     if not user:
         return
+    menu_role, isolated_role = resolve_menu_scope(user_id, user.role)
     unread = await db.count_unread_tasks(user_id)
-    kb = await build_main_menu_for_user(db, config, user_id, user.role)
+    kb = await build_main_menu_for_user(
+        db, config, user_id, menu_role, isolated_role=isolated_role,
+    )
     text = f"📥 У вас {unread} активных задач." if unread else "📥 Нет активных задач."
     await notifier.safe_send(user_id, text, reply_markup=kb)
 
