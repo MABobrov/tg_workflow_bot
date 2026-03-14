@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 # Roles that have their OWN auto-refresh middleware on their routers
 # (to avoid double-refreshing)
 _ROLES_WITH_OWN_REFRESH = {
-    "gd", "installer", "zamery", "rp",
+    "installer", "zamery", "rp",
     "manager", "manager_kv", "manager_kia", "manager_npn",
 }
 
@@ -70,7 +70,7 @@ class KeepMenuMiddleware(BaseMiddleware):
 
         try:
             from ..db import Database
-            from ..services.menu_context import build_main_menu_for_user
+            from ..keyboards import main_menu
             from ..services.menu_scope import resolve_menu_scope
             from ..utils import answer_service
 
@@ -91,11 +91,13 @@ class KeepMenuMiddleware(BaseMiddleware):
             if role_str in _ROLES_WITH_OWN_REFRESH:
                 return result
 
-            kb = await build_main_menu_for_user(
-                db,
-                config,
-                u.id,
+            # Lightweight refresh — only unread count, no heavy badge queries
+            is_admin = u.id in (config.admin_ids or set())
+            unread = await db.count_unread_tasks(u.id)
+            kb = main_menu(
                 menu_role,
+                is_admin=is_admin,
+                unread=unread,
                 isolated_role=isolated,
             )
 

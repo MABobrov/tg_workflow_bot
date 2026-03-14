@@ -72,40 +72,6 @@ router.message.filter(F.chat.type == "private")
 
 SALES_SOURCE_ROLES = {Role.RP, Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN}
 
-# Кнопки подменю — не перезаписывать
-_GD_SUBMENU_TRIGGERS = {"📂 Ещё", "📂 Еще", "Ещё", "Еще"}
-
-
-@router.message.outer_middleware()
-async def _gd_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
-    """Лёгкое обновление reply-клавиатуры ГД (без тяжёлых бейдж-запросов)."""
-    result = await handler(event, data)
-    u = event.from_user
-    if not u:
-        return result
-    # Не трогать подменю
-    msg_text = (event.text or "").strip()
-    if msg_text in _GD_SUBMENU_TRIGGERS:
-        return result
-    db_inst: Database | None = data.get("db")
-    cfg = data.get("config")
-    if not db_inst or not cfg:
-        return result
-    try:
-        user = await db_inst.get_user_optional(u.id)
-        if not user or not user.role:
-            return result
-        menu_role, isolated = resolve_menu_scope(u.id, user.role)
-        if menu_role != Role.GD:
-            return result
-        is_admin = u.id in (cfg.admin_ids or set())
-        unread = await db_inst.count_unread_tasks(u.id)
-        kb = main_menu(menu_role, is_admin=is_admin, unread=unread, isolated_role=isolated)
-        await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)
-    except Exception:
-        log.debug("gd auto-refresh failed", exc_info=True)
-    return result
-
 
 async def _search_invoice_tasks_by_criteria(
     db: Database,
