@@ -36,6 +36,7 @@ from .handlers import (
     gd,
     group_guard,
     installer_new,
+    invoice_chat,
     leads,
     manager,
     manager_new,
@@ -211,6 +212,7 @@ async def main() -> None:
     dp.include_router(rp.router)          # InvoiceCreateSG, OrderMaterial, Delivery, etc.
     dp.include_router(accounting_new.router)
     dp.include_router(installer_new.router)
+    dp.include_router(invoice_chat.router)
     dp.include_router(zamery.router)
 
     # Legacy routers (kept: unique active handlers)

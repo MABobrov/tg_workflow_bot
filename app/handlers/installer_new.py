@@ -103,6 +103,21 @@ async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
     return resolve_menu_scope(user_id, user.role if user else None)
 
 
+async def _ensure_reply_kb(cb: CallbackQuery, db: Database, config: Any) -> None:
+    """Restore reply keyboard after inline callback so menu doesn't disappear."""
+    u = cb.from_user
+    if not u or not cb.message:
+        return
+    role, isolated_role = await _current_menu(db, u.id)
+    kb = main_menu(
+        role,
+        is_admin=u.id in (config.admin_ids or set()),
+        unread=await db.count_unread_tasks(u.id),
+        isolated_role=isolated_role,
+    )
+    await cb.message.answer("📋", reply_markup=private_only_reply_markup(cb.message, kb))  # type: ignore[arg-type]
+
+
 # =====================================================================
 # ОБЩИЙ CALLBACK «НАЗАД» — возврат в главное меню монтажника
 # =====================================================================
@@ -397,6 +412,7 @@ async def invoice_ok_select(
     await state.update_data(invoice_id=invoice_id)
     await state.set_state(InstallerInvoiceOkSG.comment)
 
+    await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(  # type: ignore[union-attr]
         f"Счёт №{inv['invoice_number']} — подтверждение выполнения.\n"
         "Добавьте <b>комментарий</b> (или «—»):"
@@ -1440,6 +1456,8 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
     zp_st = inv.get("zp_installer_status") or "not_requested"
     if cat == "waiting" and zp_st not in ("approved", "requested"):
         b.button(text="💰 Запрос ЗП", callback_data=f"instzpadj:start:{invoice_id}")
+    # Чат с менеджером
+    b.button(text="💬 Чат с менеджером", callback_data=f"inv_chat:menu:{invoice_id}")
     b.button(text="⬅️ Назад", callback_data=f"instobj:cat:{cat}")
     b.adjust(1)
 
@@ -1925,7 +1943,7 @@ async def installer_in_work(message: Message, state: FSMContext, db: Database) -
 
 @router.callback_query(F.data.startswith("inst_work:view:"))
 async def installer_work_view_card(
-    cb: CallbackQuery, db: Database,
+    cb: CallbackQuery, db: Database, config: Config,
 ) -> None:
     """Карточка счёта для подтверждения «В работу»."""
     if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
@@ -1956,15 +1974,17 @@ async def installer_work_view_card(
     b.button(text="🔨 В работу", callback_data=f"inst_work:confirm:{invoice_id}")
     b.adjust(2)
 
+    await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data.startswith("inst_work:ack:"))
-async def installer_work_acknowledge(cb: CallbackQuery, db: Database) -> None:
+async def installer_work_acknowledge(cb: CallbackQuery, db: Database, config: Config) -> None:
     """Подтверждение получения (мягкое, без смены статуса)."""
     if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
         return
     await cb.answer("✅ Принято")
+    await _ensure_reply_kb(cb, db, config)
     await cb.message.answer("✅ Получение счёта подтверждено.")  # type: ignore[union-attr]
 
 

@@ -630,6 +630,41 @@ async def gd_chat_accounting(message: Message, state: FSMContext, db: Database) 
 async def gd_chat_montazh(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
+    # --- Montazh statistics dashboard ---
+    confirmed = await db.list_installer_confirmed_invoices()
+    unconfirmed = await db.list_installer_unconfirmed_invoices()
+
+    stage_counts: dict[str, int] = {}
+    for inv in confirmed:
+        stage = inv.get("montazh_stage") or "in_work"
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+
+    stage_labels = {
+        "in_work": "🔨 В работе",
+        "razmery_ok": "📐 Размеры ОК",
+        "invoice_ok": "✅ Счёт ОК",
+    }
+    lines = ["📊 <b>Монтажная — статистика</b>\n"]
+    if unconfirmed:
+        lines.append(f"⏳ Ожидают принятия: {len(unconfirmed)}")
+    for stage, label in stage_labels.items():
+        cnt = stage_counts.get(stage, 0)
+        if cnt:
+            lines.append(f"{label}: {cnt}")
+    total = len(confirmed) + len(unconfirmed)
+    lines.append(f"\n📋 Всего счетов: {total}")
+
+    # Show first 10 invoices in work
+    if confirmed[:10]:
+        lines.append("")
+        for inv in confirmed[:10]:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = (inv.get("object_address") or "")[:25]
+            stage = inv.get("montazh_stage") or "in_work"
+            icon = {"in_work": "🔨", "razmery_ok": "📐", "invoice_ok": "✅"}.get(stage, "")
+            lines.append(f"{icon} №{num} — {addr}")
+
+    await message.answer("\n".join(lines))
     await enter_chat_menu(message, state, channel="montazh")
 
 

@@ -1930,10 +1930,14 @@ async def my_invoice_view(cb: CallbackQuery, db: Database) -> None:
             f"{c4} 4. ЗП — утверждено\n"
         )
 
-    # Кнопка "Материалы" для закрытых счетов
+    # Кнопки на карточке
+    b = InlineKeyboardBuilder()
     if inv["status"] == InvoiceStatus.ENDED:
-        b = InlineKeyboardBuilder()
         b.button(text="📦 Материалы", callback_data=f"mgr_mat:{invoice_id}")
+    # Чат с монтажником (если назначен)
+    if inv.get("assigned_to"):
+        b.button(text="💬 Чат с монтажником", callback_data=f"inv_chat:menu:{invoice_id}")
+    if b.export():
         b.adjust(1)
         await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
     else:

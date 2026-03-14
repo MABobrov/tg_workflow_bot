@@ -392,6 +392,11 @@ class ManagerChatProxySG(StatesGroup):
     writing_attachments = State()  # прикрепление файлов
 
 
+class InvoiceChatSG(StatesGroup):
+    """Чат менеджер↔монтажник привязанный к счёту."""
+    writing = State()            # ввод сообщения
+
+
 class ZameryRequestSG(StatesGroup):
     """Менеджер: заявка на замер."""
     source_type = State()        # выбор источника: lead / own_client / repeat
