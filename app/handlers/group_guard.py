@@ -72,11 +72,8 @@ async def group_reply_to_gd(cb: CallbackQuery, state: FSMContext) -> None:
 # Catch-all: block all other group callbacks
 # ---------------------------------------------------------------------------
 
-@router.callback_query()
+@router.callback_query(lambda cb: not (cb.data or "").startswith(_ALLOWED_GROUP_CALLBACK_PREFIXES))
 async def cleanup_group_inline_callbacks(cb: CallbackQuery) -> None:
-    data = cb.data or ""
-    if data.startswith(_ALLOWED_GROUP_CALLBACK_PREFIXES):
-        return
     await cb.answer("Кнопки работают только в личном чате с ботом.", show_alert=True)
     try:
         if cb.message:

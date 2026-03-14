@@ -64,6 +64,47 @@ async def _maybe_mark_lead_tracking_response(db: Database, task: dict[str, Any] 
     await db.update_lead_tracking_response(lead_tracking_id)
 
 
+async def _notify_task_creator_done(
+    db: Database,
+    notifier: Notifier,
+    actor_id: int | None,
+    task: dict[str, Any] | None,
+) -> None:
+    if not task:
+        return
+    created_by = task.get("created_by")
+    if not created_by:
+        return
+    try:
+        created_by_int = int(created_by)
+    except (TypeError, ValueError):
+        return
+    if actor_id and created_by_int == actor_id:
+        return
+    initiator = await get_initiator_label(db, actor_id) if actor_id else "Исполнитель"
+    await notifier.safe_send(
+        created_by_int,
+        f"✅ Ваша задача #{task['id']} выполнена\n👤 Исполнитель: {initiator}",
+    )
+
+
+async def _apply_done_side_effects(
+    db: Database,
+    integrations: IntegrationHub,
+    task: dict[str, Any],
+    project: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    await _maybe_mark_lead_tracking_response(db, task)
+    if project and task.get("type") in {TaskType.DOCS_REQUEST, TaskType.QUOTE_REQUEST}:
+        project = await db.update_project_status(int(project["id"]), ProjectStatus.INVOICE_SENT)
+        await integrations.sync_project(project)
+    if project and task.get("type") in {TaskType.CLOSING_DOCS, TaskType.PROJECT_END}:
+        project = await db.update_project_status(int(project["id"]), ProjectStatus.ARCHIVE)
+        await integrations.sync_project(project)
+    await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+    return project
+
+
 def _invoice_task_sender_id(payload: dict[str, Any]) -> int | None:
     sender_id = payload.get("sender_id") or payload.get("manager_id")
     if sender_id is None:
@@ -212,7 +253,7 @@ async def task_actions(
         try:
             user_row = await db.get_user_optional(cb.from_user.id)
             if user_row and Role.INSTALLER in (user_row.role or ""):
-                payload = task.get("payload") or {}
+                payload = task.get("payload_json") or {}
                 if isinstance(payload, str):
                     payload = try_json_loads(payload)
                 inv_id = payload.get("invoice_id")
@@ -376,11 +417,11 @@ async def task_actions(
                 f"🏢 Поставщик: {supplier or '—'}\n"
                 f"💰 Сумма: {amount or '—'}",
             )
-        # Уведомить РП: ГД подтвердил оплату, счёт в работе
+        # Уведомить РП: ГД принял счёт в работу
         rp_id = await resolve_default_assignee(db, config, Role.RP)
         if rp_id:
             rp_text = (
-                f"✅ <b>Оплата подтверждена ГД</b>\n\n"
+                f"✅ <b>Счёт принят ГД в работу</b>\n\n"
                 f"🔢 № счёта: {invoice_number or '—'}\n"
                 f"🏢 Поставщик: {supplier or '—'}\n"
                 f"💰 Сумма: {amount or '—'}\n\n"
@@ -560,7 +601,6 @@ async def task_actions(
         await cb.message.answer(  # type: ignore[union-attr]
             "💬 Введите комментарий к задаче:",
         )
-        await cb.answer()
         return
 
     # DONE (generic)
@@ -592,20 +632,13 @@ async def task_actions(
 
         # simple close
         task = await db.update_task_status(task_id, TaskStatus.DONE)
-        await _maybe_mark_lead_tracking_response(db, task)
-
-        # project status transitions
-        if project and task.get("type") == TaskType.ISSUE:
-            # issue solved: no status change
-            pass
-        if project and task.get("type") in {TaskType.DOCS_REQUEST, TaskType.QUOTE_REQUEST}:
-            project = await db.update_project_status(int(project["id"]), ProjectStatus.INVOICE_SENT)
-            await integrations.sync_project(project)
-        if project and task.get("type") in {TaskType.CLOSING_DOCS, TaskType.PROJECT_END}:
-            project = await db.update_project_status(int(project["id"]), ProjectStatus.ARCHIVE)
-            await integrations.sync_project(project)
-
-        await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        project = await _apply_done_side_effects(db, integrations, task, project)
+        await _notify_task_creator_done(
+            db,
+            notifier,
+            cb.from_user.id if cb.from_user else None,
+            task,
+        )
         await state.clear()
         _uid_done = cb.from_user.id if cb.from_user else 0
         await cb.message.answer(
@@ -676,6 +709,10 @@ async def taskcomplete_finalize(
         await cb.message.answer("Задача не найдена.")  # type: ignore
         await state.clear()
         return
+    if task.get("status") not in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        await cb.message.answer("Эта задача уже закрыта.")  # type: ignore[union-attr]
+        await state.clear()
+        return
     project = await db.get_project(int(task["project_id"])) if task.get("project_id") else None
     target_user_id = data.get("target_user_id")
 
@@ -711,15 +748,13 @@ async def taskcomplete_finalize(
 
     # Close task and update project status
     task = await db.update_task_status(int(task_id), TaskStatus.DONE)
-    await _maybe_mark_lead_tracking_response(db, task)
-    if project and task.get("type") in {TaskType.DOCS_REQUEST, TaskType.QUOTE_REQUEST}:
-        project = await db.update_project_status(int(project["id"]), ProjectStatus.INVOICE_SENT)
-        await integrations.sync_project(project)
-    if project and task.get("type") in {TaskType.CLOSING_DOCS, TaskType.PROJECT_END}:
-        project = await db.update_project_status(int(project["id"]), ProjectStatus.ARCHIVE)
-        await integrations.sync_project(project)
-
-    await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+    project = await _apply_done_side_effects(db, integrations, task, project)
+    await _notify_task_creator_done(
+        db,
+        notifier,
+        cb.from_user.id if cb.from_user else None,
+        task,
+    )
 
     _uid_fin = cb.from_user.id if cb.from_user else 0
     await cb.message.answer(

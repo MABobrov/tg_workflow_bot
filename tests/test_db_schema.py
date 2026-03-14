@@ -137,3 +137,61 @@ def test_import_invoice_from_sheet_updates_existing_invoice_fields(tmp_path) -> 
         assert invoice["description"] == "new description"
 
     asyncio.run(scenario())
+
+
+def test_import_invoice_from_sheet_accepts_dict_payload_and_computes_status(tmp_path) -> None:
+    async def scenario() -> None:
+        db = Database(str(tmp_path / "bot.sqlite3"))
+        await db.connect()
+        try:
+            await db.init_schema()
+            invoice_id = await db.import_invoice_from_sheet(
+                {
+                    "invoice_number": "A-200",
+                    "created_by": 55,
+                    "creator_role": "manager_kv",
+                    "object_address": "Москва",
+                    "amount": 5000.0,
+                    "is_credit": 0,
+                    "actual_completion_date": "2026-03-10",
+                    "outstanding_debt": 350.0,
+                    "description": "dict import",
+                }
+            )
+            invoice = await db.get_invoice(invoice_id)
+        finally:
+            await db.close()
+
+        assert invoice is not None
+        assert invoice["created_by"] == 55
+        assert invoice["creator_role"] == "manager_kv"
+        assert invoice["status"] == "paid"
+        assert invoice["description"] == "dict import"
+
+    asyncio.run(scenario())
+
+
+def test_import_invoice_from_sheet_infers_owner_by_invoice_marker(tmp_path) -> None:
+    async def scenario() -> None:
+        db = Database(str(tmp_path / "bot.sqlite3"))
+        await db.connect()
+        try:
+            await db.init_schema()
+            await db.upsert_user(777, "kia_user", "Kia User")
+            await db.set_user_role(777, "manager_kia")
+            invoice_id = await db.import_invoice_from_sheet(
+                {
+                    "invoice_number": "КИА-42",
+                    "amount": 1200.0,
+                }
+            )
+            invoice = await db.get_invoice(invoice_id)
+        finally:
+            await db.close()
+
+        assert invoice is not None
+        assert invoice["created_by"] == 777
+        assert invoice["creator_role"] == "manager_kia"
+        assert invoice["status"] == "in_progress"
+
+    asyncio.run(scenario())

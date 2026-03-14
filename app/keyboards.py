@@ -993,7 +993,7 @@ def invoice_list_kb(invoices: list[dict], action_prefix: str = "inv", *, back_ca
         status_emoji = {
             "new": "🆕", "pending": "⏳", "in_progress": "🔄",
             "paid": "✅", "on_hold": "⏸", "rejected": "❌",
-            "closing": "📌", "ended": "🏁",
+            "closing": "📌", "ended": "🏁", "credit": "🏦",
         }.get(inv.get("status", ""), "❓")
         if hide_amount:
             text = f"{status_emoji} №{inv.get('invoice_number', '?')}"

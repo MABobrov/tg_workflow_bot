@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 import aiosqlite
 
-from .enums import Role
+from .enums import InvoiceStatus, Role
 from .utils import parse_roles, roles_to_storage, to_iso, utcnow
 
 log = logging.getLogger(__name__)
@@ -2231,25 +2231,143 @@ class Database:
         await self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
 
-    async def import_invoice_from_sheet(
+    def _infer_invoice_creator_role(self, invoice_number: str) -> str:
+        number_upper = (invoice_number or "").upper()
+        if "КИА" in number_upper:
+            return Role.MANAGER_KIA
+        if "КВ" in number_upper:
+            return Role.MANAGER_KV
+        return Role.MANAGER_NPN
+
+    async def _get_invoice_for_sheet_import(self, invoice_number: str) -> dict[str, Any] | None:
+        cur = await self.conn.execute(
+            """
+            SELECT * FROM invoices
+            WHERE invoice_number = ?
+            ORDER BY CASE WHEN parent_invoice_id IS NULL THEN 0 ELSE 1 END, id DESC
+            """,
+            ((invoice_number or "").strip(),),
+        )
+        rows = [dict(row) for row in await cur.fetchall()]
+        if not rows:
+            return None
+        if len(rows) > 1:
+            log.warning(
+                "Multiple invoices found for sheet import invoice_number=%s; updating id=%s",
+                invoice_number,
+                rows[0]["id"],
+            )
+        return rows[0]
+
+    async def _resolve_invoice_import_owner(
+        self,
+        inv_num: str,
+        data: dict[str, Any],
+        existing: dict[str, Any] | None,
+    ) -> tuple[int, str]:
+        creator_role = str(
+            data.get("creator_role")
+            or (existing.get("creator_role") if existing else "")
+            or self._infer_invoice_creator_role(inv_num)
+        ).strip()
+        created_by_raw = data.get("created_by")
+        created_by: int | None
+        try:
+            created_by = int(created_by_raw) if created_by_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            created_by = None
+        if created_by is None and existing and existing.get("created_by") not in (None, ""):
+            try:
+                created_by = int(existing["created_by"])
+            except (TypeError, ValueError):
+                created_by = None
+        if created_by is None and creator_role:
+            users = await self.find_users_by_role(creator_role, limit=1)
+            if users:
+                created_by = users[0].telegram_id
+        return created_by or 0, creator_role
+
+    def _compute_deadline_end_date(
+        self,
+        receipt_date: Any,
+        deadline_days: Any,
+    ) -> str | None:
+        if not receipt_date or deadline_days in (None, ""):
+            return None
+        from datetime import datetime, timedelta
+
+        try:
+            dt = datetime.strptime(str(receipt_date), "%Y-%m-%d")
+            end = dt + timedelta(days=int(deadline_days))
+        except (ValueError, TypeError):
+            return None
+        return end.strftime("%Y-%m-%d")
+
+    def _compute_invoice_import_status(
         self,
         data: dict[str, Any],
-    ) -> int:
-        """Import/update invoice from ОП sheet data.
+        existing: dict[str, Any] | None,
+    ) -> str:
+        explicit_status = data.get("status")
+        if explicit_status not in (None, ""):
+            return str(explicit_status)
 
-        Uses invoice_number as unique key. Updates existing rows,
-        inserts new ones with status='in_progress'.
-        Only overwrites DB fields that the sheet is source-of-truth for.
-        Does NOT overwrite bot-managed fields (montazh_stage, zp_*, etc).
+        if "is_credit" in data:
+            is_credit = data.get("is_credit")
+        else:
+            is_credit = existing.get("is_credit") if existing else None
+        if isinstance(is_credit, str):
+            is_credit = is_credit.strip().lower() in {"1", "true", "yes", "y", "on"}
+        if bool(is_credit):
+            return InvoiceStatus.CREDIT
+
+        if "actual_completion_date" in data:
+            actual_completion_date = data.get("actual_completion_date")
+        else:
+            actual_completion_date = existing.get("actual_completion_date") if existing else None
+        if "outstanding_debt" in data:
+            outstanding_debt = data.get("outstanding_debt")
+        else:
+            outstanding_debt = existing.get("outstanding_debt") if existing else None
+
+        if actual_completion_date:
+            try:
+                debt_value = float(outstanding_debt or 0)
+            except (TypeError, ValueError):
+                debt_value = 0.0
+            return InvoiceStatus.PAID if debt_value > 0 else InvoiceStatus.ENDED
+
+        if existing and existing.get("status"):
+            return str(existing["status"])
+        return InvoiceStatus.IN_PROGRESS
+
+    async def import_invoice_from_sheet(
+        self,
+        data: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> int:
+        """Import or update invoice data from sales sheet rows.
+
+        Accepts either a dict payload or keyword arguments. Sheet-owned fields
+        are synchronized bidirectionally: explicit ``None`` values clear the
+        stored column, while bot-managed fields remain untouched.
         """
-        inv_num = (data.get("invoice_number") or "").strip()
+        if data is None:
+            payload: dict[str, Any] = {}
+        elif isinstance(data, dict):
+            payload = dict(data)
+        else:
+            raise TypeError("data must be a dict when provided")
+        if kwargs:
+            payload.update(kwargs)
+
+        inv_num = str(payload.get("invoice_number") or "").strip()
         if not inv_num:
             raise ValueError("invoice_number is required")
 
-        existing = await self.get_invoice_by_number(inv_num)
+        existing = await self._get_invoice_for_sheet_import(inv_num)
         now = to_iso(utcnow())
 
-        # Fields that ОП sheet is source-of-truth for
         sheet_fields = {
             "client_name", "traffic_source", "is_credit", "client_source",
             "object_address", "receipt_date", "deadline_days",
@@ -2261,31 +2379,26 @@ class Database:
             "final_surcharge_date", "agent_fee",
             "manager_zp_blank", "npn_amount",
             "profit_tax", "rentability_calc", "payment_terms",
+            "description", "contract_type", "closing_docs_status",
         }
 
-        if existing:
-            updates: dict[str, Any] = {"updated_at": now}
-            for field in sheet_fields:
-                if field in data:
-                    updates[field] = data[field]
-            # Compute deadline_end_date if we have receipt_date + deadline_days
-            rd = data.get("receipt_date") or existing.get("receipt_date")
-            dd = data.get("deadline_days")
-            if dd is None:
-                dd = existing.get("deadline_days")
-            if rd and dd:
-                from datetime import datetime, timedelta
-                try:
-                    dt = datetime.strptime(str(rd), "%Y-%m-%d")
-                    end = dt + timedelta(days=int(dd))
-                    updates["deadline_end_date"] = end.strftime("%Y-%m-%d")
-                except (ValueError, TypeError):
-                    pass
+        created_by, creator_role = await self._resolve_invoice_import_owner(inv_num, payload, existing)
+        status = self._compute_invoice_import_status(payload, existing)
+        receipt_date = payload.get("receipt_date") if "receipt_date" in payload else (existing.get("receipt_date") if existing else None)
+        deadline_days = payload.get("deadline_days") if "deadline_days" in payload else (existing.get("deadline_days") if existing else None)
+        deadline_end_date = self._compute_deadline_end_date(receipt_date, deadline_days)
 
-            # Auto-determine status from actual_completion_date
-            acd = updates.get("actual_completion_date") or existing.get("actual_completion_date")
-            if acd:
-                updates["status"] = "ended"
+        if existing:
+            updates: dict[str, Any] = {"updated_at": now, "status": status}
+            for field in sheet_fields:
+                if field in payload:
+                    updates[field] = payload[field]
+            if "created_by" in payload and payload.get("created_by") not in (None, ""):
+                updates["created_by"] = created_by
+            if "creator_role" in payload and payload.get("creator_role"):
+                updates["creator_role"] = creator_role
+            if "receipt_date" in payload or "deadline_days" in payload:
+                updates["deadline_end_date"] = deadline_end_date
 
             sets = ", ".join(f"{k} = ?" for k in updates)
             vals = list(updates.values())
@@ -2294,28 +2407,19 @@ class Database:
             await self.conn.commit()
             return int(existing["id"])
 
-        # New invoice — insert
-        init_status = "ended" if data.get("actual_completion_date") else "in_progress"
-        fields_to_insert = {
+        fields_to_insert: dict[str, Any] = {
             "invoice_number": inv_num,
-            "status": init_status,
+            "created_by": created_by,
+            "creator_role": creator_role,
+            "status": status,
             "created_at": now,
             "updated_at": now,
         }
         for field in sheet_fields:
-            if field in data:
-                fields_to_insert[field] = data[field]
-        # deadline_end_date
-        rd = data.get("receipt_date")
-        dd = data.get("deadline_days")
-        if rd and dd:
-            from datetime import datetime, timedelta
-            try:
-                dt = datetime.strptime(str(rd), "%Y-%m-%d")
-                end = dt + timedelta(days=int(dd))
-                fields_to_insert["deadline_end_date"] = end.strftime("%Y-%m-%d")
-            except (ValueError, TypeError):
-                pass
+            if field in payload:
+                fields_to_insert[field] = payload[field]
+        if deadline_end_date is not None:
+            fields_to_insert["deadline_end_date"] = deadline_end_date
 
         cols = ", ".join(fields_to_insert.keys())
         placeholders = ", ".join("?" * len(fields_to_insert))

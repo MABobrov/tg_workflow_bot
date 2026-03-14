@@ -80,7 +80,11 @@ async def _run_sync(
                     await db.import_invoice_from_sheet(row_data)
                     ok += 1
                 except Exception:
-                    pass
+                    log.warning(
+                        "daily_sync: failed to import invoice %s",
+                        row_data.get("invoice_number"),
+                        exc_info=True,
+                    )
             if ok:
                 log.info("daily_sync: imported %d invoices from ОП", ok)
         except Exception as e:

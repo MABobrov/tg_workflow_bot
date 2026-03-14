@@ -166,6 +166,56 @@ async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
     return resolve_menu_scope(user_id, user.role if user else None)
 
 
+def _invoice_status_label(status: str | None) -> str:
+    return {
+        "new": "🆕 Новый",
+        "pending": "⏳ Ждёт подтверждения ГД",
+        "in_progress": "🔄 В работе",
+        "paid": "✅ Оплачен",
+        "on_hold": "⏸ Отложен",
+        "rejected": "❌ Отклонён",
+        "closing": "📌 Закрытие",
+        "ended": "🏁 Счет End",
+        "credit": "🏦 Кредит",
+    }.get(status or "", status or "—")
+
+
+def _invoice_status_emoji(status: str | None) -> str:
+    return {
+        "new": "🆕",
+        "pending": "⏳",
+        "in_progress": "🔄",
+        "paid": "✅",
+        "on_hold": "⏸",
+        "rejected": "❌",
+        "closing": "📌",
+        "ended": "🏁",
+        "credit": "🏦",
+    }.get(status or "", "❓")
+
+
+async def _answer_or_edit(
+    target: Message | CallbackQuery,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    if isinstance(target, CallbackQuery):
+        try:
+            await target.message.edit_text(  # type: ignore[union-attr]
+                text,
+                reply_markup=reply_markup,
+            )
+            return
+        except Exception:
+            await target.message.answer(  # type: ignore[union-attr]
+                text,
+                reply_markup=reply_markup,
+            )
+            return
+
+    await target.answer(text, reply_markup=reply_markup)
+
+
 # =====================================================================
 # ВХОДЯЩИЕ ОТД.ПРОДАЖ
 # =====================================================================
@@ -193,23 +243,7 @@ async def rp_inbox_sales(message: Message, db: Database) -> None:
 async def rp_invoice_start_monitor(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
-    in_progress = await db.list_invoices(status=InvoiceStatus.IN_PROGRESS, limit=50)
-    paid = await db.list_invoices(status=InvoiceStatus.PAID, limit=50)
-    invoices = list(in_progress) + list(paid)
-    if not invoices:
-        await answer_service(message, "💼 Нет счетов «В работе».", delay_seconds=60)
-        return
-    header_parts: list[str] = []
-    if in_progress:
-        header_parts.append(f"🔄 В работе: {len(in_progress)}")
-    if paid:
-        header_parts.append(f"✅ Оплачены: {len(paid)}")
-    await message.answer(
-        f"💼 <b>Счета В Работе</b> ({len(invoices)}):\n"
-        f"{' | '.join(header_parts)}\n\n"
-        "Нажмите для просмотра:",
-        reply_markup=invoice_list_kb(invoices, action_prefix="rpinv", back_callback="nav:home"),
-    )
+    await _show_invoices_work_dashboard(message, db)
 
 
 @router.callback_query(F.data.startswith("rpinv:view:"))
@@ -223,11 +257,7 @@ async def rp_invoice_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    status_label = {
-        "new": "🆕 Новый", "pending": "⏳ Ожидает", "in_progress": "🔄 В работе",
-        "paid": "✅ Оплачен", "on_hold": "⏸ Отложен", "closing": "📌 Закрытие",
-        "ended": "🏁 Счет End",
-    }.get(inv["status"], inv["status"])
+    status_label = _invoice_status_label(inv.get("status"))
 
     text = (
         f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
@@ -267,21 +297,56 @@ def _invoices_pay_kb(
     """Inline-кнопки для «Счета на оплату»: список + кнопка создания."""
     b = InlineKeyboardBuilder()
     for inv in invoices:
-        status_emoji = {
-            "pending": "⏳", "in_progress": "🔄",
-            "paid": "✅", "on_hold": "⏸",
-        }.get(inv.get("status", ""), "❓")
+        status_emoji = _invoice_status_emoji(inv.get("status"))
         try:
             amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
         except (ValueError, TypeError):
             amount_str = f"{inv.get('amount', 0)}₽"
         text = f"{status_emoji} №{inv.get('invoice_number', '?')} — {amount_str}"
-        b.button(text=text[:60], callback_data=f"rpinv:view:{inv['id']}")
+        b.button(text=text[:60], callback_data=f"rp_work:view:{inv['id']}")
     b.button(text="➕ Создать счёт на оплату", callback_data="rp_inv_pay:create")
     b.button(text="🔄 Обновить", callback_data="rp_inv_pay:refresh")
     b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
     return b.as_markup()
+
+
+async def _show_invoices_pay_dashboard(
+    target: Message | CallbackQuery,
+    db: Database,
+) -> None:
+    pending = await db.list_invoices(status=InvoiceStatus.PENDING_PAYMENT, limit=30)
+    in_progress = await db.list_invoices(status=InvoiceStatus.IN_PROGRESS, limit=30)
+    all_inv = list(pending) + list(in_progress)
+
+    if not all_inv:
+        b = InlineKeyboardBuilder()
+        b.button(text="➕ Создать счёт на оплату", callback_data="rp_inv_pay:create")
+        b.button(text="🔄 Обновить", callback_data="rp_inv_pay:refresh")
+        b.button(text="⬅️ Назад", callback_data="nav:home")
+        b.adjust(1)
+        await _answer_or_edit(
+            target,
+            "💳 <b>Счета на оплату</b>\n\n"
+            "Нет счетов, ожидающих оплаты ✅\n\n"
+            "Можно создать новый счёт или обновить список.",
+            reply_markup=b.as_markup(),
+        )
+        return
+
+    header_parts: list[str] = []
+    if pending:
+        header_parts.append(f"⏳ Ожидают: {len(pending)}")
+    if in_progress:
+        header_parts.append(f"🔄 В работе: {len(in_progress)}")
+
+    await _answer_or_edit(
+        target,
+        f"💳 <b>Счета на оплату</b> ({len(all_inv)})\n"
+        f"{' | '.join(header_parts)}\n\n"
+        "Нажмите для просмотра или создайте новый:",
+        reply_markup=_invoices_pay_kb(all_inv),
+    )
 
 
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_INVOICES_PAY))
@@ -290,38 +355,7 @@ async def rp_invoices_pay(message: Message, state: FSMContext, db: Database) -> 
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
-
-    pending = await db.list_invoices(status=InvoiceStatus.PENDING_PAYMENT, limit=30)
-    in_progress = await db.list_invoices(status=InvoiceStatus.IN_PROGRESS, limit=30)
-    all_inv = list(pending) + list(in_progress)
-
-    if not all_inv:
-        b = InlineKeyboardBuilder()
-        b.button(text="➕ Создать счёт на оплату", callback_data="rp_inv_pay:create")
-        b.adjust(1)
-        await message.answer(
-            "💳 <b>Счета на оплату</b>\n\n"
-            "Нет счетов, ожидающих оплаты ✅\n\n"
-            "Нажмите для создания нового:",
-            reply_markup=b.as_markup(),
-        )
-        return
-
-    n_pending = len(pending)
-    n_progress = len(in_progress)
-
-    header_parts = []
-    if n_pending:
-        header_parts.append(f"⏳ Ожидают: {n_pending}")
-    if n_progress:
-        header_parts.append(f"🔄 В работе: {n_progress}")
-
-    await message.answer(
-        f"💳 <b>Счета на оплату</b> ({len(all_inv)})\n"
-        f"{' | '.join(header_parts)}\n\n"
-        "Нажмите для просмотра или создайте новый:",
-        reply_markup=_invoices_pay_kb(all_inv),
-    )
+    await _show_invoices_pay_dashboard(message, db)
 
 
 @router.callback_query(F.data == "rp_inv_pay:refresh")
@@ -331,35 +365,7 @@ async def rp_invoices_pay_refresh(cb: CallbackQuery, state: FSMContext, db: Data
         return
     await cb.answer("🔄 Обновлено")
     await state.clear()
-
-    pending = await db.list_invoices(status=InvoiceStatus.PENDING_PAYMENT, limit=30)
-    in_progress = await db.list_invoices(status=InvoiceStatus.IN_PROGRESS, limit=30)
-    all_inv = list(pending) + list(in_progress)
-
-    if not all_inv:
-        b = InlineKeyboardBuilder()
-        b.button(text="➕ Создать счёт на оплату", callback_data="rp_inv_pay:create")
-        b.adjust(1)
-        await cb.message.answer(  # type: ignore[union-attr]
-            "💳 Нет счетов, ожидающих оплаты ✅",
-            reply_markup=b.as_markup(),
-        )
-        return
-
-    n_pending = len(pending)
-    n_progress = len(in_progress)
-    header_parts = []
-    if n_pending:
-        header_parts.append(f"⏳ Ожидают: {n_pending}")
-    if n_progress:
-        header_parts.append(f"🔄 В работе: {n_progress}")
-
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"💳 <b>Счета на оплату</b> ({len(all_inv)})\n"
-        f"{' | '.join(header_parts)}\n\n"
-        "Нажмите для просмотра или создайте новый:",
-        reply_markup=_invoices_pay_kb(all_inv),
-    )
+    await _show_invoices_pay_dashboard(cb, db)
 
 
 @router.callback_query(F.data == "rp_inv_pay:create")
@@ -712,10 +718,7 @@ async def rp_montazh_work_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    status_label = {
-        "pending": "⏳ Ждёт подтверждения ГД", "in_progress": "🔄 В работе",
-        "paid": "✅ Оплачен",
-    }.get(inv["status"], inv["status"])
+    status_label = _invoice_status_label(inv.get("status"))
 
     try:
         amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
@@ -1123,14 +1126,15 @@ async def _show_invoices_work_dashboard(
     invoices = await db.list_invoices_in_work(limit=50)
 
     if not invoices:
+        b = InlineKeyboardBuilder()
+        b.button(text="🔄 Обновить", callback_data="rp_work:refresh")
+        b.button(text="⬅️ Назад", callback_data="nav:home")
+        b.adjust(1)
         text = (
             "💼 <b>Счета в Работе</b>\n\n"
             "Нет активных счетов ✅"
         )
-        if isinstance(target, CallbackQuery):
-            await target.message.answer(text)  # type: ignore[union-attr]
-        else:
-            await target.answer(text)
+        await _answer_or_edit(target, text, reply_markup=b.as_markup())
         return
 
     # Statistics by status
@@ -1163,16 +1167,11 @@ async def _show_invoices_work_dashboard(
         "Нажмите на счёт для просмотра:"
     )
 
-    if isinstance(target, CallbackQuery):
-        await target.message.answer(  # type: ignore[union-attr]
-            text,
-            reply_markup=invoices_work_list_kb(invoices),
-        )
-    else:
-        await target.answer(
-            text,
-            reply_markup=invoices_work_list_kb(invoices),
-        )
+    await _answer_or_edit(
+        target,
+        text,
+        reply_markup=invoices_work_list_kb(invoices),
+    )
 
 
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_INVOICES_WORK))
@@ -1206,13 +1205,7 @@ async def rp_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    status_label = {
-        "new": "🆕 Новый", "pending": "⏳ Ждёт подтверждения ГД",
-        "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
-        "on_hold": "⏸ Отложен", "rejected": "❌ Отклонён",
-        "closing": "📌 Закрытие", "ended": "🏁 Счет End",
-        "credit": "🏦 Кредит",
-    }.get(inv["status"], inv["status"])
+    status_label = _invoice_status_label(inv.get("status"))
 
     try:
         amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
@@ -1499,12 +1492,7 @@ async def rp_work_return_ok(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    await db.update_invoice_status(invoice_id, "in_progress")
-
-    num = inv.get("invoice_number") or f"#{invoice_id}"
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ Счёт №{num} возвращён в работу."
-    )
+    await db.update_invoice_status(invoice_id, InvoiceStatus.IN_PROGRESS)
 
     # Refresh the dashboard
     await _show_invoices_work_dashboard(cb, db)
@@ -3210,13 +3198,7 @@ async def kp_issued_view(cb: CallbackQuery, db: Database) -> None:
     is_credit = inv.get("is_credit") or inv.get("status") == "credit"
     payment_label = "🏦 Кред (кредит)" if is_credit else "💳 б/н (безналичный)"
 
-    status_label = {
-        "new": "🆕 Новый", "pending": "⏳ Ждёт подтверждения ГД",
-        "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
-        "on_hold": "⏸ Отложен", "rejected": "❌ Отклонён",
-        "closing": "📌 Закрытие", "ended": "🏁 Счет End",
-        "credit": "🏦 Кредит",
-    }.get(inv["status"], inv["status"])
+    status_label = _invoice_status_label(inv.get("status"))
 
     try:
         amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"

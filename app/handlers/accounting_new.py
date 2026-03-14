@@ -75,14 +75,17 @@ async def acc_inbox_tasks(message: Message, db: Database) -> None:
     for t in unconfirmed[:15]:
         tid = int(t["id"])
         payload = {}
-        if t.get("payload"):
+        if t.get("payload_json"):
             try:
-                payload = json.loads(t["payload"]) if isinstance(t["payload"], str) else t["payload"]
+                payload = (
+                    json.loads(t["payload_json"])
+                    if isinstance(t["payload_json"], str)
+                    else t["payload_json"]
+                )
             except Exception:
                 pass
         inv_num = payload.get("invoice_number", "")
-        req_text = payload.get("request_text", t.get("description", ""))[:100]
-        source_label = payload.get("source", t.get("type", ""))
+        req_text = str(payload.get("request_text") or payload.get("comment") or "")[:100]
         text = (
             f"📋 <b>Задача #{tid}</b>\n"
             f"📄 Счёт: {inv_num}\n" if inv_num else f"📋 <b>Задача #{tid}</b>\n"

@@ -488,7 +488,6 @@ class GoogleSheetsService:
         13: "estimated_installation", # Установка
         14: "estimated_loaders",    # Грузчики
         15: "estimated_logistics",  # Логистика
-        17: "nds_amount",           # НДС
         16: "profit_tax",           # Q: Прибыль
         17: "nds_amount",           # R: НДС
         19: "rentability_calc",     # T: Рент-ть расч
@@ -536,6 +535,22 @@ class GoogleSheetsService:
         except (ValueError, IndexError):
             return None
 
+    def _detect_op_sheet_start_row(self, all_data: list[list[str]]) -> int:
+        """Detect the header row in the source sheet and return the first data row."""
+        header_markers = ("номер счета", "контрагент", "адрес", "дата пост", "сумма")
+        for idx, row in enumerate(all_data[:10]):
+            normalized = [str(cell).strip().lower() for cell in row if str(cell).strip()]
+            if not normalized:
+                continue
+            score = sum(
+                1
+                for marker in header_markers
+                if any(marker in cell for cell in normalized)
+            )
+            if score >= 3:
+                return idx + 1
+        return 1 if all_data else 0
+
     def read_op_sheet_sync(self) -> list[dict[str, Any]]:
         """Read all rows from source 'Отдел продаж' sheet, return parsed dicts."""
         if not self.cfg.source_spreadsheet_id:
@@ -559,9 +574,9 @@ class GoogleSheetsService:
         if len(all_data) < 2:
             return []
 
-        # Skip header (row 0), skip empty row 1 if exists
+        start_row = self._detect_op_sheet_start_row(all_data)
         results: list[dict[str, Any]] = []
-        for row_idx in range(1, len(all_data)):
+        for row_idx in range(start_row, len(all_data)):
             row = all_data[row_idx]
             # Skip empty rows (no invoice number)
             inv_num = row[4].strip() if len(row) > 4 else ""

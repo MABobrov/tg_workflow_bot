@@ -1287,9 +1287,6 @@ async def invoice_end_comment(
         await state.clear()
         return
 
-    # Update invoice status to CLOSING
-    await db.update_invoice_status(invoice_id, InvoiceStatus.CLOSING)
-
     # Create task for GD
     gd_id = await resolve_default_assignee(db, config, Role.GD)
     rp_id = await resolve_default_assignee(db, config, Role.RP)
@@ -1312,6 +1309,7 @@ async def invoice_end_comment(
             "manager_id": message.from_user.id,
         },
     )
+    await db.update_invoice_status(invoice_id, InvoiceStatus.CLOSING)
 
     initiator = await get_initiator_label(db, message.from_user.id)
     conditions = await db.check_close_conditions(invoice_id)

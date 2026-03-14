@@ -251,7 +251,11 @@ async def main() -> None:
                     await db.import_invoice_from_sheet(row_data)
                     ok += 1
                 except Exception:
-                    pass
+                    log.warning(
+                        "ОП startup sync: failed to import invoice %s",
+                        row_data.get("invoice_number"),
+                        exc_info=True,
+                    )
             if ok:
                 log.info("ОП startup sync: imported/updated %d invoices", ok)
         except Exception as e:

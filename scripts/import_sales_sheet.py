@@ -109,7 +109,7 @@ async def main() -> None:
         "1i6fZi8TLC8ghtuRLZYkHt-3UsfoJ50Ng4EJuMMQXjN4",
     )
     sales_tab = os.getenv("GSHEET_SALES_TAB", "Отдел продаж")
-    db_path = os.getenv("DB_PATH", "data/bot.db")
+    db_path = os.getenv("DB_PATH", "data/bot.sqlite3")
 
     sa_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
     if not sa_file:

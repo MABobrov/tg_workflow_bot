@@ -756,6 +756,9 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
     if _u and _u.role:
         _active = resolve_active_menu_role(message.from_user.id, _u.role)
         if _active == Role.ACCOUNTING:
+            from .accounting_new import acc_inbox_tasks
+
+            await acc_inbox_tasks(message, db)
             return
     tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)
     if not tasks:
