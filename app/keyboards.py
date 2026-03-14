@@ -229,7 +229,8 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [INST_BTN_INVOICE_OK, INST_BTN_RAZMERY_OK],
             [INST_BTN_MY_OBJECTS, INST_BTN_DAILY_REPORT],
             [INST_BTN_ZP, INST_BTN_NOT_URGENT],
-            ["📋 Все задачи", INST_BTN_SYNC],
+            [INST_BTN_URGENT, INST_BTN_SYNC],
+            ["📋 Все задачи"],
         ]
     if role == Role.GD:
         return [
@@ -851,8 +852,9 @@ def manager_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMar
     """Подменю 'Еще' для менеджеров (КВ / КИА / НПН)."""
     rows: list[list[str]] = [
         [MGR_BTN_CRED],
-        [MGR_BTN_NOT_URGENT, MGR_BTN_SEARCH_INVOICE],
-        ["📋 Все задачи", MGR_BTN_HELP],
+        [MGR_BTN_NOT_URGENT, MGR_BTN_URGENT],
+        [MGR_BTN_SEARCH_INVOICE, "📋 Все задачи"],
+        [MGR_BTN_HELP],
     ]
     if show_role_selector_back:
         rows.append([BACK_TO_ROLE_SELECTOR])

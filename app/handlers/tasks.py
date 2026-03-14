@@ -476,7 +476,13 @@ async def task_actions(
         rp_id = project.get("rp_id") or (await db.get_project_rp_id(int(project["id"])))
 
         if action == "pay_ok":
-            task = await db.update_task_status(task_id, TaskStatus.DONE)
+            task = await db.update_task_status(
+                task_id, TaskStatus.DONE,
+                expected_statuses=tuple(active_statuses),
+            )
+            if task is None:
+                await cb.answer("Задача уже была обработана.", show_alert=True)
+                return
             project = await db.update_project_status(int(project["id"]), ProjectStatus.IN_WORK)
 
             initiator = await get_initiator_label(db, cb.from_user.id)
@@ -496,7 +502,13 @@ async def task_actions(
             await notifier.notify_workchat(text)
 
         else:
-            task = await db.update_task_status(task_id, TaskStatus.REJECTED)
+            task = await db.update_task_status(
+                task_id, TaskStatus.REJECTED,
+                expected_statuses=tuple(active_statuses),
+            )
+            if task is None:
+                await cb.answer("Задача уже была обработана.", show_alert=True)
+                return
             project = await db.update_project_status(int(project["id"]), ProjectStatus.WAITING_PAYMENT)
 
             initiator = await get_initiator_label(db, cb.from_user.id)
@@ -841,7 +853,13 @@ async def task_actions(
             return
 
         # simple close
-        task = await db.update_task_status(task_id, TaskStatus.DONE)
+        task = await db.update_task_status(
+            task_id, TaskStatus.DONE,
+            expected_statuses=tuple(active_statuses),
+        )
+        if task is None:
+            await cb.answer("Задача уже была обработана.", show_alert=True)
+            return
         project = await _apply_done_side_effects(db, integrations, task, project)
         await _notify_task_creator_done(
             db,
