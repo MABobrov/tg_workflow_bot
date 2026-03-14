@@ -6,6 +6,8 @@ services:
       - .env
     environment:
       - DB_PATH=/app/data/bot.sqlite3
+    ports:
+      - "${SHEETS_WEBHOOK_PORT:-8443}:${SHEETS_WEBHOOK_PORT:-8443}"
     volumes:
       - ./data:/app/data
       - ./secrets:/app/secrets:ro

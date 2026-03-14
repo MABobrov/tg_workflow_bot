@@ -84,7 +84,7 @@ TASK_TYPE_LABELS: dict[str, str] = {
     "order_glass": "Заказ стекла",
     "order_materials": "Заказ материалов",
     "supplier_payment": "Оплата поставщику",
-    "delivery_request": "Заявка на доставку",
+    "delivery_request": "Оплата доставки",
     "delivery_done": "Доставка выполнена",
     "tinting_request": "Заявка на тонировку",
     "tinting_done": "Тонировка выполнена",
@@ -699,7 +699,7 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any]) -> str:
         lines.append(f"\n🔗 {src_label}")
         lines.append(
             f"💰 <b>Распределение прибыли:</b>\n"
-            f"  ЗП РП (8%): {rp_zp:,.0f}₽\n"
+            f"  ЗП РП (10%): {rp_zp:,.0f}₽\n"
             f"  ЗП менеджер: {mgr_zp:,.0f}₽\n"
             f"  Доля ГД: {gd_pr:,.0f}₽"
         )

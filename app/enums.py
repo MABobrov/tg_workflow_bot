@@ -14,9 +14,9 @@ class Role(StrEnum):
     LOADER = "loader"              # грузчик
     TINTER = "tinter"              # тонировщик
     # --- новые роли ---
-    MANAGER_KV = "manager_kv"     # менеджер 1 (КВ — конструкции ПВХ)
-    MANAGER_KIA = "manager_kia"   # менеджер 2 (КИА — комплектующие)
-    MANAGER_NPN = "manager_npn"   # менеджер 3 (НПН — непрофильная номенклатура)
+    MANAGER_KV = "manager_kv"     # менеджер 1 (КВ)
+    MANAGER_KIA = "manager_kia"   # менеджер 2 (КИА)
+    MANAGER_NPN = "manager_npn"   # менеджер 3 (НПН)
     ZAMERY = "zamery"             # замерщик
 
 
@@ -56,7 +56,7 @@ class TaskType(StrEnum):
     ORDER_GLASS = "order_glass"              # заказ стекла
     ORDER_MATERIALS = "order_materials"      # заказ прочих материалов (ЛДСП, ГКЛ и т.д.)
     SUPPLIER_PAYMENT = "supplier_payment"    # оплата поставщику (ТД -> поставщик)
-    DELIVERY_REQUEST = "delivery_request"    # заявка на доставку
+    DELIVERY_REQUEST = "delivery_request"    # оплата доставки (РП → ГД)
     DELIVERY_DONE = "delivery_done"          # доставка выполнена
     TINTING_REQUEST = "tinting_request"      # заявка на тонировку
     TINTING_DONE = "tinting_done"            # тонировка выполнена

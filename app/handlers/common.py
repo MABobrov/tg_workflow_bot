@@ -211,7 +211,7 @@ def _role_guide(role: str | None) -> str:
     if Role.DRIVER in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (Водитель)</b>\n"
-            "• «📥 Входящие задачи» — заявки на доставку от РП.\n"
+            "• «📥 Входящие задачи» — задачи от РП.\n"
             "• «✅ Доставка выполнена» — подтвердить доставку.\n"
             "Заполните: проект, комментарий, фото разгрузки.\n"
         )
@@ -689,6 +689,56 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
         f"📥 <b>Входящие задачи</b> ({len(tasks)}):\n\n"
         "Нажмите на задачу для просмотра:",
         reply_markup=tasks_kb(tasks, back_callback="nav:home"),
+    )
+
+
+# =====================================================================
+# ВСЕ ЗАДАЧИ (список для всех ролей)
+# =====================================================================
+
+@router.message(lambda m: (m.text or "").strip() == "📋 Все задачи")
+async def all_tasks_list(message: Message, db: Database) -> None:
+    """Show all tasks (active + recent closed) for the current user."""
+    if not message.from_user:
+        return
+    if not await _guard_blocked_message(message, db):
+        return
+    uid = message.from_user.id
+
+    # Active tasks (open + in_progress)
+    active = await db.list_tasks_for_user(uid, statuses=("open", "in_progress"), limit=50)
+    # Created by user (active)
+    created = await db.list_tasks_created_by(uid, statuses=("open", "in_progress"), limit=20)
+    # Recent closed (done + rejected, last 10)
+    closed = await db.list_tasks_for_user(uid, statuses=("done", "rejected"), limit=10)
+
+    all_tasks = []
+    seen_ids: set[int] = set()
+    for t in active:
+        if int(t["id"]) not in seen_ids:
+            all_tasks.append(t)
+            seen_ids.add(int(t["id"]))
+    for t in created:
+        if int(t["id"]) not in seen_ids:
+            all_tasks.append(t)
+            seen_ids.add(int(t["id"]))
+    for t in closed:
+        if int(t["id"]) not in seen_ids:
+            all_tasks.append(t)
+            seen_ids.add(int(t["id"]))
+
+    if not all_tasks:
+        await answer_service(message, "📋 Задач нет.", delay_seconds=60)
+        return
+
+    active_count = sum(1 for t in all_tasks if t.get("status") in ("open", "in_progress"))
+    closed_count = len(all_tasks) - active_count
+
+    await message.answer(
+        f"📋 <b>Все задачи</b>\n"
+        f"Активных: {active_count} | Закрытых: {closed_count}\n\n"
+        "Нажмите на задачу для просмотра:",
+        reply_markup=tasks_kb(all_tasks, back_callback="nav:home"),
     )
 
 

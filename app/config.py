@@ -103,6 +103,10 @@ class Config:
     webhook_url: Optional[str]
     webhook_secret: Optional[str]
 
+    # Sheets webhook (real-time sync from Google Sheets)
+    sheets_webhook_secret: Optional[str]
+    sheets_webhook_port: int
+
     # Reminders
     reminders_enabled: bool
     remind_soon_minutes: int
@@ -198,6 +202,9 @@ def load_config() -> Config:
     webhook_url = os.getenv("WEBHOOK_URL")
     webhook_secret = os.getenv("WEBHOOK_SECRET")
 
+    sheets_webhook_secret = os.getenv("SHEETS_WEBHOOK_SECRET")
+    sheets_webhook_port = int(os.getenv("SHEETS_WEBHOOK_PORT", "8443"))
+
     reminders_enabled = _parse_bool(os.getenv("REMINDERS_ENABLED"), default=True)
     remind_soon_minutes = int(os.getenv("REMIND_SOON_MINUTES", "60"))
     remind_overdue_minutes = int(os.getenv("REMIND_OVERDUE_MINUTES", "10"))
@@ -245,6 +252,8 @@ def load_config() -> Config:
         amocrm_redirect_uri=amocrm_redirect_uri,
         amocrm_access_token=amocrm_access_token,
         amocrm_refresh_token=amocrm_refresh_token,
+        sheets_webhook_secret=sheets_webhook_secret,
+        sheets_webhook_port=sheets_webhook_port,
         enable_webhook=enable_webhook,
         webhook_url=webhook_url,
         webhook_secret=webhook_secret,

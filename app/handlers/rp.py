@@ -309,98 +309,123 @@ async def order_mat_finalize(
     await state.clear()
 
 
-# ==================== ЗАЯВКА НА ДОСТАВКУ (РП -> Водитель) ====================
+# ==================== ОПЛАТА ДОСТАВКИ (РП -> ГД) ====================
 
-@router.message(F.text == "🚚 Заявка на доставку")
-async def start_delivery_request(message: Message, state: FSMContext, db: Database) -> None:
+@router.message(F.text == "🚚 Оплата доставки")
+async def start_delivery_payment(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
-    projects = await db.list_recent_projects(limit=20)
-    await state.set_state(DeliveryRequestSG.project)
+
+    # Показать счета в работе (для привязки)
+    invoices = await db.list_invoices(status="in_work", limit=30, only_regular=True)
+    if not invoices:
+        invoices = await db.list_invoices(limit=30, only_regular=True)
+    if not invoices:
+        await message.answer("Нет счетов для привязки доставки.")
+        return
+
+    b = InlineKeyboardBuilder()
+    for inv in invoices[:20]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:25]
+        label = f"📄 {num}"
+        if addr:
+            label += f" · {addr}"
+        b.button(text=label, callback_data=f"delpay:inv:{inv['id']}")
+    b.adjust(1)
+    await state.set_state(DeliveryRequestSG.invoice)
     await message.answer(
-        "🚚 <b>Заявка на доставку</b>\n"
-        "Шаг 1/6: выберите проект.\n"
+        "🚚 <b>Оплата доставки</b>\n"
+        "Шаг 1/3: выберите счёт.\n"
         "Для отмены: <code>/cancel</code>.",
-        reply_markup=projects_kb(projects, ctx="delivery_req"),
+        reply_markup=b.as_markup(),
     )
 
 
-@router.callback_query(ProjectCb.filter(F.ctx == "delivery_req"))
-async def delivery_req_pick_project(cb: CallbackQuery, callback_data: ProjectCb, state: FSMContext, db: Database) -> None:
+@router.callback_query(F.data.startswith("delpay:inv:"), DeliveryRequestSG.invoice)
+async def delivery_pay_pick_invoice(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
-    project = await db.get_project(int(callback_data.project_id))
-    await state.update_data(project_id=int(project["id"]))
-    await state.set_state(DeliveryRequestSG.address_from)
-    await cb.message.answer("Откуда забрать? (адрес склада/поставщика):")  # type: ignore
-
-
-@router.message(DeliveryRequestSG.address_from)
-async def delivery_req_from(message: Message, state: FSMContext) -> None:
-    t = (message.text or "").strip()
-    if len(t) < 3:
-        await message.answer("Укажите адрес подробнее:")
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    invoice = await db.get_invoice(inv_id)
+    if not invoice:
+        await cb.message.answer("Счёт не найден.")  # type: ignore
+        await state.clear()
         return
-    await state.update_data(address_from=t)
-    await state.set_state(DeliveryRequestSG.address_to)
-    await message.answer("Куда доставить? (адрес объекта):")
 
-
-@router.message(DeliveryRequestSG.address_to)
-async def delivery_req_to(message: Message, state: FSMContext) -> None:
-    t = (message.text or "").strip()
-    if len(t) < 3:
-        await message.answer("Укажите адрес подробнее:")
-        return
-    await state.update_data(address_to=t)
-    await state.set_state(DeliveryRequestSG.delivery_date)
-    await message.answer("Дата доставки (ДД.ММ.ГГГГ или «сегодня/завтра»):")
-
-
-@router.message(DeliveryRequestSG.delivery_date)
-async def delivery_req_date(message: Message, state: FSMContext, config: Config) -> None:
-    t = (message.text or "").strip()
-    dt = parse_date(t, config.timezone)
-    if not dt:
-        await message.answer("Не понял дату. Пример: 25.03.2026 или «сегодня».")
-        return
-    await state.update_data(delivery_date=to_iso(dt))
-    await state.set_state(DeliveryRequestSG.cargo_description)
-    await message.answer("Что везём? (профиль / стекло / другое — кратко):")
-
-
-@router.message(DeliveryRequestSG.cargo_description)
-async def delivery_req_cargo(message: Message, state: FSMContext) -> None:
-    t = (message.text or "").strip()
-    if len(t) < 3:
-        await message.answer("Опишите груз подробнее:")
-        return
-    await state.update_data(cargo_description=t)
+    await state.update_data(invoice_id=inv_id, invoice_number=invoice.get("invoice_number", ""))
     await state.set_state(DeliveryRequestSG.comment)
 
-    b = InlineKeyboardBuilder()
-    b.button(text="✅ Создать заявку", callback_data="deliveryreq:create")
-    b.adjust(1)
-    await message.answer("Комментарий (или нажмите кнопку для создания заявки):", reply_markup=b.as_markup())
+    inv_num = invoice.get("invoice_number") or f"#{inv_id}"
+    addr = invoice.get("object_address") or "—"
+    amount = invoice.get("amount") or "—"
+    est_logistics = invoice.get("estimated_logistics") or "—"
+
+    await cb.message.answer(  # type: ignore
+        f"📄 Счёт: <b>{inv_num}</b>\n"
+        f"📍 Адрес: {addr}\n"
+        f"💰 Сумма: {amount}\n"
+        f"🚚 Расч. логистика: {est_logistics}\n\n"
+        "Шаг 2/3: напишите комментарий к заявке на оплату доставки:",
+    )
 
 
 @router.message(DeliveryRequestSG.comment)
-async def delivery_req_comment(message: Message, state: FSMContext) -> None:
+async def delivery_pay_comment(message: Message, state: FSMContext) -> None:
     t = (message.text or "").strip()
-    if t == "-":
-        t = ""
-    await state.update_data(comment=t)
+    if len(t) < 2:
+        await message.answer("Напишите комментарий подробнее:")
+        return
+    await state.update_data(comment=t, attachments=[])
+    await state.set_state(DeliveryRequestSG.attachments)
 
     b = InlineKeyboardBuilder()
-    b.button(text="✅ Создать заявку", callback_data="deliveryreq:create")
+    b.button(text="✅ Отправить ГД", callback_data="delpay:send")
     b.adjust(1)
-    await message.answer("Готово. Нажмите кнопку для создания заявки:", reply_markup=b.as_markup())
+    await message.answer(
+        "Шаг 3/3: прикрепите файлы (фото, PDF, Excel) или нажмите кнопку:\n"
+        "Можно прикрепить несколько файлов по одному.",
+        reply_markup=b.as_markup(),
+    )
 
 
-@router.callback_query(F.data == "deliveryreq:create")
-async def delivery_req_finalize(
+@router.message(DeliveryRequestSG.attachments)
+async def delivery_pay_attachment(message: Message, state: FSMContext) -> None:
+    """Collect attachments (photos, documents)."""
+    file_id = None
+    file_type = None
+    if message.document:
+        file_id = message.document.file_id
+        file_type = "document"
+    elif message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
+
+    if not file_id:
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ Отправить ГД", callback_data="delpay:send")
+        b.adjust(1)
+        await message.answer("Прикрепите файл (фото/PDF/Excel) или нажмите кнопку:", reply_markup=b.as_markup())
+        return
+
+    data = await state.get_data()
+    attachments = data.get("attachments", [])
+    attachments.append({"file_id": file_id, "type": file_type})
+    await state.update_data(attachments=attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text=f"✅ Отправить ГД (файлов: {len(attachments)})", callback_data="delpay:send")
+    b.adjust(1)
+    await message.answer(
+        f"📎 Файл добавлен ({len(attachments)}). Ещё файл или отправить:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "delpay:send")
+async def delivery_pay_finalize(
     cb: CallbackQuery,
     state: FSMContext,
     db: Database,
@@ -416,76 +441,79 @@ async def delivery_req_finalize(
         return
 
     data = await state.get_data()
-    project_id = data.get("project_id")
-    if not project_id:
-        await cb.message.answer("Не выбран проект. Начните заново.")  # type: ignore
+    inv_id = data.get("invoice_id")
+    inv_num = data.get("invoice_number", "")
+    comment = data.get("comment", "")
+    attachments = data.get("attachments", [])
+
+    if not inv_id:
+        await cb.message.answer("Не выбран счёт. Начните заново.")  # type: ignore
         await state.clear()
         return
 
-    project = await db.get_project(int(project_id))
+    invoice = await db.get_invoice(int(inv_id))
 
-    # Обновляем статус проекта
-    if project.get("status") in {ProjectStatus.IN_WORK, ProjectStatus.ORDERING}:
-        project = await db.update_project_status(int(project_id), ProjectStatus.DELIVERY)
-
-    driver_id = await resolve_default_assignee(db, config, Role.DRIVER)
-
-    address_from = data.get("address_from") or ""
-    address_to = data.get("address_to") or ""
-    delivery_date = data.get("delivery_date")
-    cargo = data.get("cargo_description") or ""
-    comment = data.get("comment") or ""
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
 
     due = utcnow() + timedelta(hours=24)
     task = await db.create_task(
-        project_id=int(project_id),
+        project_id=None,
         type_=TaskType.DELIVERY_REQUEST,
         status=TaskStatus.OPEN,
         created_by=u.id,
-        assigned_to=driver_id,
+        assigned_to=gd_id,
         due_at_iso=to_iso(due),
         payload={
-            "address_from": address_from,
-            "address_to": address_to,
-            "delivery_date": delivery_date,
-            "cargo": cargo,
+            "invoice_id": inv_id,
+            "invoice_number": inv_num,
+            "object_address": (invoice or {}).get("object_address", ""),
+            "estimated_logistics": (invoice or {}).get("estimated_logistics"),
             "comment": comment,
+            "attachments": attachments,
             "rp_id": u.id,
             "rp_username": u.username,
         },
     )
 
     initiator = await get_initiator_label(db, u.id)
+    addr = (invoice or {}).get("object_address") or "—"
+    est_log = (invoice or {}).get("estimated_logistics") or "—"
     msg = (
-        "🚚 <b>Заявка на доставку</b>\n"
+        "🚚 <b>Оплата доставки</b>\n"
         f"👤 От: {initiator}\n\n"
-        f"{fmt_project_card(project, config.timezone)}\n\n"
-        f"📍 Откуда: <b>{address_from}</b>\n"
-        f"📍 Куда: <b>{address_to}</b>\n"
-        f"📅 Дата: <b>{delivery_date[:10] if isinstance(delivery_date, str) else '—'}</b>\n"
-        f"📦 Груз: <b>{cargo}</b>\n"
+        f"📄 Счёт: <b>{inv_num}</b>\n"
+        f"📍 Адрес: {addr}\n"
+        f"🚚 Расч. логистика: {est_log}\n"
     )
     if comment:
         msg += f"📝 Комментарий: {comment}\n"
 
     task_kb = task_actions_kb(task)
-    if driver_id:
-        await notifier.safe_send(int(driver_id), msg, reply_markup=task_kb)
-        await refresh_recipient_keyboard(notifier, db, config, int(driver_id))
-    await notifier.notify_workchat(msg, reply_markup=task_kb)
+    if gd_id:
+        await notifier.safe_send(int(gd_id), msg, reply_markup=task_kb)
+        # Send attachments
+        for att in attachments:
+            try:
+                if att.get("type") == "photo":
+                    await notifier.bot.send_photo(int(gd_id), att["file_id"])
+                else:
+                    await notifier.bot.send_document(int(gd_id), att["file_id"])
+            except Exception:
+                log.warning("Failed to send delivery attachment to GD")
+        await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
-    await integrations.sync_project(project)
-    await integrations.sync_task(task, project_code=project.get("code", ""))
+    await notifier.notify_workchat(msg, reply_markup=task_kb)
+    await integrations.sync_task(task, project_code="")
 
     user_now = await db.get_user_optional(u.id)
     role_now = user_now.role if user_now else Role.RP
-    await cb.message.answer(
-        "✅ Заявка на доставку создана." + (" Водитель уведомлён." if driver_id else " ⚠️ Водитель не назначен (role=driver)."),
+    await cb.message.answer(  # type: ignore
+        "✅ Заявка на оплату доставки отправлена ГД." + (" ГД уведомлён." if gd_id else " ⚠️ ГД не назначен."),
         reply_markup=private_only_reply_markup(
             cb.message,
             main_menu(role_now, is_admin=u.id in (config.admin_ids or set()), unread=await db.count_unread_tasks(u.id), rp_tasks=await db.count_rp_role_tasks(u.id), rp_messages=await db.count_rp_role_messages(u.id)),
         ),
-    )  # type: ignore
+    )
     await state.clear()
 
 

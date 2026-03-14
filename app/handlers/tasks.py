@@ -19,7 +19,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.menu_context import build_main_menu_for_user
 from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCompleteSG
+from ..states import DeliveryPaymentSG, InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCompleteSG
 from ..utils import answer_service, fmt_task_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
 
 log = logging.getLogger(__name__)
@@ -351,6 +351,83 @@ async def task_actions(
             )
         return
 
+    # CANCEL (снять задачу) — available to assigned user, creator, and admin
+    if action == "cancel":
+        if task.get("status") not in active_statuses:
+            await cb.answer("Эта задача уже закрыта.", show_alert=True)
+            return
+        # Allow creator to cancel too
+        user_id = cb.from_user.id
+        created_by = task.get("created_by")
+        is_creator = created_by and int(created_by) == user_id
+        is_assigned = task.get("assigned_to") and int(task["assigned_to"]) == user_id
+        is_admin = user_id in (config.admin_ids or set())
+        if not (is_creator or is_assigned or is_admin):
+            await cb.answer("Снять задачу может только автор, исполнитель или администратор.", show_alert=True)
+            return
+        task = await db.update_task_status(task_id, TaskStatus.REJECTED)
+        await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await _safe_edit_task_markup(cb.message, reply_markup=None)
+        await state.clear()
+        if cb.from_user:
+            role_now, isolated_role = await _current_menu(db, cb.from_user.id)
+            await _answer_with_menu(
+                cb.message,
+                db,
+                config,
+                cb.from_user.id,
+                "🚫 Задача снята.",
+                role=role_now,
+                isolated_role=isolated_role,
+            )
+        # Notify the other party (creator or assigned)
+        initiator = await get_initiator_label(db, cb.from_user.id)
+        task_label = task_type_label(task.get("type") or "")
+        inv_num = ""
+        payload = try_json_loads(task.get("payload_json"))
+        if payload:
+            inv_num = payload.get("invoice_number", "")
+        cancel_detail = f"📋 {task_label}"
+        if inv_num:
+            cancel_detail += f" | Счёт: {inv_num}"
+
+        notified_ids: set[int] = {user_id}
+        if is_creator and task.get("assigned_to"):
+            tid_assigned = int(task["assigned_to"])
+            await notifier.safe_send(
+                tid_assigned,
+                f"🚫 Задача #{task_id} снята автором\n{cancel_detail}\n👤 {initiator}",
+            )
+            notified_ids.add(tid_assigned)
+        elif is_assigned and created_by:
+            tid_creator = int(created_by)
+            await notifier.safe_send(
+                tid_creator,
+                f"🚫 Ваша задача #{task_id} снята исполнителем\n{cancel_detail}\n👤 {initiator}",
+            )
+            notified_ids.add(tid_creator)
+        elif is_admin:
+            for notify_id in filter(None, [created_by, task.get("assigned_to")]):
+                nid = int(notify_id)
+                if nid != user_id:
+                    await notifier.safe_send(
+                        nid,
+                        f"🚫 Задача #{task_id} снята администратором\n{cancel_detail}\n👤 {initiator}",
+                    )
+                    notified_ids.add(nid)
+
+        # Always notify RP and GD about cancellation
+        rp_id = await resolve_default_assignee(db, config, Role.RP)
+        gd_id = await resolve_default_assignee(db, config, Role.GD)
+        cancel_msg_rp_gd = (
+            f"🚫 Задача #{task_id} снята\n{cancel_detail}\n👤 Инициатор: {initiator}"
+        )
+        for mgmt_id in filter(None, [rp_id, gd_id]):
+            if mgmt_id not in notified_ids:
+                await notifier.safe_send(mgmt_id, cancel_msg_rp_gd)
+                notified_ids.add(mgmt_id)
+        return
+
     # PAYMENT CONFIRM actions (TD)
     if action in {"pay_ok", "pay_need"} and task.get("type") == TaskType.PAYMENT_CONFIRM:
         if task.get("status") not in active_statuses:
@@ -589,6 +666,49 @@ async def task_actions(
                 role=role_now,
                 isolated_role=isolated_role,
             )
+        return
+
+    # DELIVERY_REQUEST — ГД принял заявку (в работу)
+    if action == "del_accept" and task.get("type") == TaskType.DELIVERY_REQUEST:
+        if task.get("status") != TaskStatus.OPEN:
+            await cb.answer("Заявка уже обработана.", show_alert=True)
+            return
+        task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+        await db.accept_task(task_id)
+        # Notify RP
+        rp_id = task.get("created_by")
+        if rp_id:
+            await notifier.safe_send(
+                int(rp_id),
+                f"✅ <b>Оплата доставки — принято ГД</b>\n"
+                f"Задача #{task_id} в работе.",
+            )
+            await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
+        # Show updated card
+        task_kb = task_actions_kb(task)
+        try:
+            await cb.message.edit_reply_markup(reply_markup=task_kb)  # type: ignore
+        except TelegramBadRequest:
+            pass
+        await cb.answer("Принято, статус: в работе")
+        return
+
+    # DELIVERY_REQUEST — ГД оплачивает доставку (FSM: сумма → комментарий → платёжка)
+    if action == "del_pay" and task.get("type") == TaskType.DELIVERY_REQUEST:
+        if task.get("status") != TaskStatus.IN_PROGRESS:
+            await cb.answer("Задача не в работе.", show_alert=True)
+            return
+        await state.clear()
+        await state.update_data(delivery_task_id=task_id)
+        await state.set_state(DeliveryPaymentSG.amount)
+        payload = try_json_loads(task.get("payload_json"))
+        est = payload.get("estimated_logistics") or "—"
+        await cb.message.answer(  # type: ignore
+            f"💳 <b>Оплата доставки</b>\n"
+            f"Задача #{task_id}\n"
+            f"🚚 Расч. логистика: {est}\n\n"
+            "Введите фактическую стоимость доставки (число):",
+        )
         return
 
     # MONTAZH — подтверждение задачи (Да/Нет/Комментарий)
@@ -1043,4 +1163,181 @@ async def montazh_comment_text(
     await message.answer(
         "✅ Комментарий отправлен ГД.",
         reply_markup=task_actions_kb(task),
+    )
+
+
+# ==================== ОПЛАТА ДОСТАВКИ — FSM ГД ====================
+
+
+@router.message(DeliveryPaymentSG.amount)
+async def delivery_payment_amount(message: Message, state: FSMContext) -> None:
+    """GD enters actual delivery cost."""
+    t = (message.text or "").strip().replace(" ", "").replace("\u00a0", "")
+    # Parse number (supports 50000, 50k, 50К)
+    raw = t.lower().replace("к", "000").replace("k", "000")
+    try:
+        amount = float(raw)
+    except ValueError:
+        await message.answer("Введите число (пример: 15000 или 15к):")
+        return
+    await state.update_data(delivery_amount=amount)
+    await state.set_state(DeliveryPaymentSG.comment)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="⏭ Без комментария", callback_data="delpay_gd:nocomment")
+    b.adjust(1)
+    await message.answer(
+        f"Сумма: <b>{amount:.0f}₽</b>\n\n"
+        "Комментарий (или нажмите кнопку):",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "delpay_gd:nocomment", DeliveryPaymentSG.comment)
+async def delivery_payment_no_comment(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    await state.update_data(delivery_comment="", delivery_attachments=[])
+    await state.set_state(DeliveryPaymentSG.attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Завершить без файла", callback_data="delpay_gd:finalize")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore
+        "Прикрепите платёжку (PDF/фото) или завершите без файла:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(DeliveryPaymentSG.comment)
+async def delivery_payment_comment(message: Message, state: FSMContext) -> None:
+    t = (message.text or "").strip()
+    await state.update_data(delivery_comment=t, delivery_attachments=[])
+    await state.set_state(DeliveryPaymentSG.attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Завершить без файла", callback_data="delpay_gd:finalize")
+    b.adjust(1)
+    await message.answer(
+        "Прикрепите платёжку (PDF/фото) или завершите без файла:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(DeliveryPaymentSG.attachments)
+async def delivery_payment_attachment(message: Message, state: FSMContext) -> None:
+    file_id = None
+    file_type = None
+    if message.document:
+        file_id = message.document.file_id
+        file_type = "document"
+    elif message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
+
+    if not file_id:
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ Завершить", callback_data="delpay_gd:finalize")
+        b.adjust(1)
+        await message.answer("Прикрепите файл или завершите:", reply_markup=b.as_markup())
+        return
+
+    data = await state.get_data()
+    attachments = data.get("delivery_attachments", [])
+    attachments.append({"file_id": file_id, "type": file_type})
+    await state.update_data(delivery_attachments=attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text=f"✅ Завершить (файлов: {len(attachments)})", callback_data="delpay_gd:finalize")
+    b.adjust(1)
+    await message.answer(
+        f"📎 Файл добавлен ({len(attachments)}). Ещё или завершить:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "delpay_gd:finalize")
+async def delivery_payment_finalize(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+
+    data = await state.get_data()
+    task_id = data.get("delivery_task_id")
+    amount = data.get("delivery_amount", 0)
+    comment = data.get("delivery_comment", "")
+    attachments = data.get("delivery_attachments", [])
+
+    if not task_id:
+        await cb.message.answer("Ошибка: задача не найдена.")  # type: ignore
+        await state.clear()
+        return
+
+    task = await db.get_task(int(task_id))
+    payload = try_json_loads(task.get("payload_json"))
+    inv_id = payload.get("invoice_id")
+    inv_num = payload.get("invoice_number", "")
+
+    # Save actual delivery cost to invoice
+    if inv_id:
+        await db.update_invoice(
+            int(inv_id),
+            actual_logistics=amount,
+        )
+        # Write to Google Sheets if available
+        if integrations.sheets:
+            try:
+                await integrations.sheets.write_field_to_op(
+                    inv_num, "estimated_logistics", amount,
+                )
+            except Exception:
+                log.warning("Failed to write delivery cost to ОП sheet")
+
+    # Update task payload with payment info
+    payload["gd_amount"] = amount
+    payload["gd_comment"] = comment
+    payload["gd_attachments"] = attachments
+    import json as _json
+    from ..utils import to_iso, utcnow
+    await db.conn.execute(
+        "UPDATE tasks SET payload_json = ?, updated_at = ? WHERE id = ?",
+        (_json.dumps(payload, ensure_ascii=False), to_iso(utcnow()), int(task_id)),
+    )
+    await db.conn.commit()
+
+    # Close task
+    task = await db.update_task_status(int(task_id), TaskStatus.DONE)
+
+    # Notify RP
+    rp_id = task.get("created_by")
+    if rp_id:
+        msg = (
+            f"💳 <b>Доставка оплачена</b>\n"
+            f"Счёт: {inv_num}\n"
+            f"💰 Сумма: <b>{amount:.0f}₽</b>\n"
+        )
+        if comment:
+            msg += f"📝 Комментарий: {comment}\n"
+        await notifier.safe_send(int(rp_id), msg)
+        # Send payment attachments to RP
+        for att in attachments:
+            try:
+                if att.get("type") == "photo":
+                    await notifier.bot.send_photo(int(rp_id), att["file_id"])
+                else:
+                    await notifier.bot.send_document(int(rp_id), att["file_id"])
+            except Exception:
+                log.warning("Failed to send delivery payment to RP")
+        await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
+
+    await state.clear()
+    await cb.message.answer(  # type: ignore
+        f"✅ Доставка оплачена: {amount:.0f}₽. Задача закрыта.",
     )

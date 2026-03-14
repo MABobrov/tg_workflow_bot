@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -23,6 +24,7 @@ from .services.notifier import Notifier
 from .services.daily_sync import daily_sync_loop
 from .services.lead_poller import lead_poller_loop
 from .services.reminders import acceptance_reminders_loop, reminders_loop
+from .services.sheet_commands import process_sheet_webhook
 from .services.sheets_sync import import_from_source_sheet
 
 from .handlers import (
@@ -278,6 +280,45 @@ async def main() -> None:
             )
         )
 
+    # --- Sheets webhook server (aiohttp) ---
+    webhook_runner: web.AppRunner | None = None
+    if config.sheets_webhook_secret:
+        async def _handle_sheets_webhook(request: web.Request) -> web.Response:
+            secret = request.headers.get("X-Webhook-Secret", "")
+            if secret != config.sheets_webhook_secret:
+                return web.Response(status=403, text="Forbidden")
+            try:
+                payload = await request.json()
+            except Exception:
+                return web.Response(status=400, text="Bad JSON")
+
+            try:
+                result = await process_sheet_webhook(
+                    data=payload,
+                    db=db,
+                    config=config,
+                    notifier=notifier,
+                    sheets_service=sheets_service,
+                )
+                log.info("Sheets webhook processed: %s", result)
+                return web.json_response(result)
+            except Exception:
+                log.exception("Sheets webhook error")
+                return web.Response(status=500, text="Internal error")
+
+        async def _health(request: web.Request) -> web.Response:
+            return web.Response(text="OK")
+
+        webapp = web.Application()
+        webapp.router.add_post("/webhooks/sheets", _handle_sheets_webhook)
+        webapp.router.add_get("/health", _health)
+
+        webhook_runner = web.AppRunner(webapp)
+        await webhook_runner.setup()
+        site = web.TCPSite(webhook_runner, "0.0.0.0", config.sheets_webhook_port)
+        await site.start()
+        log.info("Sheets webhook server started on port %d", config.sheets_webhook_port)
+
     try:
         await dp.start_polling(
             bot,
@@ -320,6 +361,8 @@ async def main() -> None:
                 pass
             except Exception:
                 logging.exception("Daily sync task terminated with error")
+        if webhook_runner:
+            await webhook_runner.cleanup()
         await integrations.stop()
         await db.close()
         await bot.session.close()

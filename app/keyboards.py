@@ -220,6 +220,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [ACC_BTN_INBOX, ACC_BTN_INVOICES_WORK],
             [ACC_BTN_SEARCH, ACC_BTN_INVOICE_END],
             [ACC_BTN_SYNC, ACC_BTN_URGENT],
+            ["📋 Все задачи"],
         ]
     if role == Role.INSTALLER:
         return [
@@ -228,7 +229,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [INST_BTN_INVOICE_OK, INST_BTN_RAZMERY_OK],
             [INST_BTN_MY_OBJECTS, INST_BTN_DAILY_REPORT],
             [INST_BTN_ZP, INST_BTN_NOT_URGENT],
-            [INST_BTN_URGENT, INST_BTN_SYNC],
+            ["📋 Все задачи", INST_BTN_SYNC],
         ]
     if role == Role.GD:
         return [
@@ -256,6 +257,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [ZAM_BTN_ZAMERY, ZAM_BTN_MY_OBJECTS],
             [ZAM_BTN_SCHEDULE, ZAM_BTN_PAYMENT],
             [ZAM_BTN_URGENT, ZAM_BTN_SYNC],
+            ["📋 Все задачи"],
             [OPEN_HELP, BACK_TO_HOME],
         ]
     return []
@@ -265,15 +267,15 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
     # --- 3 менеджера (КВ / КИА / НПН) — подменю "Еще" ---
     if role in MANAGER_ROLES or role == Role.MANAGER:
         return [
-            [MGR_BTN_CRED, MGR_BTN_URGENT],
+            [MGR_BTN_CRED],
             [MGR_BTN_NOT_URGENT, MGR_BTN_SEARCH_INVOICE],
-            [MGR_BTN_HELP],
+            ["📋 Все задачи", MGR_BTN_HELP],
             [MGR_BTN_CANCEL, MGR_BTN_BACK_HOME],
         ]
     if role == Role.RP:
         return [
             [RP_BTN_SEARCH_INVOICE, RP_BTN_SYNC],
-            [RP_BTN_HELP],
+            ["📋 Все задачи", RP_BTN_HELP],
             [RP_BTN_CANCEL, RP_BTN_BACK_HOME],
         ]
     if role == Role.TD:
@@ -281,6 +283,7 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
         return [
             [GD_SUBBTN_KV_CRED, GD_SUBBTN_KIA_CRED],
             [GD_SUBBTN_NPN_CRED],
+            ["📋 Все задачи"],
         ]
     if role == Role.ACCOUNTING:
         return []  # Accounting has no submenu
@@ -290,6 +293,7 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
         return [
             [GD_SUBBTN_KV_CRED, GD_SUBBTN_KIA_CRED],
             [GD_SUBBTN_NPN_CRED],
+            ["📋 Все задачи"],
         ]
     if role == Role.DRIVER:
         return [
@@ -709,6 +713,16 @@ def task_actions_kb(task: dict[str, Any]) -> InlineKeyboardMarkup:
             b.button(text="⏸ Отложить", callback_data=TaskCb(task_id=tid, action="inv_hold").pack())
             b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="inv_reject").pack())
 
+    # Оплата доставки — кнопки для ГД
+    if ttype == TaskType.DELIVERY_REQUEST and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        b = InlineKeyboardBuilder()
+        if status == TaskStatus.OPEN:
+            b.button(text="✅ Принял", callback_data=TaskCb(task_id=tid, action="del_accept").pack())
+            b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
+        else:
+            b.button(text="💳 Оплатить", callback_data=TaskCb(task_id=tid, action="del_pay").pack())
+            b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
+
     # Пакетный запрос ЗП замерщика → ГД
     if ttype == TaskType.ZP_ZAMERY_BATCH and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         b = InlineKeyboardBuilder()
@@ -727,6 +741,10 @@ def task_actions_kb(task: dict[str, Any]) -> InlineKeyboardMarkup:
             b.button(text="💬 Комментарий", callback_data=TaskCb(task_id=tid, action="montazh_comment").pack())
             b.adjust(2, 1)
             return b.as_markup()
+
+    # «Снять задачу» — для всех активных задач
+    if status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        b.button(text="🚫 Снять задачу", callback_data=TaskCb(task_id=tid, action="cancel").pack())
 
     b.adjust(1)
     return b.as_markup()
@@ -760,6 +778,7 @@ def gd_more_menu(
     rows = [
         [_badge(GD_SUBBTN_KV_CRED, "manager_kv"), _badge(GD_SUBBTN_KIA_CRED, "manager_kia")],
         [_badge(GD_SUBBTN_NPN_CRED, "manager_npn"), GD_BTN_SYNC],
+        ["📋 Все задачи"],
     ]
     if is_admin:
         rows.append([GD_BTN_ADMIN, GD_BTN_REFRESH])
@@ -831,9 +850,9 @@ def gd_chat_write_to_kb_universal(
 def manager_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
     """Подменю 'Еще' для менеджеров (КВ / КИА / НПН)."""
     rows: list[list[str]] = [
-        [MGR_BTN_CRED, MGR_BTN_URGENT],
+        [MGR_BTN_CRED],
         [MGR_BTN_NOT_URGENT, MGR_BTN_SEARCH_INVOICE],
-        [MGR_BTN_HELP],
+        ["📋 Все задачи", MGR_BTN_HELP],
     ]
     if show_role_selector_back:
         rows.append([BACK_TO_ROLE_SELECTOR])
@@ -845,7 +864,7 @@ def rp_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
     """Подменю 'Еще' для РП: Поиск, Синхронизация, Справка (#42/#43 убраны дубли)."""
     rows: list[list[str]] = [
         [RP_BTN_SEARCH_INVOICE, RP_BTN_SYNC],
-        [RP_BTN_HELP],
+        ["📋 Все задачи", RP_BTN_HELP],
     ]
     if show_role_selector_back:
         rows.append([BACK_TO_ROLE_SELECTOR])
@@ -1025,9 +1044,9 @@ def invoice_end_conditions_kb(invoice_id: int, conditions: dict) -> InlineKeyboa
 def lead_pick_manager_kb() -> InlineKeyboardMarkup:
     """Inline-кнопки выбора менеджера для 'Лид в проект'."""
     b = InlineKeyboardBuilder()
-    b.button(text="👤 КВ (конструкции ПВХ)", callback_data="lead_mgr:manager_kv")
-    b.button(text="👤 КИА (комплектующие)", callback_data="lead_mgr:manager_kia")
-    b.button(text="👤 НПН (непрофильная)", callback_data="lead_mgr:manager_npn")
+    b.button(text="👤 КВ", callback_data="lead_mgr:manager_kv")
+    b.button(text="👤 КИА", callback_data="lead_mgr:manager_kia")
+    b.button(text="👤 НПН", callback_data="lead_mgr:manager_npn")
     b.adjust(1)
     return b.as_markup()
 

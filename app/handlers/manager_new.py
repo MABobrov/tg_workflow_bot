@@ -93,12 +93,6 @@ async def _manager_auto_refresh(handler, event: Message, data: dict):  # type: i
     u = event.from_user
     if not u:
         return result
-    # Не обновлять если в FSM-состоянии (чтобы не мешать вводу)
-    fsm: FSMContext | None = data.get("state")
-    if fsm:
-        cur_state = await fsm.get_state()
-        if cur_state is not None:
-            return result
     db_inst: Database | None = data.get("db")
     cfg = data.get("config")
     if not db_inst or not cfg:
@@ -720,7 +714,7 @@ async def invoice_start_est_logistics(message: Message, state: FSMContext) -> No
 
     # Profit split
     client_source = data.get("client_source", "own")
-    rp_zp = est_profit * 0.08 if est_profit > 0 else 0
+    rp_zp = est_profit * 0.10 if est_profit > 0 else 0
     remaining = est_profit - rp_zp
     if client_source == "gd_lead":
         mgr_share = remaining * 0.25
@@ -748,7 +742,7 @@ async def invoice_start_est_logistics(message: Message, state: FSMContext) -> No
         f"  Расч.себестоимость: {est_total:,.0f}₽\n"
         f"  Расч.прибыль: {est_profit:,.0f}₽ ({est_pct:.1f}%)\n\n"
         f"💰 <b>Распределение ({split_label}):</b>\n"
-        f"  ЗП РП (8%): {rp_zp:,.0f}₽\n"
+        f"  ЗП РП (10%): {rp_zp:,.0f}₽\n"
         f"  Ваша доля: {mgr_share:,.0f}₽\n\n"
         "📎 Прикрепите документы (необязательно: счёт, договор, приложение)\n"
         "или сразу нажмите «⏭ Без вложений».",
@@ -883,7 +877,7 @@ async def invoice_start_send(
     est_pct = (est_profit / amount * 100) if amount > 0 else 0
 
     # Profit split
-    rp_zp = est_profit * 0.08 if est_profit > 0 else 0
+    rp_zp = est_profit * 0.10 if est_profit > 0 else 0
     remaining = est_profit - rp_zp
     if client_source == "gd_lead":
         mgr_share = remaining * 0.25
@@ -913,7 +907,7 @@ async def invoice_start_send(
         f"  Расч.себест-ть: {est_total:,.0f}₽\n"
         f"  Расч.прибыль: {est_profit:,.0f}₽ ({est_pct:.1f}%)\n\n"
         f"💰 <b>Распределение:</b>\n"
-        f"  ЗП РП (8%): {rp_zp:,.0f}₽\n"
+        f"  ЗП РП (10%): {rp_zp:,.0f}₽\n"
         f"  ЗП менеджер: {mgr_share:,.0f}₽\n"
         f"  Доля ГД: {gd_share:,.0f}₽\n"
     )
@@ -3329,7 +3323,7 @@ async def manager_zp_pick(cb: CallbackQuery, state: FSMContext, db: Database) ->
             f"📍 Адрес: {inv.get('object_address') or '—'}\n"
             f"🔗 Источник: {src_label}\n\n"
             f"📊 Расч.прибыль: {pf['estimated_profit']:,.0f}₽\n"
-            f"  ЗП РП (8%): {pf['rp_zp']:,.0f}₽\n"
+            f"  ЗП РП (10%): {pf['rp_zp']:,.0f}₽\n"
             f"  <b>Ваша доля: {auto_amount:,.0f}₽</b>\n\n"
             "Отправить запрос ГД?",
             reply_markup=b.as_markup(),

@@ -452,6 +452,8 @@ class Database:
             ("zamery_requests", "completion_comment", "TEXT"),
             ("zamery_requests", "completion_attachments_json", "TEXT"),
             ("zamery_requests", "completed_at", "TEXT"),
+            # --- Фактическая стоимость доставки ---
+            ("invoices", "actual_logistics", "REAL"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -833,6 +835,29 @@ class Database:
               AND json_extract(payload_json, '$.source') = ?
               {where_creator}
             ORDER BY COALESCE(due_at, created_at) ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def list_tasks_created_by(
+        self,
+        created_by: int,
+        statuses: Iterable[str] = ("open", "in_progress"),
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        """List tasks created by a specific user."""
+        statuses = list(statuses)
+        placeholders = ",".join("?" for _ in statuses)
+        params: list[Any] = [created_by, *statuses, limit]
+        cur = await self.conn.execute(
+            f"""
+            SELECT t.*, u.role AS creator_role FROM tasks t
+            LEFT JOIN users u ON t.created_by = u.telegram_id
+            WHERE t.created_by = ? AND t.status IN ({placeholders})
+            ORDER BY COALESCE(t.due_at, t.created_at) ASC
             LIMIT ?
             """,
             tuple(params),
@@ -1365,7 +1390,7 @@ class Database:
           net_vat    = output_vat - input_vat
 
         Распределение прибыли:
-          1) ЗП РП = 8% от прибыли
+          1) ЗП РП = 10% от прибыли (с вычетом НДС)
           2) Остаток: клиент менеджера → 50/50, лид от ГД → 75(ГД)/25(менеджер)
         """
         inv = await self.get_invoice(invoice_id)
@@ -1418,7 +1443,7 @@ class Database:
 
         # Распределение расчётной прибыли
         client_source = inv.get("client_source") or "own"
-        rp_zp = est_profit * 0.08 if est_profit > 0 else 0.0
+        rp_zp = est_profit * 0.10 if est_profit > 0 else 0.0
         remaining = est_profit - rp_zp
         if client_source == "gd_lead":
             # Лид от ГД: 75% ГД / 25% менеджер

@@ -115,13 +115,18 @@ class SupplierPaymentSG(StatesGroup):
 
 
 class DeliveryRequestSG(StatesGroup):
-    """Заявка на доставку (РП -> Водитель)"""
-    project = State()
-    address_from = State()
-    address_to = State()
-    delivery_date = State()
-    cargo_description = State()
-    comment = State()
+    """Оплата доставки (РП -> ГД)"""
+    invoice = State()        # выбор счёта
+    comment = State()        # комментарий
+    attachments = State()    # вложения (фото/pdf/excel)
+
+
+class DeliveryPaymentSG(StatesGroup):
+    """Оплата доставки — ответ ГД (платёжка + сумма)."""
+    task_id = State()       # placeholder
+    amount = State()        # фактическая стоимость доставки
+    comment = State()       # комментарий ГД
+    attachments = State()   # платёжка (PDF)
 
 
 class DeliveryDoneSG(StatesGroup):

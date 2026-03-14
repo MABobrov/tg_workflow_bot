@@ -870,3 +870,44 @@ class GoogleSheetsService:
         if not self.cfg.enabled:
             return False
         return await asyncio.to_thread(self.write_date_fact_to_op_sync, invoice_number, date_iso)
+
+    # --- Generic field write-back to ОП ---
+
+    _OP_FIELD_TO_COL: dict[str, int] = {
+        "estimated_logistics": 16,  # col P (1-based) = index 15 → logistics
+    }
+
+    def write_field_to_op_sync(self, invoice_number: str, field: str, value: Any) -> bool:
+        """Write a single field back to ОП sheet by invoice_number."""
+        col_1based = self._OP_FIELD_TO_COL.get(field)
+        if col_1based is None:
+            log.warning("write_field_to_op: unknown field %s", field)
+            return False
+        if not self.cfg.source_spreadsheet_id:
+            return False
+        gc = self._get_client()
+        try:
+            source_sh = gc.open_by_key(self.cfg.source_spreadsheet_id)
+            ws = source_sh.worksheet(self.cfg.source_sheet_name)
+        except Exception as e:
+            log.error("Cannot open source sheet for write-back: %s", e)
+            return False
+
+        try:
+            cell = ws.find(invoice_number, in_column=5)
+        except gspread.CellNotFound:
+            log.warning("Invoice %s not found in ОП sheet for field write", invoice_number)
+            return False
+
+        if not cell:
+            return False
+
+        ws.update_cell(cell.row, col_1based, value)
+        log.info("Wrote %s=%s for %s to ОП row %d", field, value, invoice_number, cell.row)
+        return True
+
+    async def write_field_to_op(self, invoice_number: str, field: str, value: Any) -> bool:
+        """Async wrapper for generic field write-back."""
+        if not self.cfg.enabled:
+            return False
+        return await asyncio.to_thread(self.write_field_to_op_sync, invoice_number, field, value)
