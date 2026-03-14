@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 # Roles that have their OWN auto-refresh middleware on their routers
 # (to avoid double-refreshing)
 _ROLES_WITH_OWN_REFRESH = {
-    "installer", "zamery", "rp",
+    "gd", "installer", "zamery", "rp",
     "manager", "manager_kv", "manager_kia", "manager_npn",
 }
 
