@@ -46,7 +46,7 @@ from ..keyboards import (
     tasks_kb,
 )
 from ..services.integration_hub import IntegrationHub
-from ..services.menu_scope import get_active_menu_role, resolve_menu_scope
+from ..services.menu_scope import get_active_menu_role
 from ..services.notifier import Notifier
 from ..services.sheets_sync import export_to_sheets
 from ..states import ChatProxySG, InvoiceSearchSG, SalesWriteSG
@@ -71,40 +71,6 @@ router = Router()
 router.message.filter(F.chat.type == "private")
 
 SALES_SOURCE_ROLES = {Role.RP, Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN}
-
-
-@router.message.outer_middleware()
-async def _gd_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
-    """Обновляем reply-клавиатуру ГД с бейджами после каждого сообщения."""
-    from ..services.menu_context import build_menu_context
-
-    result = await handler(event, data)
-    u = event.from_user
-    if not u:
-        return result
-    db_inst: Database | None = data.get("db")
-    cfg = data.get("config")
-    if not db_inst or not cfg:
-        return result
-    try:
-        user = await db_inst.get_user_optional(u.id)
-        if not user or not user.role:
-            return result
-        menu_role, isolated = resolve_menu_scope(u.id, user.role)
-        if menu_role != Role.GD:
-            return result
-        is_admin = u.id in (cfg.admin_ids or set())
-        menu_ctx = await build_menu_context(db_inst, u.id, user.role)
-        kb = main_menu(
-            menu_role,
-            is_admin=is_admin,
-            isolated_role=isolated,
-            **menu_ctx,
-        )
-        await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)
-    except Exception:
-        log.debug("gd auto-refresh failed", exc_info=True)
-    return result
 
 
 async def _search_invoice_tasks_by_criteria(

@@ -22,8 +22,15 @@ log = logging.getLogger(__name__)
 # Roles that have their OWN auto-refresh middleware on their routers
 # (to avoid double-refreshing)
 _ROLES_WITH_OWN_REFRESH = {
-    "gd", "installer", "zamery", "rp",
+    "installer", "zamery", "rp",
     "manager", "manager_kv", "manager_kia", "manager_npn",
+}
+
+# Button texts that switch to a submenu — middleware must NOT overwrite
+# the submenu keyboard with main_menu after these messages.
+_SUBMENU_TRIGGERS = {
+    "📂 Ещё", "📂 Еще", "Еще", "Ещё",  # GD / Manager / RP "More"
+    "👥 Команда",                          # RP team submenu
 }
 
 
@@ -45,6 +52,11 @@ class KeepMenuMiddleware(BaseMiddleware):
 
         u = event.from_user
         if not u:
+            return result
+
+        # Don't overwrite submenu keyboards
+        msg_text = (event.text or "").strip()
+        if msg_text in _SUBMENU_TRIGGERS:
             return result
 
         # NOTE: НЕ пропускаем FSM-состояния!
