@@ -865,13 +865,36 @@ class Database:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
-    async def update_task_status(self, task_id: int, status: str) -> dict[str, Any]:
+    async def update_task_status(
+        self,
+        task_id: int,
+        status: str,
+        *,
+        expected_statuses: tuple[str, ...] | None = None,
+    ) -> dict[str, Any] | None:
+        """Update task status atomically.
+
+        If *expected_statuses* is given, the UPDATE only touches rows whose
+        current status is one of those values.  Returns ``None`` when the row
+        was not updated (status already changed by another handler).
+        """
         now = to_iso(utcnow())
-        await self.conn.execute(
-            "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-            (status, now, task_id),
-        )
+        if expected_statuses:
+            cur = await self.conn.execute(
+                "UPDATE tasks SET status = ?, updated_at = ? "
+                "WHERE id = ? AND status IN ({})".format(
+                    ",".join("?" for _ in expected_statuses)
+                ),
+                (status, now, task_id, *expected_statuses),
+            )
+        else:
+            cur = await self.conn.execute(
+                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, task_id),
+            )
         await self.conn.commit()
+        if expected_statuses and cur.rowcount == 0:
+            return None
         return await self.get_task(task_id)
 
     async def close_tasks_by_invoice(self, invoice_id: int, task_type: str) -> int:
@@ -2452,6 +2475,16 @@ class Database:
 
         cols = ", ".join(fields_to_insert.keys())
         placeholders = ", ".join("?" * len(fields_to_insert))
+        # Re-check for duplicates right before insert (guard against concurrent webhooks)
+        recheck = await self._get_invoice_for_sheet_import(inv_num)
+        if recheck:
+            # Another request inserted between our check and now — update instead
+            sets = ", ".join(f"{k} = ?" for k in fields_to_insert if k != "invoice_number")
+            vals = [v for k, v in fields_to_insert.items() if k != "invoice_number"]
+            vals.append(recheck["id"])
+            await self.conn.execute(f"UPDATE invoices SET {sets} WHERE id = ?", vals)
+            await self.conn.commit()
+            return int(recheck["id"])
         cur = await self.conn.execute(
             f"INSERT INTO invoices ({cols}) VALUES ({placeholders})",
             list(fields_to_insert.values()),

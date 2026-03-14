@@ -294,7 +294,13 @@ async def task_actions(
         if status not in active_statuses:
             await cb.answer("Эта задача уже закрыта.", show_alert=True)
             return
-        task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+        task = await db.update_task_status(
+            task_id, TaskStatus.IN_PROGRESS,
+            expected_statuses=tuple(active_statuses),
+        )
+        if task is None:
+            await cb.answer("Задача уже была обработана.", show_alert=True)
+            return
         if not task.get("accepted_at"):
             await db.accept_task(task_id)
             task = await db.get_task(task_id)
@@ -323,7 +329,13 @@ async def task_actions(
         if task.get("status") not in active_statuses:
             await cb.answer("Эта задача уже закрыта.", show_alert=True)
             return
-        task = await db.update_task_status(task_id, TaskStatus.REJECTED)
+        task = await db.update_task_status(
+            task_id, TaskStatus.REJECTED,
+            expected_statuses=tuple(active_statuses),
+        )
+        if task is None:
+            await cb.answer("Задача уже была обработана.", show_alert=True)
+            return
         await _maybe_mark_lead_tracking_response(db, task)
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await _safe_edit_task_markup(cb.message, reply_markup=None)
@@ -359,13 +371,26 @@ async def task_actions(
         # Allow creator to cancel too
         user_id = cb.from_user.id
         created_by = task.get("created_by")
-        is_creator = created_by and int(created_by) == user_id
-        is_assigned = task.get("assigned_to") and int(task["assigned_to"]) == user_id
+        try:
+            is_creator = created_by is not None and int(created_by) == user_id
+        except (ValueError, TypeError):
+            is_creator = False
+        try:
+            is_assigned = task.get("assigned_to") is not None and int(task["assigned_to"]) == user_id
+        except (ValueError, TypeError):
+            is_assigned = False
         is_admin = user_id in (config.admin_ids or set())
         if not (is_creator or is_assigned or is_admin):
             await cb.answer("Снять задачу может только автор, исполнитель или администратор.", show_alert=True)
             return
-        task = await db.update_task_status(task_id, TaskStatus.REJECTED)
+        # Atomic update — prevent race condition
+        task = await db.update_task_status(
+            task_id, TaskStatus.REJECTED,
+            expected_statuses=tuple(active_statuses),
+        )
+        if task is None:
+            await cb.answer("Задача уже была обработана.", show_alert=True)
+            return
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
@@ -393,22 +418,31 @@ async def task_actions(
 
         notified_ids: set[int] = {user_id}
         if is_creator and task.get("assigned_to"):
-            tid_assigned = int(task["assigned_to"])
-            await notifier.safe_send(
-                tid_assigned,
-                f"🚫 Задача #{task_id} снята автором\n{cancel_detail}\n👤 {initiator}",
-            )
-            notified_ids.add(tid_assigned)
+            try:
+                tid_assigned = int(task["assigned_to"])
+                await notifier.safe_send(
+                    tid_assigned,
+                    f"🚫 Задача #{task_id} снята автором\n{cancel_detail}\n👤 {initiator}",
+                )
+                notified_ids.add(tid_assigned)
+            except (ValueError, TypeError):
+                pass
         elif is_assigned and created_by:
-            tid_creator = int(created_by)
-            await notifier.safe_send(
-                tid_creator,
-                f"🚫 Ваша задача #{task_id} снята исполнителем\n{cancel_detail}\n👤 {initiator}",
-            )
-            notified_ids.add(tid_creator)
+            try:
+                tid_creator = int(created_by)
+                await notifier.safe_send(
+                    tid_creator,
+                    f"🚫 Ваша задача #{task_id} снята исполнителем\n{cancel_detail}\n👤 {initiator}",
+                )
+                notified_ids.add(tid_creator)
+            except (ValueError, TypeError):
+                pass
         elif is_admin:
             for notify_id in filter(None, [created_by, task.get("assigned_to")]):
-                nid = int(notify_id)
+                try:
+                    nid = int(notify_id)
+                except (ValueError, TypeError):
+                    continue
                 if nid != user_id:
                     await notifier.safe_send(
                         nid,

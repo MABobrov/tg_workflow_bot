@@ -292,22 +292,62 @@ async def main() -> None:
             except Exception:
                 return web.Response(status=400, text="Bad JSON")
 
-            try:
-                result = await process_sheet_webhook(
-                    data=payload,
-                    db=db,
-                    config=config,
-                    notifier=notifier,
-                    sheets_service=sheets_service,
-                )
-                log.info("Sheets webhook processed: %s", result)
-                return web.json_response(result)
-            except Exception:
-                log.exception("Sheets webhook error")
-                return web.Response(status=500, text="Internal error")
+            if not isinstance(payload, dict):
+                return web.Response(status=400, text="Payload must be a JSON object")
+            if not payload.get("sheet") and not payload.get("command") and not payload.get("invoice_number"):
+                return web.Response(status=400, text="Missing required field: sheet, command, or invoice_number")
+
+            # Process in background — return 200 immediately to avoid GAS timeout
+            async def _process_in_bg(data: dict) -> None:
+                try:
+                    result = await process_sheet_webhook(
+                        data=data,
+                        db=db,
+                        config=config,
+                        notifier=notifier,
+                        sheets_service=sheets_service,
+                    )
+                    log.info("Sheets webhook processed: %s", result)
+                except Exception:
+                    log.exception("Sheets webhook background processing error")
+
+            asyncio.create_task(_process_in_bg(payload))
+            return web.json_response({"status": "accepted"})
+
+        import time as _time
+        _start_ts = _time.monotonic()
 
         async def _health(request: web.Request) -> web.Response:
-            return web.Response(text="OK")
+            """Health dashboard: DB, tasks queue, uptime."""
+            try:
+                uptime_sec = int(_time.monotonic() - _start_ts)
+                hours, remainder = divmod(uptime_sec, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                uptime_str = f"{hours}h {minutes}m {seconds}s"
+
+                # DB check
+                cur = await db.conn.execute("SELECT COUNT(*) FROM invoices")
+                inv_count = (await cur.fetchone())[0]
+                cur2 = await db.conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status IN ('open','in_progress')"
+                )
+                active_tasks = (await cur2.fetchone())[0]
+                cur3 = await db.conn.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
+                user_count = (await cur3.fetchone())[0]
+
+                return web.json_response({
+                    "status": "ok",
+                    "uptime": uptime_str,
+                    "db": "connected",
+                    "invoices": inv_count,
+                    "active_tasks": active_tasks,
+                    "active_users": user_count,
+                    "sheets_enabled": config.sheets_enabled,
+                })
+            except Exception as exc:
+                return web.json_response(
+                    {"status": "error", "detail": str(exc)}, status=500
+                )
 
         webapp = web.Application()
         webapp.router.add_post("/webhooks/sheets", _handle_sheets_webhook)
