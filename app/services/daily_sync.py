@@ -2,12 +2,15 @@
 
 Sends updated reply keyboard with fresh badge counts to every
 registered user, and runs Google Sheets import/export if enabled.
+Also sends deadline notifications for approaching/overdue invoices.
 """
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 from ..db import Database
 from ..utils import refresh_recipient_keyboard
@@ -115,3 +118,94 @@ async def _run_sync(
         await asyncio.sleep(0.3)
 
     log.info("daily_sync: refreshed keyboards for %d users", refreshed)
+
+    # --- 3. Deadline notifications ---
+    try:
+        sent = await _send_deadline_notifications(db, notifier, config)
+        log.info("daily_sync: sent %d deadline notifications", sent)
+    except Exception:
+        log.exception("daily_sync: deadline notifications failed")
+
+
+async def _send_deadline_notifications(
+    db: Database,
+    notifier: Notifier,
+    config: object,
+) -> int:
+    """Отправляет уведомления по срокам договора.
+
+    - За 3 дня до срока → менеджеру + РП
+    - В день срока (0 дней) → ГД + менеджер
+    - Просрочен (< 0) → ежедневно ГД
+    """
+    invoices = await db.list_invoices_approaching_deadline()
+    if not invoices:
+        return 0
+
+    today = date.today()
+    admin_ids: set[int] = getattr(config, "admin_ids", None) or set()
+    sent = 0
+
+    for inv in invoices:
+        raw = inv.get("deadline_end_date")
+        if not raw:
+            continue
+        try:
+            end = datetime.fromisoformat(str(raw)).date()
+        except (ValueError, TypeError):
+            continue
+
+        delta = (end - today).days
+        inv_num = html.escape(str(inv.get("invoice_number", "?")))
+        address = html.escape(str(inv.get("object_address") or "—"))
+        manager_id: int | None = inv.get("created_by")
+        project_id: int | None = inv.get("project_id")
+
+        # Определяем РП через проект
+        rp_id: int | None = None
+        if project_id:
+            try:
+                rp_id = await db.get_project_rp_id(project_id)
+            except Exception:
+                pass
+
+        recipients: set[int] = set()
+        if delta < 0:
+            # Просрочен → ежедневно ГД
+            icon = "🔴"
+            label = f"просрочен на {abs(delta)} дн."
+            recipients.update(admin_ids)
+        elif delta == 0:
+            # Сегодня → ГД + менеджер
+            icon = "🔴"
+            label = "срок сегодня!"
+            recipients.update(admin_ids)
+            if manager_id:
+                recipients.add(manager_id)
+        elif delta <= 3:
+            # За 3 дня → менеджер + РП
+            icon = "⚠️"
+            label = f"до срока {delta} дн."
+            if manager_id:
+                recipients.add(manager_id)
+            if rp_id:
+                recipients.add(rp_id)
+        else:
+            continue
+
+        text = (
+            f"{icon} <b>Срок по договору</b>\n"
+            f"Счёт <b>№{inv_num}</b> — {label}\n"
+            f"📍 {address}\n"
+            f"📅 Срок: {end.strftime('%d.%m.%Y')}"
+        )
+
+        for uid in recipients:
+            try:
+                await notifier.safe_send(uid, text)
+                sent += 1
+            except Exception:
+                log.debug("deadline notify failed for user %s", uid, exc_info=True)
+            await asyncio.sleep(0.1)
+
+    return sent
