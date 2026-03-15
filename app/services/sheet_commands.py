@@ -497,6 +497,21 @@ async def _handle_field_change(
         if result:
             actions.append(result)
 
+    # --- Outstanding debt changed ---
+    new_debt = changed.get("outstanding_debt")
+    if new_debt is not None:
+        old_debt = invoice.get("outstanding_debt") or 0
+        try:
+            new_debt_val = float(str(new_debt).replace(",", ".").replace("\xa0", "").replace(" ", "") or 0)
+        except (TypeError, ValueError):
+            new_debt_val = 0
+        await db.update_invoice(int(invoice["id"]), outstanding_debt=new_debt_val)
+        result = await _field_debt_changed(
+            invoice, old_debt, new_debt_val, db, config, notifier, source,
+        )
+        if result:
+            actions.append(result)
+
     # --- Deadline changed ---
     new_deadline = changed.get("deadline_days")
     if new_deadline is not None:
@@ -665,6 +680,51 @@ async def _field_deadline_changed(
     )
     await notifier.safe_send(int(manager_id), text)
     return "deadline_changed"
+
+
+async def _field_debt_changed(
+    invoice: dict, old_debt: Any, new_debt: float, db: Database, config: Any,
+    notifier: Any, source: str,
+) -> str | None:
+    """Notify manager when outstanding debt changes."""
+    manager_id = invoice.get("created_by")
+    if not manager_id:
+        return None
+    try:
+        old_val = float(old_debt or 0)
+    except (TypeError, ValueError):
+        old_val = 0
+    if abs(old_val - new_debt) < 1:
+        return None  # insignificant change
+
+    inv_num = invoice.get("invoice_number", "?")
+    address = invoice.get("object_address") or "—"
+
+    if new_debt == 0 and old_val > 0:
+        text = (
+            f"✅ <b>Долг погашен!</b>\n"
+            f"Счёт: <b>{inv_num}</b>\n"
+            f"📍 {address}\n"
+            f"Было: {old_val:,.0f}₽ → Долг: <b>0₽</b>"
+        )
+    elif new_debt > old_val:
+        text = (
+            f"📈 <b>Долг увеличился</b>\n"
+            f"Счёт: <b>{inv_num}</b>\n"
+            f"📍 {address}\n"
+            f"Было: {old_val:,.0f}₽ → Стало: <b>{new_debt:,.0f}₽</b>"
+        )
+    else:
+        text = (
+            f"💰 <b>Изменение долга</b>\n"
+            f"Счёт: <b>{inv_num}</b>\n"
+            f"📍 {address}\n"
+            f"Было: {old_val:,.0f}₽ → Стало: <b>{new_debt:,.0f}₽</b>"
+        )
+
+    await notifier.safe_send(int(manager_id), text)
+    await refresh_recipient_keyboard(notifier, db, config, int(manager_id))
+    return "debt_changed"
 
 
 # --- Data sync (full row import) ---

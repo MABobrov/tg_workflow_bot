@@ -30,6 +30,7 @@ var CONFIG = {
   COL_AMOUNT: 10,          // K — Сумма
   COL_ADDRESS: 5,          // F — Адрес
   COL_DEADLINE: 7,         // H — Сроки (дни)
+  COL_DEBT: 25,            // Z — Долг (задолженность)
   COL_COMMAND: 39,         // AN — Команда боту (после AM «Комментарии»)
   COL_MANAGER: 40,         // AO — Менеджер (КВ/КИА/НПН)
   COL_PRIORITY: 41,        // AP — Приоритет
@@ -64,6 +65,7 @@ TRACKED_FIELDS[CONFIG.COL_DEADLINE] = "deadline_days";
 TRACKED_FIELDS[CONFIG.COL_MANAGER] = "manager";
 TRACKED_FIELDS[CONFIG.COL_PRIORITY] = "priority";
 TRACKED_FIELDS[CONFIG.COL_COMMENT] = "comment";
+TRACKED_FIELDS[CONFIG.COL_DEBT] = "outstanding_debt";
 
 
 function onEditOP(e) {

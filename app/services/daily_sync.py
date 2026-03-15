@@ -119,12 +119,55 @@ async def _run_sync(
 
     log.info("daily_sync: refreshed keyboards for %d users", refreshed)
 
-    # --- 3. Deadline notifications ---
+    # --- 3. Debt summaries for managers ---
+    try:
+        debt_sent = await _send_debt_summaries(db, notifier)
+        log.info("daily_sync: sent debt summaries to %d managers", debt_sent)
+    except Exception:
+        log.exception("daily_sync: debt summaries failed")
+
+    # --- 4. Deadline notifications ---
     try:
         sent = await _send_deadline_notifications(db, notifier, config)
         log.info("daily_sync: sent %d deadline notifications", sent)
     except Exception:
         log.exception("daily_sync: deadline notifications failed")
+
+
+async def _send_debt_summaries(
+    db: Database,
+    notifier: Notifier,
+) -> int:
+    """Send morning debt summary to each manager with outstanding debts."""
+    invoices = await db.list_invoices(limit=10000)
+    by_manager: dict[int, list[tuple[str, float]]] = {}
+    for inv in invoices:
+        debt = float(inv.get("outstanding_debt") or 0)
+        status = str(inv.get("status") or "")
+        if debt > 0 and inv.get("created_by") and status not in ("ended", "cancelled"):
+            mid = int(inv["created_by"])
+            by_manager.setdefault(mid, []).append(
+                (str(inv.get("invoice_number", "?")), debt),
+            )
+
+    sent = 0
+    for manager_id, debts in by_manager.items():
+        total = sum(d for _, d in debts)
+        lines = [f"  • {num}: <b>{d:,.0f}₽</b>" for num, d in debts[:20]]
+        text = (
+            f"📊 <b>Сводка по долгам (утро)</b>\n"
+            f"Всего долг: <b>{total:,.0f}₽</b> ({len(debts)} сч.)\n\n"
+            + "\n".join(lines)
+        )
+        if len(debts) > 20:
+            text += f"\n  … и ещё {len(debts) - 20} счетов"
+        try:
+            if await notifier.safe_send(manager_id, text):
+                sent += 1
+        except Exception:
+            log.debug("debt summary failed for user %s", manager_id, exc_info=True)
+        await asyncio.sleep(0.1)
+    return sent
 
 
 async def _send_deadline_notifications(
