@@ -33,7 +33,7 @@ from ..keyboards import (
     zamery_incoming_kb,
 )
 from ..services.assignment import resolve_default_assignee
-from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope, set_active_menu_role
 from ..services.notifier import Notifier
 from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryCostEditSG, ZameryQuickBookSG, ZameryZpSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
@@ -62,11 +62,16 @@ async def _zamery_auto_refresh(handler, event: Message, data: dict):  # type: ig
         if not user or not user.role:
             return result
         from ..utils import parse_roles as _pr
-        if Role.ZAMERSCHIK not in _pr(user.role):
+        user_roles = set(_pr(user.role))
+        if Role.ZAMERY not in user_roles:
             return result
         menu_role, isolated = resolve_menu_scope(u.id, user.role)
-        if menu_role != Role.ZAMERSCHIK:
-            return result
+        if menu_role != Role.ZAMERY:
+            # Auto-set zamery role since this router handled the message
+            if len(user_roles) > 1:
+                set_active_menu_role(u.id, Role.ZAMERY)
+                isolated = True
+            menu_role = Role.ZAMERY
         unread = await db_inst.count_unread_tasks(u.id)
         uc = await db_inst.count_unread_by_channel(u.id)
         is_admin = u.id in (cfg.admin_ids or set())

@@ -35,7 +35,7 @@ from ..keyboards import (
 )
 from ..services.integration_hub import IntegrationHub
 from ..services.assignment import resolve_default_assignee
-from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope, set_active_menu_role
 from ..services.notifier import Notifier
 from ..states import (
     InstallerDailyReportSG,
@@ -72,11 +72,16 @@ async def _installer_auto_refresh(handler, event: Message, data: dict):  # type:
         user = await db_inst.get_user_optional(u.id)
         if not user or not user.role:
             return result
-        if Role.INSTALLER not in set(parse_roles(user.role)):
+        user_roles = set(parse_roles(user.role))
+        if Role.INSTALLER not in user_roles:
             return result
         menu_role, isolated = resolve_menu_scope(u.id, user.role)
         if menu_role != Role.INSTALLER:
-            return result
+            # Auto-set installer as active role since this router handled the message
+            if len(user_roles) > 1:
+                set_active_menu_role(u.id, Role.INSTALLER)
+                isolated = True
+            menu_role = Role.INSTALLER
         unread = await db_inst.count_unread_tasks(u.id)
         uc = await db_inst.count_unread_by_channel(u.id)
         is_admin = u.id in (cfg.admin_ids or set())
@@ -116,6 +121,21 @@ async def _ensure_reply_kb(cb: CallbackQuery, db: Database, config: Any) -> None
         isolated_role=isolated_role,
     )
     await cb.message.answer("📋", reply_markup=private_only_reply_markup(cb.message, kb))  # type: ignore[arg-type]
+
+
+async def _ensure_reply_kb_msg(message: Message, db: Database, config: Any) -> None:
+    """Send a persistent message with reply keyboard before inline content."""
+    u = message.from_user
+    if not u:
+        return
+    role, isolated_role = await _current_menu(db, u.id)
+    kb = main_menu(
+        role,
+        is_admin=u.id in (config.admin_ids or set()),
+        unread=await db.count_unread_tasks(u.id),
+        isolated_role=isolated_role,
+    )
+    await message.answer("📋", reply_markup=private_only_reply_markup(message, kb))
 
 
 # =====================================================================
@@ -1922,7 +1942,7 @@ async def daily_report_finalize(
 # =====================================================================
 
 @router.message(F.text == INST_BTN_IN_WORK)
-async def installer_in_work(message: Message, state: FSMContext, db: Database) -> None:
+async def installer_in_work(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     """Список неподтверждённых счетов для принятия в работу."""
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
@@ -1932,6 +1952,9 @@ async def installer_in_work(message: Message, state: FSMContext, db: Database) -
     if not invoices:
         await answer_service(message, "🔨 Нет новых счетов для принятия в работу ✅", delay_seconds=60)
         return
+
+    # Restore reply keyboard before sending inline content
+    await _ensure_reply_kb_msg(message, db, config)
 
     b = InlineKeyboardBuilder()
     for inv in invoices:

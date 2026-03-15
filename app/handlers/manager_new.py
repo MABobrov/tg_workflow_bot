@@ -58,7 +58,7 @@ from ..keyboards import (
 )
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
-from ..services.menu_scope import get_active_menu_role, resolve_active_menu_role, resolve_menu_scope
+from ..services.menu_scope import get_active_menu_role, resolve_active_menu_role, resolve_menu_scope, set_active_menu_role
 from ..services.notifier import Notifier
 from ..states import (
     CheckKpSG,
@@ -102,11 +102,19 @@ async def _manager_auto_refresh(handler, event: Message, data: dict):  # type: i
         if not user or not user.role:
             return result
         user_roles = set(parse_roles(user.role))
-        if not user_roles & set(MANAGER_ROLES):
+        mgr_intersection = user_roles & set(MANAGER_ROLES)
+        if not mgr_intersection:
             return result
         menu_role, isolated = resolve_menu_scope(u.id, user.role)
         if menu_role not in MANAGER_ROLES:
-            return result
+            # Auto-set manager role since this router handled the message
+            if len(user_roles) > 1:
+                # Pick the first matching manager role
+                menu_role = next(iter(mgr_intersection))
+                set_active_menu_role(u.id, menu_role)
+                isolated = True
+            else:
+                return result
         unread = await db_inst.count_unread_tasks(u.id)
         is_admin = u.id in (cfg.admin_ids or set())
         kb = main_menu(

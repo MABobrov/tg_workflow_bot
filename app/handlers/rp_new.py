@@ -75,7 +75,7 @@ from ..keyboards import (
     tasks_kb,
 )
 from ..services.assignment import resolve_default_assignee
-from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope, set_active_menu_role
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import (
@@ -111,11 +111,16 @@ async def _rp_auto_refresh(handler, event: Message, data: dict):  # type: ignore
         user = await db_rp.get_user_optional(u.id)
         if not user or not user.role:
             return result
-        if Role.RP not in set(parse_roles(user.role)):
+        user_roles = set(parse_roles(user.role))
+        if Role.RP not in user_roles:
             return result
         menu_role, isolated = resolve_menu_scope(u.id, user.role)
         if menu_role != Role.RP:
-            return result
+            # Auto-set RP role since this router handled the message
+            if len(user_roles) > 1:
+                set_active_menu_role(u.id, Role.RP)
+                isolated = True
+            menu_role = Role.RP
         unread = await db_rp.count_unread_tasks(u.id)
         uc = await db_rp.count_unread_by_channel(u.id)
         is_admin = u.id in (cfg.admin_ids or set())
