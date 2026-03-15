@@ -40,6 +40,7 @@ from ..keyboards import (
     GD_BTN_MONTAZH,
     GD_BTN_SALES,
     GD_BTN_SEARCH_INVOICE,
+    GD_BTN_DAILY_SUMMARY,
     GD_BTN_SYNC,
     GD_BTN_ZAMERY,
     main_menu,
@@ -947,6 +948,77 @@ async def gd_write_send_message(
 
 
 # "Сообщение Всем" — broadcast to all channels
+# ---------------------------------------------------------------------------
+# "📊 Сводка дня" — daily dashboard for GD
+# ---------------------------------------------------------------------------
+
+@router.message(
+    lambda m: (m.text or "").strip() == GD_BTN_DAILY_SUMMARY
+    and get_active_menu_role(m.from_user.id if m.from_user else None) == Role.GD
+)
+async def gd_daily_summary(message: Message, db: Database, config: Config) -> None:
+    """Агрегированная сводка дня для ГД."""
+    if not await require_role_message(message, db, roles=[Role.GD]):
+        return
+
+    s = await db.get_daily_summary()
+
+    # Счета по статусам
+    inv = s["invoices_by_status"]
+    pending = inv.get("pending", 0)
+    in_progress = inv.get("in_progress", 0)
+    paid = inv.get("paid", 0)
+    closing = inv.get("closing", 0)
+
+    # Финансы
+    total_amt = s["total_amount"] or 0
+    total_debt = s["total_debt"] or 0
+
+    # Задачи
+    tasks = s["tasks_open"]
+    urgent = tasks.get("urgent_gd", 0) + tasks.get("not_urgent_gd", 0)
+    inv_pay = tasks.get("invoice_payment", 0)
+    suppl_pay = tasks.get("supplier_payment", 0)
+
+    # Дедлайны
+    overdue = s["overdue"]
+    today_dl = s["today_deadline"]
+    soon_dl = s["soon_deadline"]
+
+    lines = [
+        "<b>📊 Сводка дня</b>",
+        "",
+        "<b>📄 Счета в работе:</b> " + str(s["in_work"]),
+        f"  ⏳ Ожидают оплаты: {pending}",
+        f"  🔧 В работе: {in_progress}",
+        f"  💰 Оплачены: {paid}",
+        f"  🏁 На закрытии: {closing}",
+        f"  ✅ Закрыто за месяц: {s['ended_month']}",
+        "",
+        "<b>💵 Финансы (активные счета):</b>",
+        f"  Сумма: <b>{total_amt:,.0f}₽</b>".replace(",", " "),
+        f"  Долг: <b>{total_debt:,.0f}₽</b>".replace(",", " "),
+        "",
+        "<b>📋 Открытые задачи:</b>",
+        f"  🚨 Срочные/Не срочные ГД: {urgent}",
+        f"  💳 Счета на оплату: {inv_pay}",
+        f"  💸 Оплата поставщику: {suppl_pay}",
+        f"  💰 ЗП-запросы: {s['zp_pending']}",
+    ]
+
+    if overdue or today_dl or soon_dl:
+        lines.append("")
+        lines.append("<b>⏰ Дедлайны:</b>")
+        if overdue:
+            lines.append(f"  🔴 Просрочено: {overdue}")
+        if today_dl:
+            lines.append(f"  🔴 Срок сегодня: {today_dl}")
+        if soon_dl:
+            lines.append(f"  ⚠️ До 3 дней: {soon_dl}")
+
+    await message.answer("\n".join(lines))
+
+
 # ---------------------------------------------------------------------------
 # "Синхронизация данных" — Google Sheets resync from GD main menu
 # ---------------------------------------------------------------------------

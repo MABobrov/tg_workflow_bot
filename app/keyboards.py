@@ -48,6 +48,7 @@ GD_BTN_SUPPLIER_PAY = "💸 Оплата поставщику"
 GD_BTN_BACK_HOME = BACK_TO_HOME
 GD_BTN_REFRESH = "🔄 Обновить меню"
 GD_BTN_HELP = "📚 Справка"
+GD_BTN_DAILY_SUMMARY = "📊 Сводка дня"
 
 # --- Manager-specific buttons (КВ / КИА / НПН) ---
 MGR_BTN_INBOX = "Задачи / Лид в проект"
@@ -779,7 +780,7 @@ def gd_more_menu(
     rows = [
         [_badge(GD_SUBBTN_KV_CRED, "manager_kv"), _badge(GD_SUBBTN_KIA_CRED, "manager_kia")],
         [_badge(GD_SUBBTN_NPN_CRED, "manager_npn"), GD_BTN_SYNC],
-        ["📋 Все задачи"],
+        [GD_BTN_DAILY_SUMMARY, "📋 Все задачи"],
     ]
     if is_admin:
         rows.append([GD_BTN_ADMIN, GD_BTN_REFRESH])

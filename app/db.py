@@ -1598,6 +1598,17 @@ class Database:
             )
         return [dict(r) for r in await cur.fetchall()]
 
+    async def list_invoices_approaching_deadline(self) -> list[dict[str, Any]]:
+        """Активные счета с deadline_end_date: просроченные, сегодня, <=3 дней."""
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices "
+            "WHERE deadline_end_date IS NOT NULL "
+            "AND status NOT IN ('ended', 'cancelled', 'credit') "
+            "AND parent_invoice_id IS NULL "
+            "ORDER BY deadline_end_date ASC",
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
     async def assign_installer_to_invoice(
         self, invoice_id: int, installer_id: int,
     ) -> None:
@@ -1741,6 +1752,91 @@ class Database:
             )
         row = await cur.fetchone()
         return row[0] if row else 0
+
+    async def get_daily_summary(self) -> dict[str, Any]:
+        """Агрегированная сводка дня для ГД."""
+        today_iso = date.today().isoformat()
+        month_start = date.today().replace(day=1).isoformat()
+
+        # Счета по статусам
+        cur = await self.conn.execute(
+            "SELECT status, COUNT(*) AS cnt FROM invoices "
+            "WHERE parent_invoice_id IS NULL "
+            "GROUP BY status"
+        )
+        inv_by_status: dict[str, int] = {}
+        for r in await cur.fetchall():
+            inv_by_status[str(r["status"])] = int(r["cnt"])
+
+        # Счета в работе (pending/in_progress/paid, без кредитных)
+        in_work = await self.count_invoices_in_work()
+
+        # Закрытые за месяц
+        ended_month = await self.count_ended_invoices(month_start)
+
+        # Открытые задачи по типам
+        cur = await self.conn.execute(
+            "SELECT task_type, COUNT(*) AS cnt FROM tasks "
+            "WHERE status IN ('open', 'in_progress') "
+            "GROUP BY task_type"
+        )
+        tasks_open: dict[str, int] = {}
+        for r in await cur.fetchall():
+            tasks_open[str(r["task_type"])] = int(r["cnt"])
+
+        # Просроченные / приближающиеся дедлайны
+        deadlines = await self.list_invoices_approaching_deadline()
+        overdue = 0
+        today_dl = 0
+        soon_dl = 0
+        for inv in deadlines:
+            raw = inv.get("deadline_end_date")
+            if not raw:
+                continue
+            try:
+                end = datetime.fromisoformat(str(raw)).date()
+            except (ValueError, TypeError):
+                continue
+            delta = (end - date.today()).days
+            if delta < 0:
+                overdue += 1
+            elif delta == 0:
+                today_dl += 1
+            elif delta <= 3:
+                soon_dl += 1
+
+        # Сумма активных счетов
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) AS total, "
+            "COALESCE(SUM(debt), 0) AS total_debt "
+            "FROM invoices "
+            "WHERE status IN ('pending', 'in_progress', 'paid') "
+            "AND parent_invoice_id IS NULL "
+            "AND (is_credit = 0 OR is_credit IS NULL)"
+        )
+        fin = await cur.fetchone()
+
+        # ЗП-запросы в ожидании
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM invoices "
+            "WHERE zp_installer_status = 'requested' "
+            "OR zp_status = 'requested' "
+            "OR zp_manager_status = 'requested'"
+        )
+        zp_pending = (await cur.fetchone())[0]
+
+        return {
+            "invoices_by_status": inv_by_status,
+            "in_work": in_work,
+            "ended_month": ended_month,
+            "tasks_open": tasks_open,
+            "overdue": overdue,
+            "today_deadline": today_dl,
+            "soon_deadline": soon_dl,
+            "total_amount": fin["total"] if fin else 0,
+            "total_debt": fin["total_debt"] if fin else 0,
+            "zp_pending": zp_pending,
+        }
 
     async def mark_messages_read(self, user_id: int, channel: str) -> int:
         """Mark all incoming messages for user in channel as read. Returns count."""

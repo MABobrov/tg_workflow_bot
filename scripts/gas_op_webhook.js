@@ -2,7 +2,7 @@
  * Google Apps Script for sheet "Отдел продаж"
  *
  * Sends webhook to the bot when:
- * 1. Command is written in "Команда боту" column (col AK = index 36)
+ * 1. Command is written in "Команда боту" column (col AN = index 39)
  * 2. Data fields are changed (amount, address, deadline, manager, priority, comment)
  * 3. Any cell in a row with invoice number is edited (data sync)
  *
@@ -30,10 +30,10 @@ var CONFIG = {
   COL_AMOUNT: 10,          // K — Сумма
   COL_ADDRESS: 5,          // F — Адрес
   COL_DEADLINE: 7,         // H — Сроки (дни)
-  COL_COMMAND: 36,         // AK — Команда боту (NEW COLUMN — add it!)
-  COL_MANAGER: 37,         // AL — Менеджер (КВ/КИА/НПН) (NEW COLUMN)
-  COL_PRIORITY: 38,        // AM — Приоритет (NEW COLUMN)
-  COL_COMMENT: 39,         // AN — Комментарий РП (NEW COLUMN)
+  COL_COMMAND: 39,         // AN — Команда боту (после AM «Комментарии»)
+  COL_MANAGER: 40,         // AO — Менеджер (КВ/КИА/НПН)
+  COL_PRIORITY: 41,        // AP — Приоритет
+  COL_COMMENT: 42,         // AQ — Комментарий РП
 
   // Total data columns to send for full row sync
   TOTAL_DATA_COLS: 34,     // A through AH (original OP columns)
@@ -44,7 +44,7 @@ var CONFIG = {
 
 /**
  * Dropdown values for "Команда боту" column.
- * Add Data Validation in Google Sheets: col AK, list from range or manual:
+ * Add Data Validation in Google Sheets: col AN, list from range or manual:
  *
  * 📩 Напомнить менеджеру
  * 📋 Запрос документов

@@ -45,10 +45,10 @@ var GEN_CONFIG = {
   GEN_COL_AMOUNT: 10,          // K — Сумма
   GEN_COL_ADDRESS: 5,          // F — Адрес
   GEN_COL_DEADLINE: 7,         // H — Сроки (дни)
-  GEN_COL_COMMAND: 36,         // AK — Команда боту
-  GEN_COL_MANAGER: 37,         // AL — Менеджер (КВ/КИА/НПН)
-  GEN_COL_PRIORITY: 38,        // AM — Приоритет
-  GEN_COL_COMMENT: 39,         // AN — Комментарий ГД
+  GEN_COL_COMMAND: 39,         // AN — Команда боту
+  GEN_COL_MANAGER: 40,         // AO — Менеджер (КВ/КИА/НПН)
+  GEN_COL_PRIORITY: 41,        // AP — Приоритет
+  GEN_COL_COMMENT: 42,         // AQ — Комментарий ГД
 
   // Column mapping in "Отдел продаж" (target for mirroring)
   OP_COL_INVOICE_NUMBER: 4,    // E — same as ОП

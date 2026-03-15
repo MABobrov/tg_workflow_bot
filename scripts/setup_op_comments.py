@@ -225,9 +225,9 @@ COLUMN_COMMENTS: dict[int, str] = {
         "AH — тех\n"
         "Технические заметки."
     ),
-    # --- Bot-control columns (AK=36, AL=37, AM=38, AN=39) ---
-    36: (
-        "AK — Команда боту 🤖\n"
+    # --- Bot-control columns (AN=39, AO=40, AP=41, AQ=42) ---
+    39: (
+        "AN — Команда боту 🤖\n"
         "Выберите команду из выпадающего списка.\n"
         "После выбора команда отправляется боту и ячейка очищается автоматически.\n\n"
         "═══ КОМАНДЫ (требуют номер счёта в строке) ═══\n\n"
@@ -249,8 +249,8 @@ COLUMN_COMMENTS: dict[int, str] = {
         "   → Переводит счёт в статус «Закрытие».\n\n"
         "Результат всех команд приходит в Telegram-бот получателю."
     ),
-    37: (
-        "AL — Менеджер 👤\n"
+    40: (
+        "AO — Менеджер 👤\n"
         "Назначенный менеджер для этого счёта.\n\n"
         "Выберите из списка: КВ / КИА / НПН\n\n"
         "При смене менеджера бот:\n"
@@ -258,15 +258,15 @@ COLUMN_COMMENTS: dict[int, str] = {
         "• Отправляет новому менеджеру: «Вам назначен счёт»\n"
         "• Отправляет старому: «Счёт переназначен»"
     ),
-    38: (
-        "AM — Приоритет ⚡\n"
+    41: (
+        "AP — Приоритет ⚡\n"
         "Приоритет обработки счёта.\n\n"
         "🟢 — Обычный приоритет\n"
         "🟡 — Повышенный\n"
         "🔴 — СРОЧНО! → Менеджер получает уведомление «🔴 СРОЧНО» в бот"
     ),
-    39: (
-        "AN — Комментарий РП 💬\n"
+    42: (
+        "AQ — Комментарий РП 💬\n"
         "Текстовый комментарий от РП.\n\n"
         "При вводе текста:\n"
         "• Комментарий пересылается менеджеру в Telegram-бот\n"
@@ -292,10 +292,10 @@ PRIORITIES = ["🟢", "🟡", "🔴"]
 
 # Column headers for new bot-control columns
 BOT_HEADERS = {
-    36: "Команда боту",
-    37: "Менеджер",
-    38: "Приоритет",
-    39: "Комментарий РП",
+    39: "Команда боту",
+    40: "Менеджер",
+    41: "Приоритет",
+    42: "Комментарий РП",
 }
 
 
@@ -412,15 +412,15 @@ def main():
     last_row = len(row_count_result.get("values", []))
     data_rows = max(last_row, 200)  # At least 200 rows of dropdowns
 
-    # Command dropdown (col AK = 36)
+    # Command dropdown (col AN = 39)
     requests.append({
         "setDataValidation": {
             "range": {
                 "sheetId": sheet_id,
                 "startRowIndex": 1,
                 "endRowIndex": data_rows,
-                "startColumnIndex": 36,
-                "endColumnIndex": 37,
+                "startColumnIndex": 39,
+                "endColumnIndex": 40,
             },
             "rule": {
                 "condition": {
@@ -432,17 +432,17 @@ def main():
             },
         }
     })
-    print(f"  Command dropdown: AK2:AK{data_rows} ({len(BOT_COMMANDS)} options)")
+    print(f"  Command dropdown: AN2:AN{data_rows} ({len(BOT_COMMANDS)} options)")
 
-    # Manager dropdown (col AL = 37)
+    # Manager dropdown (col AO = 40)
     requests.append({
         "setDataValidation": {
             "range": {
                 "sheetId": sheet_id,
                 "startRowIndex": 1,
                 "endRowIndex": data_rows,
-                "startColumnIndex": 37,
-                "endColumnIndex": 38,
+                "startColumnIndex": 40,
+                "endColumnIndex": 41,
             },
             "rule": {
                 "condition": {
@@ -454,17 +454,17 @@ def main():
             },
         }
     })
-    print(f"  Manager dropdown: AL2:AL{data_rows}")
+    print(f"  Manager dropdown: AO2:AO{data_rows}")
 
-    # Priority dropdown (col AM = 38)
+    # Priority dropdown (col AP = 41)
     requests.append({
         "setDataValidation": {
             "range": {
                 "sheetId": sheet_id,
                 "startRowIndex": 1,
                 "endRowIndex": data_rows,
-                "startColumnIndex": 38,
-                "endColumnIndex": 39,
+                "startColumnIndex": 41,
+                "endColumnIndex": 42,
             },
             "rule": {
                 "condition": {
@@ -476,7 +476,7 @@ def main():
             },
         }
     })
-    print(f"  Priority dropdown: AM2:AM{data_rows}")
+    print(f"  Priority dropdown: AP2:AP{data_rows}")
 
     # 6. Execute all requests
     if requests:
