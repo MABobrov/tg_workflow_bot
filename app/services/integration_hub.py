@@ -61,6 +61,19 @@ class IntegrationHub:
     async def sync_task(self, task: dict[str, Any], project_code: str = "") -> None:
         await self.push("task_upsert", {"task": task, "project_code": project_code})
 
+    async def sync_invoice_status(
+        self,
+        invoice_number: str,
+        status: str,
+        montazh_stage: str | None = None,
+    ) -> None:
+        """Write bot status / montazh stage back to ОП sheet (cols AR/AS)."""
+        await self.push("invoice_status_writeback", {
+            "invoice_number": invoice_number,
+            "status": status,
+            "montazh_stage": montazh_stage,
+        })
+
     async def maybe_create_lead(self, project_id: int) -> None:
         if not self.amocrm:
             return
@@ -98,6 +111,14 @@ class IntegrationHub:
                             log.exception("Failed to upsert project from task event, task_id=%s", task.get("id"))
 
                     await self.sheets.upsert_task(task, project_code=project_code)
+                elif ev.kind == "invoice_status_writeback" and self.sheets:
+                    inv_num = ev.payload["invoice_number"]
+                    status = ev.payload.get("status")
+                    stage = ev.payload.get("montazh_stage")
+                    if status:
+                        await self.sheets.write_field_to_op(inv_num, "bot_status", status)
+                    if stage:
+                        await self.sheets.write_field_to_op(inv_num, "montazh_stage", stage)
                 elif ev.kind == "amocrm_create_lead" and self.amocrm:
                     pid = int(ev.payload["project_id"])
                     project = await self.db.get_project(pid)

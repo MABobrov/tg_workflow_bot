@@ -39,6 +39,10 @@ var CONFIG = {
   // Total data columns to send for full row sync
   TOTAL_DATA_COLS: 34,     // A through AH (original OP columns)
 
+  // Bot-managed columns (skip to prevent circular updates)
+  COL_BOT_STATUS: 43,      // AR — Статус бота (written by bot)
+  COL_BOT_MONTAZH: 44,     // AS — Стадия монтажа (written by bot)
+
   HEADER_ROW: 1,           // skip header row
 };
 // ================================================
@@ -78,6 +82,9 @@ function onEditOP(e) {
   if (row <= CONFIG.HEADER_ROW) return;  // skip header
 
   var col = e.range.getColumn() - 1;  // 0-based
+
+  // Skip bot-managed columns to prevent circular updates
+  if (col === CONFIG.COL_BOT_STATUS || col === CONFIG.COL_BOT_MONTAZH) return;
 
   // Get invoice number from the row
   var invoiceNumber = sheet.getRange(row, CONFIG.COL_INVOICE_NUMBER + 1).getValue();
@@ -201,6 +208,8 @@ function setupCommandDropdown() {
   sheet.getRange(CONFIG.HEADER_ROW, CONFIG.COL_MANAGER + 1).setValue("Менеджер");
   sheet.getRange(CONFIG.HEADER_ROW, CONFIG.COL_PRIORITY + 1).setValue("Приоритет");
   sheet.getRange(CONFIG.HEADER_ROW, CONFIG.COL_COMMENT + 1).setValue("Комментарий РП");
+  sheet.getRange(CONFIG.HEADER_ROW, CONFIG.COL_BOT_STATUS + 1).setValue("Статус бота");
+  sheet.getRange(CONFIG.HEADER_ROW, CONFIG.COL_BOT_MONTAZH + 1).setValue("Стадия монтажа");
 
   // Priority dropdown
   var priorityRange = sheet.getRange(

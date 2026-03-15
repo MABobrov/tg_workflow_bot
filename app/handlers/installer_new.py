@@ -443,6 +443,11 @@ async def invoice_ok_comment(
     # Update montazh stage → invoice_ok
     from ..enums import MontazhStage
     await db.update_montazh_stage(invoice_id, MontazhStage.INVOICE_OK)
+    inv_row = await db.get_invoice(invoice_id)
+    if inv_row:
+        await integrations.sync_invoice_status(
+            inv_row["invoice_number"], inv_row.get("status", ""), MontazhStage.INVOICE_OK,
+        )
 
     # Set actual completion date (Дата Факт)
     from datetime import datetime
@@ -894,7 +899,8 @@ async def razmery_result_attach(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "razmok_inst:result_send")
 async def razmery_result_send(
-    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
+    notifier: Notifier, integrations: IntegrationHub,
 ) -> None:
     """Финализация ответа: Размеры ОК или Ошибка."""
     await cb.answer()
@@ -926,6 +932,10 @@ async def razmery_result_send(
             result_comment=comment, result_at=now,
         )
         await db.update_montazh_stage(req["invoice_id"], MontazhStage.RAZMERY_OK)
+        if inv:
+            await integrations.sync_invoice_status(
+                inv["invoice_number"], inv.get("status", ""), MontazhStage.RAZMERY_OK,
+            )
 
         rp_id = await resolve_default_assignee(db, config, Role.RP)
         if rp_id:
@@ -1991,6 +2001,7 @@ async def installer_work_acknowledge(cb: CallbackQuery, db: Database, config: Co
 @router.callback_query(F.data.startswith("inst_work:confirm:"))
 async def installer_work_confirm(
     cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+    integrations: IntegrationHub,
 ) -> None:
     """Монтажник подтверждает «В работу» → montazh_stage=IN_WORK."""
     if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
@@ -2007,6 +2018,9 @@ async def installer_work_confirm(
         return
 
     await db.update_montazh_stage(invoice_id, MontazhStage.IN_WORK)
+    await integrations.sync_invoice_status(
+        inv["invoice_number"], inv.get("status", ""), MontazhStage.IN_WORK,
+    )
 
     # Уведомить РП
     initiator = await get_initiator_label(db, u.id)

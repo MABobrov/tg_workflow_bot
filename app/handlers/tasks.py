@@ -317,6 +317,11 @@ async def task_actions(
                 if inv_id:
                     from ..enums import MontazhStage
                     await db.update_montazh_stage(int(inv_id), MontazhStage.IN_WORK)
+                    inv_row = await db.get_invoice(int(inv_id))
+                    if inv_row:
+                        await integrations.sync_invoice_status(
+                            inv_row["invoice_number"], inv_row.get("status", ""), MontazhStage.IN_WORK,
+                        )
         except Exception:
             log.exception("Failed to update montazh_stage on take")
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
@@ -571,6 +576,8 @@ async def task_actions(
         invoice_id, invoice_number, supplier, amount = _invoice_task_details(payload)
         if invoice_id is not None:
             await db.update_invoice_status(invoice_id, InvoiceStatus.IN_PROGRESS)
+            if invoice_number:
+                await integrations.sync_invoice_status(invoice_number, InvoiceStatus.IN_PROGRESS)
         # Уведомить отправителя (РП)
         sender_id = _invoice_task_sender_id(payload)
         if sender_id:
@@ -651,6 +658,8 @@ async def task_actions(
         invoice_id, invoice_number, supplier, amount = _invoice_task_details(payload)
         if invoice_id is not None:
             await db.update_invoice_status(invoice_id, InvoiceStatus.ON_HOLD)
+            if invoice_number:
+                await integrations.sync_invoice_status(invoice_number, InvoiceStatus.ON_HOLD)
         sender_id = _invoice_task_sender_id(payload)
         if sender_id:
             initiator = await get_initiator_label(db, cb.from_user.id)
@@ -687,6 +696,8 @@ async def task_actions(
         invoice_id, invoice_number, supplier, amount = _invoice_task_details(payload)
         if invoice_id is not None:
             await db.update_invoice_status(invoice_id, InvoiceStatus.REJECTED)
+            if invoice_number:
+                await integrations.sync_invoice_status(invoice_number, InvoiceStatus.REJECTED)
         sender_id = _invoice_task_sender_id(payload)
         if sender_id:
             initiator = await get_initiator_label(db, cb.from_user.id)
@@ -1074,6 +1085,8 @@ async def invoice_pp_finalize(
             await cb.message.answer("Не удалось найти счёт для обновления статуса.")  # type: ignore[union-attr]
             return
         await db.update_invoice_status(invoice_id, InvoiceStatus.PAID)
+        if inv_num:
+            await integrations.sync_invoice_status(inv_num, InvoiceStatus.PAID)
 
     # Mark task as done
     task = await db.update_task_status(int(task_id), TaskStatus.DONE)

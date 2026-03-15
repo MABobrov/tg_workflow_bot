@@ -831,6 +831,7 @@ async def invoice_start_send(
 
     # Update invoice status
     await db.update_invoice_status(invoice_id, InvoiceStatus.PENDING_PAYMENT)
+    await integrations.sync_invoice_status(invoice_number, InvoiceStatus.PENDING_PAYMENT)
 
     # Create task for GD
     role = await _current_role(db, u.id)
@@ -1314,6 +1315,7 @@ async def invoice_end_comment(
     db: Database,
     config: Config,
     notifier: Notifier,
+    integrations: IntegrationHub,
 ) -> None:
     if not message.from_user:
         return
@@ -1353,6 +1355,7 @@ async def invoice_end_comment(
         },
     )
     await db.update_invoice_status(invoice_id, InvoiceStatus.CLOSING)
+    await integrations.sync_invoice_status(inv["invoice_number"], InvoiceStatus.CLOSING)
 
     initiator = await get_initiator_label(db, message.from_user.id)
     conditions = await db.check_close_conditions(invoice_id)
@@ -1484,6 +1487,9 @@ async def invoice_end_gd_final(
         # Update montazh stage → invoice_end
         from ..enums import MontazhStage
         await db.update_montazh_stage(invoice_id, MontazhStage.INVOICE_END)
+        await integrations.sync_invoice_status(
+            inv["invoice_number"], InvoiceStatus.ENDED, MontazhStage.INVOICE_END,
+        )
         linked_tasks = await db.search_tasks_by_payload(
             field="invoice_id",
             value=str(invoice_id),

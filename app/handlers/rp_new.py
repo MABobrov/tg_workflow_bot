@@ -76,6 +76,7 @@ from ..keyboards import (
 )
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
+from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import (
     EdoRequestSG,
@@ -1475,7 +1476,9 @@ async def rp_work_return_confirm(cb: CallbackQuery, db: Database) -> None:
 
 
 @router.callback_query(F.data.regexp(r"^rp_work:return_ok:\d+$"))
-async def rp_work_return_ok(cb: CallbackQuery, db: Database) -> None:
+async def rp_work_return_ok(
+    cb: CallbackQuery, db: Database, integrations: IntegrationHub,
+) -> None:
     """Вернуть ended-счёт в работу (status → in_progress)."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
@@ -1488,6 +1491,7 @@ async def rp_work_return_ok(cb: CallbackQuery, db: Database) -> None:
         return
 
     await db.update_invoice_status(invoice_id, InvoiceStatus.IN_PROGRESS)
+    await integrations.sync_invoice_status(inv["invoice_number"], InvoiceStatus.IN_PROGRESS)
 
     # Refresh the dashboard
     await _show_invoices_work_dashboard(cb, db)
