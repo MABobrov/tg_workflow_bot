@@ -33,6 +33,9 @@ _SUBMENU_TRIGGERS = {
     "👥 Команда",                          # RP team submenu
 }
 
+# Prefix for role-selector buttons — middleware must not interfere
+_ROLE_SELECTOR_PREFIX = "🎭 "
+
 
 class KeepMenuMiddleware(BaseMiddleware):
     """Outer middleware for dp.message — refreshes reply keyboard for all roles."""
@@ -54,9 +57,11 @@ class KeepMenuMiddleware(BaseMiddleware):
         if not u:
             return result
 
-        # Don't overwrite submenu keyboards
+        # Don't overwrite submenu keyboards or role selector
         msg_text = (event.text or "").strip()
         if msg_text in _SUBMENU_TRIGGERS:
+            return result
+        if msg_text.startswith(_ROLE_SELECTOR_PREFIX):
             return result
 
         # NOTE: НЕ пропускаем FSM-состояния!

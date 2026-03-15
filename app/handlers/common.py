@@ -304,25 +304,50 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
         return
     user = await db.get_user_optional(u.id)
     role = user.role if user else None
-    if len(parse_roles(role)) > 1:
+    is_admin = u.id in (config.admin_ids or set())
+    roles = parse_roles(role)
+
+    if len(roles) > 1:
+        # Multi-role user: preserve active role if already selected
+        active = get_active_menu_role(u.id)
+        if active and active in roles:
+            # Refresh menu for the active role (don't reset to selector)
+            menu_context = await _menu_context(db, u.id, active)
+            await message.answer(
+                "✅ Меню обновлено.",
+                reply_markup=private_only_reply_markup(
+                    message,
+                    main_menu(
+                        active,
+                        is_admin=is_admin,
+                        isolated_role=True,
+                        **menu_context,
+                    ),
+                ),
+            )
+            return
+        # No active role — show role selector
         clear_active_menu_role(u.id)
+        menu_context = await _menu_context(db, u.id, role)
+        await message.answer(
+            "🎭 <b>Выберите роль</b>\n\nСначала выберите, в каком контексте открыть меню.",
+            reply_markup=private_only_reply_markup(
+                message,
+                main_menu(role, is_admin=is_admin, **menu_context),
+            ),
+        )
     else:
         set_active_menu_role(u.id, role)
-    is_admin = u.id in (config.admin_ids or set())
-    menu_context = await _menu_context(db, u.id, role)
-    if len(parse_roles(role)) > 1:
-        text = "🎭 <b>Выберите роль</b>\n\nСначала выберите, в каком контексте открыть меню."
-    else:
-        text = "✅ Меню обновлено."
-    # Use message.answer() directly — NOT answer_service() which auto-deletes
-    # the message after 60s, taking the reply keyboard with it.
-    await message.answer(
-        text,
-        reply_markup=private_only_reply_markup(
-            message,
-            main_menu(role, is_admin=is_admin, **menu_context),
-        ),
-    )
+        menu_context = await _menu_context(db, u.id, role)
+        # Use message.answer() directly — NOT answer_service() which auto-deletes
+        # the message after 60s, taking the reply keyboard with it.
+        await message.answer(
+            "✅ Меню обновлено.",
+            reply_markup=private_only_reply_markup(
+                message,
+                main_menu(role, is_admin=is_admin, **menu_context),
+            ),
+        )
 
 
 @router.message(Command("help"))
@@ -408,16 +433,29 @@ async def menu_actions(message: Message, db: Database, config: Config) -> None:
 
 
 @router.message(lambda m: (m.text or "").strip().startswith(ROLE_SELECTOR_PREFIX))
-async def role_selector_pick(message: Message, db: Database, config: Config) -> None:
+async def role_selector_pick(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     if not await _guard_blocked_message(message, db):
         return
     u = message.from_user
     if not u:
         return
+    # Clear any lingering FSM state to avoid interference with role menus
+    await state.clear()
     user = await db.get_user_optional(u.id)
     role_raw = user.role if user else None
     selected_role = role_selector_choices(role_raw).get((message.text or "").strip())
     if not selected_role:
+        log.warning("role_selector_pick: no match for text=%r, role_raw=%r", (message.text or "").strip(), role_raw)
+        # Fallback: re-show role selector so the user is not stuck
+        is_admin = u.id in (config.admin_ids or set())
+        menu_context = await _menu_context(db, u.id, role_raw)
+        await message.answer(
+            "🎭 <b>Выберите роль</b>\n\nСначала выберите, в каком контексте открыть меню.",
+            reply_markup=private_only_reply_markup(
+                message,
+                main_menu(role_raw, is_admin=is_admin, **menu_context),
+            ),
+        )
         return
     set_active_menu_role(u.id, selected_role)
 
@@ -544,7 +582,37 @@ async def menu_more_universal(message: Message, state: FSMContext, db: Database,
 
 @router.message(lambda m: (m.text or "").strip() in {GD_BTN_BACK_HOME, MGR_BTN_BACK_HOME, RP_BTN_BACK_HOME, "Назад в Гл.меню"})
 async def role_back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    """Any role: return from 'Еще' submenu to main menu."""
+    """Any role: return from 'Еще' submenu to main menu.
+
+    For multi-role users: preserve the active role selection instead of
+    resetting to the role selector every time.
+    """
+    await state.clear()
+    if not await _guard_blocked_message(message, db):
+        return
+    u = message.from_user
+    if not u:
+        return
+    user = await db.get_user_optional(u.id)
+    role = user.role if user else None
+    menu_role, isolated_role = _menu_scope(u.id, role)
+    # If user has an active role selected, return to that role's menu
+    if isolated_role and menu_role:
+        menu_context = await _menu_context(db, u.id, menu_role)
+        await message.answer(
+            "Главное меню выбранной роли.",
+            reply_markup=private_only_reply_markup(
+                message,
+                main_menu(
+                    menu_role,
+                    is_admin=u.id in (config.admin_ids or set()),
+                    isolated_role=True,
+                    **menu_context,
+                ),
+            ),
+        )
+        return
+    # Fallback: full menu reset (single role or no active role)
     await cmd_menu(message, state, db, config)
 
 
