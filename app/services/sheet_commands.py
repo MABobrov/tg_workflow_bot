@@ -109,6 +109,8 @@ async def process_sheet_webhook(
         return await _handle_field_change(data, inv_num, db, config, notifier)
     elif event_type == "data_sync":
         return await _handle_data_sync(data, inv_num, db, sheets_service)
+    elif event_type == "search":
+        return await _handle_search(data, db, sheets_service)
     else:
         return {"status": "error", "detail": f"unknown type: {event_type}"}
 
@@ -725,6 +727,63 @@ async def _field_debt_changed(
     await notifier.safe_send(int(manager_id), text)
     await refresh_recipient_keyboard(notifier, db, config, int(manager_id))
     return "debt_changed"
+
+
+# --- Search from Органайзер ---
+
+async def _handle_search(
+    data: dict[str, Any],
+    db: Database,
+    sheets_service: Any | None,
+) -> dict[str, Any]:
+    """Search invoice by query and write result back to the sheet."""
+    query = str(data.get("query", "")).strip()
+    if not query:
+        return {"status": "error", "detail": "empty query"}
+
+    sheet_name = data.get("sheet", "Органайзер")
+    result_row = data.get("result_row")
+    result_col = data.get("result_col")
+
+    # Search by exact invoice number first
+    invoice = await db.get_invoice_by_number(query)
+    if invoice:
+        result = _format_search_result(invoice)
+    else:
+        # Fuzzy search by number or address
+        invoices = await db.search_invoices(query, limit=3)
+        if invoices:
+            result = " | ".join(_format_search_result(inv) for inv in invoices)
+        else:
+            result = f"Не найдено: {query}"
+
+    # Write result back to the sheet
+    if sheets_service and result_row and result_col:
+        try:
+            await sheets_service.write_cell_to_sheet(
+                sheet_name, int(result_row), int(result_col), result,
+            )
+        except Exception:
+            log.warning("Failed to write search result to %s R%sC%s", sheet_name, result_row, result_col)
+
+    return {"status": "ok", "action": "search", "result": result[:200]}
+
+
+def _format_search_result(inv: dict[str, Any]) -> str:
+    """Format invoice for search result (compact, for sheet cell)."""
+    num = inv.get("invoice_number", "?")
+    addr = inv.get("object_address") or "—"
+    amount = inv.get("amount")
+    status = inv.get("status") or "—"
+    debt = inv.get("outstanding_debt")
+
+    parts = [f"№{num}", addr]
+    if amount:
+        parts.append(f"{float(amount):,.0f}р")
+    if debt and float(debt) > 0:
+        parts.append(f"долг:{float(debt):,.0f}р")
+    parts.append(f"[{status}]")
+    return " · ".join(parts)
 
 
 # --- Data sync (full row import) ---

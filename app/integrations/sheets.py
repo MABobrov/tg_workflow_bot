@@ -914,3 +914,30 @@ class GoogleSheetsService:
         if not self.cfg.enabled:
             return False
         return await asyncio.to_thread(self.write_field_to_op_sync, invoice_number, field, value)
+
+    def write_cell_to_sheet_sync(
+        self, sheet_name: str, row: int, col_1based: int, value: str,
+    ) -> bool:
+        """Write a value to a specific cell in the source spreadsheet."""
+        if not self.cfg.source_spreadsheet_id:
+            return False
+        gc = self._get_client()
+        try:
+            sp = gc.open_by_key(self.cfg.source_spreadsheet_id)
+            ws = sp.worksheet(sheet_name)
+        except Exception as e:
+            log.error("Cannot open sheet %s for cell write: %s", sheet_name, e)
+            return False
+        ws.update_cell(row, col_1based, value)
+        log.info("Wrote cell R%dC%d=%s in %s", row, col_1based, value[:50], sheet_name)
+        return True
+
+    async def write_cell_to_sheet(
+        self, sheet_name: str, row: int, col_1based: int, value: str,
+    ) -> bool:
+        """Async wrapper for cell write."""
+        if not self.cfg.enabled:
+            return False
+        return await asyncio.to_thread(
+            self.write_cell_to_sheet_sync, sheet_name, row, col_1based, value,
+        )
