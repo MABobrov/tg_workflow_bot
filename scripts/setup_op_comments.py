@@ -50,7 +50,7 @@ COLUMN_COMMENTS: dict[int, str] = {
     2: (
         "C — Менеджер\n"
         "Ответственный менеджер по данному счёту.\n"
-        "Синхронизируется с ботом. При изменении в столбце AL → переназначение в боте."
+        "Синхронизируется с ботом. При изменении в столбце AO → переназначение в боте."
     ),
     3: (
         "D — Бухг.ЭДО\n"
@@ -132,7 +132,8 @@ COLUMN_COMMENTS: dict[int, str] = {
     ),
     14: (
         "O — Грузчики\n"
-        "Стоимость услуг грузчиков (₽)."
+        "Расчётная стоимость грузчиков (₽).\n"
+        "Учитывается в плановой себестоимости счёта."
     ),
     15: (
         "P — Логистика\n"
@@ -224,6 +225,31 @@ COLUMN_COMMENTS: dict[int, str] = {
     33: (
         "AH — тех\n"
         "Технические заметки."
+    ),
+    34: (
+        "AI — Логистика\n"
+        "Фактическая стоимость логистики (₽).\n"
+        "Заполняется по факту оплаты доставки."
+    ),
+    35: (
+        "AJ — Дата лог.\n"
+        "Дата логистики / доставки.\n"
+        "Формат: ДД.ММ.ГГГГ"
+    ),
+    36: (
+        "AK — Грузчики\n"
+        "Фактическая стоимость грузчиков (₽).\n"
+        "Заполняется по факту оплаты."
+    ),
+    37: (
+        "AL — Дата груз.\n"
+        "Дата работы грузчиков.\n"
+        "Формат: ДД.ММ.ГГГГ"
+    ),
+    38: (
+        "AM — Комментарии\n"
+        "Свободные комментарии по счёту.\n"
+        "Текстовое поле для заметок."
     ),
     # --- Bot-control columns (AN=39, AO=40, AP=41, AQ=42) ---
     39: (
@@ -347,7 +373,7 @@ def main():
     print(f"Sheet ID: {sheet_id}")
 
     # 2. Read current header row to verify structure
-    header_range = f"'{SHEET_NAME}'!A1:AN1"
+    header_range = f"'{SHEET_NAME}'!A1:AQ1"
     result = sheets.values().get(
         spreadsheetId=SPREADSHEET_ID,
         range=header_range,
@@ -492,7 +518,7 @@ def main():
     # 7. Verify — re-read notes
     print("\n--- Verification ---")
     # Read a few notes back to confirm
-    verify_range = f"'{SHEET_NAME}'!A1:AN1"
+    verify_range = f"'{SHEET_NAME}'!A1:AQ1"
     verify_result = sheets.get(
         spreadsheetId=SPREADSHEET_ID,
         ranges=[verify_range],
