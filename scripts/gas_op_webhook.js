@@ -40,8 +40,8 @@ var CONFIG = {
   TOTAL_DATA_COLS: 34,     // A through AH (original OP columns)
 
   // Bot-managed columns (skip to prevent circular updates)
-  COL_BOT_STATUS: 43,      // AR — Статус бота (written by bot)
-  COL_BOT_MONTAZH: 44,     // AS — Стадия монтажа (written by bot)
+  COL_BOT_STATUS: 45,      // AT — Статус бота (written by bot)
+  COL_BOT_MONTAZH: 46,     // AU — Стадия монтажа (written by bot)
 
   HEADER_ROW: 1,           // skip header row
 };
