@@ -875,6 +875,9 @@ class GoogleSheetsService:
 
     _OP_FIELD_TO_COL: dict[str, int] = {
         "estimated_logistics": 16,  # col P (1-based) = index 15 → logistics
+        "margin_pct": 21,           # col U (1-based) = "Рент-ть факт"
+        "bot_status": 44,           # col AR (1-based) = Статус бота
+        "montazh_stage": 45,        # col AS (1-based) = Стадия монтажа
     }
 
     def write_field_to_op_sync(self, invoice_number: str, field: str, value: Any) -> bool:

@@ -1516,6 +1516,17 @@ async def invoice_end_gd_final(
         cost_msg = format_cost_card(inv, cost_data)
         await cb.message.answer(cost_msg)  # type: ignore[union-attr]
 
+        # --- Запись маржи в ОП (Рент-ть факт) ---
+        if integrations.sheets:
+            inv_num = inv.get("invoice_number")
+            margin_pct = cost_data.get("margin_pct", 0)
+            try:
+                await integrations.sheets.write_field_to_op(
+                    inv_num, "margin_pct", f"{margin_pct:.1f}",
+                )
+            except Exception:
+                log.warning("Failed to write margin to ОП for %s", inv_num, exc_info=True)
+
         # --- Список материалов менеджеру (без сумм) ---
         if manager_id:
             children = await db.list_child_invoices(invoice_id)
