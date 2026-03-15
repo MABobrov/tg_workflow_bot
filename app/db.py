@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
 import aiosqlite
@@ -1208,6 +1208,39 @@ class Database:
             f"{fmt_clause}"
             "ORDER BY updated_at DESC LIMIT ?",
             (limit,),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def list_invoices_approaching_deadline(
+        self,
+        *,
+        today: date | None = None,
+        days_ahead: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Return active top-level invoices whose contract deadline is near.
+
+        Includes overdue invoices and invoices with deadline within ``days_ahead``.
+        Excludes child invoices, credit invoices, and inactive lifecycle states.
+        """
+        if days_ahead < 0:
+            raise ValueError("days_ahead must be >= 0")
+
+        anchor = today or datetime.now(timezone.utc).date()
+        deadline_upper = (anchor + timedelta(days=days_ahead)).isoformat()
+
+        cur = await self.conn.execute(
+            """
+            SELECT * FROM invoices
+            WHERE deadline_end_date IS NOT NULL
+              AND TRIM(deadline_end_date) != ''
+              AND status IN ('pending', 'in_progress', 'paid', 'closing')
+              AND (is_credit = 0 OR is_credit IS NULL)
+              AND parent_invoice_id IS NULL
+              AND date(substr(deadline_end_date, 1, 10)) <= date(?)
+            ORDER BY date(substr(deadline_end_date, 1, 10)) ASC, updated_at DESC, id DESC
+            """,
+            (deadline_upper,),
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]

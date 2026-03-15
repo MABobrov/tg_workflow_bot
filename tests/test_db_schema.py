@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -193,5 +194,108 @@ def test_import_invoice_from_sheet_infers_owner_by_invoice_marker(tmp_path) -> N
         assert invoice["created_by"] == 777
         assert invoice["creator_role"] == "manager_kia"
         assert invoice["status"] == "in_progress"
+
+    asyncio.run(scenario())
+
+
+def test_list_invoices_approaching_deadline_filters_active_top_level_invoices(tmp_path) -> None:
+    async def scenario() -> None:
+        db = Database(str(tmp_path / "bot.sqlite3"))
+        await db.connect()
+        try:
+            await db.init_schema()
+
+            today = date(2026, 3, 15)
+
+            overdue_id = await db.create_invoice(
+                invoice_number="DL-OVERDUE",
+                project_id=None,
+                created_by=1,
+                creator_role="manager_kv",
+            )
+            upcoming_id = await db.create_invoice(
+                invoice_number="DL-UPCOMING",
+                project_id=None,
+                created_by=1,
+                creator_role="manager_kv",
+            )
+            far_id = await db.create_invoice(
+                invoice_number="DL-FAR",
+                project_id=None,
+                created_by=1,
+                creator_role="manager_kv",
+            )
+            ended_id = await db.create_invoice(
+                invoice_number="DL-ENDED",
+                project_id=None,
+                created_by=1,
+                creator_role="manager_kv",
+            )
+            credit_id = await db.create_invoice(
+                invoice_number="DL-CREDIT",
+                project_id=None,
+                created_by=1,
+                creator_role="manager_kv",
+            )
+            parent_id = await db.create_invoice(
+                invoice_number="DL-PARENT",
+                project_id=None,
+                created_by=1,
+                creator_role="manager_kv",
+            )
+            child_id = await db.create_invoice(
+                invoice_number="DL-CHILD",
+                project_id=None,
+                created_by=1,
+                creator_role="manager_kv",
+            )
+
+            await db.update_invoice(
+                overdue_id,
+                status="in_progress",
+                deadline_end_date=(today - timedelta(days=1)).isoformat(),
+            )
+            await db.update_invoice(
+                upcoming_id,
+                status="paid",
+                deadline_end_date=(today + timedelta(days=3)).isoformat(),
+            )
+            await db.update_invoice(
+                far_id,
+                status="closing",
+                deadline_end_date=(today + timedelta(days=4)).isoformat(),
+            )
+            await db.update_invoice(
+                ended_id,
+                status="ended",
+                deadline_end_date=today.isoformat(),
+            )
+            await db.update_invoice(
+                credit_id,
+                status="in_progress",
+                is_credit=1,
+                deadline_end_date=today.isoformat(),
+            )
+            await db.update_invoice(
+                parent_id,
+                status="in_progress",
+                deadline_end_date=today.isoformat(),
+            )
+            await db.update_invoice(
+                child_id,
+                status="in_progress",
+                parent_invoice_id=parent_id,
+                deadline_end_date=today.isoformat(),
+            )
+
+            invoices = await db.list_invoices_approaching_deadline(today=today)
+        finally:
+            await db.close()
+
+        assert [invoice["invoice_number"] for invoice in invoices] == [
+            "DL-OVERDUE",
+            "DL-PARENT",
+            "DL-UPCOMING",
+        ]
 
     asyncio.run(scenario())

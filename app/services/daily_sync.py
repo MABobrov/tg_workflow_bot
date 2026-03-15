@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..db import Database
@@ -138,11 +138,11 @@ async def _send_deadline_notifications(
     - В день срока (0 дней) → ГД + менеджер
     - Просрочен (< 0) → ежедневно ГД
     """
-    invoices = await db.list_invoices_approaching_deadline()
+    today = datetime.now(_MSK).date()
+    invoices = await db.list_invoices_approaching_deadline(today=today)
     if not invoices:
         return 0
 
-    today = date.today()
     admin_ids: set[int] = getattr(config, "admin_ids", None) or set()
     sent = 0
 
@@ -202,8 +202,8 @@ async def _send_deadline_notifications(
 
         for uid in recipients:
             try:
-                await notifier.safe_send(uid, text)
-                sent += 1
+                if await notifier.safe_send(uid, text):
+                    sent += 1
             except Exception:
                 log.debug("deadline notify failed for user %s", uid, exc_info=True)
             await asyncio.sleep(0.1)

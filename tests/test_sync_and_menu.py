@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
 
 from aiogram.exceptions import TelegramBadRequest
@@ -10,6 +11,7 @@ from app.enums import InvoiceStatus, Role
 from app.handlers.tasks import _safe_edit_task_markup
 from app.handlers.common import _menu_context
 from app.integrations.sheets import GoogleSheetsService, SheetsConfig
+from app.services.daily_sync import _MSK, _send_deadline_notifications
 from app.services.menu_context import build_main_menu_for_user
 
 
@@ -251,6 +253,21 @@ class _FakeTaskMessage:
             raise self.exc
 
 
+class _FakeNotifier:
+    def __init__(self, results: dict[int, bool] | None = None) -> None:
+        self.results = results or {}
+        self.calls: list[tuple[int, str]] = []
+
+    async def safe_send(
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: object | None = None,
+    ) -> bool:
+        self.calls.append((chat_id, text))
+        return self.results.get(chat_id, True)
+
+
 def test_safe_edit_task_markup_clears_inline_keyboard() -> None:
     async def scenario() -> None:
         message = _FakeTaskMessage()
@@ -258,6 +275,41 @@ def test_safe_edit_task_markup_clears_inline_keyboard() -> None:
         await _safe_edit_task_markup(message, reply_markup=None)
 
         assert message.calls == [None]
+
+    asyncio.run(scenario())
+
+
+def test_send_deadline_notifications_counts_only_successful_sends(tmp_path) -> None:
+    async def scenario() -> None:
+        db = Database(str(tmp_path / "bot.sqlite3"))
+        await db.connect()
+        try:
+            await db.init_schema()
+            today = datetime.now(_MSK).date()
+            invoice_id = await db.create_invoice(
+                invoice_number="DL-TODAY",
+                project_id=None,
+                created_by=1,
+                creator_role=Role.MANAGER_KV,
+            )
+            await db.update_invoice(
+                invoice_id,
+                status=InvoiceStatus.IN_PROGRESS,
+                deadline_end_date=today.isoformat(),
+                object_address="Москва",
+            )
+
+            notifier = _FakeNotifier({1: False, 99: True})
+            sent = await _send_deadline_notifications(
+                db,
+                notifier,
+                SimpleNamespace(admin_ids={99}),
+            )
+        finally:
+            await db.close()
+
+        assert sent == 1
+        assert sorted(chat_id for chat_id, _text in notifier.calls) == [1, 99]
 
     asyncio.run(scenario())
 
