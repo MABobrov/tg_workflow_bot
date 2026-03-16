@@ -86,6 +86,15 @@ ALL_MANAGER_ROLES = [Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAG
 # Auto-refresh middleware — обновляет reply keyboard с бейджами на каждое сообщение
 # ---------------------------------------------------------------------------
 
+_MANAGER_BUTTONS = {
+    MGR_BTN_CHECK_KP, MGR_BTN_CHAT_RP, MGR_BTN_CRED, MGR_BTN_EDO,
+    MGR_BTN_INVOICE_END, MGR_BTN_INVOICE_START, MGR_BTN_ISSUE,
+    MGR_BTN_MONTAZH, MGR_BTN_MY_INVOICES, MGR_BTN_SEARCH_INVOICE,
+    MGR_BTN_ZAMERY, MGR_BTN_ZP,
+    "🔍 Поиск Счета", "🔍 Найти Счет №", "🔍 Поиск счёта",
+}
+
+
 @router.message.outer_middleware()
 async def _manager_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
     """При каждом сообщении от менеджера — обновляем reply-клавиатуру с бейджем."""
@@ -107,9 +116,9 @@ async def _manager_auto_refresh(handler, event: Message, data: dict):  # type: i
             return result
         menu_role, isolated = resolve_menu_scope(u.id, user.role)
         if menu_role not in MANAGER_ROLES:
-            # Auto-set manager role since this router handled the message
-            if len(user_roles) > 1:
-                # Pick the first matching manager role
+            # Only auto-set role if user pressed a known manager button
+            msg_text = (event.text or "").strip()
+            if msg_text in _MANAGER_BUTTONS and len(user_roles) > 1:
                 menu_role = next(iter(mgr_intersection))
                 set_active_menu_role(u.id, menu_role)
                 isolated = True

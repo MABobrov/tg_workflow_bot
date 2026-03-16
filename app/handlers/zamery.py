@@ -45,6 +45,11 @@ router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 
 
+_ZAMERY_BUTTONS = {
+    ZAM_BTN_ZAMERY, ZAM_BTN_MY_OBJECTS, ZAM_BTN_SCHEDULE, ZAM_BTN_PAYMENT,
+}
+
+
 @router.message.outer_middleware()
 async def _zamery_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
     """При каждом сообщении от замерщика — обновляем reply-клавиатуру."""
@@ -67,11 +72,14 @@ async def _zamery_auto_refresh(handler, event: Message, data: dict):  # type: ig
             return result
         menu_role, isolated = resolve_menu_scope(u.id, user.role)
         if menu_role != Role.ZAMERY:
-            # Auto-set zamery role since this router handled the message
-            if len(user_roles) > 1:
+            # Only auto-set role if user pressed a known zamery button
+            msg_text = (event.text or "").strip()
+            if msg_text in _ZAMERY_BUTTONS and len(user_roles) > 1:
                 set_active_menu_role(u.id, Role.ZAMERY)
                 isolated = True
-            menu_role = Role.ZAMERY
+                menu_role = Role.ZAMERY
+            else:
+                return result
         unread = await db_inst.count_unread_tasks(u.id)
         uc = await db_inst.count_unread_by_channel(u.id)
         is_admin = u.id in (cfg.admin_ids or set())

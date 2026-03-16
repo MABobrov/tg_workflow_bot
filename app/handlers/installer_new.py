@@ -56,6 +56,13 @@ router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 
 
+_INSTALLER_BUTTONS = {
+    INST_BTN_DAILY_REPORT, INST_BTN_IN_WORK, INST_BTN_INVOICE_OK,
+    INST_BTN_MY_OBJECTS, INST_BTN_ORDER_EXTRA, INST_BTN_ORDER_MAT,
+    INST_BTN_RAZMERY_OK, INST_BTN_ZP,
+}
+
+
 @router.message.outer_middleware()
 async def _installer_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
     """При каждом сообщении от монтажника — обновляем reply-клавиатуру."""
@@ -77,11 +84,14 @@ async def _installer_auto_refresh(handler, event: Message, data: dict):  # type:
             return result
         menu_role, isolated = resolve_menu_scope(u.id, user.role)
         if menu_role != Role.INSTALLER:
-            # Auto-set installer as active role since this router handled the message
-            if len(user_roles) > 1:
+            # Only auto-set role if user pressed a known installer button
+            msg_text = (event.text or "").strip()
+            if msg_text in _INSTALLER_BUTTONS and len(user_roles) > 1:
                 set_active_menu_role(u.id, Role.INSTALLER)
                 isolated = True
-            menu_role = Role.INSTALLER
+                menu_role = Role.INSTALLER
+            else:
+                return result
         unread = await db_inst.count_unread_tasks(u.id)
         uc = await db_inst.count_unread_by_channel(u.id)
         is_admin = u.id in (cfg.admin_ids or set())

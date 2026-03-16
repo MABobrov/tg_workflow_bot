@@ -95,6 +95,16 @@ router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 
 
+_RP_BUTTONS = {
+    RP_BTN_CHECK_KP, RP_BTN_CHAT_GD, RP_BTN_EDO, RP_BTN_INVOICE_CLOSED,
+    RP_BTN_INVOICE_END, RP_BTN_INVOICE_START, RP_BTN_INVOICES_PAY,
+    RP_BTN_INVOICES_WORK, RP_BTN_ISSUE, RP_BTN_LEAD, RP_BTN_MGR_KIA,
+    RP_BTN_MGR_KV, RP_BTN_MONTAZH, RP_BTN_ROLE_RP, RP_BTN_ROLE_NPN,
+    RP_BTN_ROLE_RP_INACTIVE, RP_BTN_ROLE_NPN_ACTIVE, RP_MONTAZH_BTN_RAZMERY,
+    RP_SUBBTN_MGR_KIA, RP_SUBBTN_MGR_KV, RP_SUBBTN_MONTAZH,
+}
+
+
 @router.message.outer_middleware()
 async def _rp_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
     """При каждом сообщении от РП — обновляем reply-клавиатуру с бейджами."""
@@ -116,11 +126,14 @@ async def _rp_auto_refresh(handler, event: Message, data: dict):  # type: ignore
             return result
         menu_role, isolated = resolve_menu_scope(u.id, user.role)
         if menu_role != Role.RP:
-            # Auto-set RP role since this router handled the message
-            if len(user_roles) > 1:
+            # Only auto-set role if user pressed a known RP button
+            msg_text = (event.text or "").strip()
+            if msg_text in _RP_BUTTONS and len(user_roles) > 1:
                 set_active_menu_role(u.id, Role.RP)
                 isolated = True
-            menu_role = Role.RP
+                menu_role = Role.RP
+            else:
+                return result
         unread = await db_rp.count_unread_tasks(u.id)
         uc = await db_rp.count_unread_by_channel(u.id)
         is_admin = u.id in (cfg.admin_ids or set())
