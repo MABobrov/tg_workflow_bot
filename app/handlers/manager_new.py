@@ -262,17 +262,20 @@ async def check_kp_amount(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(CheckKpSG.payment_type, F.data.startswith("kp_pay:"))
 async def check_kp_payment_type(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
     pay_type = (cb.data or "").split(":", 1)[1]
     labels = {"100": "100% предоплата", "5050": "50/50", "installment": "Рассрочка", "other": "Другое"}
     await state.update_data(payment_type=labels.get(pay_type, pay_type))
     await state.set_state(CheckKpSG.deadline_days)
-    await cb.message.edit_text(  # type: ignore[union-attr]
-        f"✅ Тип оплаты: <b>{labels.get(pay_type, pay_type)}</b>"
-    )
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            f"✅ Тип оплаты: <b>{labels.get(pay_type, pay_type)}</b>"
+        )
+    except Exception:
+        pass
     await cb.message.answer(  # type: ignore[union-attr]
         "Шаг 6/7: Введите <b>срок по договору</b> (кол-во дней):"
     )
-    await cb.answer()
 
 
 @router.message(CheckKpSG.deadline_days)
@@ -482,7 +485,10 @@ async def mgr_kp_ok_confirm(cb: CallbackQuery, db: Database) -> None:
     if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
         return
     await cb.answer("✅ Задача подтверждена")
-    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    try:
+        task_id = int((cb.data or "").split(":")[-1])
+    except (ValueError, IndexError):
+        return
 
     # Закрываем кнопку — убираем inline keyboard
     try:
@@ -493,13 +499,16 @@ async def mgr_kp_ok_confirm(cb: CallbackQuery, db: Database) -> None:
     task = await db.get_task(task_id)
     if task:
         # Помечаем как подтверждённую менеджером
-        payload = json.loads(task.get("payload_json") or "{}")
-        payload["manager_confirmed"] = True
-        await db.conn.execute(
-            "UPDATE tasks SET payload_json = ? WHERE id = ?",
-            (json.dumps(payload, ensure_ascii=False), task_id),
-        )
-        await db.conn.commit()
+        try:
+            payload = json.loads(task.get("payload_json") or "{}")
+            payload["manager_confirmed"] = True
+            await db.conn.execute(
+                "UPDATE tasks SET payload_json = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), task_id),
+            )
+            await db.conn.commit()
+        except Exception:
+            log.warning("Failed to update task %s payload", task_id, exc_info=True)
 
 
 # =====================================================================
@@ -594,7 +603,6 @@ async def invoice_start_deadline(message: Message, state: FSMContext) -> None:
     except ValueError:
         await message.answer("⚠️ Введите целое число дней > 0:")
         return
-    from datetime import date, timedelta
     end_date = date.today() + timedelta(days=days)
     await state.update_data(
         deadline_days=days,
@@ -970,9 +978,14 @@ async def invoice_start_edo_check(
     if not await require_role_callback(cb, db, roles=[Role.GD]):
         return
     await cb.answer()
-    parts = cb.data.split(":")  # type: ignore[union-attr]
+    parts = (cb.data or "").split(":")
+    if len(parts) < 3:
+        return
     answer = parts[1]  # yes or no
-    invoice_id = int(parts[2])
+    try:
+        invoice_id = int(parts[2])
+    except (ValueError, IndexError):
+        return
 
     inv = await db.get_invoice(invoice_id)
     if not inv:
@@ -1011,9 +1024,14 @@ async def invoice_start_paper_check(
     if not await require_role_callback(cb, db, roles=[Role.GD]):
         return
     await cb.answer()
-    parts = cb.data.split(":")  # type: ignore[union-attr]
+    parts = (cb.data or "").split(":")
+    if len(parts) < 3:
+        return
     answer = parts[1]
-    invoice_id = int(parts[2])
+    try:
+        invoice_id = int(parts[2])
+    except (ValueError, IndexError):
+        return
 
     inv = await db.get_invoice(invoice_id)
     if not inv:
@@ -1055,9 +1073,14 @@ async def invoice_start_originals(
     if not await require_role_callback(cb, db, roles=[Role.GD]):
         return
     await cb.answer()
-    parts = cb.data.split(":")  # type: ignore[union-attr]
+    parts = (cb.data or "").split(":")
+    if len(parts) < 3:
+        return
     holder = parts[1]  # gd or manager
-    invoice_id = int(parts[2])
+    try:
+        invoice_id = int(parts[2])
+    except (ValueError, IndexError):
+        return
 
     inv = await db.get_invoice(invoice_id)
     if not inv:
@@ -1245,9 +1268,14 @@ async def invoice_end_primary_originals(
     if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
         return
     await cb.answer()
-    parts = cb.data.split(":")  # type: ignore[union-attr]
+    parts = (cb.data or "").split(":")
+    if len(parts) < 3:
+        return
     holder = parts[1]  # gd or manager
-    invoice_id = int(parts[2])
+    try:
+        invoice_id = int(parts[2])
+    except (ValueError, IndexError):
+        return
 
     inv = await db.get_invoice(invoice_id)
     if not inv:
@@ -1285,9 +1313,14 @@ async def invoice_end_closing_originals(
     if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
         return
     await cb.answer()
-    parts = cb.data.split(":")  # type: ignore[union-attr]
+    parts = (cb.data or "").split(":")
+    if len(parts) < 3:
+        return
     holder = parts[1]  # gd or manager
-    invoice_id = int(parts[2])
+    try:
+        invoice_id = int(parts[2])
+    except (ValueError, IndexError):
+        return
 
     inv = await db.get_invoice(invoice_id)
     if not inv:
@@ -1412,9 +1445,14 @@ async def invoice_end_gd_debt_response(
     if not await require_role_callback(cb, db, roles=[Role.GD]):
         return
     await cb.answer()
-    parts = cb.data.split(":")  # type: ignore[union-attr]
+    parts = (cb.data or "").split(":")
+    if len(parts) < 3:
+        return
     answer = parts[1]  # yes or no
-    invoice_id = int(parts[2])
+    try:
+        invoice_id = int(parts[2])
+    except (ValueError, IndexError):
+        return
 
     inv = await db.get_invoice(invoice_id)
     if not inv:
@@ -1453,9 +1491,14 @@ async def invoice_end_gd_final(
     if not await require_role_callback(cb, db, roles=[Role.GD]):
         return
     await cb.answer()
-    parts = cb.data.split(":")  # type: ignore[union-attr]
+    parts = (cb.data or "").split(":")
+    if len(parts) < 3:
+        return
     decision = parts[1]  # check or end
-    invoice_id = int(parts[2])
+    try:
+        invoice_id = int(parts[2])
+    except (ValueError, IndexError):
+        return
 
     inv = await db.get_invoice(invoice_id)
     if not inv:
@@ -1960,6 +2003,8 @@ async def my_invoice_view(cb: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data.regexp(r"^mgr_mat:\d+$"))
 async def manager_invoice_materials(cb: CallbackQuery, db: Database) -> None:
     """Менеджер: список купленных материалов по закрытому счёту."""
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
     await cb.answer()
     inv_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
     inv = await db.get_invoice(inv_id)
@@ -2808,7 +2853,6 @@ async def zamery_finalize(
     scheduled_date = data.get("scheduled_date")
     scheduled_time_interval = data.get("scheduled_time_interval")
 
-    import json
     zam_req_id = await db.create_zamery_request(
         source_type=source_type,
         address=address,
@@ -3020,38 +3064,47 @@ async def mgr_rp_chat(message: Message, state: FSMContext, db: Database) -> None
 
 
 @router.callback_query(F.data.startswith("mgrchat:"))
-async def mgr_chat_invoice_picked(cb: CallbackQuery, state: FSMContext) -> None:
+async def mgr_chat_invoice_picked(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
+    await cb.answer()
     parts = (cb.data or "").split(":")
     if len(parts) < 3:
-        await cb.answer()
         return
     channel = parts[1]
     invoice_id = parts[2]
 
     if invoice_id == "cancel":
         await state.clear()
-        await cb.message.delete()  # type: ignore[union-attr]
-        await cb.answer()
+        try:
+            await cb.message.delete()  # type: ignore[union-attr]
+        except Exception:
+            pass
         return
 
     await state.set_state(ManagerChatProxySG.menu)
     inv_ref = ""
     if invoice_id != "0":
-        await state.update_data(channel=channel, invoice_id=int(invoice_id))
-        inv_ref = f" (счёт #{invoice_id})"
+        try:
+            await state.update_data(channel=channel, invoice_id=int(invoice_id))
+            inv_ref = f" (счёт #{invoice_id})"
+        except (ValueError, TypeError):
+            await state.update_data(channel=channel, invoice_id=None)
     else:
         await state.update_data(channel=channel, invoice_id=None)
 
     title = "Монтажная гр." if channel == "montazh" else "Чат с РП"
-    await cb.message.edit_text(  # type: ignore[union-attr]
-        f"💬 <b>{title}</b>{inv_ref}\n\n"
-        "Выберите действие:",
-    )
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            f"💬 <b>{title}</b>{inv_ref}\n\n"
+            "Выберите действие:",
+        )
+    except Exception:
+        pass
     await cb.message.answer(  # type: ignore[union-attr]
         "Выберите действие:",
         reply_markup=manager_chat_submenu("⬅️ Назад"),
     )
-    await cb.answer()
 
 
 # =====================================================================
