@@ -238,6 +238,21 @@ async def task_actions(
         return
     active_statuses = {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}
 
+    # DELETE — only for GD (admin)
+    if action == "delete":
+        if cb.from_user.id not in (config.admin_ids or set()):
+            await cb.answer("⛔️ Удаление доступно только ГД", show_alert=True)
+            return
+        await db.delete_task(task_id)
+        await cb.answer(f"🗑 Задача #{task_id} удалена", show_alert=True)
+        try:
+            await cb.message.edit_text(  # type: ignore[union-attr]
+                f"🗑 <s>Задача #{task_id}</s> — удалена",
+            )
+        except Exception:
+            pass
+        return
+
     if not await _can_manage_task(cb, db, config, task):
         await cb.answer("Эта задача назначена другому человеку", show_alert=True)
         return

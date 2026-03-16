@@ -751,7 +751,7 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
 # =====================================================================
 
 @router.message(lambda m: (m.text or "").strip() == "📋 Все задачи")
-async def all_tasks_list(message: Message, db: Database) -> None:
+async def all_tasks_list(message: Message, db: Database, config: Config) -> None:
     """Show all tasks (active + recent closed) for the current user."""
     if not message.from_user:
         return
@@ -788,11 +788,14 @@ async def all_tasks_list(message: Message, db: Database) -> None:
     active_count = sum(1 for t in all_tasks if t.get("status") in ("open", "in_progress"))
     closed_count = len(all_tasks) - active_count
 
+    # GD gets delete buttons
+    is_gd = uid in (config.admin_ids or set())
+
     await message.answer(
         f"📋 <b>Все задачи</b>\n"
         f"Активных: {active_count} | Закрытых: {closed_count}\n\n"
         "Нажмите на задачу для просмотра:",
-        reply_markup=tasks_kb(all_tasks, back_callback="nav:home"),
+        reply_markup=tasks_kb(all_tasks, back_callback="nav:home", show_delete=is_gd),
     )
 
 

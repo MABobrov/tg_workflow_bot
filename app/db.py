@@ -780,6 +780,12 @@ class Database:
             raise KeyError(f"task {task_id} not found")
         return dict(row)
 
+    async def delete_task(self, task_id: int) -> None:
+        """Permanently delete a task and its attachments."""
+        await self.conn.execute("DELETE FROM attachments WHERE task_id = ?", (task_id,))
+        await self.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        await self.conn.commit()
+
     async def list_tasks_for_user(
         self,
         assigned_to: int,

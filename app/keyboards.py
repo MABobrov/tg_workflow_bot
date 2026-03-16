@@ -655,16 +655,27 @@ _ROLE_SHORT: dict[str, str] = {
 }
 
 
-def tasks_kb(tasks: list[dict[str, Any]], *, back_callback: str | None = None) -> InlineKeyboardMarkup:
+def tasks_kb(
+    tasks: list[dict[str, Any]],
+    *,
+    back_callback: str | None = None,
+    show_delete: bool = False,
+) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for t in tasks:
         role_short = _ROLE_SHORT.get(t.get("creator_role", ""), "")
         role_tag = f" ({role_short})" if role_short else ""
         text = f"#{t['id']}{role_tag} • {task_type_label(t.get('type'))} • {task_status_label(t.get('status'))}"
         b.button(text=text[:64], callback_data=TaskCb(task_id=int(t["id"]), action="open").pack())
+        if show_delete:
+            b.button(text=f"🗑 #{t['id']}", callback_data=TaskCb(task_id=int(t["id"]), action="delete").pack())
     if back_callback:
         b.button(text="⬅️ Назад", callback_data=back_callback)
-    b.adjust(1)
+    if show_delete:
+        # Two columns: task button + delete button per row
+        b.adjust(2)
+    else:
+        b.adjust(1)
     return b.as_markup()
 
 
