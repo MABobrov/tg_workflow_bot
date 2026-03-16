@@ -240,7 +240,7 @@ async def task_actions(
 
     # DELETE — only for GD (admin)
     if action == "delete":
-        if cb.from_user.id not in (config.admin_ids or set()):
+        if not cb.from_user or cb.from_user.id not in (config.admin_ids or set()):
             await cb.answer("⛔️ Удаление доступно только ГД", show_alert=True)
             return
         await db.delete_task(task_id)
@@ -278,8 +278,6 @@ async def task_actions(
             )
         return
 
-    await cb.answer()
-
     project = None
     if task.get("project_id"):
         try:
@@ -289,6 +287,7 @@ async def task_actions(
 
     # OPEN: show card + actions
     if action == "open":
+        await cb.answer()
         text = fmt_task_card(task, project, config.timezone)
         await cb.message.answer(text, reply_markup=task_actions_kb(task))  # type: ignore
 
@@ -1408,13 +1407,9 @@ async def delivery_payment_finalize(
         await notifier.safe_send(int(rp_id), msg)
         # Send payment attachments to RP
         for att in attachments:
-            try:
-                if att.get("type") == "photo":
-                    await notifier.bot.send_photo(int(rp_id), att["file_id"])
-                else:
-                    await notifier.bot.send_document(int(rp_id), att["file_id"])
-            except Exception:
-                log.warning("Failed to send delivery payment to RP")
+            await notifier.safe_send_media(
+                int(rp_id), att.get("type", "document"), att["file_id"],
+            )
         await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
     await state.clear()
