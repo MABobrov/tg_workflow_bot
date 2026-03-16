@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from aiogram import Router, F
@@ -452,7 +453,6 @@ async def invoice_ok_comment(
     await db.set_invoice_installer_ok(invoice_id, True)
 
     # Update montazh stage → invoice_ok
-    from ..enums import MontazhStage
     await db.update_montazh_stage(invoice_id, MontazhStage.INVOICE_OK)
     inv_row = await db.get_invoice(invoice_id)
     if inv_row:
@@ -461,7 +461,6 @@ async def invoice_ok_comment(
         )
 
     # Set actual completion date (Дата Факт)
-    from datetime import datetime
     today_iso = datetime.now().strftime("%Y-%m-%d")
     await db.conn.execute(
         "UPDATE invoices SET actual_completion_date = ? WHERE id = ? AND actual_completion_date IS NULL",
@@ -756,6 +755,8 @@ async def razmery_send_to_rp(
     cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
 ) -> None:
     """Финализация: создать razmery_request + уведомить РП."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
     await cb.answer()
     u = cb.from_user
     if not u:
@@ -914,6 +915,8 @@ async def razmery_result_send(
     notifier: Notifier, integrations: IntegrationHub,
 ) -> None:
     """Финализация ответа: Размеры ОК или Ошибка."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
     await cb.answer()
     u = cb.from_user
     if not u:
@@ -1201,10 +1204,11 @@ async def installer_zp_price_ok(
         f"💲 Цена по счёту №{inv.get('invoice_number', '?')} подтверждена.",
     )
     # Уведомляем ГД
-    from ..services.assignment import resolve_default_assignee
     gd_id = await resolve_default_assignee(db, config, Role.GD)
     if gd_id:
         u = cb.from_user
+        if not u:
+            return
         initiator = await get_initiator_label(db, u.id)
         await notifier.safe_send(
             int(gd_id),
@@ -1789,6 +1793,9 @@ async def zpadj_cancel(cb: CallbackQuery, state: FSMContext, db: Database, confi
     await cb.answer()
     await state.clear()
     u = cb.from_user
+    if not u:
+        await cb.message.answer("❌ Запрос ЗП отменён.")  # type: ignore[union-attr]
+        return
     user = await db.get_user_optional(u.id) if u else None
     role = user.role if user else None
     menu_role, isolated = resolve_menu_scope(u.id, role) if u else (role, False)
@@ -2297,6 +2304,8 @@ async def installer_zp_cancel(cb: CallbackQuery, state: FSMContext) -> None:
 async def installer_zp_confirm(
     cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
 ) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
     await cb.answer()
     u = cb.from_user
     if not u:
