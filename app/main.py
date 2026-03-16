@@ -245,21 +245,10 @@ async def main() -> None:
         acceptance_reminders_loop(db=db, notifier=notifier, interval_seconds=60)
     )
 
-    # --- One-time full sync from ОП sheet at startup ---
+    # NOTE: Startup sheets sync removed — sync only via "Синхронизация данных" button
     log = logging.getLogger(__name__)
-    if integrations.sheets:
-        try:
-            ok = await import_from_source_sheet(
-                db,
-                integrations.sheets,
-                log_prefix="ОП startup sync",
-            )
-            if ok:
-                log.info("ОП startup sync: imported/updated %d invoices", ok)
-        except Exception as e:
-            log.error("ОП startup sync error: %s", e)
 
-    # Daily auto-sync at 09:00 MSK for all roles
+    # Daily auto-sync at 09:00 MSK (keyboards, deadlines, debts — NO Sheets import/export)
     daily_sync_task: asyncio.Task | None = asyncio.create_task(
         daily_sync_loop(
             db=db,

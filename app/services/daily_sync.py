@@ -74,36 +74,10 @@ async def _run_sync(
 ) -> None:
     """Execute one full sync cycle."""
 
-    # --- 1. Google Sheets import/export ---
-    if integrations.sheets:
-        try:
-            ok = await import_from_source_sheet(
-                db,
-                integrations.sheets,
-                log_prefix="daily_sync",
-            )
-            if ok:
-                log.info("daily_sync: imported %d invoices from ОП", ok)
-        except Exception as e:
-            log.error("daily_sync: read_op_sheet failed: %s", e)
+    # NOTE: Google Sheets import/export removed from daily sync
+    # — sync only via "Синхронизация данных" button press
 
-        try:
-            stats = await export_to_sheets(
-                db,
-                integrations.sheets,
-                include_invoice_cost=False,
-                sync_invoices=True,
-            )
-            log.info(
-                "daily_sync: exported %d projects, %d tasks, %d invoices",
-                stats["projects"],
-                stats["tasks"],
-                stats["invoices"],
-            )
-        except Exception as e:
-            log.error("daily_sync: sheets export failed: %s", e)
-
-    # --- 2. Refresh keyboards for ALL active users ---
+    # --- 1. Refresh keyboards for ALL active users ---
     all_users = await db.list_users(limit=10000)
     refreshed = 0
     for user in all_users:
