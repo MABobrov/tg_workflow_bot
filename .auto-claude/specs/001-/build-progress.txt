@@ -87,3 +87,31 @@ Example:
 - Test baseline deferred due to missing pytest dependency
 
 === END subtask-1-1 ===
+
+=== SESSION: subtask-4-2 (Audit Legacy Handler Conflicts) ===
+
+## Audit Results
+
+Router inclusion order in main.py:
+- New routers (manager_new, rp_new) included BEFORE legacy (manager, rp)
+- In aiogram, first matching handler wins → new handlers take priority ✅
+
+### manager.py vs manager_new.py
+- Callback prefixes: DIFFERENT (legacy: mgrflow/docs/quote/pay/closing/issue vs new: kp_pay/inv_src/invstart/invend/edo/myinv/zam/mgrchat/mgrzp)
+- No callback routing conflicts found
+- Message handlers use different button texts (legacy uses combined "Проверить КП/Запросить документы", new uses separate MGR_BTN_* constants)
+- No duplicate handler registration
+
+### rp.py vs rp_new.py
+- Callback prefixes: DIFFERENT (legacy: ordermat/delpay/assignlead/tintingreq/invoice_create vs new: rpinv/rp_inv_pay/rp_chat_inv/rp_montazh/razmok_rp/rp_work/rp_sinv/rp_edo/rp_closed/rp_lead/lead_*/kp_*)
+- No callback routing conflicts found
+- Message handlers use different button texts
+- No duplicate handler registration
+
+### Conclusion
+- No code changes needed — no actual conflicts exist
+- Legacy and new handlers coexist safely due to different callback prefixes and button texts
+- Router priority order is correct (new before legacy)
+- Verification: py_compile passes for both files
+
+=== END subtask-4-2 ===
