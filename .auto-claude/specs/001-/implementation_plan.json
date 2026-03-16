@@ -1,0 +1,601 @@
+{
+  "feature": "Full codebase bug audit and fix",
+  "workflow_type": "feature",
+  "workflow_rationale": "Although conceptually a bug-fix task, the spec classifies this as a feature workflow. The deliverable is a clean, error-free codebase. Phases follow priority order: static analysis → core modules → handlers → services → utilities → verification.",
+  "phases": [
+    {
+      "id": "phase-1-discovery",
+      "name": "Static Analysis & Discovery",
+      "type": "setup",
+      "description": "Run py_compile on all 54 files, run existing test suite to establish baseline, identify syntax errors and obvious issues before any code changes.",
+      "depends_on": [],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-1-1",
+          "description": "Run py_compile on all 54 Python files to identify syntax errors. Run pytest to establish test baseline (23 tests). Document all compilation errors and test failures as a discovery log in build-progress.txt.",
+          "service": "main",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/main.py && python -m py_compile app/db.py && python -m py_compile app/config.py && echo 'Compilation check done'",
+            "expected": "Compilation check done"
+          },
+          "status": "completed",
+          "notes": "All 62 Python files compile cleanly (0 errors). pytest not available in venv (network blocked). Test baseline deferred to Phase 7."
+        }
+      ]
+    },
+    {
+      "id": "phase-2-core",
+      "name": "Core Module Fixes (P1)",
+      "type": "implementation",
+      "description": "Fix bugs in the highest-impact core modules: config.py, enums.py, states.py, callbacks.py, db.py, main.py. These files affect all other modules.",
+      "depends_on": [
+        "phase-1-discovery"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-2-1",
+          "description": "Audit and fix app/config.py, app/enums.py, app/states.py, app/callbacks.py. Check for: missing env var handling in config, type coercion errors, missing enum members referenced by handlers, FSM state completeness, callback data fitting 64-byte Telegram limit.",
+          "service": "main",
+          "files_to_modify": [
+            "app/config.py",
+            "app/enums.py",
+            "app/states.py",
+            "app/callbacks.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/config.py",
+            "app/enums.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/config.py && python -m py_compile app/enums.py && python -m py_compile app/states.py && python -m py_compile app/callbacks.py && echo 'Core config/enum/states OK'",
+            "expected": "Core config/enum/states OK"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-2-2",
+          "description": "Audit and fix app/db.py (3564 LOC). Focus on: SQL query correctness, parameterized queries (no f-string injection of user data), missing error handling on DB operations, schema drift between init_schema and migration columns, foreign key violations, transaction safety, and None handling in return values.",
+          "service": "main",
+          "files_to_modify": [
+            "app/db.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/db.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/db.py && python -m pytest tests/test_db_schema.py -v --tb=short && echo 'DB fixes OK'",
+            "expected": "DB fixes OK"
+          },
+          "status": "pending",
+          "notes": "db.py is 3564 LOC with dynamic SQL construction. Column names in f-strings are from code-controlled dicts, not user input — focus on actual bugs (wrong queries, missing await, missing error handling) rather than theoretical SQL injection."
+        },
+        {
+          "id": "subtask-2-3",
+          "description": "Audit and fix app/main.py. Focus on: startup sequence errors, background task exception handling, webhook server issues, one-time import idempotency, proper cleanup in finally block, missing awaits.",
+          "service": "main",
+          "files_to_modify": [
+            "app/main.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/main.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/main.py && echo 'Main module OK'",
+            "expected": "Main module OK"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-3-large-handlers",
+      "name": "Large Handler Fixes (P2 Critical)",
+      "type": "implementation",
+      "description": "Fix bugs in the 4 largest handler files (2300-3500 LOC each). These are the most complex and bug-prone modules with FSM flows, callback parsing, and role checks.",
+      "depends_on": [
+        "phase-2-core"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-3-1",
+          "description": "Audit and fix app/handlers/manager_new.py (3455 LOC). Check for: missing await call.answer(), incorrect callback data parsing, FSM state leaks (missing state.clear()), missing role checks, incorrect DB query usage, error handling in invoice lifecycle flows (CheckKpSG, InvoiceStartSG, InvoiceEndSG, EdoRequestSG, ManagerZpSG).",
+          "service": "main",
+          "files_to_modify": [
+            "app/handlers/manager_new.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/handlers/auth.py",
+            "app/services/notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/handlers/manager_new.py && echo 'manager_new OK'",
+            "expected": "manager_new OK"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-3-2",
+          "description": "Audit and fix app/handlers/rp_new.py (3219 LOC). Check for: material ordering flow bugs, supplier payment logic errors, delivery/tinting request issues, missing await call.answer(), FSM state leaks, role checks (RP role), InvoiceCreateSG flow correctness.",
+          "service": "main",
+          "files_to_modify": [
+            "app/handlers/rp_new.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/handlers/auth.py",
+            "app/handlers/manager_new.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/handlers/rp_new.py && echo 'rp_new OK'",
+            "expected": "rp_new OK"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-3-3",
+          "description": "Audit and fix app/handlers/zamery.py (2364 LOC). Check for: zamery scheduling bugs, cost editing errors, ZP batch calculation, ZameryRequestSG/ZameryAcceptSG/ZameryCompleteSG flows, blackout date handling, missing error handling on DB operations.",
+          "service": "main",
+          "files_to_modify": [
+            "app/handlers/zamery.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/handlers/auth.py",
+            "app/handlers/manager_new.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/handlers/zamery.py && echo 'zamery OK'",
+            "expected": "zamery OK"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-3-4",
+          "description": "Audit and fix app/handlers/installer_new.py (2356 LOC). Check for: invoice confirmation bugs, razmery flow errors, daily report logic, ZP calculation, InstallerInvoiceOkSG/InstallerRazmerySG/InstallerZpSG/InstallerDailyReportSG flows, missing error handling.",
+          "service": "main",
+          "files_to_modify": [
+            "app/handlers/installer_new.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/handlers/auth.py",
+            "app/handlers/manager_new.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/handlers/installer_new.py && echo 'installer_new OK'",
+            "expected": "installer_new OK"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-4-medium-handlers",
+      "name": "Medium Handler Fixes (P2 Important)",
+      "type": "implementation",
+      "description": "Fix bugs in medium-sized handler files (700-1600 LOC). Includes legacy handler conflict audit and remaining P2 handlers.",
+      "depends_on": [
+        "phase-2-core"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-4-1",
+          "description": "Audit and fix app/handlers/tasks.py (1423 LOC) and app/handlers/gd.py (1255 LOC). Check for: task listing/filtering bugs, completion/rejection flow errors, GD approval flow, broadcast issues, task creation bugs, missing await call.answer(), error handling.",
+          "service": "main",
+          "files_to_modify": [
+            "app/handlers/tasks.py",
+            "app/handlers/gd.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/handlers/auth.py",
+            "app/services/notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/handlers/tasks.py && python -m py_compile app/handlers/gd.py && echo 'tasks+gd OK'",
+            "expected": "tasks+gd OK"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-4-2",
+          "description": "Audit legacy handler conflicts: app/handlers/manager.py (1545 LOC) vs manager_new.py, app/handlers/rp.py (1156 LOC) vs rp_new.py. Check for: callback routing conflicts (same callback data matched by both old and new handlers), duplicate handler registration, incorrect handler priority due to router inclusion order in main.py.",
+          "service": "main",
+          "files_to_modify": [
+            "app/handlers/manager.py",
+            "app/handlers/rp.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/handlers/manager_new.py",
+            "app/handlers/rp_new.py",
+            "app/main.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/handlers/manager.py && python -m py_compile app/handlers/rp.py && echo 'legacy handlers OK'",
+            "expected": "legacy handlers OK"
+          },
+          "status": "pending",
+          "notes": "Legacy handlers coexist intentionally with new ones. Do NOT remove them. Focus on routing conflicts and bugs within the legacy code."
+        },
+        {
+          "id": "subtask-4-3",
+          "description": "Audit and fix app/handlers/chat_proxy.py (1085 LOC) and app/handlers/accounting_new.py (1005 LOC). Check for: message forwarding bugs, chat state management errors in ChatProxySG, EDO request/response flow in EdoRequestSG/EdoResponseSG, missing error handling, role check correctness.",
+          "service": "main",
+          "files_to_modify": [
+            "app/handlers/chat_proxy.py",
+            "app/handlers/accounting_new.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/handlers/auth.py",
+            "app/services/notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/handlers/chat_proxy.py && python -m py_compile app/handlers/accounting_new.py && echo 'chat_proxy+accounting OK'",
+            "expected": "chat_proxy+accounting OK"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-4-4",
+          "description": "Audit and fix app/handlers/admin.py (1002 LOC) and app/handlers/common.py (779 LOC). Check for: role assignment bugs, user management errors, privilege escalation risks in admin.py. Check /start flow, menu routing, user registration in common.py. Verify admin_ids check correctness.",
+          "service": "main",
+          "files_to_modify": [
+            "app/handlers/admin.py",
+            "app/handlers/common.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/handlers/auth.py",
+            "app/config.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/handlers/admin.py && python -m py_compile app/handlers/common.py && echo 'admin+common OK'",
+            "expected": "admin+common OK"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-5-services",
+      "name": "Service & Integration Fixes (P3-P4)",
+      "type": "implementation",
+      "description": "Fix bugs in business logic services, background tasks, and external integrations (Google Sheets, amoCRM).",
+      "depends_on": [
+        "phase-2-core"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-5-1",
+          "description": "Audit and fix app/services/sheet_commands.py (1269 LOC) and app/integrations/sheets.py (943 LOC). Check for: webhook payload processing errors, import/export correctness, gspread API usage, header mapping, row operations, error recovery in sheet operations.",
+          "service": "main",
+          "files_to_modify": [
+            "app/services/sheet_commands.py",
+            "app/integrations/sheets.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/services/notifier.py",
+            "app/db.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/services/sheet_commands.py && python -m py_compile app/integrations/sheets.py && echo 'sheet services OK'",
+            "expected": "sheet services OK"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-2",
+          "description": "Audit and fix background task services: app/services/daily_sync.py (254 LOC), app/services/reminders.py (129 LOC), app/services/lead_poller.py (220 LOC). Check for: proper CancelledError re-raising, exception handling in loops, scheduling timing bugs, keyboard refresh errors, debt sync issues, amoCRM polling errors.",
+          "service": "main",
+          "files_to_modify": [
+            "app/services/daily_sync.py",
+            "app/services/reminders.py",
+            "app/services/lead_poller.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/services/reminders.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/services/daily_sync.py && python -m py_compile app/services/reminders.py && python -m py_compile app/services/lead_poller.py && echo 'background services OK'",
+            "expected": "background services OK"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-3",
+          "description": "Audit and fix remaining services and integrations: app/integrations/amocrm.py (338 LOC), app/services/integration_hub.py (152 LOC), app/services/notifier.py (155 LOC), app/services/sheets_sync.py (107 LOC), app/services/menu_context.py (72 LOC), app/services/menu_scope.py (35 LOC), app/services/assignment.py (72 LOC). Check for: amocrm session management, token refresh race conditions, integration hub worker resilience, notifier edge cases.",
+          "service": "main",
+          "files_to_modify": [
+            "app/integrations/amocrm.py",
+            "app/services/integration_hub.py",
+            "app/services/notifier.py",
+            "app/services/sheets_sync.py",
+            "app/services/menu_context.py",
+            "app/services/menu_scope.py",
+            "app/services/assignment.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/services/notifier.py",
+            "app/integrations/amocrm.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/integrations/amocrm.py && python -m py_compile app/services/integration_hub.py && python -m py_compile app/services/notifier.py && echo 'remaining services OK'",
+            "expected": "remaining services OK"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-6-utilities-remaining",
+      "name": "Utilities, Middlewares & Remaining Handlers (P4-P5)",
+      "type": "implementation",
+      "description": "Fix bugs in utility modules, middlewares, and remaining small handler files.",
+      "depends_on": [
+        "phase-3-large-handlers",
+        "phase-4-medium-handlers",
+        "phase-5-services"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-6-1",
+          "description": "Audit and fix app/utils.py (861 LOC), app/keyboards.py (1179 LOC), app/callbacks.py (45 LOC). Check for: date parsing edge cases, HTML formatting errors, role helper correctness, keyboard construction bugs, callback data correctness and 64-byte limit compliance.",
+          "service": "main",
+          "files_to_modify": [
+            "app/utils.py",
+            "app/keyboards.py",
+            "app/callbacks.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/utils.py",
+            "app/callbacks.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/utils.py && python -m py_compile app/keyboards.py && python -m py_compile app/callbacks.py && echo 'utils+keyboards OK'",
+            "expected": "utils+keyboards OK"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-6-2",
+          "description": "Audit and fix middlewares and remaining handlers. Middlewares: app/middlewares/keep_menu.py (106 LOC), update_logger.py (112 LOC), usage_audit.py (146 LOC). Handlers: td.py (725 LOC), installer.py (525 LOC), urgent.py (476 LOC), leads.py (256 LOC), accounting.py (256 LOC), driver.py (201 LOC), tinter.py (201 LOC), invoice_chat.py (207 LOC), group_guard.py (82 LOC), search.py (76 LOC), projects.py (62 LOC). Check for: middleware performance impact, audit trail completeness, menu state preservation, handler-specific bugs, silent exception swallowing in group_guard.py.",
+          "service": "main",
+          "files_to_modify": [
+            "app/middlewares/keep_menu.py",
+            "app/middlewares/update_logger.py",
+            "app/middlewares/usage_audit.py",
+            "app/handlers/td.py",
+            "app/handlers/installer.py",
+            "app/handlers/urgent.py",
+            "app/handlers/leads.py",
+            "app/handlers/accounting.py",
+            "app/handlers/driver.py",
+            "app/handlers/tinter.py",
+            "app/handlers/invoice_chat.py",
+            "app/handlers/group_guard.py",
+            "app/handlers/search.py",
+            "app/handlers/projects.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/services/notifier.py",
+            "app/handlers/auth.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -m py_compile app/middlewares/keep_menu.py && python -m py_compile app/middlewares/update_logger.py && python -m py_compile app/middlewares/usage_audit.py && python -m py_compile app/handlers/td.py && python -m py_compile app/handlers/group_guard.py && echo 'middlewares+remaining OK'",
+            "expected": "middlewares+remaining OK"
+          },
+          "status": "pending",
+          "notes": "group_guard.py has known silent exception swallowing (except: pass without logging). Add at least log.debug() calls."
+        }
+      ]
+    },
+    {
+      "id": "phase-7-verification",
+      "name": "Final Verification & Documentation",
+      "type": "integration",
+      "description": "Run full static analysis on all 54 files, execute complete test suite, verify all fixes, and document each change with location, root cause, and rationale.",
+      "depends_on": [
+        "phase-6-utilities-remaining"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-7-1",
+          "description": "Final verification: (1) Run py_compile on all 54 Python files, (2) Run full pytest test suite (23 tests), (3) Verify import chain works: python -c 'import app.main', (4) Review all changes made across the codebase to ensure no regressions were introduced, (5) Update build-progress.txt with summary of all fixes applied.",
+          "service": "main",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "find app -name '*.py' -exec python -m py_compile {} \\; && find scripts -name '*.py' -exec python -m py_compile {} \\; && find tests -name '*.py' -exec python -m py_compile {} \\; && python -m pytest tests/ -v --tb=short && echo 'ALL VERIFICATION PASSED'",
+            "expected": "ALL VERIFICATION PASSED"
+          },
+          "status": "pending",
+          "notes": "This is the final gate. All 54 files must compile, all 23 tests must pass. Document each fix in build-progress.txt."
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_phases": 7,
+    "total_subtasks": 18,
+    "services_involved": [
+      "main"
+    ],
+    "estimated_files_to_audit": 54,
+    "estimated_loc": 33900,
+    "parallelism": {
+      "max_parallel_phases": 2,
+      "parallel_groups": [
+        {
+          "phases": [
+            "phase-4-medium-handlers",
+            "phase-5-services"
+          ],
+          "reason": "Both depend only on phase-2-core, modify entirely different file sets (handlers vs services/integrations)"
+        }
+      ],
+      "recommended_workers": 2,
+      "speedup_estimate": "1.3x faster than sequential (phases 4+5 can overlap)"
+    },
+    "startup_command": "source auto-claude/.venv/bin/activate && python auto-claude/run.py --spec 001 --parallel 2"
+  },
+  "verification_strategy": {
+    "risk_level": "medium",
+    "skip_validation": false,
+    "test_creation_phase": "post_implementation",
+    "test_types_required": [
+      "unit",
+      "integration"
+    ],
+    "security_scanning_required": false,
+    "staging_deployment_required": false,
+    "acceptance_criteria": [
+      "All 54 Python files compile without syntax errors (python -m py_compile)",
+      "All 23 existing tests pass (pytest tests/ -v)",
+      "Bot import chain works (python -c 'import app.main')",
+      "No unhandled exceptions in handler code paths",
+      "All callback handlers call await call.answer()",
+      "All database queries use parameterized placeholders (?)",
+      "All background task loops have proper exception handling",
+      "Integration failures (Sheets, amoCRM) are caught and logged gracefully",
+      "FSM state flows have complete entry/exit paths",
+      "Each fix documented with location, root cause, and rationale"
+    ],
+    "verification_steps": [
+      {
+        "name": "Compilation Check",
+        "command": "find app -name '*.py' -exec python -m py_compile {} \\;",
+        "expected_outcome": "All files compile without errors (exit code 0)",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Unit Tests",
+        "command": "python -m pytest tests/ -v --tb=short",
+        "expected_outcome": "23/23 tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Import Chain",
+        "command": "python -c 'import app.main'",
+        "expected_outcome": "No ImportError",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      }
+    ],
+    "reasoning": "Medium risk: bug fixes across 54 files with limited test coverage (2 test files for 54 source files). Each fix must be minimal and targeted. Compilation and existing test suite are the primary safety nets."
+  },
+  "qa_acceptance": {
+    "unit_tests": {
+      "required": true,
+      "commands": [
+        "python -m pytest tests/ -v --tb=short"
+      ],
+      "minimum_coverage": null,
+      "expected_pass_count": 23
+    },
+    "integration_tests": {
+      "required": false,
+      "commands": [],
+      "services_to_test": [],
+      "notes": "No integration test infrastructure exists. Rely on unit tests and manual verification."
+    },
+    "e2e_tests": {
+      "required": false,
+      "commands": [],
+      "flows": [],
+      "notes": "E2E testing requires running bot with real Telegram API. Out of scope for automated verification."
+    },
+    "browser_verification": {
+      "required": false,
+      "pages": [],
+      "notes": "No web UI. Bot operates via Telegram API. Health endpoint at http://localhost:8443/health is the only HTTP interface."
+    },
+    "database_verification": {
+      "required": true,
+      "checks": [
+        "schema-valid",
+        "migrations-applied"
+      ],
+      "notes": "DB tests in test_db_schema.py verify schema creation, CRUD operations, and invoice import functions."
+    },
+    "static_analysis": {
+      "required": true,
+      "checks": [
+        {
+          "name": "Syntax validity",
+          "command": "find app -name '*.py' -exec python -m py_compile {} \\;",
+          "expected": "Exit code 0 for all files"
+        },
+        {
+          "name": "Import chain",
+          "command": "python -c 'import app.main'",
+          "expected": "No ImportError"
+        }
+      ]
+    },
+    "code_review_checks": [
+      "Every @router.callback_query handler calls await call.answer()",
+      "All SQL queries use ? placeholders (no f-string/format interpolation for values)",
+      "All try/except blocks log exceptions (no silent swallowing)",
+      "No blocking calls in async functions (time.sleep, open(), requests.)",
+      "All state groups have handlers for all defined states",
+      "All role-restricted handlers validate user role before proceeding"
+    ]
+  },
+  "qa_signoff": null,
+  "status": "in_progress",
+  "planStatus": "in_progress",
+  "xstateState": "coding",
+  "executionPhase": "coding",
+  "updated_at": "2026-03-16T14:04:40.183Z",
+  "lastEvent": {
+    "eventId": "f7c4c3d3-3e81-4524-a3ba-7dee5bf27a52",
+    "sequence": 0,
+    "type": "PLANNING_COMPLETE",
+    "timestamp": "2026-03-16T14:04:24.792369+00:00"
+  }
+}

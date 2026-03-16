@@ -1,0 +1,89 @@
+=== AUTO-BUILD PROGRESS ===
+
+Project: Full Codebase Bug Audit & Fix (Telegram Workflow Bot)
+Workspace: /Volumes/dev/tg_workflow_bot
+Started: 2026-03-16
+
+Workflow Type: feature
+Rationale: Full-codebase bug-hunt treated as a deliverable feature (clean, error-free codebase). Single monolithic service with 54 Python files (~34K LOC), 13 user roles, Google Sheets and amoCRM integrations.
+
+Session 1 (Planner):
+- Created implementation_plan.json
+- Phases: 7
+- Total subtasks: 18
+- Created context.json (updated with investigation findings)
+- Created project_index.json (updated with file stats)
+- Created init.sh
+- Created build-progress.txt
+
+Phase Summary:
+- Phase 1 (Discovery):      1 subtask  — Static analysis & test baseline
+- Phase 2 (Core Fixes):     3 subtasks — config/enums/states, db.py, main.py
+- Phase 3 (Large Handlers):  4 subtasks — manager_new, rp_new, zamery, installer_new
+- Phase 4 (Medium Handlers): 4 subtasks — tasks+gd, legacy conflicts, chat_proxy+accounting, admin+common
+- Phase 5 (Services):        3 subtasks — sheets, background tasks, integrations
+- Phase 6 (Utilities):       2 subtasks — utils+keyboards, middlewares+remaining handlers
+- Phase 7 (Verification):    1 subtask  — Final compilation, tests, documentation
+
+Services Involved:
+- main (single monolithic Python service): All bot logic, database, handlers, services, integrations
+
+Key Investigation Findings (Phase 0):
+- SQL dynamic column construction in db.py via f-strings (code-controlled, not user input)
+- Silent exception swallowing in group_guard.py (except: pass without logging)
+- lead_poller.py silently returns old timestamp on API failure
+- All callback handlers properly call await call.answer() (pattern well-established)
+- Legacy handlers (manager.py, rp.py) coexist with new versions — routing order matters
+- Background loops (reminders, acceptance, daily_sync, lead_poller) have proper CancelledError handling
+
+Parallelism Analysis:
+- Max parallel phases: 2
+- Recommended workers: 2
+- Parallel groups: Phase 4 (Medium Handlers) + Phase 5 (Services) can run in parallel
+  - Both depend only on Phase 2 (Core Fixes)
+  - Modify entirely different file sets
+- Speedup estimate: ~1.3x faster than sequential
+
+Priority Order (from spec):
+- P1 (Highest): main.py, db.py, config.py, enums.py, states.py
+- P2 (Complex): manager_new.py (3455 LOC), rp_new.py (3219), zamery.py (2364), installer_new.py (2356), etc.
+- P3 (Services): sheet_commands.py (1269), daily_sync.py, lead_poller.py, notifier.py
+- P4 (Integrations): amocrm.py, sheets.py, middlewares, utils.py, keyboards.py
+- P5 (Remaining): td.py, installer.py, driver.py, tinter.py, etc.
+
+Constraints:
+- No new features, no architectural changes, no new tests
+- No dependency upgrades, no env variable restructuring
+- No Telegram UI/message formatting changes
+- All 23 existing tests must pass after fixes
+
+=== STARTUP COMMAND ===
+
+To continue building this spec, run:
+
+  source auto-claude/.venv/bin/activate && python auto-claude/run.py --spec 001 --parallel 2
+
+Example:
+  source auto-claude/.venv/bin/activate && python auto-claude/run.py --spec 001 --parallel 2
+
+=== END SESSION 1 ===
+
+=== SESSION 2: subtask-1-1 (Static Analysis & Discovery) ===
+
+## py_compile Results (Python 3.12, all 62 .py files)
+- Total files scanned: 62 (54 app/services/handlers + 6 scripts + 2 tests)
+- Compilation errors: 0
+- All 62 files compile cleanly with zero syntax errors.
+
+## pytest Baseline
+- pytest is NOT installed in the venv (.venv/bin/python3.12)
+- Network access is blocked (proxy 403), cannot pip install pytest
+- BLOCKER: Cannot establish test baseline until pytest is available
+- Recommendation: Install pytest in a network-enabled environment before Phase 7
+
+## Discovery Summary
+- No syntax errors found in any Python file
+- Codebase compiles cleanly under Python 3.12
+- Test baseline deferred due to missing pytest dependency
+
+=== END subtask-1-1 ===
