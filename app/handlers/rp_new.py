@@ -957,6 +957,8 @@ async def rp_razmery_form_send(
     cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
 ) -> None:
     """Финализация: отправить форму поставщика монтажнику."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
     await cb.answer()
     u = cb.from_user
     if not u:
@@ -1563,8 +1565,10 @@ async def rp_sinv_attach(message: Message, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data == "rp_sinv:skip_attach")
-async def rp_sinv_to_comment(cb: CallbackQuery, state: FSMContext) -> None:
+async def rp_sinv_to_comment(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """Перейти к вводу комментария."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
     await cb.answer()
 
     await state.set_state(RpSupplierInvoiceSG.comment)
@@ -1599,6 +1603,8 @@ async def rp_sinv_send_no_comment(
     config: "Config", notifier: "Notifier",
 ) -> None:
     """Отправить без комментария."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
     await cb.answer()
     await state.update_data(comment="")
     await _rp_sinv_finalize(cb.message, state, db, config, notifier, cb.from_user)  # type: ignore[arg-type]
@@ -2362,7 +2368,9 @@ async def lead_create_start(cb: CallbackQuery, state: FSMContext, db: Database) 
 
 
 @router.callback_query(F.data.startswith("lead_mgr:"))
-async def lead_pick_manager(cb: CallbackQuery, state: FSMContext) -> None:
+async def lead_pick_manager(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
     await cb.answer()
     manager_role = cb.data.split(":")[-1]  # type: ignore[union-attr]
     await state.update_data(manager_role=manager_role)
@@ -2403,8 +2411,10 @@ async def lead_cancel(cb: CallbackQuery, state: FSMContext, db: Database, config
 
 
 @router.callback_query(F.data.startswith("lead_src:"))
-async def lead_source_pick(cb: CallbackQuery, state: FSMContext) -> None:
+async def lead_source_pick(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """Выбор источника лида из предустановленных."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
     await cb.answer()
     source_key = cb.data.split(":")[-1]  # type: ignore[union-attr]
 
@@ -2901,8 +2911,10 @@ async def kp_review_documents(message: Message, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data == "kp_review:next")
-async def kp_review_next(cb: CallbackQuery, state: FSMContext) -> None:
+async def kp_review_next(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """Кнопка 'Далее' → переход к комментарию."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
     await cb.answer()
     await state.set_state(KpReviewSG.comment)
     await cb.message.answer(  # type: ignore[union-attr]
