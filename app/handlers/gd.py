@@ -70,6 +70,7 @@ log = logging.getLogger(__name__)
 
 router = Router()
 router.message.filter(F.chat.type == "private")
+router.callback_query.filter(F.message.chat.type == "private")
 
 SALES_SOURCE_ROLES = {Role.RP, Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN}
 

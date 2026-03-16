@@ -63,9 +63,21 @@ def setup_logging() -> None:
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
 
+def _task_exception_cb(task: asyncio.Task) -> None:
+    """Log unhandled exceptions from background tasks instead of silently dropping them."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logging.getLogger(__name__).error(
+            "Background task %s failed: %s", task.get_name(), exc, exc_info=exc,
+        )
+
+
 async def main() -> None:
     load_dotenv()
     setup_logging()
+    log = logging.getLogger(__name__)
 
     config = load_config()
 
@@ -227,6 +239,12 @@ async def main() -> None:
 
     dp.include_router(tasks.router)
 
+    # -- Background tasks & webhook server --
+    # Keep references to all background tasks for proper cleanup.
+    background_tasks: list[asyncio.Task] = []
+    # Hold strong refs to fire-and-forget webhook processing tasks so they aren't GC'd.
+    _webhook_bg_tasks: set[asyncio.Task] = set()
+
     reminder_task: asyncio.Task | None = None
     if config.reminders_enabled:
         reminder_task = asyncio.create_task(
@@ -237,16 +255,21 @@ async def main() -> None:
                 remind_soon_minutes=config.remind_soon_minutes,
                 remind_overdue_minutes=config.remind_overdue_minutes,
                 interval_seconds=60,
-            )
+            ),
+            name="reminders_loop",
         )
+        reminder_task.add_done_callback(_task_exception_cb)
+        background_tasks.append(reminder_task)
 
     # 15-min acceptance reminders + 2h post-accept reminder
     acceptance_task: asyncio.Task | None = asyncio.create_task(
-        acceptance_reminders_loop(db=db, notifier=notifier, interval_seconds=60)
+        acceptance_reminders_loop(db=db, notifier=notifier, interval_seconds=60),
+        name="acceptance_reminders_loop",
     )
+    acceptance_task.add_done_callback(_task_exception_cb)
+    background_tasks.append(acceptance_task)
 
     # NOTE: Startup sheets sync removed — sync only via "Синхронизация данных" button
-    log = logging.getLogger(__name__)
 
     # Daily auto-sync at 09:00 MSK (keyboards, deadlines, debts — NO Sheets import/export)
     daily_sync_task: asyncio.Task | None = asyncio.create_task(
@@ -257,8 +280,11 @@ async def main() -> None:
             integrations=integrations,
             target_hour=9,
             target_minute=0,
-        )
+        ),
+        name="daily_sync_loop",
     )
+    daily_sync_task.add_done_callback(_task_exception_cb)
+    background_tasks.append(daily_sync_task)
 
     lead_poller_task: asyncio.Task | None = None
     if config.amocrm_enabled and amocrm_service is not None:
@@ -268,8 +294,11 @@ async def main() -> None:
                 amocrm=amocrm_service,
                 notifier=notifier,
                 interval_seconds=30,
-            )
+            ),
+            name="lead_poller_loop",
         )
+        lead_poller_task.add_done_callback(_task_exception_cb)
+        background_tasks.append(lead_poller_task)
 
     # --- Sheets webhook server (aiohttp) ---
     webhook_runner: web.AppRunner | None = None
@@ -302,7 +331,10 @@ async def main() -> None:
                 except Exception:
                     log.exception("Sheets webhook background processing error")
 
-            asyncio.create_task(_process_in_bg(payload))
+            task = asyncio.create_task(_process_in_bg(payload), name="webhook_bg")
+            # Prevent GC of fire-and-forget tasks
+            _webhook_bg_tasks.add(task)
+            task.add_done_callback(_webhook_bg_tasks.discard)
             return web.json_response({"status": "accepted"})
 
         import time as _time
@@ -360,38 +392,13 @@ async def main() -> None:
             integrations=integrations,
         )
     finally:
-        if lead_poller_task:
-            lead_poller_task.cancel()
-            try:
-                await lead_poller_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logging.exception("Lead poller task terminated with error")
-        if reminder_task:
-            reminder_task.cancel()
-            try:
-                await reminder_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logging.exception("Reminder task terminated with error")
-        if acceptance_task:
-            acceptance_task.cancel()
-            try:
-                await acceptance_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logging.exception("Acceptance reminder task terminated with error")
-        if daily_sync_task:
-            daily_sync_task.cancel()
-            try:
-                await daily_sync_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logging.exception("Daily sync task terminated with error")
+        # Cancel all background tasks and await them
+        for task in background_tasks:
+            task.cancel()
+        results = await asyncio.gather(*background_tasks, return_exceptions=True)
+        for task, result in zip(background_tasks, results):
+            if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
+                log.error("Task %s terminated with error: %s", task.get_name(), result)
         if webhook_runner:
             await webhook_runner.cleanup()
         await integrations.stop()
