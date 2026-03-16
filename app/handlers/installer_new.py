@@ -35,7 +35,7 @@ from ..keyboards import (
 )
 from ..services.integration_hub import IntegrationHub
 from ..services.assignment import resolve_default_assignee
-from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope, set_active_menu_role
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import (
     InstallerDailyReportSG,
@@ -47,20 +47,13 @@ from ..states import (
     InstallerZpInitSG,
     InstallerZpSG,
 )
-from ..utils import answer_service, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard
+from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
 router = Router()
 router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
-
-
-_INSTALLER_BUTTONS = {
-    INST_BTN_DAILY_REPORT, INST_BTN_IN_WORK, INST_BTN_INVOICE_OK,
-    INST_BTN_MY_OBJECTS, INST_BTN_ORDER_EXTRA, INST_BTN_ORDER_MAT,
-    INST_BTN_RAZMERY_OK, INST_BTN_ZP,
-}
 
 
 @router.message.outer_middleware()
@@ -70,7 +63,6 @@ async def _installer_auto_refresh(handler, event: Message, data: dict):  # type:
     u = event.from_user
     if not u:
         return result
-    # Обновляем клавиатуру ВСЕГДА (включая FSM) чтобы меню не пропадало
     db_inst: Database | None = data.get("db")
     cfg = data.get("config")
     if not db_inst or not cfg:
@@ -79,19 +71,9 @@ async def _installer_auto_refresh(handler, event: Message, data: dict):  # type:
         user = await db_inst.get_user_optional(u.id)
         if not user or not user.role:
             return result
-        user_roles = set(parse_roles(user.role))
-        if Role.INSTALLER not in user_roles:
-            return result
-        menu_role, isolated = resolve_menu_scope(u.id, user.role)
+        menu_role = resolve_active_menu_role(u.id, user.role)
         if menu_role != Role.INSTALLER:
-            # Only auto-set role if user pressed a known installer button
-            msg_text = (event.text or "").strip()
-            if msg_text in _INSTALLER_BUTTONS and len(user_roles) > 1:
-                set_active_menu_role(u.id, Role.INSTALLER)
-                isolated = True
-                menu_role = Role.INSTALLER
-            else:
-                return result
+            return result
         unread = await db_inst.count_unread_tasks(u.id)
         uc = await db_inst.count_unread_by_channel(u.id)
         is_admin = u.id in (cfg.admin_ids or set())
@@ -100,7 +82,6 @@ async def _installer_auto_refresh(handler, event: Message, data: dict):  # type:
             is_admin=is_admin,
             unread=unread,
             unread_channels=uc,
-            isolated_role=isolated,
         )
         await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)
     except Exception:

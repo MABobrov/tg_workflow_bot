@@ -58,7 +58,7 @@ from ..keyboards import (
 )
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
-from ..services.menu_scope import get_active_menu_role, resolve_active_menu_role, resolve_menu_scope, set_active_menu_role
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import (
     CheckKpSG,
@@ -71,7 +71,7 @@ from ..states import (
     ManagerZpSG,
     ZameryRequestSG,
 )
-from ..utils import answer_service, format_materials_list, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
+from ..utils import answer_service, format_materials_list, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -85,15 +85,6 @@ ALL_MANAGER_ROLES = [Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAG
 # ---------------------------------------------------------------------------
 # Auto-refresh middleware — обновляет reply keyboard с бейджами на каждое сообщение
 # ---------------------------------------------------------------------------
-
-_MANAGER_BUTTONS = {
-    MGR_BTN_CHECK_KP, MGR_BTN_CHAT_RP, MGR_BTN_CRED, MGR_BTN_EDO,
-    MGR_BTN_INVOICE_END, MGR_BTN_INVOICE_START, MGR_BTN_ISSUE,
-    MGR_BTN_MONTAZH, MGR_BTN_MY_INVOICES, MGR_BTN_SEARCH_INVOICE,
-    MGR_BTN_ZAMERY, MGR_BTN_ZP,
-    "🔍 Поиск Счета", "🔍 Найти Счет №", "🔍 Поиск счёта",
-}
-
 
 @router.message.outer_middleware()
 async def _manager_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
@@ -110,27 +101,15 @@ async def _manager_auto_refresh(handler, event: Message, data: dict):  # type: i
         user = await db_inst.get_user_optional(u.id)
         if not user or not user.role:
             return result
-        user_roles = set(parse_roles(user.role))
-        mgr_intersection = user_roles & set(MANAGER_ROLES)
-        if not mgr_intersection:
-            return result
-        menu_role, isolated = resolve_menu_scope(u.id, user.role)
+        menu_role = resolve_active_menu_role(u.id, user.role)
         if menu_role not in MANAGER_ROLES:
-            # Only auto-set role if user pressed a known manager button
-            msg_text = (event.text or "").strip()
-            if msg_text in _MANAGER_BUTTONS and len(user_roles) > 1:
-                menu_role = next(iter(mgr_intersection))
-                set_active_menu_role(u.id, menu_role)
-                isolated = True
-            else:
-                return result
+            return result
         unread = await db_inst.count_unread_tasks(u.id)
         is_admin = u.id in (cfg.admin_ids or set())
         kb = main_menu(
             menu_role,
             is_admin=is_admin,
             unread=unread,
-            isolated_role=isolated,
         )
         await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)
     except Exception:
@@ -2024,7 +2003,6 @@ async def start_manager_issue(message: Message, state: FSMContext, db: Database)
 
 @router.message(
     lambda m: (m.text or "").strip() in {MGR_BTN_SEARCH_INVOICE, "🔍 Поиск Счета", "🔍 Найти Счет №", "🔍 Поиск счёта"}
-    and get_active_menu_role(m.from_user.id if m.from_user else None) != Role.GD
 )
 async def search_invoice_start(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES + [Role.RP, Role.ACCOUNTING]):

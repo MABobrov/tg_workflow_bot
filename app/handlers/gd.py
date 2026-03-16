@@ -47,7 +47,7 @@ from ..keyboards import (
     tasks_kb,
 )
 from ..services.integration_hub import IntegrationHub
-from ..services.menu_scope import get_active_menu_role, resolve_menu_scope
+from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
 from ..services.sheets_sync import export_to_sheets
 from ..states import ChatProxySG, InvoiceSearchSG, SalesWriteSG
@@ -473,7 +473,6 @@ async def gd_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
 
 @router.message(
     lambda m: (m.text or "").strip() in {GD_BTN_SEARCH_INVOICE, "Поиск Счета"}
-    and get_active_menu_role(m.from_user.id if m.from_user else None) == Role.GD
 )
 async def gd_search_invoice_start(message: Message, state: FSMContext, db: Database) -> None:
     """Start invoice search flow."""
@@ -954,7 +953,6 @@ async def gd_write_send_message(
 
 @router.message(
     lambda m: (m.text or "").strip() == GD_BTN_DAILY_SUMMARY
-    and get_active_menu_role(m.from_user.id if m.from_user else None) == Role.GD
 )
 async def gd_daily_summary(message: Message, db: Database, config: Config) -> None:
     """Агрегированная сводка дня для ГД."""
@@ -1025,7 +1023,6 @@ async def gd_daily_summary(message: Message, db: Database, config: Config) -> No
 
 @router.message(
     lambda m: (m.text or "").strip() == GD_BTN_SYNC
-    and get_active_menu_role(m.from_user.id if m.from_user else None) == Role.GD
 )
 async def gd_sync_data(message: Message, db: Database, config: Config, integrations: IntegrationHub) -> None:
     """Trigger Google Sheets resync + show detailed task/project summary."""

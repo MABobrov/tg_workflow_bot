@@ -33,7 +33,7 @@ from ..keyboards import (
     zamery_incoming_kb,
 )
 from ..services.assignment import resolve_default_assignee
-from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope, set_active_menu_role
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryCostEditSG, ZameryQuickBookSG, ZameryZpSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
@@ -45,11 +45,6 @@ router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 
 
-_ZAMERY_BUTTONS = {
-    ZAM_BTN_ZAMERY, ZAM_BTN_MY_OBJECTS, ZAM_BTN_SCHEDULE, ZAM_BTN_PAYMENT,
-}
-
-
 @router.message.outer_middleware()
 async def _zamery_auto_refresh(handler, event: Message, data: dict):  # type: ignore[type-arg]
     """При каждом сообщении от замерщика — обновляем reply-клавиатуру."""
@@ -57,7 +52,6 @@ async def _zamery_auto_refresh(handler, event: Message, data: dict):  # type: ig
     u = event.from_user
     if not u:
         return result
-    # Обновляем клавиатуру ВСЕГДА (включая FSM) чтобы меню не пропадало
     db_inst: Database | None = data.get("db")
     cfg = data.get("config")
     if not db_inst or not cfg:
@@ -66,20 +60,9 @@ async def _zamery_auto_refresh(handler, event: Message, data: dict):  # type: ig
         user = await db_inst.get_user_optional(u.id)
         if not user or not user.role:
             return result
-        from ..utils import parse_roles as _pr
-        user_roles = set(_pr(user.role))
-        if Role.ZAMERY not in user_roles:
-            return result
-        menu_role, isolated = resolve_menu_scope(u.id, user.role)
+        menu_role = resolve_active_menu_role(u.id, user.role)
         if menu_role != Role.ZAMERY:
-            # Only auto-set role if user pressed a known zamery button
-            msg_text = (event.text or "").strip()
-            if msg_text in _ZAMERY_BUTTONS and len(user_roles) > 1:
-                set_active_menu_role(u.id, Role.ZAMERY)
-                isolated = True
-                menu_role = Role.ZAMERY
-            else:
-                return result
+            return result
         unread = await db_inst.count_unread_tasks(u.id)
         uc = await db_inst.count_unread_by_channel(u.id)
         is_admin = u.id in (cfg.admin_ids or set())
@@ -88,9 +71,7 @@ async def _zamery_auto_refresh(handler, event: Message, data: dict):  # type: ig
             is_admin=is_admin,
             unread=unread,
             unread_channels=uc,
-            isolated_role=isolated,
         )
-        # Тихое обновление — сообщение удалится через 1сек, reply_markup обновится
         await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)
     except Exception:
         log.debug("zamery auto-refresh failed", exc_info=True)

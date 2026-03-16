@@ -11,7 +11,7 @@ from .utils import parse_roles, task_status_label, task_type_label, try_json_loa
 
 
 BACK_TO_HOME = "⬅️ Назад в главное меню"
-BACK_TO_ROLE_SELECTOR = "⬅️ К выбору роли"
+BACK_TO_ROLE_SELECTOR = "⬅️ Назад в главное меню"  # legacy alias, no longer used
 OPEN_ACTIONS = "📂 Ещё действия"
 OPEN_HELP = "📚 Справка"
 OPEN_ADMIN_PANEL = "🛠 Адм.панель"
@@ -140,21 +140,9 @@ ZAM_BTN_SYNC = "🔄 Синхронизация данных"
 ZAM_BTN_PAYMENT = "💰 Оплата замеров"
 ZAM_BTN_SCHEDULE = "📅 График замеров"
 
+# Legacy — kept for backward compat, no longer used
 ROLE_SELECTOR_PREFIX = "🎭 "
-ROLE_SELECTOR_LABELS: dict[str, str] = {
-    Role.MANAGER: f"{ROLE_SELECTOR_PREFIX}Менеджер",
-    Role.MANAGER_KV: f"{ROLE_SELECTOR_PREFIX}Менеджер КВ",
-    Role.MANAGER_KIA: f"{ROLE_SELECTOR_PREFIX}Менеджер КИА",
-    Role.MANAGER_NPN: f"{ROLE_SELECTOR_PREFIX}Менеджер НПН",
-    Role.RP: f"{ROLE_SELECTOR_PREFIX}РП",
-    Role.ACCOUNTING: f"{ROLE_SELECTOR_PREFIX}Бухгалтерия",
-    Role.INSTALLER: f"{ROLE_SELECTOR_PREFIX}Монтажник",
-    Role.ZAMERY: f"{ROLE_SELECTOR_PREFIX}Замерщик",
-    Role.GD: f"{ROLE_SELECTOR_PREFIX}ГД",
-    Role.DRIVER: f"{ROLE_SELECTOR_PREFIX}Водитель",
-    Role.LOADER: f"{ROLE_SELECTOR_PREFIX}Грузчик",
-    Role.TINTER: f"{ROLE_SELECTOR_PREFIX}Тонировщик",
-}
+ROLE_SELECTOR_LABELS: dict[str, str] = {}
 
 
 def _build_reply_rows(rows: list[list[str]]) -> ReplyKeyboardMarkup:
@@ -422,8 +410,9 @@ def main_menu(
     rp_ch_montazh: int = 0,
 ) -> ReplyKeyboardMarkup:
     parsed_roles = parse_roles(role)
-    if not isolated_role and len(parsed_roles) > 1:
-        return role_selector_menu(role, is_admin=is_admin)
+    # Single-role mode: if legacy multi-role data, use first role
+    if len(parsed_roles) > 1:
+        role = parsed_roles[0]
 
     inbox_label = MGR_BTN_INBOX
     if unread > 0:
@@ -518,14 +507,11 @@ def main_menu(
     # GD gets a custom layout — Отмена и Ещё уже в grid, админ в подменю
     if _is_pure_gd(role):
         rows: list[list[str]] = [list(r) for r in _role_primary_action_rows(Role.GD)]
-        if isolated_role:
-            rows.append([BACK_TO_ROLE_SELECTOR])
         _patch_inbox(rows)
         return _build_reply_rows(rows)
 
     # MANAGER_NPN (switched from RP) — role-switching row + NPN manager menu
-    # Must be checked BEFORE generic _is_pure_manager to add role-switch buttons
-    if _is_pure_manager_npn(role) and not isolated_role:
+    if _is_pure_manager_npn(role):
         rp_label = _format_role_badge(RP_BTN_ROLE_RP_INACTIVE, rp_tasks, rp_messages)
         npn_label = _format_role_badge(RP_BTN_ROLE_NPN_ACTIVE, npn_tasks, npn_messages)
         rows = [[rp_label, npn_label]]
@@ -539,15 +525,13 @@ def main_menu(
     if _is_pure_manager(role):
         r = parse_roles(role)[0]
         rows = [list(row) for row in _role_primary_action_rows(r)]
-        if isolated_role:
-            rows.append([BACK_TO_ROLE_SELECTOR])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         _patch_inbox(rows)
         return _build_reply_rows(rows)
 
     # RP — custom layout with role-switching row + built-in "Еще" button
-    if _is_pure_rp(role) and not isolated_role:
+    if _is_pure_rp(role):
         rp_label = _format_role_badge(RP_BTN_ROLE_RP, rp_tasks, rp_messages)
         npn_label = _format_role_badge(RP_BTN_ROLE_NPN, npn_tasks, npn_messages)
         rows: list[list[str]] = [[rp_label, npn_label]]
@@ -557,20 +541,10 @@ def main_menu(
         _patch_inbox(rows)
         return _build_reply_rows(rows)
 
-    if isolated_role and role == Role.RP:
-        rows = [list(row) for row in _role_primary_action_rows(Role.RP)]
-        rows.append([BACK_TO_ROLE_SELECTOR])
-        if is_admin:
-            rows.append([OPEN_ADMIN_PANEL])
-        _patch_inbox(rows)
-        return _build_reply_rows(rows)
-
     # Accounting — compact layout, no submenu
     if _is_pure_accounting(role):
         rows = [list(row) for row in _role_primary_action_rows(Role.ACCOUNTING)]
         rows.append(["❌ Отмена", OPEN_HELP])
-        if isolated_role:
-            rows.append([BACK_TO_ROLE_SELECTOR])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         _patch_inbox(rows)
@@ -580,8 +554,6 @@ def main_menu(
     if _is_pure_installer(role):
         rows = [list(row) for row in _role_primary_action_rows(Role.INSTALLER)]
         rows.append(["❌ Отмена", OPEN_HELP])
-        if isolated_role:
-            rows.append([BACK_TO_ROLE_SELECTOR])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         _patch_inbox(rows)
@@ -590,14 +562,12 @@ def main_menu(
     # Zamery — compact layout, no submenu
     if _is_pure_zamery(role):
         rows = [list(row) for row in _role_primary_action_rows(Role.ZAMERY)]
-        if isolated_role:
-            rows.append([BACK_TO_ROLE_SELECTOR])
         if is_admin:
             rows.append([OPEN_ADMIN_PANEL])
         _patch_inbox(rows)
         return _build_reply_rows(rows)
 
-    # Generic: combined roles or old roles
+    # Generic: fallback
     rows = []
     if role:
         rows.extend(_merge_rows_for_roles(role, _role_primary_action_rows))
@@ -605,8 +575,6 @@ def main_menu(
     if secondary_rows:
         rows.append([OPEN_ACTIONS])
     rows.append([OPEN_HELP, "🔄 Обновить меню"])
-    if isolated_role:
-        rows.append([BACK_TO_ROLE_SELECTOR])
     if is_admin:
         rows.append([OPEN_ADMIN_PANEL])
     rows.append(["❌ Отмена"])
@@ -622,10 +590,7 @@ def actions_menu(
     rows = _merge_rows_for_roles(role, _role_secondary_action_rows)
     if is_admin:
         rows.append([OPEN_ADMIN_PANEL])
-    if show_role_selector_back:
-        rows.append([BACK_TO_HOME, BACK_TO_ROLE_SELECTOR])
-    else:
-        rows.append([BACK_TO_HOME])
+    rows.append([BACK_TO_HOME])
     return _build_reply_rows(rows)
 
 
@@ -797,8 +762,6 @@ def gd_more_menu(
         rows.append([GD_BTN_ADMIN, GD_BTN_REFRESH])
     else:
         rows.append([GD_BTN_REFRESH])
-    if show_role_selector_back:
-        rows.append([BACK_TO_ROLE_SELECTOR])
     rows.append([GD_BTN_CANCEL, GD_BTN_HELP])
     return _build_reply_rows(rows)
 
@@ -868,20 +831,16 @@ def manager_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMar
         [MGR_BTN_SEARCH_INVOICE, "📋 Все задачи"],
         [MGR_BTN_HELP],
     ]
-    if show_role_selector_back:
-        rows.append([BACK_TO_ROLE_SELECTOR])
     rows.append([MGR_BTN_CANCEL, MGR_BTN_BACK_HOME])
     return _build_reply_rows(rows)
 
 
 def rp_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
-    """Подменю 'Еще' для РП: Поиск, Синхронизация, Справка (#42/#43 убраны дубли)."""
+    """Подменю 'Еще' для РП: Поиск, Синхронизация, Справка."""
     rows: list[list[str]] = [
         [RP_BTN_SEARCH_INVOICE, RP_BTN_SYNC],
         ["📋 Все задачи", RP_BTN_HELP],
     ]
-    if show_role_selector_back:
-        rows.append([BACK_TO_ROLE_SELECTOR])
     rows.append([RP_BTN_CANCEL, RP_BTN_BACK_HOME])
     return _build_reply_rows(rows)
 
@@ -892,8 +851,6 @@ def rp_team_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
         [RP_SUBBTN_MGR_KV, RP_SUBBTN_MGR_KIA],
         [RP_SUBBTN_MONTAZH],
     ]
-    if show_role_selector_back:
-        rows.append([BACK_TO_ROLE_SELECTOR])
     rows.append([RP_BTN_CANCEL, RP_BTN_BACK_HOME])
     return _build_reply_rows(rows)
 

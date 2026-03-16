@@ -33,10 +33,6 @@ _SUBMENU_TRIGGERS = {
     "👥 Команда",                          # RP team submenu
 }
 
-# Prefix for role-selector buttons — middleware must not interfere
-_ROLE_SELECTOR_PREFIX = "🎭 "
-
-
 class KeepMenuMiddleware(BaseMiddleware):
     """Outer middleware for dp.message — refreshes reply keyboard for all roles."""
 
@@ -57,11 +53,9 @@ class KeepMenuMiddleware(BaseMiddleware):
         if not u:
             return result
 
-        # Don't overwrite submenu keyboards or role selector
+        # Don't overwrite submenu keyboards
         msg_text = (event.text or "").strip()
         if msg_text in _SUBMENU_TRIGGERS:
-            return result
-        if msg_text.startswith(_ROLE_SELECTOR_PREFIX):
             return result
 
         # NOTE: НЕ пропускаем FSM-состояния!
@@ -87,7 +81,7 @@ class KeepMenuMiddleware(BaseMiddleware):
                 return result
 
             # Determine current menu role
-            menu_role, isolated = resolve_menu_scope(u.id, user.role)
+            menu_role, _ = resolve_menu_scope(u.id, user.role)
             if not menu_role:
                 return result
 
@@ -103,7 +97,6 @@ class KeepMenuMiddleware(BaseMiddleware):
                 menu_role,
                 is_admin=is_admin,
                 unread=unread,
-                isolated_role=isolated,
             )
 
             await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)

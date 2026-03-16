@@ -16,21 +16,15 @@ from ..db import Database
 from ..enums import Role
 from ..enums import MANAGER_ROLES
 from ..keyboards import (
-    BACK_TO_HOME, BACK_TO_ROLE_SELECTOR, OPEN_ACTIONS, OPEN_HELP, actions_menu, main_menu,
+    BACK_TO_HOME, OPEN_ACTIONS, OPEN_HELP, actions_menu, main_menu,
     gd_more_menu, GD_BTN_BACK_HOME, GD_BTN_MORE,
     manager_more_menu, MGR_BTN_MORE, MGR_BTN_BACK_HOME, MGR_BTN_SYNC,
-    role_selector_choices, ROLE_SELECTOR_PREFIX,
     rp_more_menu, rp_team_menu, RP_BTN_MORE, RP_BTN_BACK_HOME, RP_BTN_TEAM,
     tasks_kb,
 )
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_context import build_menu_context
-from ..services.menu_scope import (
-    clear_active_menu_role,
-    get_active_menu_role,
-    resolve_active_menu_role,
-    set_active_menu_role,
-)
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.sheets_sync import export_to_sheets, import_from_source_sheet
 from ..utils import answer_service, parse_roles, private_only_reply_markup, role_label
 
@@ -58,15 +52,9 @@ async def _menu_context(db: Database, user_id: int | None, role: str | None) -> 
 
 
 def _menu_scope(user_id: int | None, role_value: str | None) -> tuple[str | None, bool]:
+    """Return (role, False). No multi-role support."""
     active_role = resolve_active_menu_role(user_id, role_value)
-    isolated_role = bool(
-        user_id
-        and role_value
-        and active_role
-        and active_role != role_value
-        and len(parse_roles(role_value)) > 1
-    )
-    return active_role or role_value, isolated_role
+    return active_role or role_value, False
 
 
 def _new_user_admin_kb(user_id: int) -> InlineKeyboardBuilder:
@@ -240,12 +228,6 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
     existed = await db.get_user_optional(u.id)
     user = await db.upsert_user(u.id, u.username, u.full_name)
     role = user.role
-    if len(parse_roles(role)) > 1:
-        clear_active_menu_role(u.id)
-        active_role = None
-    else:
-        set_active_menu_role(u.id, role)
-        active_role = role
 
     if not user.is_active:
         await message.answer("⛔️ Ваш доступ к боту заблокирован. Обратитесь к администратору.")
@@ -256,27 +238,21 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
         f"Ваш Telegram ID: <code>{u.id}</code>\n"
     )
     if role:
-        text += f"Ваши роли: <b>{role_label(role)}</b>\n\nОткройте меню и выберите действие."
+        text += f"Ваша роль: <b>{role_label(role)}</b>\n\nОткройте меню и выберите действие."
     else:
         text += (
             "Ваша роль пока не назначена.\n"
-            "Администратор должен выдать роль командой: /setrole <code>@username</code> <code>manager[,rp,...]</code>\n"
-            "Допускается и старый формат по ID.\n\n"
+            "Администратор должен выдать роль командой: /setrole <code>@username</code> <code>role</code>\n\n"
             "После назначения нажмите «🔄 Обновить меню»."
         )
 
     is_admin = u.id in (config.admin_ids or set())
-    menu_context = await _menu_context(db, u.id, active_role or role)
+    menu_context = await _menu_context(db, u.id, role)
     await message.answer(
         text,
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(
-                active_role or role,
-                is_admin=is_admin,
-                isolated_role=bool(active_role and active_role != role),
-                **menu_context,
-            ),
+            main_menu(role, is_admin=is_admin, **menu_context),
         ),
     )
     if existed is None and not role and not is_admin:
@@ -305,49 +281,14 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
     user = await db.get_user_optional(u.id)
     role = user.role if user else None
     is_admin = u.id in (config.admin_ids or set())
-    roles = parse_roles(role)
-
-    if len(roles) > 1:
-        # Multi-role user: preserve active role if already selected
-        active = get_active_menu_role(u.id)
-        if active and active in roles:
-            # Refresh menu for the active role (don't reset to selector)
-            menu_context = await _menu_context(db, u.id, active)
-            await message.answer(
-                "✅ Меню обновлено.",
-                reply_markup=private_only_reply_markup(
-                    message,
-                    main_menu(
-                        active,
-                        is_admin=is_admin,
-                        isolated_role=True,
-                        **menu_context,
-                    ),
-                ),
-            )
-            return
-        # No active role — show role selector
-        clear_active_menu_role(u.id)
-        menu_context = await _menu_context(db, u.id, role)
-        await message.answer(
-            "🎭 <b>Выберите роль</b>\n\nСначала выберите, в каком контексте открыть меню.",
-            reply_markup=private_only_reply_markup(
-                message,
-                main_menu(role, is_admin=is_admin, **menu_context),
-            ),
-        )
-    else:
-        set_active_menu_role(u.id, role)
-        menu_context = await _menu_context(db, u.id, role)
-        # Use message.answer() directly — NOT answer_service() which auto-deletes
-        # the message after 60s, taking the reply keyboard with it.
-        await message.answer(
-            "✅ Меню обновлено.",
-            reply_markup=private_only_reply_markup(
-                message,
-                main_menu(role, is_admin=is_admin, **menu_context),
-            ),
-        )
+    menu_context = await _menu_context(db, u.id, role)
+    await message.answer(
+        "✅ Меню обновлено.",
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(role, is_admin=is_admin, **menu_context),
+        ),
+    )
 
 
 @router.message(Command("help"))
@@ -432,104 +373,12 @@ async def menu_actions(message: Message, db: Database, config: Config) -> None:
     )
 
 
-@router.message(lambda m: (m.text or "").strip().startswith(ROLE_SELECTOR_PREFIX))
-async def role_selector_pick(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    if not await _guard_blocked_message(message, db):
-        return
-    u = message.from_user
-    if not u:
-        return
-    # Clear any lingering FSM state to avoid interference with role menus
-    await state.clear()
-    user = await db.get_user_optional(u.id)
-    role_raw = user.role if user else None
-    selected_role = role_selector_choices(role_raw).get((message.text or "").strip())
-    if not selected_role:
-        log.warning("role_selector_pick: no match for text=%r, role_raw=%r", (message.text or "").strip(), role_raw)
-        # Fallback: re-show role selector so the user is not stuck
-        is_admin = u.id in (config.admin_ids or set())
-        menu_context = await _menu_context(db, u.id, role_raw)
-        await message.answer(
-            "🎭 <b>Выберите роль</b>\n\nСначала выберите, в каком контексте открыть меню.",
-            reply_markup=private_only_reply_markup(
-                message,
-                main_menu(role_raw, is_admin=is_admin, **menu_context),
-            ),
-        )
-        return
-    set_active_menu_role(u.id, selected_role)
-
-    menu_context = await _menu_context(db, u.id, selected_role)
-    is_admin = u.id in (config.admin_ids or set())
-    await message.answer(
-        "🎭 <b>Выбрана роль</b>\n\nДоступны действия только этой роли.",
-        reply_markup=private_only_reply_markup(
-            message,
-            main_menu(
-                selected_role,
-                is_admin=is_admin,
-                isolated_role=True,
-                **menu_context,
-            ),
-        ),
-    )
-
-
 @router.message(lambda m: (m.text or "").strip() == BACK_TO_HOME)
 async def back_to_home(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     await state.clear()
     if not await _guard_blocked_message(message, db):
         return
-    u = message.from_user
-    if not u:
-        return
-    user = await db.get_user_optional(u.id)
-    role = user.role if user else None
-    menu_role, isolated_role = _menu_scope(u.id, role)
-    if isolated_role:
-        menu_context = await _menu_context(db, u.id, menu_role)
-        await message.answer(
-            "Главное меню выбранной роли.",
-            reply_markup=private_only_reply_markup(
-                message,
-                main_menu(
-                    menu_role,
-                    is_admin=u.id in (config.admin_ids or set()),
-                    isolated_role=True,
-                    **menu_context,
-                ),
-            ),
-        )
-        return
     await cmd_menu(message, state, db, config)
-
-
-@router.message(lambda m: (m.text or "").strip() == BACK_TO_ROLE_SELECTOR)
-async def back_to_role_selector(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    await state.clear()
-    if not await _guard_blocked_message(message, db):
-        return
-    u = message.from_user
-    if not u:
-        return
-    user = await db.get_user_optional(u.id)
-    role = user.role if user else None
-    if len(parse_roles(role)) <= 1:
-        await cmd_menu(message, state, db, config)
-        return
-    clear_active_menu_role(u.id)
-    menu_context = await _menu_context(db, u.id, role)
-    await message.answer(
-        "🎭 <b>Выберите роль</b>\n\nВыберите, в каком контексте продолжить работу.",
-        reply_markup=private_only_reply_markup(
-            message,
-            main_menu(
-                role,
-                is_admin=u.id in (config.admin_ids or set()),
-                **menu_context,
-            ),
-        ),
-    )
 
 
 @router.message(lambda m: (m.text or "").strip() in {GD_BTN_MORE, MGR_BTN_MORE, RP_BTN_MORE, "Еще"})
@@ -546,37 +395,27 @@ async def menu_more_universal(message: Message, state: FSMContext, db: Database,
     if not u:
         return
     user = await db.get_user_optional(u.id)
-    _, isolated_role = _menu_scope(u.id, user.role if user else None)
+    role = resolve_active_menu_role(u.id, user.role if user else None)
 
-    active_role = get_active_menu_role(u.id)
-    if active_role is None and user and user.role:
-        roles = parse_roles(user.role)
-        active_role = roles[0] if roles else None
-
-    if active_role == Role.GD:
+    if role == Role.GD:
         _is_adm = bool(u.id in (config.admin_ids or set()))
         _uc = await db.count_unread_by_channel(u.id)
         await message.answer(
             "Выберите действие:",
             reply_markup=private_only_reply_markup(
                 message,
-                gd_more_menu(
-                    is_admin=_is_adm,
-                    unread_channels=_uc,
-                    show_role_selector_back=isolated_role,
-                ),
+                gd_more_menu(is_admin=_is_adm, unread_channels=_uc),
             ),
         )
-    elif active_role == Role.RP:
+    elif role == Role.RP:
         await message.answer(
             "Выберите действие:",
-            reply_markup=private_only_reply_markup(message, rp_more_menu(show_role_selector_back=isolated_role)),
+            reply_markup=private_only_reply_markup(message, rp_more_menu()),
         )
     else:
-        # Manager roles (KV / KIA / NPN) and legacy Manager
         await message.answer(
             "Выберите действие:",
-            reply_markup=private_only_reply_markup(message, manager_more_menu(show_role_selector_back=isolated_role)),
+            reply_markup=private_only_reply_markup(message, manager_more_menu()),
         )
 
 
@@ -805,12 +644,14 @@ async def all_tasks_list(message: Message, db: Database, config: Config) -> None
 
 @router.message(
     lambda m: (m.text or "").strip() in {MGR_BTN_SYNC, "🔄 Синхронизация данных"}
-    and get_active_menu_role(m.from_user.id if m.from_user else None) != Role.GD
 )
 async def sync_data_non_gd(
     message: Message, db: Database, config: Config, integrations: IntegrationHub,
 ) -> None:
-    """Sync data with Google Sheets for non-GD roles (button text with emoji)."""
+    """Sync data with Google Sheets for non-GD roles.
+
+    GD users are handled by gd.py's gd_sync_data — we import and call it directly.
+    """
     if not message.from_user:
         return
     user = await db.get_user_optional(message.from_user.id)
@@ -820,6 +661,9 @@ async def sync_data_non_gd(
     role = user.role
     active_role = resolve_active_menu_role(message.from_user.id, role)
     if active_role == Role.GD:
+        # Delegate to GD-specific sync handler
+        from .gd import gd_sync_data
+        await gd_sync_data(message, db, config, integrations)
         return
     is_admin = message.from_user.id in (config.admin_ids or set())
     menu_context = await _menu_context(db, message.from_user.id, active_role or role)
