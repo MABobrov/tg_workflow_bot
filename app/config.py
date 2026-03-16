@@ -17,7 +17,10 @@ def _parse_int(val: str | None) -> Optional[int]:
     val = val.strip()
     if not val:
         return None
-    return int(val)
+    try:
+        return int(val)
+    except ValueError:
+        return None
 
 
 def _parse_int_set(val: str | None) -> Set[int]:
@@ -28,7 +31,10 @@ def _parse_int_set(val: str | None) -> Set[int]:
         part = part.strip()
         if not part:
             continue
-        items.append(int(part))
+        try:
+            items.append(int(part))
+        except ValueError:
+            continue
     return set(items)
 
 
@@ -178,7 +184,7 @@ def load_config() -> Config:
     default_manager_npn_username = _parse_username(os.getenv("DEFAULT_MANAGER_NPN_USERNAME"))
     default_zamery_id = _parse_int(os.getenv("DEFAULT_ZAMERY_ID"))
     default_zamery_username = _parse_username(os.getenv("DEFAULT_ZAMERY_USERNAME"))
-    chat_history_limit = int(os.getenv("CHAT_HISTORY_LIMIT", "20"))
+    chat_history_limit = _parse_int(os.getenv("CHAT_HISTORY_LIMIT", "20")) or 20
 
     sheets_enabled = _parse_bool(os.getenv("SHEETS_ENABLED"), default=False)
     gsheet_spreadsheet_id = os.getenv("GSHEET_SPREADSHEET_ID")
@@ -203,11 +209,11 @@ def load_config() -> Config:
     webhook_secret = os.getenv("WEBHOOK_SECRET")
 
     sheets_webhook_secret = os.getenv("SHEETS_WEBHOOK_SECRET")
-    sheets_webhook_port = int(os.getenv("SHEETS_WEBHOOK_PORT", "8443"))
+    sheets_webhook_port = _parse_int(os.getenv("SHEETS_WEBHOOK_PORT", "8443")) or 8443
 
     reminders_enabled = _parse_bool(os.getenv("REMINDERS_ENABLED"), default=True)
-    remind_soon_minutes = int(os.getenv("REMIND_SOON_MINUTES", "60"))
-    remind_overdue_minutes = int(os.getenv("REMIND_OVERDUE_MINUTES", "10"))
+    remind_soon_minutes = _parse_int(os.getenv("REMIND_SOON_MINUTES", "60")) or 60
+    remind_overdue_minutes = _parse_int(os.getenv("REMIND_OVERDUE_MINUTES", "10")) or 10
 
     return Config(
         bot_token=token,
