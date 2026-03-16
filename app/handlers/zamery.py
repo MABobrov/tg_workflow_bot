@@ -137,7 +137,11 @@ async def zamery_view_request(
         return
     await cb.answer()
 
-    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    try:
+        req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    except (ValueError, TypeError, IndexError):
+        await cb.message.answer("❌ Некорректные данные заявки.")  # type: ignore[union-attr]
+        return
     req = await db.get_zamery_request(req_id)
     if not req:
         await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
@@ -180,7 +184,8 @@ async def zamery_view_request(
         text += f"\n📝 Описание: {req['description']}\n"
     text += f"📌 Источник: {source_label}\n"
     text += f"📊 Статус: {status_label}\n"
-    text += f"📅 Создана: {req.get('created_at', '—')[:16]}\n"
+    created_at = req.get("created_at") or "—"
+    text += f"📅 Создана: {str(created_at)[:16]}\n"
 
     b = InlineKeyboardBuilder()
     if req.get("status") in ("open", "in_progress"):
@@ -216,7 +221,11 @@ async def zamery_accept_request(
         return
     await cb.answer()
 
-    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    try:
+        req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    except (ValueError, TypeError, IndexError):
+        await cb.message.answer("❌ Некорректные данные заявки.")  # type: ignore[union-attr]
+        return
     req = await db.get_zamery_request(req_id)
     if not req:
         await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
@@ -242,7 +251,6 @@ async def zamery_accept_request(
 async def zamery_acc_pick_date(cb: CallbackQuery, state: FSMContext) -> None:
     """Показать 7 дней для выбора."""
     await cb.answer()
-    from datetime import date, timedelta
     today = date.today()
     day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     b = InlineKeyboardBuilder()
@@ -270,8 +278,11 @@ async def zamery_acc_pick_time(cb: CallbackQuery, state: FSMContext) -> None:
     for interval in intervals:
         b.button(text=interval, callback_data=f"zam_time:{interval}")
     b.adjust(3, 2)
-    from datetime import date as date_cls
-    d = date_cls.fromisoformat(chosen_date)
+    try:
+        d = date.fromisoformat(chosen_date)
+    except ValueError:
+        await cb.message.answer("❌ Некорректная дата.")  # type: ignore[union-attr]
+        return
     day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     await cb.message.answer(  # type: ignore[union-attr]
         f"📅 {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}\n\n"
@@ -331,7 +342,12 @@ async def _finalize_accept(
     """Общая функция финализации принятия заявки."""
     from ..utils import to_iso, utcnow
     data = await state.get_data()
-    req_id = data["accept_req_id"]
+    req_id = data.get("accept_req_id")
+    if not req_id:
+        msg = event.message if isinstance(event, CallbackQuery) else event
+        await msg.answer("❌ Ошибка состояния. Попробуйте снова.")  # type: ignore[union-attr]
+        await state.clear()
+        return
     req = await db.get_zamery_request(req_id)
     if not req:
         msg = event.message if isinstance(event, CallbackQuery) else event
@@ -364,10 +380,12 @@ async def _finalize_accept(
         f"📍 {req.get('address', '—')}\n"
     )
     if data.get("scheduled_date"):
-        from datetime import date as date_cls
-        d = date_cls.fromisoformat(data["scheduled_date"])
-        day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-        notify_text += f"📅 Дата: {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}\n"
+        try:
+            d = date.fromisoformat(data["scheduled_date"])
+            day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            notify_text += f"📅 Дата: {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}\n"
+        except (ValueError, TypeError):
+            pass
     if data.get("scheduled_time_interval"):
         notify_text += f"⏰ Время: {data['scheduled_time_interval']}\n"
     if data.get("accept_comment"):
@@ -403,7 +421,11 @@ async def zamery_reject_request(
         return
     await cb.answer("❌ Отклонено")
 
-    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    try:
+        req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    except (ValueError, TypeError, IndexError):
+        await cb.message.answer("❌ Некорректные данные заявки.")  # type: ignore[union-attr]
+        return
     req = await db.get_zamery_request(req_id)
     if not req:
         await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
@@ -572,7 +594,11 @@ async def zamery_myreq_view(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
 
-    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    try:
+        req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    except (ValueError, TypeError, IndexError):
+        await cb.message.answer("❌ Некорректные данные заявки.")  # type: ignore[union-attr]
+        return
     req = await db.get_zamery_request(req_id)
     if not req:
         await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
@@ -611,9 +637,8 @@ async def zamery_myreq_view(cb: CallbackQuery, db: Database) -> None:
         text += f"💰 Стоимость замера: <b>{total_cost}₽</b>\n"
     # Дата/время если назначены
     if req.get("scheduled_date"):
-        from datetime import date as date_cls
         try:
-            d = date_cls.fromisoformat(req["scheduled_date"])
+            d = date.fromisoformat(req["scheduled_date"])
             day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
             text += f"📅 Дата: {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}\n"
         except ValueError:
@@ -626,7 +651,8 @@ async def zamery_myreq_view(cb: CallbackQuery, db: Database) -> None:
         text += f"\n📝 Описание: {req['description']}\n"
     text += f"📌 Источник: {source_label}\n"
     text += f"📊 Статус: {status_label}\n"
-    text += f"📅 Создана: {req.get('created_at', '—')[:16]}\n"
+    created_at = req.get("created_at") or "—"
+    text += f"📅 Создана: {str(created_at)[:16]}\n"
 
     b = InlineKeyboardBuilder()
     if req.get("status") == "in_progress":
@@ -646,7 +672,11 @@ async def zamery_complete_start(cb: CallbackQuery, state: FSMContext, db: Databa
     if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
         return
     await cb.answer()
-    req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    try:
+        req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    except (ValueError, TypeError, IndexError):
+        await cb.message.answer("❌ Некорректные данные заявки.")  # type: ignore[union-attr]
+        return
     req = await db.get_zamery_request(req_id)
     if not req or req.get("status") != "in_progress":
         await cb.message.answer("❌ Заявка не найдена или уже завершена.")  # type: ignore[union-attr]
@@ -733,11 +763,14 @@ async def _finalize_complete(
 ) -> None:
     """Общая функция завершения замера."""
     from ..utils import to_iso, utcnow
-    from datetime import datetime
     data = await state.get_data()
-    req_id = data["complete_req_id"]
-    req = await db.get_zamery_request(req_id)
+    req_id = data.get("complete_req_id")
     msg_target = event.message if isinstance(event, CallbackQuery) else event
+    if not req_id:
+        await msg_target.answer("❌ Ошибка состояния. Попробуйте снова.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+    req = await db.get_zamery_request(req_id)
 
     if not req:
         await msg_target.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
@@ -785,9 +818,8 @@ async def _finalize_complete(
     if time_label:
         notify_text += f"⏱ Время выполнения: {time_label}\n"
     if req.get("scheduled_date"):
-        from datetime import date as date_cls
         try:
-            d = date_cls.fromisoformat(req["scheduled_date"])
+            d = date.fromisoformat(req["scheduled_date"])
             day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
             notify_text += f"📅 Дата замера: {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}"
             if req.get("scheduled_time_interval"):
@@ -964,7 +996,11 @@ async def zamery_payment_card(cb: CallbackQuery, state: FSMContext, db: Database
         return
     await cb.answer()
 
-    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    try:
+        inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    except (ValueError, TypeError, IndexError):
+        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
+        return
     inv = await db.get_invoice(inv_id)
     if not inv:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
@@ -1014,7 +1050,11 @@ async def zamery_edit_cost_value(message: Message, state: FSMContext, db: Databa
         return
 
     data = await state.get_data()
-    inv_id = data["edit_cost_inv_id"]
+    inv_id = data.get("edit_cost_inv_id")
+    if not inv_id:
+        await message.answer("❌ Ошибка состояния. Попробуйте снова.")
+        await state.clear()
+        return
     await db.update_invoice(
         inv_id,
         zp_zamery_total=cost,
@@ -1160,14 +1200,18 @@ async def zamery_batch_gd_approve(
         return
     await cb.answer("✅ ЗП ОК")
 
-    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    try:
+        task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    except (ValueError, TypeError, IndexError):
+        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
+        return
     task = await db.get_task(task_id)
     if not task:
         await cb.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
         return
 
     from ..utils import try_json_loads
-    payload = try_json_loads(task.get("payload_json"))
+    payload = try_json_loads(task.get("payload_json")) or {}
     inv_ids = payload.get("invoice_ids", [])
     zamery_uid = payload.get("zamery_user_id")
     total = payload.get("total", 0)
@@ -1206,14 +1250,18 @@ async def zamery_batch_gd_reject(
         return
     await cb.answer("❌ Отклонено")
 
-    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    try:
+        task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    except (ValueError, TypeError, IndexError):
+        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
+        return
     task = await db.get_task(task_id)
     if not task:
         await cb.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
         return
 
     from ..utils import try_json_loads
-    payload = try_json_loads(task.get("payload_json"))
+    payload = try_json_loads(task.get("payload_json")) or {}
     inv_ids = payload.get("invoice_ids", [])
     zamery_uid = payload.get("zamery_user_id")
 
@@ -2006,21 +2054,19 @@ async def zamery_blackout_remove(cb: CallbackQuery, db: Database) -> None:
     await cb.answer()
 
     parts = cb.data.split(":")  # type: ignore[union-attr]
-    bl_id = int(parts[3])
-    week_offset = int(parts[4]) if len(parts) > 4 else 0
+    try:
+        bl_id = int(parts[3])
+        week_offset = int(parts[4]) if len(parts) > 4 else 0
+    except (ValueError, TypeError, IndexError):
+        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
+        return
 
     await db.remove_zamery_blackout_date(bl_id)
 
-    # Refresh week view
-    today = date.today()
-    mon, sun = _week_range(today, week_offset)
-
-    # Re-render the week
     await cb.message.answer("✅ Выходной удалён.")  # type: ignore[union-attr]
 
-    # Simulate going back to that week
-    cb.data = f"zamsched:week:{week_offset}"  # type: ignore[assignment]
-    await zamery_schedule_week(cb, db)
+    # Refresh schedule main view instead of mutating cb.data
+    await _render_schedule_main(cb, db, cb.from_user.id, edit_existing=False)
 
 
 # =====================================================================
@@ -2036,7 +2082,11 @@ async def zamery_zp_start(
         return
     await cb.answer()
 
-    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    try:
+        invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    except (ValueError, TypeError, IndexError):
+        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
+        return
     inv = await db.get_invoice(invoice_id)
     if not inv:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
@@ -2323,8 +2373,15 @@ async def zamery_zp_approve(
         return
     await cb.answer()
     parts = cb.data.split(":")  # type: ignore[union-attr]
+    if len(parts) < 3:
+        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
+        return
     decision = parts[1]  # yes or no
-    invoice_id = int(parts[2])
+    try:
+        invoice_id = int(parts[2])
+    except (ValueError, TypeError):
+        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
+        return
 
     inv = await db.get_invoice(invoice_id)
     if not inv:
