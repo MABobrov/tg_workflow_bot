@@ -1604,7 +1604,7 @@ class Database:
             )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def list_invoices_approaching_deadline(self) -> list[dict[str, Any]]:
+    async def list_invoices_with_deadline(self) -> list[dict[str, Any]]:
         """Активные счета с deadline_end_date: просроченные, сегодня, <=3 дней."""
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
@@ -1782,16 +1782,16 @@ class Database:
 
         # Открытые задачи по типам
         cur = await self.conn.execute(
-            "SELECT task_type, COUNT(*) AS cnt FROM tasks "
+            "SELECT type, COUNT(*) AS cnt FROM tasks "
             "WHERE status IN ('open', 'in_progress') "
-            "GROUP BY task_type"
+            "GROUP BY type"
         )
         tasks_open: dict[str, int] = {}
         for r in await cur.fetchall():
-            tasks_open[str(r["task_type"])] = int(r["cnt"])
+            tasks_open[str(r["type"])] = int(r["cnt"])
 
         # Просроченные / приближающиеся дедлайны
-        deadlines = await self.list_invoices_approaching_deadline()
+        deadlines = await self.list_invoices_with_deadline()
         overdue = 0
         today_dl = 0
         soon_dl = 0
@@ -1814,7 +1814,7 @@ class Database:
         # Сумма активных счетов
         cur = await self.conn.execute(
             "SELECT COALESCE(SUM(amount), 0) AS total, "
-            "COALESCE(SUM(debt), 0) AS total_debt "
+            "COALESCE(SUM(outstanding_debt), 0) AS total_debt "
             "FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid') "
             "AND parent_invoice_id IS NULL "
