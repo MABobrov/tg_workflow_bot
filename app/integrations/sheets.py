@@ -520,6 +520,8 @@ class GoogleSheetsService:
             ws = self._get_or_create_ws(self.cfg.invoices_tab, INVOICES_HEADER)
             row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_id)
             cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
+            if not is_new:
+                cells = {k: v for k, v in cells.items() if k not in _MANUAL_COLS}
             batch_data = self._invoice_batch_ranges(row, cells)
             self._flush_batch_update(ws, batch_data, chunk_size=200)
 
@@ -583,6 +585,8 @@ class GoogleSheetsService:
                     continue
                 row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_id)
                 cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
+                if not is_new:
+                    cells = {k: v for k, v in cells.items() if k not in _MANUAL_COLS}
                 batch_data.extend(self._invoice_batch_ranges(row, cells))
                 count += 1
             self._flush_batch_update(ws, batch_data, chunk_size=500)
@@ -632,33 +636,43 @@ class GoogleSheetsService:
 
     # Column mapping: source sheet col index → field name
     _OP_COL_MAP: dict[int, str] = {
-        0: "client_name",           # Контрагент
-        1: "traffic_source",        # Ист.трафика
-        2: "is_credit",             # Б.Н./Кред (0=кредит, 1=б.н.)
-        3: "client_source",         # Свой/Атм (1=Свой, 2=Атм)
-        4: "invoice_number",        # Номер счета (KEY)
-        5: "object_address",        # Адрес
-        6: "receipt_date",          # Дата пост.
-        7: "deadline_days",         # Сроки (дни)
-        9: "actual_completion_date", # Дата Факт
-        10: "amount",              # Сумма
-        11: "first_payment_amount", # Сумма 1пл
-        12: "estimated_materials",  # Расч.мат.
-        13: "estimated_installation", # Установка
-        14: "estimated_loaders",    # Грузчики
-        15: "estimated_logistics",  # Логистика
-        16: "profit_tax",           # Q: Прибыль
-        17: "nds_amount",           # R: НДС
-        19: "rentability_calc",     # T: Рент-ть расч
-        21: "surcharge_amount",     # V: Сумма допл
-        22: "surcharge_date",       # W: Дата допл
-        23: "final_surcharge_amount", # X: Оконч допл
-        24: "final_surcharge_date", # Y: Дата оконч
-        25: "outstanding_debt",     # Z: Долг
-        26: "payment_terms",        # AA: Пояснения
-        27: "agent_fee",            # AB: Агентское
-        28: "manager_zp_blank",     # AC: Мен.ЗП
-        33: "npn_amount",           # AH: НПН 10%
+        0: "client_name",              # A: Контрагент
+        1: "traffic_source",           # B: Ист.трафика
+        2: "is_credit",                # C: Кред (0=кредит, 1=б.н.)
+        3: "client_source",            # D: Свой/Атм (1=Свой, 2=Атм)
+        4: "invoice_number",           # E: Номер счета (KEY)
+        5: "object_address",           # F: Адрес
+        6: "receipt_date",             # G: Дата пост.
+        7: "deadline_days",            # H: Сроки (дни)
+        # 8: пусто
+        9: "actual_completion_date",   # J: Дата Факт
+        10: "amount",                  # K: Сумма
+        11: "first_payment_amount",    # L: Сумма 1пл
+        12: "estimated_materials",     # M: Расч.мат.
+        13: "estimated_installation",  # N: Установка
+        14: "estimated_loaders",       # O: Грузчики
+        15: "estimated_logistics",     # P: Логистика
+        16: "profit_tax",              # Q: Прибыль кред.
+        17: "nds_amount",              # R: НДС
+        # 18: Налог на приб. (не импортируем)
+        # 19: РП - 10% (не импортируем)
+        # 20: Прибыль расч (не импортируем)
+        21: "rentability_calc",        # V: Рент-ть расчетная
+        # 22: Рент-ть факт (не импортируем)
+        23: "surcharge_amount",        # X: Сумма допл
+        24: "surcharge_date",          # Y: Дата допл
+        25: "final_surcharge_amount",  # Z: Финальный платеж
+        26: "final_surcharge_date",    # AA: Дата Финал.пл.
+        27: "outstanding_debt",        # AB: Сумма Долга
+        28: "payment_terms",           # AC: Пояснения
+        29: "agent_fee",               # AD: Агентское
+        # 30: Выплаты. Агент. (не импортируем)
+        # 31: Дата выпл. Агент. (не импортируем)
+        32: "manager_zp_blank",        # AG: Мен. ЗП (по бланку)
+        # 33-43: ЗП выплаты, факт данные (не импортируем)
+        # 44: Команда боту (human-writable)
+        # 45: Запрос НПН (не импортируем)
+        46: "npn_amount",              # AU: Выдано НПН
     }
 
     def _parse_num(self, val: str) -> float | None:
