@@ -1212,7 +1212,7 @@ class Database:
             "SELECT * FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid') "
             f"{fmt_clause}"
-            "ORDER BY updated_at DESC LIMIT ?",
+            "ORDER BY receipt_date DESC, updated_at DESC LIMIT ?",
             (limit,),
         )
         rows = await cur.fetchall()
@@ -1280,7 +1280,7 @@ class Database:
             "SELECT * FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid', 'ended') "
             f"{fmt_clause}"
-            "ORDER BY updated_at DESC LIMIT ?",
+            "ORDER BY receipt_date DESC, updated_at DESC LIMIT ?",
             (limit,),
         )
         return [dict(r) for r in await cur.fetchall()]
@@ -2676,7 +2676,7 @@ class Database:
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(limit)
         cur = await self.conn.execute(
-            f"SELECT * FROM invoices {where} ORDER BY created_at DESC LIMIT ?",
+            f"SELECT * FROM invoices {where} ORDER BY receipt_date DESC, created_at DESC LIMIT ?",
             tuple(params),
         )
         rows = await cur.fetchall()
