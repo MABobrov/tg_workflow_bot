@@ -24,7 +24,6 @@ from .services.notifier import Notifier
 from .services.daily_sync import daily_sync_loop
 from .services.lead_poller import lead_poller_loop
 from .services.reminders import acceptance_reminders_loop, reminders_loop
-from .services.sheet_cmd_poller import sheet_cmd_poller_loop
 from .services.sheet_commands import process_sheet_webhook
 from .services.sheets_sync import import_from_source_sheet
 
@@ -251,19 +250,6 @@ async def main() -> None:
             )
         )
 
-    # --- Sheet command poller (ОП → бот, column AN) ---
-    sheet_cmd_task: asyncio.Task | None = None
-    if sheets_service and sheets_service.cfg.source_spreadsheet_id:
-        sheet_cmd_task = asyncio.create_task(
-            sheet_cmd_poller_loop(
-                db=db,
-                notifier=notifier,
-                sheets=sheets_service,
-                interval_seconds=30,
-            )
-        )
-        log.info("Sheet command poller task started")
-
     # --- Sheets webhook server (aiohttp) ---
     webhook_runner: web.AppRunner | None = None
     if config.sheets_webhook_secret:
@@ -385,14 +371,6 @@ async def main() -> None:
                 pass
             except Exception:
                 logging.exception("Daily sync task terminated with error")
-        if sheet_cmd_task:
-            sheet_cmd_task.cancel()
-            try:
-                await sheet_cmd_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logging.exception("Sheet command poller terminated with error")
         if webhook_runner:
             await webhook_runner.cleanup()
         await integrations.stop()
