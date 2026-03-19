@@ -422,9 +422,13 @@ class GoogleSheetsService:
             cells[17] = self._fmt_amount(est_inst)
             cells[18] = self._fmt_amount(est_load)
             cells[19] = self._fmt_amount(est_log)
-            cells[20] = self._fmt_amount(est_profit)
             cells[21] = self._fmt_amount(net_vat)
             cells[23] = f"{est_pct:.1f}%"
+
+        # Прибыль кредит — из ОП (поле profit_tax), не рассчитывать
+        profit_tax = invoice.get("profit_tax")
+        if profit_tax:
+            cells[20] = self._fmt_amount(profit_tax)
 
         if _c:
             fact_pct = _c.get("margin_pct", 0)
