@@ -24,6 +24,7 @@ from .services.notifier import Notifier
 from .services.daily_sync import daily_sync_loop
 from .services.lead_poller import lead_poller_loop
 from .services.reminders import acceptance_reminders_loop, reminders_loop
+from .services.sheet_cmd_poller import sheet_cmd_poller_loop
 from .services.sheet_commands import process_sheet_webhook
 from .services.sheets_sync import import_from_source_sheet
 
@@ -97,28 +98,7 @@ async def main() -> None:
     if marker_map:
         await db.assign_invoices_by_marker(marker_map)
 
-    # One-time import: 8 zamery records as unpaid invoices
-    zamery_uid = config.default_zamery_id
-    if not zamery_uid:
-        _zam_users = await db.find_users_by_role("zamery")
-        # Предпочесть пользователя с ролью gd (ГД), иначе первого
-        _zam_users.sort(key=lambda u: (0 if "gd" in (u.role or "").split(",") else 1))
-        if _zam_users:
-            zamery_uid = _zam_users[0].telegram_id
-    if zamery_uid:
-        _zamery_records = [
-            {"invoice_number": "ЗМ-КВ-1", "object_address": "г. Москва, Енисейская 2 стр.2", "client_contact": "Константин 89857948959"},
-            {"invoice_number": "ЗМ-КИА-1", "object_address": "г. Москва, Краснопресненская наб. 12 ЦМТ", "client_contact": "Юрий 89296880543"},
-            {"invoice_number": "ЗМ-КВ-2", "object_address": "г. Москва, ул. Рабочая д.91 стр.3", "client_contact": "Илья 89255702601"},
-            {"invoice_number": "ЗМ-НПН-1", "object_address": "г. Москва, ул. 2-я Звенигородская, д. 13, стр. 42", "client_contact": "Екатерина 8 926 588 19 84"},
-            {"invoice_number": "ЗМ-КВ-3", "object_address": "г. Москва, наб. Туполева 17", "client_contact": "Валерий Анатольевич 8 953 742 02 31"},
-            {"invoice_number": "ЗМ-КВ-4", "object_address": "г. Москва, пр-т Вернадского, д. 11/19", "client_contact": "Сюзанна 89152144332"},
-            {"invoice_number": "ЗМ-КВ-5", "object_address": "г. Москва, ул. Лобачевского д.28А", "client_contact": "Евгений 8 903 324 42 87"},
-            {"invoice_number": "ЗМ-КИА-2", "object_address": "г. Москва, ул. Мосфильмовская 88 корп 4 стр 1 кв. 742", "client_contact": "Петр +7 991 305-86-04"},
-        ]
-        imported = await db.import_zamery_invoices(_zamery_records, zamery_uid)
-        if imported:
-            logging.getLogger(__name__).info("Imported %d zamery records", imported)
+    # zamery one-time import removed — records were test data
 
     work_chat_id = await get_work_chat_id(db, config)
 
@@ -271,6 +251,19 @@ async def main() -> None:
             )
         )
 
+    # --- Sheet command poller (ОП → бот, column AN) ---
+    sheet_cmd_task: asyncio.Task | None = None
+    if sheets_service and sheets_service.cfg.source_spreadsheet_id:
+        sheet_cmd_task = asyncio.create_task(
+            sheet_cmd_poller_loop(
+                db=db,
+                notifier=notifier,
+                sheets=sheets_service,
+                interval_seconds=30,
+            )
+        )
+        log.info("Sheet command poller task started")
+
     # --- Sheets webhook server (aiohttp) ---
     webhook_runner: web.AppRunner | None = None
     if config.sheets_webhook_secret:
@@ -392,6 +385,14 @@ async def main() -> None:
                 pass
             except Exception:
                 logging.exception("Daily sync task terminated with error")
+        if sheet_cmd_task:
+            sheet_cmd_task.cancel()
+            try:
+                await sheet_cmd_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logging.exception("Sheet command poller terminated with error")
         if webhook_runner:
             await webhook_runner.cleanup()
         await integrations.stop()
