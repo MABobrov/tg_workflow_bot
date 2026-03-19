@@ -422,7 +422,7 @@ class GoogleSheetsService:
 
         # Формулы в таблице: НДС (V), Нал.приб. (W), Прибыль (U), Рентабельность (X)
         cells[21] = f"=((O{row}*22/122)-(Q{row}*22/122))*G{row}"
-        cells[22] = f"=(O{row}-Q{row}-R{row}-S{row}-T{row}-V{row})/100*20"
+        cells[22] = f"=((O{row}-Q{row}-R{row}-S{row}-T{row}-V{row})/100*20)*G{row}"
         cells[20] = f"=(O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row})*0.9"
         cells[23] = f'=IF(O{row}>0,U{row}/O{row}*100,0)'
 
