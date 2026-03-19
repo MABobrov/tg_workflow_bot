@@ -427,7 +427,7 @@ class GoogleSheetsService:
 
         # Прибыль кредит — из ОП (поле profit_tax), не рассчитывать
         profit_tax = invoice.get("profit_tax")
-        if profit_tax:
+        if profit_tax is not None:
             cells[20] = self._fmt_amount(profit_tax)
 
         if _c:
