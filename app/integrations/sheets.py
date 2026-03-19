@@ -415,6 +415,8 @@ class GoogleSheetsService:
         input_vat = refundable_base * 22 / 122 if refundable_base > 0 else 0
         net_vat = output_vat - input_vat
         est_profit = amount - est_total - net_vat
+        # Прибыль кредит = прибыль − 10% ЗП РП за проведение
+        profit_credit = est_profit * 0.9
         est_pct = (est_profit / amount * 100) if amount > 0 else 0
 
         if any([est_glass, est_profile, est_mat_legacy, est_inst, est_load, est_log]):
@@ -422,13 +424,9 @@ class GoogleSheetsService:
             cells[17] = self._fmt_amount(est_inst)
             cells[18] = self._fmt_amount(est_load)
             cells[19] = self._fmt_amount(est_log)
+            cells[20] = self._fmt_amount(profit_credit)
             cells[21] = self._fmt_amount(net_vat)
             cells[23] = f"{est_pct:.1f}%"
-
-        # Прибыль кредит — из ОП (поле profit_tax), не рассчитывать
-        profit_tax = invoice.get("profit_tax")
-        if profit_tax is not None:
-            cells[20] = self._fmt_amount(profit_tax)
 
         if _c:
             fact_pct = _c.get("margin_pct", 0)
