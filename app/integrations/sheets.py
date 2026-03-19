@@ -132,7 +132,7 @@ INVOICES_HEADER = [
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
 # Removed 7 (Свой/Атм→client_source), 18,19,21,24 — now bot-managed (Plan/Fact)
-_MANUAL_COLS = frozenset([1, 5, 11, 12, 22, 25, 26, 27, 28, 29,
+_MANUAL_COLS = frozenset([1, 5, 11, 12, 25, 26, 27, 28, 29,
                           31, 33, 34, 37, 38, 39, 40, 41, 42, 43, 44, 45])
 
 
@@ -420,9 +420,10 @@ class GoogleSheetsService:
             cells[18] = self._fmt_amount(est_load)
             cells[19] = self._fmt_amount(est_log)
 
-        # Формулы в таблице: НДС (V), Прибыль (U), Рентабельность (X)
+        # Формулы в таблице: НДС (V), Нал.приб. (W), Прибыль (U), Рентабельность (X)
         cells[21] = f"=((O{row}*22/122)-(Q{row}*22/122))*G{row}"
-        cells[20] = f"=(O{row}-Q{row}-R{row}-S{row}-T{row}-V{row})*0.9"
+        cells[22] = f"=(O{row}-Q{row}-R{row}-S{row}-T{row}-V{row})/100*20"
+        cells[20] = f"=(O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row})*0.9"
         cells[23] = f'=IF(O{row}>0,U{row}/O{row}*100,0)'
 
         if _c:
