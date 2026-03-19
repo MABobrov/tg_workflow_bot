@@ -133,7 +133,7 @@ INVOICES_HEADER = [
 # Column indices the bot NEVER overwrites (manual-only + formula)
 # Removed 7 (Свой/Атм→client_source), 18,19,21,24 — now bot-managed (Plan/Fact)
 _MANUAL_COLS = frozenset([1, 5, 11, 12, 25, 26, 27, 28, 29,
-                          31, 33, 34, 37, 38, 39, 40, 41, 42, 43, 44, 45])
+                          31, 33, 34, 37, 38, 39, 40, 42, 43, 44, 45])
 
 
 @dataclass
@@ -400,7 +400,7 @@ class GoogleSheetsService:
             60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
         }
 
-        amount = float(invoice.get("amount") or 0)
+        # Расч.мат., Установка, Грузчики, Логистика — из БД
         est_glass = float(invoice.get("estimated_glass") or 0)
         est_profile = float(invoice.get("estimated_profile") or 0)
         est_mat_legacy = float(invoice.get("estimated_materials") or 0)
@@ -408,23 +408,18 @@ class GoogleSheetsService:
         est_load = float(invoice.get("estimated_loaders") or 0)
         est_log = float(invoice.get("estimated_logistics") or 0)
         materials_total = est_glass + est_profile + est_mat_legacy
-        est_total = materials_total + est_inst + est_load + est_log
-
-        refundable_base = est_glass + est_profile
-        output_vat = amount * 22 / 122 if amount > 0 else 0
-        input_vat = refundable_base * 22 / 122 if refundable_base > 0 else 0
-        net_vat = output_vat - input_vat
         if any([est_glass, est_profile, est_mat_legacy, est_inst, est_load, est_log]):
             cells[16] = self._fmt_amount(materials_total)
             cells[17] = self._fmt_amount(est_inst)
             cells[18] = self._fmt_amount(est_load)
             cells[19] = self._fmt_amount(est_log)
 
-        # Формулы в таблице: НДС (V), Нал.приб. (W), Прибыль (U), Рентабельность (X)
-        cells[21] = f"=((O{row}*22/122)-(Q{row}*22/122))*G{row}"
-        cells[22] = f"=((O{row}-Q{row}-R{row}-S{row}-T{row}-V{row})/100*20)*G{row}"
-        cells[20] = f"=(O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row})*0.9"
-        cells[23] = f'=IF(O{row}>0,U{row}/O{row}*100,0)'
+        # Формулы: НДС (V), Нал.приб. (W), НПН (AP), Прибыль (U), Рент-ть (X)
+        cells[21] = f"=((O{row}*22/122)-(Q{row}*22/122))*G{row}"              # V
+        cells[22] = f"=((O{row}-Q{row}-R{row}-S{row}-T{row}-V{row})/100*20)*G{row}"  # W
+        cells[41] = f"=(O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row})*10/100"    # AP (НПН 10%)
+        cells[20] = f"=O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row}-AP{row}"     # U (Прибыль)
+        cells[23] = f'=IF(O{row}>0,U{row}/O{row}*100,0)'                      # X (Рент-ть)
 
         if _c:
             fact_pct = _c.get("margin_pct", 0)
