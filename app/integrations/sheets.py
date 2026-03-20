@@ -121,8 +121,8 @@ INVOICES_HEADER = [
     "Этап монтажа",         # 51
     "Монтажник ОК",         # 52
     "Долгов нет",           # 53
-    "ЗП Замерщик",          # 54
-    "ЗП Замерщик сумма",    # 55
+    "",                     # 54 (перенесено в 74)
+    "",                     # 55 (перенесено в 75)
     "ЗП Монтажник статус",  # 56
     "Оплаты пост. итого",   # 57
     "Расходы итого",        # 58
@@ -146,8 +146,11 @@ INVOICES_HEADER = [
     "ЗП Замерщик",         # 74 (перенос из 54)
     "ЗП Замерщик сумма",   # 75 (перенос из 55)
     "Замеры",              # 76 (перенос из 69)
-    # — Аналитика (77) —
+    # — Аналитика (77-80) —
     "Расчет vs Факт",     # 77
+    "Прибыль факт",       # 78
+    "Рент-ть факт %",     # 79
+    "Перерасчет прибыли",  # 80
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -464,6 +467,7 @@ class GoogleSheetsService:
             76: invoice.get("_zamery_info") or "",                       # BY Замеры
             # — Аналитика —
             77: invoice.get("_plan_fact_label") or "",                   # BZ Расчет vs Факт
+            # 78, 79, 80 заполняются ниже из cost_card
         }
 
         # Расч.мат., Установка, Грузчики, Логистика — из БД
@@ -489,10 +493,28 @@ class GoogleSheetsService:
 
         if _c:
             fact_pct = _c.get("margin_pct", 0)
+            fact_margin = _c.get("margin", 0)
             cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""
             cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
             cells[58] = self._fmt_amount(_c.get("total_cost"))
             cells[71] = self._fmt_amount(_c.get("materials_total"))          # Материалы Факт
+            # Прибыль факт (78) и Рентабельность факт % (79)
+            cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CC Прибыль факт
+            cells[79] = f"{fact_pct:.1f}%" if fact_pct else ""               # CD Рент-ть факт %
+            # Перерасчет прибыли (80): разница план-факт при перерасходе
+            pf_label = invoice.get("_plan_fact_label") or ""
+            if pf_label == "Перерасчет прибыли":
+                est_total = (float(invoice.get("estimated_glass") or 0)
+                             + float(invoice.get("estimated_profile") or 0)
+                             + float(invoice.get("estimated_materials") or 0)
+                             + float(invoice.get("estimated_installation") or 0)
+                             + float(invoice.get("estimated_loaders") or 0)
+                             + float(invoice.get("estimated_logistics") or 0))
+                fact_total = _c.get("total_cost", 0)
+                delta = fact_total - est_total
+                cells[80] = self._fmt_amount(delta)                          # CE Перерасчет
+            else:
+                cells[80] = ""
 
         # Монтаж Факт = zp_installer_amount (сумма запроса ЗП монтажника)
         zp_inst_amt = invoice.get("zp_installer_amount")
@@ -657,7 +679,40 @@ class GoogleSheetsService:
                 batch_data.extend(self._invoice_batch_ranges(row, cells))
                 count += 1
             self._flush_batch_update(ws, batch_data, chunk_size=500)
+
+            # Сортировка по дате счёта (столбец K=10), старые вверху
+            try:
+                self._sort_ws_by_date(ws, sort_col_index=10)
+            except Exception:
+                pass  # не критично если сортировка не удалась
+
             return count
+
+    def _sort_ws_by_date(self, ws: gspread.Worksheet, sort_col_index: int = 10) -> None:
+        """Sort worksheet rows 2+ by column (date DD.MM.YYYY), oldest first."""
+        sheet_id = ws._properties["sheetId"]  # noqa: SLF001
+        row_count = ws.row_count
+        col_count = ws.col_count
+        body = {
+            "requests": [{
+                "sortRange": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 1,  # skip header
+                        "endRowIndex": row_count,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": col_count,
+                    },
+                    "sortSpecs": [{
+                        "dimensionIndex": sort_col_index,
+                        "sortOrder": "ASCENDING",
+                    }],
+                }
+            }]
+        }
+        ws.spreadsheet.batch_update(body)
+        # Сбросить кеш строк после сортировки
+        self._row_indexes.pop(self.cfg.invoices_tab, None)
 
     # ---------- async wrappers ----------
 
