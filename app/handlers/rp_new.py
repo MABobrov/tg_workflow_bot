@@ -2977,35 +2977,73 @@ async def kp_review_comment(
     payload = json.loads(task.get("payload_json") or "{}")
     manager_id = payload.get("manager_id")
     invoice_number = payload.get("invoice_number", "?")
-    invoice_id = payload.get("invoice_id")
-    project_id = payload.get("project_id")
+    invoice_id = payload.get("invoice_id")  # set only for existing invoices
+    manager_role = payload.get("manager_role", "manager")
 
     # Mark task as done
     await db.update_task_status(task_id, TaskStatus.DONE)
 
-    # Update invoice based on payment type
+    # РП выставляет счёт: создаёт invoice (или обновляет существующий)
     is_credit = payment_type == "cred"
+    is_new = payload.get("is_new_invoice", True)
 
-    if invoice_id:
+    if is_new and not invoice_id:
+        # Создаём project + invoice (РП выставляет счёт)
+        project = await db.create_project(
+            title=f"Счёт: {invoice_number}",
+            address=payload.get("address") or None,
+            client=payload.get("client_name") or None,
+            amount=float(payload.get("amount") or 0) or None,
+            deadline_iso=None,
+            status="active",
+            manager_id=int(manager_id) if manager_id else None,
+            rp_id=message.from_user.id,
+        )
+        project_id = int(project["id"])
+
+        try:
+            invoice_id = await db.create_invoice(
+                invoice_number=invoice_number,
+                project_id=project_id,
+                created_by=int(manager_id) if manager_id else message.from_user.id,
+                creator_role=manager_role,
+                client_name=payload.get("client_name", ""),
+                object_address=payload.get("address", ""),
+                amount=payload.get("amount", 0),
+                description=payload.get("comment", ""),
+                payment_terms=payload.get("payment_type", ""),
+                deadline_days=payload.get("deadline_days"),
+            )
+        except ValueError:
+            await message.answer(
+                f"⚠️ Счёт №{invoice_number} уже существует в базе."
+            )
+            await state.clear()
+            return
+
+        # Set status + is_credit + documents
+        upd: dict[str, Any] = {
+            "is_credit": 1 if is_credit else 0,
+            "status": InvoiceStatus.CREDIT if is_credit else InvoiceStatus.PENDING_PAYMENT,
+        }
+        if not is_credit and documents:
+            upd["documents_json"] = json.dumps(documents, ensure_ascii=False)
+        await db.update_invoice(invoice_id, **upd)
+    elif invoice_id:
+        # Существующий invoice — обновляем статус
         if is_credit:
-            # Кред: is_credit=1, status=credit, документы не нужны
-            upd_kwargs: dict[str, Any] = dict(
+            await db.update_invoice(
+                invoice_id,
                 is_credit=1,
                 status=InvoiceStatus.CREDIT,
             )
-            if project_id:
-                upd_kwargs["project_id"] = int(project_id)
-            await db.update_invoice(invoice_id, **upd_kwargs)
         else:
-            # б/н: обычный flow, документы прикреплены, status=pending_payment
-            upd_kwargs2: dict[str, Any] = dict(
+            await db.update_invoice(
+                invoice_id,
                 is_credit=0,
                 status=InvoiceStatus.PENDING_PAYMENT,
                 documents_json=json.dumps(documents, ensure_ascii=False) if documents else None,
             )
-            if project_id:
-                upd_kwargs2["project_id"] = int(project_id)
-            await db.update_invoice(invoice_id, **upd_kwargs2)
 
     # Notify manager
     if manager_id:

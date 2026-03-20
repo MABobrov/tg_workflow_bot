@@ -164,38 +164,6 @@ _CHAT_CHANNEL_LABEL: dict[str, str] = {
 # ПРОВЕРИТЬ КП / СЧЕТ  (CheckKpSG)
 # =====================================================================
 
-@router.callback_query(F.data.startswith("create_invoice_from_lead:"))
-async def start_check_kp_from_lead(
-    cb: CallbackQuery,
-    state: FSMContext,
-    db: Database,
-) -> None:
-    """Start check_kp flow with lead context pre-loaded."""
-    if not cb.message or not cb.from_user:
-        return
-    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    task = await db.get_task(task_id)
-    if not task:
-        await cb.answer("❌ Задача лида не найдена.", show_alert=True)
-        return
-    payload = json.loads(task.get("payload_json") or "{}")
-    await state.clear()
-    await state.update_data(
-        lead_task_id=task_id,
-        lead_id=payload.get("lead_id"),
-        project_id=payload.get("project_id"),
-    )
-    await state.set_state(CheckKpSG.invoice_number)
-    lead_desc = payload.get("description", "")
-    await cb.message.answer(
-        f"📋 <b>Создание счёта по лиду</b>\n"
-        f"📝 {lead_desc}\n\n"
-        "Шаг 1/5: Введите <b>номер счёта</b>.\n"
-        "Для отмены: <code>/cancel</code>."
-    )
-    await cb.answer()
-
-
 @router.message(F.text == MGR_BTN_CHECK_KP)
 async def start_check_kp(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
@@ -396,70 +364,20 @@ async def check_kp_comment(
         return
 
     role = await _current_role(db, message.from_user.id)
-    inv_id = existing_inv_id
-
-    # project_id из лида (если из кнопки "Создать счёт") или None
-    project_id = data.get("project_id")
-
-    # Если project_id нет (прямое создание) — создаём project автоматически
-    if not project_id:
-        project = await db.create_project(
-            title=f"Счёт: {invoice_number}",
-            address=address or None,
-            client=client_name or None,
-            amount=float(amount) if amount else None,
-            deadline_iso=None,
-            status="active",
-            manager_id=message.from_user.id,
-            rp_id=int(rp_id),
-        )
-        project_id = int(project["id"])
-
-    if not existing_inv_id:
-        # New invoice — create in DB
-        try:
-            inv_id = await db.create_invoice(
-                invoice_number=invoice_number,
-                project_id=project_id,
-                created_by=message.from_user.id,
-                creator_role=role or "manager",
-                client_name=client_name,
-                object_address=address,
-                amount=amount,
-                description=comment,
-                payment_terms=payment_type,
-                deadline_days=deadline_days,
-            )
-        except ValueError:
-            await state.clear()
-            await message.answer(
-                f"⚠️ Счёт №{invoice_number} уже существует в базе.\n"
-                "Проверьте номер счёта или используйте существующую карточку."
-            )
-            return
-    else:
-        # Existing invoice — update project_id if missing
-        await db.update_invoice(inv_id, project_id=project_id)
-
-    # Обновить lead_tracking если создано из лида
-    lead_id = data.get("lead_id")
-    if lead_id:
-        try:
-            await db.update_lead_tracking_response(lead_id)
-        except Exception:
-            log.warning("Failed to update lead_tracking response for lead_id=%s", lead_id)
 
     role_label = {"manager_kv": "Менеджер КВ", "manager_kia": "Менеджер КИА", "manager_npn": "Менеджер НПН"}.get(role or "", "Менеджер")
 
+    # Менеджер НЕ создаёт invoice — только отправляет КП на проверку РП.
+    # РП создаёт invoice при одобрении.
     task = await db.create_task(
-        project_id=project_id,
+        project_id=None,
         type_=TaskType.CHECK_KP,
         status=TaskStatus.OPEN,
         created_by=message.from_user.id,
         assigned_to=int(rp_id),
         due_at_iso=None,
         payload={
-            "invoice_id": inv_id,
+            "invoice_id": existing_inv_id,
             "invoice_number": invoice_number,
             "client_name": client_name,
             "address": address,
@@ -470,7 +388,6 @@ async def check_kp_comment(
             "manager_role": role or "manager",
             "manager_id": message.from_user.id,
             "is_new_invoice": not bool(existing_inv_id),
-            "project_id": project_id,
         },
     )
 

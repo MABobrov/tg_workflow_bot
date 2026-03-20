@@ -663,13 +663,6 @@ def task_actions_kb(task: dict[str, Any]) -> InlineKeyboardMarkup:
         b.button(text="✅ Завершить", callback_data=TaskCb(task_id=tid, action="done").pack())
         b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
 
-    # Лид на расчет — кнопка "Создать счёт" для менеджера
-    if ttype == TaskType.LEAD_TO_PROJECT and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
-        b.button(
-            text="📋 Создать счёт",
-            callback_data=f"create_invoice_from_lead:{tid}",
-        )
-
     # payment confirm special actions (TD)
     if ttype == TaskType.PAYMENT_CONFIRM and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         b = InlineKeyboardBuilder()
