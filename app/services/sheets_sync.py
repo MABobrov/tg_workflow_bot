@@ -79,7 +79,10 @@ async def export_to_sheets(
 
     invoice_count = 0
     if sync_invoices:
-        invoices = sorted(await db.list_invoices(limit=10000), key=lambda item: int(item["id"]))
+        invoices = sorted(
+            await db.list_invoices(limit=10000),
+            key=lambda item: (item.get("receipt_date") or "9999-12-31", int(item["id"])),
+        )
         invoice_items: list[tuple[dict[str, Any], str, dict[str, Any] | None]] = []
         for invoice in invoices:
             manager_label = ""
