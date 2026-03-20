@@ -3226,55 +3226,40 @@ async def manager_zp_start(message: Message, state: FSMContext, db: Database) ->
                              "(Счёт должен иметь статус «Счёт End»)")
         return
 
-    # Check plan/fact for each invoice — filter out those where fact > plan
+    # Check plan/fact for each invoice — flag those where fact > plan
     eligible: list[dict] = []
-    blocked: list[dict] = []
+    flagged_ids: set[int] = set()
     for inv in invoices:
         pf = await db.get_plan_fact_card(inv["id"])
-        if not pf["has_estimated"]:
-            # No estimated data — allow (legacy invoices)
-            eligible.append(inv)
-        elif pf["zp_allowed"]:
-            eligible.append(inv)
-        else:
-            blocked.append(inv)
+        eligible.append(inv)
+        if pf["has_estimated"] and not pf["zp_allowed"]:
+            flagged_ids.add(inv["id"])
 
-    if not eligible and not blocked:
+    if not eligible:
         await message.answer("✅ Нет счетов, по которым можно запросить ЗП.\n"
                              "(Счёт должен иметь статус «Счёт End»)")
         return
 
     b = InlineKeyboardBuilder()
     for inv in eligible:
-        label = f"№{inv['invoice_number'] or '—'} / {(inv.get('object_address') or '—')[:30]}"
+        prefix = "⚠️ " if inv["id"] in flagged_ids else ""
+        label = f"{prefix}№{inv['invoice_number'] or '—'} / {(inv.get('object_address') or '—')[:30]}"
         b.button(text=label, callback_data=f"mgrzp:pick:{inv['id']}")
     b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
-    text_parts = ["💰 <b>Запрос ЗП</b>\n"]
-    if eligible:
-        text_parts.append("Выберите счёт (статус «Счёт End»):")
-    else:
-        text_parts.append("⚠️ Нет счетов, доступных для запроса ЗП.")
+    text_parts = ["💰 <b>Запрос ЗП</b>\n", "Выберите счёт (статус «Счёт End»):"]
 
-    if blocked:
+    if flagged_ids:
         text_parts.append(
-            f"\n❌ <b>Заблокировано ({len(blocked)}):</b> "
-            "фактическая себестоимость превышает расчётную:"
+            f"\n⚠️ <b>Перерасчет прибыли ({len(flagged_ids)}):</b> "
+            "факт. себестоимость превышает расчётную — ГД будет уведомлён."
         )
-        for inv in blocked:
-            pf = await db.get_plan_fact_card(inv["id"])
-            text_parts.append(
-                f"  • №{inv['invoice_number']} — "
-                f"план {pf['estimated_total_cost']:,.0f}₽, "
-                f"факт {pf['actual_total_cost']:,.0f}₽"
-            )
 
-    if eligible:
-        await state.set_state(ManagerZpSG.select_invoice)
+    await state.set_state(ManagerZpSG.select_invoice)
     await message.answer(
         "\n".join(text_parts),
-        reply_markup=b.as_markup() if eligible else None,
+        reply_markup=b.as_markup(),
     )
 
 
@@ -3287,18 +3272,14 @@ async def manager_zp_pick(cb: CallbackQuery, state: FSMContext, db: Database) ->
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         await state.clear()
         return
-    # Double-check plan/fact condition
+    # Check plan/fact — flag overbudget for GD notification (no block)
     pf = await db.get_plan_fact_card(invoice_id)
-    if pf["has_estimated"] and not pf["zp_allowed"]:
-        await cb.message.answer(  # type: ignore[union-attr]
-            f"❌ <b>ЗП заблокирована</b>\n\n"
-            f"Счёт №{inv['invoice_number']}\n"
-            f"Фактическая себестоимость ({pf['actual_total_cost']:,.0f}₽) "
-            f"превышает расчётную ({pf['estimated_total_cost']:,.0f}₽).\n\n"
-            "Обратитесь к ГД.",
-        )
-        await state.clear()
-        return
+    is_overbudget = pf["has_estimated"] and not pf["zp_allowed"]
+    await state.update_data(
+        is_overbudget=is_overbudget,
+        overbudget_est=pf.get("estimated_total_cost", 0),
+        overbudget_fact=pf.get("actual_total_cost", 0),
+    )
 
     # Auto-calculate ZP from estimated profit split
     if pf["has_estimated"] and pf["manager_zp"] > 0:
@@ -3411,6 +3392,18 @@ async def manager_zp_confirm(
             },
         )
         initiator = await get_initiator_label(db, u.id)
+
+        # Бейдж перерасчёта прибыли для ГД
+        overbudget_text = ""
+        if data.get("is_overbudget"):
+            ob_est = data.get("overbudget_est", 0)
+            ob_fact = data.get("overbudget_fact", 0)
+            overbudget_text = (
+                f"\n\n🔴 <b>ПЕРЕРАСЧЕТ ПРИБЫЛИ</b>\n"
+                f"Расчет: {ob_est:,.0f}₽ → Факт: {ob_fact:,.0f}₽\n"
+                f"Превышение: {ob_fact - ob_est:,.0f}₽"
+            )
+
         b = InlineKeyboardBuilder()
         b.button(text="✅ ЗП ОК", callback_data=f"gdzp_mgr:ok:{invoice_id}")
         b.button(text="❌ Отклонить", callback_data=f"gdzp_mgr:no:{invoice_id}")
@@ -3421,7 +3414,8 @@ async def manager_zp_confirm(
             f"👤 От: {initiator}\n"
             f"🔢 Счёт: №{inv_number}\n"
             f"📍 Адрес: {inv.get('object_address') or '—' if inv else '—'}\n"
-            f"💵 Сумма: {amount:,.0f}₽",
+            f"💵 Сумма: {amount:,.0f}₽"
+            f"{overbudget_text}",
             reply_markup=b.as_markup(),
         )
         await refresh_recipient_keyboard(notifier, db, config, int(gd_id))

@@ -121,6 +121,23 @@ async def export_to_sheets(
                 except Exception:
                     invoice["_zamery_info"] = ""
 
+            # Расчет vs Факт — сравнение план/факт себестоимости
+            plan_fact_label = ""
+            if cost and not invoice.get("parent_invoice_id"):
+                est_glass = float(invoice.get("estimated_glass") or 0)
+                est_profile = float(invoice.get("estimated_profile") or 0)
+                est_mat = float(invoice.get("estimated_materials") or 0)
+                est_inst = float(invoice.get("estimated_installation") or 0)
+                est_load = float(invoice.get("estimated_loaders") or 0)
+                est_log = float(invoice.get("estimated_logistics") or 0)
+                est_total = est_glass + est_profile + est_mat + est_inst + est_load + est_log
+                if any([est_glass, est_profile, est_mat, est_inst, est_load, est_log]):
+                    if cost["total_cost"] <= est_total:
+                        plan_fact_label = "Расчет ОК"
+                    else:
+                        plan_fact_label = "Перерасчет прибыли"
+            invoice["_plan_fact_label"] = plan_fact_label
+
             invoice_items.append((invoice, manager_label, cost))
 
         invoice_count = await sheets.upsert_invoices_bulk(invoice_items)

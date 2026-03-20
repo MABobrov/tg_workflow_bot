@@ -128,7 +128,7 @@ INVOICES_HEADER = [
     "Расходы итого",        # 58
     "Создан",               # 59
     "Обновлён",             # 60
-    # — Статусы жизненного цикла (61-74) —
+    # — Статусы жизненного цикла (61-73) —
     "Лид КВ",              # 61
     "Лид КИА",             # 62
     "Лид НПН",             # 63
@@ -137,11 +137,17 @@ INVOICES_HEADER = [
     "Счет НПН",            # 66
     "В работе",            # 67
     "Счет END",            # 68
-    "Замеры",              # 69
+    "",                    # 69 (было Замеры — перенесено в 76)
     "Монтаж Факт",         # 70
     "Материалы Факт",      # 71
     "Логистика Факт",      # 72
     "Статус лида",         # 73
+    # — Блок Замерщик (74-76, перенос из 54/55/69) —
+    "ЗП Замерщик",         # 74 (перенос из 54)
+    "ЗП Замерщик сумма",   # 75 (перенос из 55)
+    "Замеры",              # 76 (перенос из 69)
+    # — Аналитика (77) —
+    "Расчет vs Факт",     # 77
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -435,8 +441,8 @@ class GoogleSheetsService:
             51: invoice.get("montazh_stage") or "",
             52: "Да" if invoice.get("installer_ok") else "",
             53: "Да" if invoice.get("no_debts") else "",
-            54: invoice.get("zp_status") or "",
-            55: self._fmt_amount(invoice.get("zp_zamery_total")),
+            54: "",  # очистка (перенесено в 74)
+            55: "",  # очистка (перенесено в 75)
             56: invoice.get("zp_installer_status") or "",
             59: format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),
             60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
@@ -449,9 +455,15 @@ class GoogleSheetsService:
             66: _li.get("inv_npn", ""),       # BO Счет НПН
             67: "Да" if invoice.get("status") == "in_progress" else "", # BP В работе
             68: "Да" if invoice.get("status") == "ended" else "",       # BQ Счет END
-            69: invoice.get("_zamery_info") or "",                       # BR Замеры
+            69: "",  # очистка (перенесено в 76)
             72: self._fmt_amount(invoice.get("actual_logistics")),       # BU Логистика Факт
             73: _li.get("lead_status", ""),   # BV Статус лида
+            # — Блок Замерщик (перенос из 54/55/69) —
+            74: invoice.get("zp_status") or "",                          # BW ЗП Замерщик
+            75: self._fmt_amount(invoice.get("zp_zamery_total")),        # BX ЗП Замерщик сумма
+            76: invoice.get("_zamery_info") or "",                       # BY Замеры
+            # — Аналитика —
+            77: invoice.get("_plan_fact_label") or "",                   # BZ Расчет vs Факт
         }
 
         # Расч.мат., Установка, Грузчики, Логистика — из БД
