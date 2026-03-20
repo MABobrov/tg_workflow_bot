@@ -133,7 +133,7 @@ INVOICES_HEADER = [
 # Column indices the bot NEVER overwrites (manual-only + formula)
 # Removed 7 (Свой/Атм→client_source), 18,19,21,24 — now bot-managed (Plan/Fact)
 _MANUAL_COLS = frozenset([1, 5, 11, 12,
-                          31, 33, 34, 37, 38, 39, 40, 42, 43, 44, 45])
+                          33, 34, 37, 38, 39, 40, 42, 43, 44, 45])
 
 
 @dataclass
@@ -186,6 +186,26 @@ class GoogleSheetsService:
             return datetime.fromisoformat(text).strftime("%d.%m.%Y")
         except ValueError:
             return text
+
+    @staticmethod
+    def _fmt_docs_primary(invoice: dict[str, Any]) -> str:
+        """AF (Договор): contract_signed + docs_edo_signed."""
+        contract = invoice.get("contract_signed") or ""
+        edo = bool(invoice.get("docs_edo_signed"))
+        if edo and contract:
+            return f"{contract} ✅"
+        if edo:
+            return "ЭДО ✅"
+        if contract:
+            return f"{contract} ⏳"
+        return "⏳"
+
+    @staticmethod
+    def _fmt_docs_closing(invoice: dict[str, Any]) -> str:
+        """AG (Закр.док): edo_signed."""
+        if bool(invoice.get("edo_signed")):
+            return "ЭДО ✅"
+        return "⏳"
 
     def _task_payload_fields(self, task: dict[str, Any]) -> dict[str, str]:
         payload = try_json_loads(task.get("payload_json"))
@@ -387,7 +407,8 @@ class GoogleSheetsService:
             28: self._fmt_amount(invoice.get("final_surcharge_amount")), # AC Оконч допл
             29: self._fmt_sheet_date(invoice.get("final_surcharge_date")), # AD Дата оконч
             30: f"=O{row}-P{row}-Z{row}-AC{row}",                          # AE Долг
-            32: invoice.get("closing_docs_status") or "",
+            31: self._fmt_docs_primary(invoice),                        # AF Договор
+            32: self._fmt_docs_closing(invoice),                        # AG Закр.док
             35: self._fmt_amount(invoice.get("zp_manager_amount")),
             36: invoice.get("zp_manager_status") or "",
             46: invoice.get("status") or "",
