@@ -132,7 +132,7 @@ INVOICES_HEADER = [
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
 # Removed 7 (Свой/Атм→client_source), 18,19,21,24 — now bot-managed (Plan/Fact)
-_MANUAL_COLS = frozenset([1, 5, 11, 12, 25, 26, 27, 28, 29,
+_MANUAL_COLS = frozenset([1, 5, 11, 12,
                           31, 33, 34, 37, 38, 39, 40, 42, 43, 44, 45])
 
 
@@ -381,7 +381,11 @@ class GoogleSheetsService:
             13: self._fmt_sheet_date(invoice.get("actual_completion_date")),
             14: self._fmt_amount(invoice.get("amount")),
             15: self._fmt_amount(invoice.get("first_payment_amount")),
-            30: self._fmt_amount(invoice.get("outstanding_debt")),
+            25: self._fmt_amount(invoice.get("surcharge_amount")),       # Z Сумма допл
+            27: self._fmt_sheet_date(invoice.get("surcharge_date")),     # AB Дата допл
+            28: self._fmt_amount(invoice.get("final_surcharge_amount")), # AC Оконч допл
+            29: self._fmt_sheet_date(invoice.get("final_surcharge_date")), # AD Дата оконч
+            30: self._fmt_amount(invoice.get("outstanding_debt")),       # AE Долг
             32: invoice.get("closing_docs_status") or "",
             35: self._fmt_amount(invoice.get("zp_manager_amount")),
             36: invoice.get("zp_manager_status") or "",
