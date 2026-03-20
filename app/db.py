@@ -2914,7 +2914,7 @@ class Database:
         role_key_map = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}
         # {role_key: {date_str: count}}
         lead_dates: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-        inv_dates: dict[str, str] = {}
+        inv_dates: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         latest_status = "lead"
 
         for row in rows:
@@ -2933,14 +2933,15 @@ class Database:
                 if date_str:
                     lead_dates[key][date_str] += 1
 
-            # Invoice issued date
+            # Invoice issued date (grouped by day, count)
             inv_at = row.get("invoice_issued_at") or ""
             if inv_at:
                 try:
                     inv_date_str = _dt.fromisoformat(inv_at).strftime("%d.%m.%Y")
                 except (ValueError, TypeError):
                     inv_date_str = inv_at[:10] if len(inv_at) >= 10 else inv_at
-                inv_dates[f"inv_{key}"] = inv_date_str
+                if inv_date_str:
+                    inv_dates[f"inv_{key}"][inv_date_str] += 1
 
             # Status
             row_status = row.get("status") or "lead"
@@ -2959,8 +2960,15 @@ class Database:
                     parts.append(dt_str)
             result[key] = "\n".join(parts)
 
-        # Invoice issued dates per role
-        result.update(inv_dates)
+        # Invoice issued dates (grouped by day, count)
+        for key, dates in inv_dates.items():
+            parts = []
+            for dt_str, cnt in dates.items():
+                if cnt > 1:
+                    parts.append(f"{dt_str} ({cnt})")
+                else:
+                    parts.append(dt_str)
+            result[key] = "\n".join(parts)
 
         # Status
         result["lead_status"] = latest_status
