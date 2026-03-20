@@ -128,7 +128,7 @@ INVOICES_HEADER = [
     "Расходы итого",        # 58
     "Создан",               # 59
     "Обновлён",             # 60
-    # — Статусы жизненного цикла (61-69) —
+    # — Статусы жизненного цикла (61-70) —
     "Лид КВ",              # 61
     "Лид КИА",             # 62
     "Лид НПН",             # 63
@@ -138,6 +138,7 @@ INVOICES_HEADER = [
     "В работе",            # 67
     "Счет END",            # 68
     "Замеры",              # 69
+    "Монтаж Факт",         # 70
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -472,6 +473,12 @@ class GoogleSheetsService:
             cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""
             cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
             cells[58] = self._fmt_amount(_c.get("total_cost"))
+            # Монтаж Факт: материалы + оплаты поставщикам + ЗП монтажника
+            mat_fact = float(_c.get("materials_total") or 0)
+            sp_fact = float(_c.get("supplier_payments_total") or 0)
+            zp_inst = float(_c.get("zp_installer") or 0)
+            montazh_fact = mat_fact + sp_fact + zp_inst
+            cells[70] = self._fmt_amount(montazh_fact) if montazh_fact else ""
 
         if is_new:
             cells[12] = (
