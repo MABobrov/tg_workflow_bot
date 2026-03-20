@@ -3023,6 +3023,13 @@ async def kp_review_comment(
         if documents:
             upd["documents_json"] = json.dumps(documents, ensure_ascii=False)
         await db.update_invoice(invoice_id, **upd)
+
+        # Лид → "счет выставлен" (фиксация менеджера + даты)
+        try:
+            await db.update_lead_to_invoice_issued(project_id, invoice_id)
+        except Exception:
+            log.warning("Failed to update lead status for project_id=%s", project_id)
+
     elif invoice_id:
         # Существующий invoice — обновляем статус + документы
         upd2: dict[str, Any] = {"status": InvoiceStatus.PENDING_PAYMENT}

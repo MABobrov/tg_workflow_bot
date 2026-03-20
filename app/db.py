@@ -456,6 +456,10 @@ class Database:
             ("invoices", "actual_logistics", "REAL"),
             # --- Подтверждение оплаты ГД ---
             ("invoices", "payment_confirm_status", "TEXT DEFAULT ''"),
+            # --- Lead lifecycle: статус лида + привязка к счёту ---
+            ("lead_tracking", "status", "TEXT DEFAULT 'lead'"),
+            ("lead_tracking", "invoice_id", "INTEGER"),
+            ("lead_tracking", "invoice_issued_at", "TEXT"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -3204,6 +3208,19 @@ class Database:
         await self.conn.execute(
             f"UPDATE lead_tracking SET {set_clause} WHERE id = ?",
             tuple(values),
+        )
+        await self.conn.commit()
+
+    async def update_lead_to_invoice_issued(
+        self, project_id: int, invoice_id: int,
+    ) -> None:
+        """Лид → 'счет выставлен': привязка к счёту, фиксация даты."""
+        now = to_iso(utcnow())
+        await self.conn.execute(
+            "UPDATE lead_tracking SET status = 'invoice_issued', "
+            "invoice_id = ?, invoice_issued_at = ? "
+            "WHERE project_id = ?",
+            (invoice_id, now, project_id),
         )
         await self.conn.commit()
 
