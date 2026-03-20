@@ -407,7 +407,8 @@ class GoogleSheetsService:
             3: "Да" if invoice.get("edo_signed") else "",
             4: invoice.get("client_name") or "",
             6: "0" if invoice.get("is_credit") else "1",
-            7: {"own": 1, "gd_lead": 2}.get(invoice.get("client_source", ""), ""),
+            7: {"own": 1, "gd_lead": 2}.get(invoice.get("client_source", ""), "")
+               or invoice.get("client_type") or "",
             8: invoice.get("invoice_number") or "",
             9: invoice.get("object_address") or "",
             10: self._fmt_sheet_date(invoice.get("receipt_date")),

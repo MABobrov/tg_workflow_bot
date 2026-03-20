@@ -2514,15 +2514,29 @@ async def lead_finalize(
         await state.clear()
         return
 
+    # Create project to link lead → invoice chain
+    project = await db.create_project(
+        title=f"Лид: {source[:50] if source else 'б/и'}",
+        address=None,
+        client=None,
+        amount=None,
+        deadline_iso=None,
+        status="lead",
+        manager_id=manager_id,
+        rp_id=u.id,
+    )
+    project_id = int(project["id"])
+
     lead_id = await db.create_lead_tracking(
         assigned_by=u.id,
         assigned_manager_id=manager_id,
         assigned_manager_role=manager_role,
         lead_source=source,
+        project_id=project_id,
     )
 
     task = await db.create_task(
-        project_id=None,
+        project_id=project_id,
         type_=TaskType.LEAD_TO_PROJECT,
         status=TaskStatus.OPEN,
         created_by=u.id,
@@ -2530,6 +2544,7 @@ async def lead_finalize(
         due_at_iso=None,
         payload={
             "lead_id": lead_id,
+            "project_id": project_id,
             "description": description,
             "source": source,
             "manager_role": manager_role,
@@ -2963,6 +2978,7 @@ async def kp_review_comment(
     manager_id = payload.get("manager_id")
     invoice_number = payload.get("invoice_number", "?")
     invoice_id = payload.get("invoice_id")
+    project_id = payload.get("project_id")
 
     # Mark task as done
     await db.update_task_status(task_id, TaskStatus.DONE)
@@ -2973,19 +2989,23 @@ async def kp_review_comment(
     if invoice_id:
         if is_credit:
             # Кред: is_credit=1, status=credit, документы не нужны
-            await db.update_invoice(
-                invoice_id,
+            upd_kwargs: dict[str, Any] = dict(
                 is_credit=1,
                 status=InvoiceStatus.CREDIT,
             )
+            if project_id:
+                upd_kwargs["project_id"] = int(project_id)
+            await db.update_invoice(invoice_id, **upd_kwargs)
         else:
             # б/н: обычный flow, документы прикреплены, status=pending_payment
-            await db.update_invoice(
-                invoice_id,
+            upd_kwargs2: dict[str, Any] = dict(
                 is_credit=0,
                 status=InvoiceStatus.PENDING_PAYMENT,
                 documents_json=json.dumps(documents, ensure_ascii=False) if documents else None,
             )
+            if project_id:
+                upd_kwargs2["project_id"] = int(project_id)
+            await db.update_invoice(invoice_id, **upd_kwargs2)
 
     # Notify manager
     if manager_id:
