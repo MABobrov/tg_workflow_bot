@@ -3252,15 +3252,42 @@ class Database:
 
     async def update_lead_to_invoice_issued(
         self, project_id: int, invoice_id: int,
+        *,
+        manager_id: int | None = None,
+        manager_role: str | None = None,
     ) -> None:
-        """Лид → 'счет выставлен': привязка к счёту, фиксация даты."""
+        """Лид → 'счет выставлен': привязка к счёту, фиксация даты.
+
+        Если записи lead_tracking нет — создаёт её (привязка менеджера
+        к счёту на этапе выставления).
+        """
         now = to_iso(utcnow())
-        await self.conn.execute(
-            "UPDATE lead_tracking SET status = 'invoice_issued', "
-            "invoice_id = ?, invoice_issued_at = ? "
-            "WHERE project_id = ?",
-            (invoice_id, now, project_id),
+
+        # Проверяем есть ли уже запись
+        cur = await self.conn.execute(
+            "SELECT id FROM lead_tracking WHERE project_id = ?",
+            (project_id,),
         )
+        existing = await cur.fetchone()
+
+        if existing:
+            # Обновить существующий лид
+            await self.conn.execute(
+                "UPDATE lead_tracking SET status = 'invoice_issued', "
+                "invoice_id = ?, invoice_issued_at = ? "
+                "WHERE project_id = ?",
+                (invoice_id, now, project_id),
+            )
+        else:
+            # Создать запись — привязка менеджера к счёту при выставлении
+            await self.conn.execute(
+                "INSERT INTO lead_tracking "
+                "(project_id, assigned_manager_id, assigned_manager_role, "
+                "assigned_at, status, invoice_id, invoice_issued_at) "
+                "VALUES (?, ?, ?, ?, 'invoice_issued', ?, ?)",
+                (project_id, manager_id, manager_role, now, invoice_id, now),
+            )
+
         await self.conn.commit()
 
     async def list_leads(

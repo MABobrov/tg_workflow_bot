@@ -3025,8 +3025,13 @@ async def kp_review_comment(
         await db.update_invoice(invoice_id, **upd)
 
         # Лид → "счет выставлен" (фиксация менеджера + даты)
+        # Если lead_tracking записи нет — создаёт привязку менеджера к счёту
         try:
-            await db.update_lead_to_invoice_issued(project_id, invoice_id)
+            await db.update_lead_to_invoice_issued(
+                project_id, invoice_id,
+                manager_id=int(manager_id) if manager_id else None,
+                manager_role=manager_role,
+            )
         except Exception:
             log.warning("Failed to update lead status for project_id=%s", project_id)
 
@@ -3036,6 +3041,18 @@ async def kp_review_comment(
         if documents:
             upd2["documents_json"] = json.dumps(documents, ensure_ascii=False)
         await db.update_invoice(invoice_id, **upd2)
+
+        # Привязка менеджера к счёту (если нет lead_tracking)
+        inv = await db.get_invoice(invoice_id)
+        if inv and inv.get("project_id"):
+            try:
+                await db.update_lead_to_invoice_issued(
+                    int(inv["project_id"]), invoice_id,
+                    manager_id=int(manager_id) if manager_id else None,
+                    manager_role=manager_role or inv.get("creator_role"),
+                )
+            except Exception:
+                log.warning("Failed to update lead status for invoice_id=%s", invoice_id)
 
     # Notify manager
     if manager_id:
