@@ -137,6 +137,57 @@ def parse_amount_from_text(text: str) -> float | None:
 
 FINANCE_CHANNELS = {"manager_kv", "manager_kia", "manager_npn"}
 
+# Маппинг канала → роль менеджера (для поиска кредитных счетов)
+_CHANNEL_TO_ROLE = {
+    "manager_kv": "manager_kv",
+    "manager_kia": "manager_kia",
+    "manager_npn": "manager_npn",
+}
+
+
+async def _auto_credit_expense(
+    db: "Database",
+    channel: str,
+    amount: float,
+    description: str,
+    *,
+    entered_by: int,
+    chat_message_id: int | None = None,
+) -> None:
+    """Auto-record credit expense to the latest active credit invoice of this manager role.
+
+    Finds credit invoices (is_credit=1) for the manager role matching the channel,
+    picks the most recent one, and records the expense.
+    """
+    role = _CHANNEL_TO_ROLE.get(channel)
+    if not role:
+        return
+
+    try:
+        cur = await db.conn.execute(
+            "SELECT id FROM invoices "
+            "WHERE creator_role = ? AND (is_credit = 1 OR status = 'credit') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (role,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return
+
+        invoice_id = int(row["id"])
+        await db.add_credit_expense(
+            invoice_id=invoice_id,
+            amount=amount,
+            description=description,
+            entered_by=entered_by,
+            chat_message_id=chat_message_id,
+        )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to auto-record credit expense for channel=%s", channel, exc_info=True,
+        )
+
 # Composite channels: one button -> multiple underlying channels
 COMPOSITE_CHANNELS = {
     "otd_prodazh": ["rp", "manager_kv", "manager_kia", "manager_npn"],
@@ -349,6 +400,11 @@ async def handle_writing(
                 entered_by=u.id,
                 chat_message_id=int(chat_msg["id"]),
                 description=text[:200],
+            )
+            # Автозапись расхода в credit_expenses для кредитных счетов
+            await _auto_credit_expense(
+                db, channel, amount, text[:200],
+                entered_by=u.id, chat_message_id=int(chat_msg["id"]),
             )
 
     if file_info:
@@ -1069,6 +1125,22 @@ async def reply_to_gd_send(
             tg_file_unique_id=file_info.get("file_unique_id"),
             caption=message.caption,
         )
+
+    # Auto-detect credit expense from manager reply
+    if channel in FINANCE_CHANNELS and text:
+        amount = parse_amount_from_text(text)
+        if amount is not None:
+            await db.save_finance_entry(
+                channel=channel,
+                amount=amount,
+                entered_by=u.id,
+                chat_message_id=int(chat_msg["id"]),
+                description=text[:200],
+            )
+            await _auto_credit_expense(
+                db, channel, amount, text[:200],
+                entered_by=u.id, chat_message_id=int(chat_msg["id"]),
+            )
 
     # Forward to GD
     label = channel_label(channel)
