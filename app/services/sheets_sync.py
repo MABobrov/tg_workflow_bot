@@ -97,12 +97,13 @@ async def export_to_sheets(
                     cost = None
 
             # Обогатить lead_info и zamery_info для столбцов BJ-BP
+            try:
+                invoice["_lead_info"] = await db.get_lead_info_for_invoice(invoice)
+            except Exception:
+                invoice["_lead_info"] = {}
+
             project_id = invoice.get("project_id")
             if project_id:
-                try:
-                    invoice["_lead_info"] = await db.get_lead_info_for_project(int(project_id))
-                except Exception:
-                    invoice["_lead_info"] = {}
                 try:
                     invoice["_zamery_info"] = await db.get_zamery_info_for_project(int(project_id))
                 except Exception:

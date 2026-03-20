@@ -2848,6 +2848,52 @@ class Database:
         if not rows:
             return {}
 
+        return await self._format_lead_rows(rows)
+
+    async def get_lead_info_for_invoice(self, invoice: dict) -> dict[str, str]:
+        """Return lead info per role for Invoices sheet cols BJ-BL.
+
+        Tries project_id first, then falls back to matching by
+        created_by == assigned_manager_id + creator_role == assigned_manager_role.
+        """
+        result: dict[str, str] = {}
+
+        # 1) По project_id (если есть)
+        project_id = invoice.get("project_id")
+        if project_id:
+            cur = await self.conn.execute(
+                "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id "
+                "FROM lead_tracking lt "
+                "WHERE lt.project_id = ? "
+                "ORDER BY lt.assigned_at ASC",
+                (int(project_id),),
+            )
+            rows = [dict(r) for r in await cur.fetchall()]
+            if rows:
+                return await self._format_lead_rows(rows)
+
+        # 2) Fallback: по менеджеру, создавшему счёт
+        created_by = invoice.get("created_by")
+        creator_role = invoice.get("creator_role")
+        if created_by and creator_role:
+            cur = await self.conn.execute(
+                "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id "
+                "FROM lead_tracking lt "
+                "WHERE lt.assigned_manager_id = ? AND lt.assigned_manager_role = ? "
+                "ORDER BY lt.assigned_at DESC LIMIT 1",
+                (int(created_by), creator_role),
+            )
+            rows = [dict(r) for r in await cur.fetchall()]
+            if rows:
+                return await self._format_lead_rows(rows)
+
+        return result
+
+    async def _format_lead_rows(self, rows: list[dict]) -> dict[str, str]:
+        """Format lead_tracking rows into {kv/kia/npn: 'date | comment'}."""
+        from datetime import datetime as _dt
+        import json
+
         role_key_map = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}
         result: dict[str, str] = {}
 
@@ -2874,7 +2920,6 @@ class Database:
                 )
                 trow = await tcur.fetchone()
                 if trow:
-                    import json
                     try:
                         payload = json.loads(trow[0]) if trow[0] else {}
                         comment = payload.get("description", "")
