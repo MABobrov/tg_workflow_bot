@@ -418,7 +418,7 @@ class GoogleSheetsService:
         cells[21] = f"=((O{row}*22/122)-(Q{row}*22/122))*G{row}"              # V
         cells[22] = f"=((O{row}-Q{row}-R{row}-S{row}-T{row}-V{row})/100*20)*G{row}"  # W
         cells[41] = f"=(O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row})*10/100"    # AP (НПН 10%)
-        cells[20] = f"=O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row}-AP{row}"     # U (Прибыль)
+        cells[20] = f"=O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row}"              # U (Прибыль)
         cells[23] = f'=IF(O{row}>0,U{row}/O{row}*100,0)'                      # X (Рент-ть)
 
         if _c:
