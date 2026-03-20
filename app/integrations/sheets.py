@@ -436,7 +436,7 @@ class GoogleSheetsService:
             32: self._fmt_docs_closing(invoice),                        # AG Закр.док
             35: self._fmt_amount(invoice.get("zp_manager_amount")),
             36: invoice.get("zp_manager_status") or "",
-            46: invoice.get("status") or "",
+            46: "" if invoice.get("status") == "credit" else (invoice.get("status") or ""),
             47: _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
             48: invoice.get("supplier") or "",
             49: invoice.get("material_type") or "",
