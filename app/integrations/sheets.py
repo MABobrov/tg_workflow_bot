@@ -128,7 +128,7 @@ INVOICES_HEADER = [
     "Расходы итого",        # 58
     "Создан",               # 59
     "Обновлён",             # 60
-    # — Статусы жизненного цикла (61-73) —
+    # — Статусы жизненного цикла (61-74) —
     "Лид КВ",              # 61
     "Лид КИА",             # 62
     "Лид НПН",             # 63
@@ -141,6 +141,7 @@ INVOICES_HEADER = [
     "Монтаж Факт",         # 70
     "Материалы Факт",      # 71
     "Логистика Факт",      # 72
+    "Статус лида",         # 73
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -400,6 +401,7 @@ class GoogleSheetsService:
             "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
         }
         _c = cost or {}
+        _li = invoice.get("_lead_info") or {}
 
         cells: dict[int, Any] = {
             0: invoice.get("id") or "",
@@ -439,16 +441,17 @@ class GoogleSheetsService:
             59: format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),
             60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
             # — Статусы жизненного цикла —
-            61: (invoice.get("_lead_info") or {}).get("kv", ""),         # BJ Лид КВ
-            62: (invoice.get("_lead_info") or {}).get("kia", ""),        # BK Лид КИА
-            63: (invoice.get("_lead_info") or {}).get("npn", ""),        # BL Лид НПН
-            64: self._fmt_sheet_date(invoice.get("receipt_date")) if invoice.get("creator_role") == "manager_kv" and invoice.get("receipt_date") else "",   # BM Счет КВ
-            65: self._fmt_sheet_date(invoice.get("receipt_date")) if invoice.get("creator_role") == "manager_kia" and invoice.get("receipt_date") else "",  # BN Счет КИА
-            66: self._fmt_sheet_date(invoice.get("receipt_date")) if invoice.get("creator_role") == "manager_npn" and invoice.get("receipt_date") else "",  # BO Счет НПН
+            61: _li.get("kv", ""),            # BJ Лид КВ (дата получения лида)
+            62: _li.get("kia", ""),           # BK Лид КИА
+            63: _li.get("npn", ""),           # BL Лид НПН
+            64: _li.get("inv_kv", ""),        # BM Счет КВ (дата выставления счёта)
+            65: _li.get("inv_kia", ""),       # BN Счет КИА
+            66: _li.get("inv_npn", ""),       # BO Счет НПН
             67: "Да" if invoice.get("status") == "in_progress" else "", # BP В работе
             68: "Да" if invoice.get("status") == "ended" else "",       # BQ Счет END
             69: invoice.get("_zamery_info") or "",                       # BR Замеры
             72: self._fmt_amount(invoice.get("actual_logistics")),       # BU Логистика Факт
+            73: _li.get("lead_status", ""),   # BV Статус лида
         }
 
         # Расч.мат., Установка, Грузчики, Логистика — из БД

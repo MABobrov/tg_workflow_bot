@@ -2855,57 +2855,67 @@ class Database:
         return await self._format_lead_rows(rows)
 
     async def get_lead_info_for_invoice(self, invoice: dict) -> dict[str, str]:
-        """Return lead info per role for Invoices sheet cols BJ-BL.
+        """Return lead info per role for Invoices sheet.
+
+        Returns dict with keys:
+        - kv, kia, npn: lead dates (Лид КВ/КИА/НПН)
+        - inv_kv, inv_kia, inv_npn: invoice issued dates (Счет КВ/КИА/НПН)
+        - lead_status: текущий статус лида
 
         Tries project_id first, then falls back to matching by
         created_by == assigned_manager_id + creator_role == assigned_manager_role.
         """
-        result: dict[str, str] = {}
+        rows: list[dict] = []
 
         # 1) По project_id (если есть)
         project_id = invoice.get("project_id")
         if project_id:
             cur = await self.conn.execute(
-                "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id "
+                "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id, "
+                "lt.status, lt.invoice_issued_at "
                 "FROM lead_tracking lt "
                 "WHERE lt.project_id = ? "
                 "ORDER BY lt.assigned_at ASC",
                 (int(project_id),),
             )
             rows = [dict(r) for r in await cur.fetchall()]
-            if rows:
-                return await self._format_lead_rows(rows)
 
         # 2) Fallback: по менеджеру, создавшему счёт
-        created_by = invoice.get("created_by")
-        creator_role = invoice.get("creator_role")
-        if created_by and creator_role:
-            cur = await self.conn.execute(
-                "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id "
-                "FROM lead_tracking lt "
-                "WHERE lt.assigned_manager_id = ? AND lt.assigned_manager_role = ? "
-                "ORDER BY lt.assigned_at DESC LIMIT 1",
-                (int(created_by), creator_role),
-            )
-            rows = [dict(r) for r in await cur.fetchall()]
-            if rows:
-                return await self._format_lead_rows(rows)
+        if not rows:
+            created_by = invoice.get("created_by")
+            creator_role = invoice.get("creator_role")
+            if created_by and creator_role:
+                cur = await self.conn.execute(
+                    "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id, "
+                    "lt.status, lt.invoice_issued_at "
+                    "FROM lead_tracking lt "
+                    "WHERE lt.assigned_manager_id = ? AND lt.assigned_manager_role = ? "
+                    "ORDER BY lt.assigned_at DESC LIMIT 1",
+                    (int(created_by), creator_role),
+                )
+                rows = [dict(r) for r in await cur.fetchall()]
 
-        return result
+        if not rows:
+            return {}
+
+        return await self._format_lead_rows(rows)
 
     async def _format_lead_rows(self, rows: list[dict]) -> dict[str, str]:
-        """Format lead_tracking rows into {kv/kia/npn: 'date (count)'}.
+        """Format lead_tracking rows into sheet-ready dict.
 
-        Groups leads by role + date. If multiple leads for one manager
-        on the same day, shows count: '15.03.2026 (3)'.
-        Multiple dates separated by newline.
+        Returns:
+        - kv, kia, npn: lead dates grouped by day (count if >1)
+        - inv_kv, inv_kia, inv_npn: invoice_issued dates per role
+        - lead_status: latest status
         """
         from collections import defaultdict
         from datetime import datetime as _dt
 
         role_key_map = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}
         # {role_key: {date_str: count}}
-        date_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        lead_dates: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        inv_dates: dict[str, str] = {}
+        latest_status = "lead"
 
         for row in rows:
             role_raw = row.get("assigned_manager_role", "")
@@ -2913,19 +2923,34 @@ class Database:
             if not key:
                 continue
 
+            # Lead date
             at = row.get("assigned_at") or ""
-            date_str = ""
             if at:
                 try:
                     date_str = _dt.fromisoformat(at).strftime("%d.%m.%Y")
                 except (ValueError, TypeError):
                     date_str = at[:10] if len(at) >= 10 else at
+                if date_str:
+                    lead_dates[key][date_str] += 1
 
-            if date_str:
-                date_counts[key][date_str] += 1
+            # Invoice issued date
+            inv_at = row.get("invoice_issued_at") or ""
+            if inv_at:
+                try:
+                    inv_date_str = _dt.fromisoformat(inv_at).strftime("%d.%m.%Y")
+                except (ValueError, TypeError):
+                    inv_date_str = inv_at[:10] if len(inv_at) >= 10 else inv_at
+                inv_dates[f"inv_{key}"] = inv_date_str
+
+            # Status
+            row_status = row.get("status") or "lead"
+            if row_status == "invoice_issued":
+                latest_status = "invoice_issued"
 
         result: dict[str, str] = {}
-        for key, dates in date_counts.items():
+
+        # Lead dates (grouped by day, count)
+        for key, dates in lead_dates.items():
             parts = []
             for dt_str, cnt in dates.items():
                 if cnt > 1:
@@ -2933,6 +2958,12 @@ class Database:
                 else:
                     parts.append(dt_str)
             result[key] = "\n".join(parts)
+
+        # Invoice issued dates per role
+        result.update(inv_dates)
+
+        # Status
+        result["lead_status"] = latest_status
 
         return result
 
