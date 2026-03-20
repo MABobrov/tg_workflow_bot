@@ -2829,6 +2829,34 @@ class Database:
             "zp_approved": inv.get("zp_status") == "approved",
         }
 
+    async def get_lead_info_for_project(self, project_id: int) -> str:
+        """Return lead assignment info string for Invoices sheet col BJ."""
+        cur = await self.conn.execute(
+            "SELECT lt.assigned_manager_role, lt.assigned_at, u.username "
+            "FROM lead_tracking lt "
+            "LEFT JOIN users u ON u.telegram_id = lt.assigned_manager_id "
+            "WHERE lt.project_id = ? "
+            "ORDER BY lt.assigned_at DESC LIMIT 1",
+            (project_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return ""
+        row = dict(row)
+        role_map = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}
+        role = role_map.get(row.get("assigned_manager_role", ""), "")
+        username = row.get("username") or ""
+        at = row.get("assigned_at") or ""
+        date_str = ""
+        if at:
+            try:
+                from datetime import datetime
+                date_str = datetime.fromisoformat(at).strftime("%d.%m.%Y")
+            except (ValueError, TypeError):
+                date_str = at[:10] if len(at) >= 10 else at
+        parts = [p for p in [role, f"@{username}" if username else "", date_str] if p]
+        return " ".join(parts)
+
     async def search_invoices(
         self, query: str, limit: int = 20
     ) -> list[dict[str, Any]]:

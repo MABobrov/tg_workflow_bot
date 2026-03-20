@@ -96,6 +96,14 @@ async def export_to_sheets(
                     log.debug("Failed to build invoice cost card for invoice %s", invoice.get("id"), exc_info=True)
                     cost = None
 
+            # Обогатить lead_info для столбца BJ
+            project_id = invoice.get("project_id")
+            if project_id:
+                try:
+                    invoice["_lead_info"] = await db.get_lead_info_for_project(int(project_id))
+                except Exception:
+                    invoice["_lead_info"] = ""
+
             invoice_items.append((invoice, manager_label, cost))
 
         invoice_count = await sheets.upsert_invoices_bulk(invoice_items)
