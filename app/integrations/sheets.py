@@ -385,7 +385,7 @@ class GoogleSheetsService:
             27: self._fmt_sheet_date(invoice.get("surcharge_date")),     # AB Дата допл
             28: self._fmt_amount(invoice.get("final_surcharge_amount")), # AC Оконч допл
             29: self._fmt_sheet_date(invoice.get("final_surcharge_date")), # AD Дата оконч
-            30: self._fmt_amount(invoice.get("outstanding_debt")),       # AE Долг
+            30: f"=O{row}-P{row}-Z{row}-AC{row}",                          # AE Долг
             32: invoice.get("closing_docs_status") or "",
             35: self._fmt_amount(invoice.get("zp_manager_amount")),
             36: invoice.get("zp_manager_status") or "",
