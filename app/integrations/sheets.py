@@ -704,7 +704,7 @@ class GoogleSheetsService:
                 count += 1
             self._flush_batch_update(ws, batch_data, chunk_size=500)
 
-            # Сортировка по дате счёта (столбец K=10), старые вверху
+            # Сортировка по дате счёта (столбец K=10), новые вверху, старые внизу
             try:
                 self._sort_ws_by_date(ws, sort_col_index=10)
             except Exception:
@@ -713,7 +713,7 @@ class GoogleSheetsService:
             return count
 
     def _sort_ws_by_date(self, ws: gspread.Worksheet, sort_col_index: int = 10) -> None:
-        """Sort worksheet rows 2+ by column (date DD.MM.YYYY), oldest first."""
+        """Sort worksheet rows 2+ by column (date DD.MM.YYYY), newest first (old at bottom)."""
         sheet_id = ws._properties["sheetId"]  # noqa: SLF001
         row_count = ws.row_count
         col_count = ws.col_count
@@ -729,7 +729,7 @@ class GoogleSheetsService:
                     },
                     "sortSpecs": [{
                         "dimensionIndex": sort_col_index,
-                        "sortOrder": "ASCENDING",
+                        "sortOrder": "DESCENDING",
                     }],
                 }
             }]
