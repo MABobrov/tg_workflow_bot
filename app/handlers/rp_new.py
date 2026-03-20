@@ -2823,7 +2823,7 @@ async def kp_back_to_list(cb: CallbackQuery, state: FSMContext, db: Database) ->
 
 @router.callback_query(F.data.regexp(r"^kp_resp:yes:\d+$"))
 async def kp_resp_yes(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """РП нажал Да → выбор системы оплаты (б/н или Кред)."""
+    """РП нажал Да → сбор документов (Счёт, Договор, Приложение)."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
@@ -2834,17 +2834,15 @@ async def kp_resp_yes(cb: CallbackQuery, state: FSMContext, db: Database) -> Non
         await cb.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
         return
 
-    payload = json.loads(task.get("payload_json") or "{}")
-    invoice_number = payload.get("invoice_number", "?")
-    try:
-        amount_str = f"{float(payload.get('amount', 0)):,.0f}₽"
-    except (ValueError, TypeError):
-        amount_str = f"{payload.get('amount', 0)}₽"
+    await state.clear()
+    await state.set_state(KpReviewSG.documents)
+    await state.update_data(task_id=task_id, documents=[])
 
     await cb.message.answer(  # type: ignore[union-attr]
-        f"📋 <b>Счёт №{invoice_number}</b> — {amount_str}\n\n"
-        "Выберите <b>систему оплаты</b>:",
-        reply_markup=kp_payment_type_kb(task_id),
+        "📋 <b>Одобрение КП</b>\n\n"
+        "Прикрепите готовые документы:\n"
+        "• Счёт\n• Договор\n• Приложение к договору\n\n"
+        "Отправляйте файлы по одному.",
     )
 
 
@@ -2956,7 +2954,7 @@ async def kp_review_comment(
     config: Config,
     notifier: Notifier,
 ) -> None:
-    """Финализация ответа «Да» (б/н или Кред)."""
+    """Финализация ответа «Да» → РП выставляет счёт."""
     if not message.from_user:
         return
     comment = (message.text or "").strip()
@@ -2965,7 +2963,6 @@ async def kp_review_comment(
 
     data = await state.get_data()
     task_id = data["task_id"]
-    payment_type = data.get("payment_type", "bn")  # "bn" or "cred"
     documents = data.get("documents", [])
 
     task = await db.get_task(task_id)
@@ -2984,7 +2981,7 @@ async def kp_review_comment(
     await db.update_task_status(task_id, TaskStatus.DONE)
 
     # РП выставляет счёт: создаёт invoice (или обновляет существующий)
-    is_credit = payment_type == "cred"
+    # Статус б/н или кредит определяется из Импорт ОП, не здесь
     is_new = payload.get("is_new_invoice", True)
 
     if is_new and not invoice_id:
@@ -3021,55 +3018,32 @@ async def kp_review_comment(
             await state.clear()
             return
 
-        # Set status + is_credit + documents
-        upd: dict[str, Any] = {
-            "is_credit": 1 if is_credit else 0,
-            "status": InvoiceStatus.CREDIT if is_credit else InvoiceStatus.PENDING_PAYMENT,
-        }
-        if not is_credit and documents:
+        # Статус pending_payment, документы
+        upd: dict[str, Any] = {"status": InvoiceStatus.PENDING_PAYMENT}
+        if documents:
             upd["documents_json"] = json.dumps(documents, ensure_ascii=False)
         await db.update_invoice(invoice_id, **upd)
     elif invoice_id:
-        # Существующий invoice — обновляем статус
-        if is_credit:
-            await db.update_invoice(
-                invoice_id,
-                is_credit=1,
-                status=InvoiceStatus.CREDIT,
-            )
-        else:
-            await db.update_invoice(
-                invoice_id,
-                is_credit=0,
-                status=InvoiceStatus.PENDING_PAYMENT,
-                documents_json=json.dumps(documents, ensure_ascii=False) if documents else None,
-            )
+        # Существующий invoice — обновляем статус + документы
+        upd2: dict[str, Any] = {"status": InvoiceStatus.PENDING_PAYMENT}
+        if documents:
+            upd2["documents_json"] = json.dumps(documents, ensure_ascii=False)
+        await db.update_invoice(invoice_id, **upd2)
 
     # Notify manager
     if manager_id:
         initiator = await get_initiator_label(db, message.from_user.id)
 
-        if is_credit:
-            msg = (
-                f"🏦 <b>Счёт №{invoice_number} — Кред</b>\n"
-                f"👤 От: {initiator}\n\n"
-                f"РП одобрил КП.\n"
-                f"Система оплаты: <b>Кредит</b>\n"
-                f"Документы оформляет банк.\n"
-            )
-        else:
-            msg = (
-                f"📋 <b>Документы по счёту №{invoice_number}</b>\n"
-                f"👤 От: {initiator}\n\n"
-                f"РП проверил КП и подготовил:\n"
-                f"• Счёт, Договор, Приложение\n"
-                f"Система оплаты: <b>б/н</b>\n"
-            )
+        msg = (
+            f"📋 <b>Счёт №{invoice_number} выставлен</b>\n"
+            f"👤 От: {initiator}\n\n"
+            f"РП проверил КП и подготовил документы.\n"
+        )
 
         if comment:
             msg += f"\n💬 Комментарий РП: {comment}"
 
-        # Кнопка "Задача ок" для менеджера (#26/#27)
+        # Кнопка "Задача ок" для менеджера
         confirm_kb = InlineKeyboardBuilder()
         confirm_kb.button(
             text="✅ Задача ок",
@@ -3079,21 +3053,19 @@ async def kp_review_comment(
             int(manager_id), msg, reply_markup=confirm_kb.as_markup(),
         )
 
-        # Send attached documents (only for б/н)
-        if not is_credit:
-            for doc in documents:
-                await notifier.safe_send_media(
-                    int(manager_id), doc["file_type"], doc["file_id"],
-                    caption=doc.get("caption"),
-                )
+        # Send attached documents
+        for doc in documents:
+            await notifier.safe_send_media(
+                int(manager_id), doc["file_type"], doc["file_id"],
+                caption=doc.get("caption"),
+            )
 
         await refresh_recipient_keyboard(notifier, db, config, int(manager_id))
 
-    credit_label = " (Кред)" if is_credit else ""
     menu_role, isolated_role = await _current_menu(db, message.from_user.id)
     await state.clear()
     await message.answer(
-        f"✅ Ответ отправлен менеджеру по счёту №{invoice_number}{credit_label}.",
+        f"✅ Счёт №{invoice_number} выставлен. Менеджер уведомлён.",
         reply_markup=private_only_reply_markup(
             message,
             main_menu(
