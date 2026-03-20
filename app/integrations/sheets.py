@@ -128,13 +128,14 @@ INVOICES_HEADER = [
     "Расходы итого",        # 58
     "Создан",               # 59
     "Обновлён",             # 60
-    # — Статусы жизненного цикла (61-66) —
+    # — Статусы жизненного цикла (61-67) —
     "Лид КВ",              # 61
     "Лид КИА",             # 62
     "Лид НПН",             # 63
     "Счет выставлен",      # 64
     "В работе",            # 65
     "Счет END",            # 66
+    "Замеры",              # 67
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -438,6 +439,7 @@ class GoogleSheetsService:
             64: self._fmt_sheet_date(invoice.get("receipt_date")) or "", # BM Счет выставлен
             65: "Да" if invoice.get("status") == "in_progress" else "", # BN В работе
             66: "Да" if invoice.get("status") == "ended" else "",       # BO Счет END
+            67: invoice.get("_zamery_info") or "",                       # BP Замеры
         }
 
         # Расч.мат., Установка, Грузчики, Логистика — из БД

@@ -2886,6 +2886,37 @@ class Database:
 
         return result
 
+    async def get_zamery_info_for_project(self, project_id: int) -> str:
+        """Return zamery info string for Invoices sheet col BP."""
+        from datetime import datetime as _dt
+        cur = await self.conn.execute(
+            "SELECT zr.address, zr.total_cost, zr.scheduled_date, zr.created_at "
+            "FROM zamery_requests zr "
+            "JOIN lead_tracking lt ON lt.id = zr.lead_id "
+            "WHERE lt.project_id = ? "
+            "ORDER BY zr.created_at ASC",
+            (project_id,),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        if not rows:
+            return ""
+        parts = []
+        for r in rows:
+            date_raw = r.get("scheduled_date") or r.get("created_at") or ""
+            date_str = ""
+            if date_raw:
+                try:
+                    date_str = _dt.fromisoformat(date_raw).strftime("%d.%m.%Y")
+                except (ValueError, TypeError):
+                    date_str = str(date_raw)[:10]
+            addr = r.get("address") or ""
+            cost = r.get("total_cost")
+            cost_str = f"{int(cost)}₽" if cost else ""
+            line = " | ".join(p for p in [date_str, addr, cost_str] if p)
+            if line:
+                parts.append(line)
+        return "\n".join(parts)
+
     async def search_invoices(
         self, query: str, limit: int = 20
     ) -> list[dict[str, Any]]:
