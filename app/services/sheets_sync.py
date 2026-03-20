@@ -88,6 +88,15 @@ async def export_to_sheets(
                 if user:
                     manager_label = f"@{user.username}" if user.username else (user.full_name or str(user.telegram_id))
 
+            # Fallback: определить creator_role из роли пользователя
+            if not invoice.get("creator_role") and invoice.get("created_by"):
+                try:
+                    u = await db.get_user_optional(int(invoice["created_by"]))
+                    if u and u.role and u.role.startswith("manager"):
+                        invoice["creator_role"] = u.role
+                except Exception:
+                    pass
+
             cost = None
             if include_invoice_cost and not invoice.get("parent_invoice_id"):
                 try:

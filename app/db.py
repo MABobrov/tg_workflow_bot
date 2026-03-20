@@ -2890,12 +2890,18 @@ class Database:
         return result
 
     async def _format_lead_rows(self, rows: list[dict]) -> dict[str, str]:
-        """Format lead_tracking rows into {kv/kia/npn: 'date | comment'}."""
+        """Format lead_tracking rows into {kv/kia/npn: 'date (count)'}.
+
+        Groups leads by role + date. If multiple leads for one manager
+        on the same day, shows count: '15.03.2026 (3)'.
+        Multiple dates separated by newline.
+        """
+        from collections import defaultdict
         from datetime import datetime as _dt
-        import json
 
         role_key_map = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}
-        result: dict[str, str] = {}
+        # {role_key: {date_str: count}}
+        date_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
         for row in rows:
             role_raw = row.get("assigned_manager_role", "")
@@ -2911,23 +2917,18 @@ class Database:
                 except (ValueError, TypeError):
                     date_str = at[:10] if len(at) >= 10 else at
 
-            # Получить комментарий РП из payload задачи
-            comment = ""
-            task_id = row.get("task_id")
-            if task_id:
-                tcur = await self.conn.execute(
-                    "SELECT payload_json FROM tasks WHERE id = ?", (task_id,)
-                )
-                trow = await tcur.fetchone()
-                if trow:
-                    try:
-                        payload = json.loads(trow[0]) if trow[0] else {}
-                        comment = payload.get("description", "")
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+            if date_str:
+                date_counts[key][date_str] += 1
 
-            parts = [date_str, comment] if comment else [date_str]
-            result[key] = " | ".join(p for p in parts if p)
+        result: dict[str, str] = {}
+        for key, dates in date_counts.items():
+            parts = []
+            for dt_str, cnt in dates.items():
+                if cnt > 1:
+                    parts.append(f"{dt_str} ({cnt})")
+                else:
+                    parts.append(dt_str)
+            result[key] = "\n".join(parts)
 
         return result
 
