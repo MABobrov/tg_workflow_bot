@@ -128,14 +128,16 @@ INVOICES_HEADER = [
     "Расходы итого",        # 58
     "Создан",               # 59
     "Обновлён",             # 60
-    # — Статусы жизненного цикла (61-67) —
+    # — Статусы жизненного цикла (61-69) —
     "Лид КВ",              # 61
     "Лид КИА",             # 62
     "Лид НПН",             # 63
-    "Счет выставлен",      # 64
-    "В работе",            # 65
-    "Счет END",            # 66
-    "Замеры",              # 67
+    "Счет КВ",             # 64
+    "Счет КИА",            # 65
+    "Счет НПН",            # 66
+    "В работе",            # 67
+    "Счет END",            # 68
+    "Замеры",              # 69
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -436,10 +438,12 @@ class GoogleSheetsService:
             61: (invoice.get("_lead_info") or {}).get("kv", ""),         # BJ Лид КВ
             62: (invoice.get("_lead_info") or {}).get("kia", ""),        # BK Лид КИА
             63: (invoice.get("_lead_info") or {}).get("npn", ""),        # BL Лид НПН
-            64: self._fmt_sheet_date(invoice.get("receipt_date")) or "", # BM Счет выставлен
-            65: "Да" if invoice.get("status") == "in_progress" else "", # BN В работе
-            66: "Да" if invoice.get("status") == "ended" else "",       # BO Счет END
-            67: invoice.get("_zamery_info") or "",                       # BP Замеры
+            64: self._fmt_sheet_date(invoice.get("receipt_date")) if invoice.get("creator_role") == "manager_kv" and invoice.get("receipt_date") else "",   # BM Счет КВ
+            65: self._fmt_sheet_date(invoice.get("receipt_date")) if invoice.get("creator_role") == "manager_kia" and invoice.get("receipt_date") else "",  # BN Счет КИА
+            66: self._fmt_sheet_date(invoice.get("receipt_date")) if invoice.get("creator_role") == "manager_npn" and invoice.get("receipt_date") else "",  # BO Счет НПН
+            67: "Да" if invoice.get("status") == "in_progress" else "", # BP В работе
+            68: "Да" if invoice.get("status") == "ended" else "",       # BQ Счет END
+            69: invoice.get("_zamery_info") or "",                       # BR Замеры
         }
 
         # Расч.мат., Установка, Грузчики, Логистика — из БД
