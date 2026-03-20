@@ -138,6 +138,18 @@ async def export_to_sheets(
                         plan_fact_label = "Перерасчет прибыли"
             invoice["_plan_fact_label"] = plan_fact_label
 
+            # Кредитные расходы (для столбцов CF-DJ)
+            is_credit = bool(invoice.get("is_credit")) or invoice.get("status") == "credit"
+            if is_credit:
+                try:
+                    invoice["_credit_expenses"] = await db.get_credit_expenses_summary(
+                        int(invoice["id"])
+                    )
+                except Exception:
+                    invoice["_credit_expenses"] = {}
+            else:
+                invoice["_credit_expenses"] = {}
+
             invoice_items.append((invoice, manager_label, cost))
 
         invoice_count = await sheets.upsert_invoices_bulk(invoice_items)

@@ -151,6 +151,12 @@ INVOICES_HEADER = [
     "Прибыль факт",       # 78
     "Рент-ть факт %",     # 79
     "Перерасчет прибыли",  # 80
+    # — Кредитный учёт (81-85) —
+    "Кредит вход",         # 81 — сумма входящего кредита
+    "Кредит вход коммент", # 82 — Менеджер, адрес
+    "Кредит расход",       # 83 — накопительная сумма расходов
+    "Кредит назначение",   # 84 — лог назначений расходов
+    "Кредит баланс",       # 85 — формула: вход - расход
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -468,7 +474,25 @@ class GoogleSheetsService:
             # — Аналитика —
             77: invoice.get("_plan_fact_label") or "",                   # BZ Расчет vs Факт
             # 78, 79, 80 заполняются ниже из cost_card
+            # — Кредитный учёт —
+            85: f"=IF(CF{row}=\"\",\"\",CF{row}-CH{row})",              # DJ Кредит баланс
         }
+
+        # Кредит входящий (81-82): при is_credit=1 или status=credit
+        is_credit = bool(invoice.get("is_credit")) or invoice.get("status") == "credit"
+        if is_credit:
+            cells[81] = self._fmt_amount(invoice.get("amount"))          # CF Кредит вход
+            mgr_label = manager_label or ""
+            addr = invoice.get("object_address") or ""
+            cells[82] = f"{mgr_label}, {addr}".strip(", ") if (mgr_label or addr) else ""
+        else:
+            cells[81] = ""
+            cells[82] = ""
+
+        # Кредит расход (83) и назначение (84): из _credit_expenses
+        credit_exp = invoice.get("_credit_expenses") or {}
+        cells[83] = self._fmt_amount(credit_exp.get("total")) if credit_exp.get("total") else ""
+        cells[84] = credit_exp.get("log") or ""
 
         # Расч.мат., Установка, Грузчики, Логистика — из БД
         est_glass = float(invoice.get("estimated_glass") or 0)

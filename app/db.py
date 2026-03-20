@@ -350,6 +350,18 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_razmery_req_inv ON razmery_requests(invoice_id, status);
             CREATE INDEX IF NOT EXISTS idx_razmery_req_inst ON razmery_requests(installer_id, status);
+
+            CREATE TABLE IF NOT EXISTS credit_expenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+                amount REAL NOT NULL,
+                description TEXT,
+                entered_by INTEGER NOT NULL,
+                chat_message_id INTEGER REFERENCES chat_messages(id),
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_credit_exp_inv ON credit_expenses(invoice_id);
             """
         )
         await self.conn.commit()
@@ -3289,6 +3301,57 @@ class Database:
             )
 
         await self.conn.commit()
+
+    # ---------- Кредитный учёт ----------
+
+    async def add_credit_expense(
+        self,
+        invoice_id: int,
+        amount: float,
+        description: str,
+        entered_by: int,
+        chat_message_id: int | None = None,
+    ) -> int:
+        """Добавить расход кредитных средств по счёту."""
+        now = to_iso(utcnow())
+        cur = await self.conn.execute(
+            "INSERT INTO credit_expenses "
+            "(invoice_id, amount, description, entered_by, chat_message_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (invoice_id, amount, description, entered_by, chat_message_id, now),
+        )
+        await self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def get_credit_expenses_summary(self, invoice_id: int) -> dict[str, Any]:
+        """Получить сводку расходов кредитных средств по счёту.
+
+        Returns: {"total": float, "log": str, "items": list[dict]}
+        """
+        cur = await self.conn.execute(
+            "SELECT amount, description, created_at "
+            "FROM credit_expenses WHERE invoice_id = ? "
+            "ORDER BY created_at ASC",
+            (invoice_id,),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        if not rows:
+            return {"total": 0, "log": "", "items": []}
+
+        total = sum(r["amount"] for r in rows)
+        from datetime import datetime as _dt
+        log_parts = []
+        for r in rows:
+            dt_str = ""
+            if r.get("created_at"):
+                try:
+                    dt_str = _dt.fromisoformat(r["created_at"]).strftime("%d.%m.%Y")
+                except (ValueError, TypeError):
+                    dt_str = r["created_at"][:10]
+            desc = r.get("description") or "—"
+            log_parts.append(f"{dt_str}: {r['amount']:,.0f}₽ — {desc}")
+
+        return {"total": total, "log": "\n".join(log_parts), "items": rows}
 
     async def list_leads(
         self,
