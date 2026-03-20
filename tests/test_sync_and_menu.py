@@ -123,8 +123,8 @@ def test_upsert_invoice_sync_writes_sheet_dates_and_clears_empty_cells(monkeypat
 
     updates = _expand_row_batch_updates(fake_ws.batch_data)
     assert updates["E2"] == ""
-    assert updates["K2"] == "05.03.2026"
-    assert updates["N2"] == "10.03.2026"
+    assert updates["K2"] == "=DATE(2026,3,5)"
+    assert updates["N2"] == "=DATE(2026,3,10)"
     assert updates["P2"] == ""
 
 

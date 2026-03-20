@@ -205,14 +205,19 @@ class GoogleSheetsService:
 
     @staticmethod
     def _fmt_sheet_date(value: Any) -> str:
-        """Format DB ISO date/datetime for invoice sheet cells (DD.MM.YYYY)."""
+        """Format DB ISO date/datetime as =DATE() formula for Google Sheets.
+
+        Returns =DATE(YYYY,M,D) so Sheets treats it as a real date —
+        correct chronological sorting and locale-aware display (DD.MM.YYYY).
+        """
         if value in (None, ""):
             return ""
         text = str(value).strip()
         if not text:
             return ""
         try:
-            return datetime.fromisoformat(text).strftime("%d.%m.%Y")
+            dt = datetime.fromisoformat(text)
+            return f"=DATE({dt.year},{dt.month},{dt.day})"
         except ValueError:
             return text
 
@@ -705,17 +710,16 @@ class GoogleSheetsService:
             self._flush_batch_update(ws, batch_data, chunk_size=500)
 
             # Сортировка: старые счета вверху, новые внизу.
-            # Сортируем по столбцу A (id, index=0) — ID растёт хронологически.
-            # Текстовая сортировка DD.MM.YYYY по столбцу K некорректна.
+            # Столбец K (index=10) = receipt_date, записан как =DATE() — корректная сортировка.
             try:
-                self._sort_ws_by_date(ws, sort_col_index=0)
+                self._sort_ws_by_date(ws, sort_col_index=10)
             except Exception:
                 pass  # не критично если сортировка не удалась
 
             return count
 
-    def _sort_ws_by_date(self, ws: gspread.Worksheet, sort_col_index: int = 0) -> None:
-        """Sort worksheet rows 2+ by column, ASCENDING (oldest/smallest first)."""
+    def _sort_ws_by_date(self, ws: gspread.Worksheet, sort_col_index: int = 10) -> None:
+        """Sort worksheet rows 2+ by column, ASCENDING (oldest dates first)."""
         sheet_id = ws._properties["sheetId"]  # noqa: SLF001
         row_count = ws.row_count
         col_count = ws.col_count
