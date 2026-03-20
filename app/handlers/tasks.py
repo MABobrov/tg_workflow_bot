@@ -504,6 +504,12 @@ async def task_actions(
                 await cb.answer("Задача уже была обработана.", show_alert=True)
                 return
             project = await db.update_project_status(int(project["id"]), ProjectStatus.IN_WORK)
+            # Обновить статус подтверждения оплаты на счетах проекта
+            await db.conn.execute(
+                "UPDATE invoices SET payment_confirm_status = 'Подтверждена' WHERE project_id = ?",
+                (int(project["id"]),),
+            )
+            await db.conn.commit()
 
             initiator = await get_initiator_label(db, cb.from_user.id)
             text = (
@@ -530,6 +536,12 @@ async def task_actions(
                 await cb.answer("Задача уже была обработана.", show_alert=True)
                 return
             project = await db.update_project_status(int(project["id"]), ProjectStatus.WAITING_PAYMENT)
+            # Обновить статус подтверждения оплаты на счетах проекта
+            await db.conn.execute(
+                "UPDATE invoices SET payment_confirm_status = 'Нужна доплата' WHERE project_id = ?",
+                (int(project["id"]),),
+            )
+            await db.conn.commit()
 
             initiator = await get_initiator_label(db, cb.from_user.id)
             text = (

@@ -382,6 +382,7 @@ class GoogleSheetsService:
             14: self._fmt_amount(invoice.get("amount")),
             15: self._fmt_amount(invoice.get("first_payment_amount")),
             25: self._fmt_amount(invoice.get("surcharge_amount")),       # Z Сумма допл
+            26: invoice.get("payment_confirm_status") or "",             # AA Допл подтв
             27: self._fmt_sheet_date(invoice.get("surcharge_date")),     # AB Дата допл
             28: self._fmt_amount(invoice.get("final_surcharge_amount")), # AC Оконч допл
             29: self._fmt_sheet_date(invoice.get("final_surcharge_date")), # AD Дата оконч

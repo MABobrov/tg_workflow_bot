@@ -454,6 +454,8 @@ class Database:
             ("zamery_requests", "completed_at", "TEXT"),
             # --- Фактическая стоимость доставки ---
             ("invoices", "actual_logistics", "REAL"),
+            # --- Подтверждение оплаты ГД ---
+            ("invoices", "payment_confirm_status", "TEXT DEFAULT ''"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
