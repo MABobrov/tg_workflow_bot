@@ -1494,10 +1494,12 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
 
 
 def _is_credit(inv: dict) -> bool:
-    """Проверка: кредитный ли счёт."""
+    """Проверка: кредитный ли счёт.
+
+    is_credit — единственный источник правды (status='credit' ставится автоматически
+    через _compute_lifecycle_status). Дополнительно: номер ЗМ-* тоже считается кредитным.
+    """
     if inv.get("is_credit"):
-        return True
-    if inv.get("status") == "credit":
         return True
     num = str(inv.get("invoice_number") or "")
     return num.upper().startswith("ЗМ")

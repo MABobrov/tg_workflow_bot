@@ -471,13 +471,16 @@ async def mgr_kp_ok_confirm(cb: CallbackQuery, db: Database) -> None:
     task = await db.get_task(task_id)
     if task:
         # Помечаем как подтверждённую менеджером
-        payload = json.loads(task.get("payload_json") or "{}")
-        payload["manager_confirmed"] = True
-        await db.conn.execute(
-            "UPDATE tasks SET payload_json = ? WHERE id = ?",
-            (json.dumps(payload, ensure_ascii=False), task_id),
-        )
-        await db.conn.commit()
+        try:
+            payload = json.loads(task.get("payload_json") or "{}")
+            payload["manager_confirmed"] = True
+            await db.conn.execute(
+                "UPDATE tasks SET payload_json = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), task_id),
+            )
+            await db.conn.commit()
+        except Exception:
+            log.exception("Failed to update task payload_json for task_id=%s", task_id)
 
 
 # =====================================================================

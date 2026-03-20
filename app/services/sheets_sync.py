@@ -71,6 +71,7 @@ async def export_to_sheets(
                     if project_code:
                         project_code_by_id[int(project_id)] = project_code
                 except Exception:
+                    log.debug("Failed to get project %s for task", project_id, exc_info=True)
                     project_code = ""
         task_items.append((task, project_code))
 
@@ -98,7 +99,7 @@ async def export_to_sheets(
                     if u and u.role and u.role.startswith("manager"):
                         invoice["creator_role"] = u.role
                 except Exception:
-                    pass
+                    log.debug("Failed to resolve creator_role for invoice %s", invoice.get("id"), exc_info=True)
 
             cost = None
             if include_invoice_cost and not invoice.get("parent_invoice_id"):
@@ -112,6 +113,7 @@ async def export_to_sheets(
             try:
                 invoice["_lead_info"] = await db.get_lead_info_for_invoice(invoice)
             except Exception:
+                log.debug("Failed to get lead_info for invoice %s", invoice.get("id"), exc_info=True)
                 invoice["_lead_info"] = {}
 
             project_id = invoice.get("project_id")
@@ -119,6 +121,7 @@ async def export_to_sheets(
                 try:
                     invoice["_zamery_info"] = await db.get_zamery_info_for_project(int(project_id))
                 except Exception:
+                    log.debug("Failed to get zamery_info for project %s", project_id, exc_info=True)
                     invoice["_zamery_info"] = ""
 
             # Расчет vs Факт — сравнение план/факт себестоимости
@@ -139,13 +142,14 @@ async def export_to_sheets(
             invoice["_plan_fact_label"] = plan_fact_label
 
             # Кредитные расходы (для столбцов CF-DJ)
-            is_credit = bool(invoice.get("is_credit")) or invoice.get("status") == "credit"
+            is_credit = bool(invoice.get("is_credit"))
             if is_credit:
                 try:
                     invoice["_credit_expenses"] = await db.get_credit_expenses_summary(
                         int(invoice["id"])
                     )
                 except Exception:
+                    log.debug("Failed to get credit_expenses for invoice %s", invoice.get("id"), exc_info=True)
                     invoice["_credit_expenses"] = {}
             else:
                 invoice["_credit_expenses"] = {}

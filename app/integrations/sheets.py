@@ -423,7 +423,7 @@ class GoogleSheetsService:
             2: manager_label,
             3: "Да" if invoice.get("edo_signed") else "",
             4: invoice.get("client_name") or "",
-            6: "0" if invoice.get("is_credit") else "1",
+            6: "0" if invoice.get("is_credit") else "1",  # ОП convention: 0=кредит, 1=б.н.
             7: {"own": 1, "gd_lead": 2}.get(invoice.get("client_source", ""), "")
                or invoice.get("client_type") or "",
             8: invoice.get("invoice_number") or "",
@@ -478,8 +478,8 @@ class GoogleSheetsService:
             85: f"=IF(CF{row}=\"\",\"\",CF{row}-CH{row})",              # DJ Кредит баланс
         }
 
-        # Кредит входящий (81-82): при is_credit=1 или status=credit
-        is_credit = bool(invoice.get("is_credit")) or invoice.get("status") == "credit"
+        # Кредит входящий (81-82): is_credit=1 — единственный источник правды
+        is_credit = bool(invoice.get("is_credit"))
         if is_credit:
             cells[81] = self._fmt_amount(invoice.get("amount"))          # CF Кредит вход
             mgr_label = manager_label or ""
@@ -704,16 +704,18 @@ class GoogleSheetsService:
                 count += 1
             self._flush_batch_update(ws, batch_data, chunk_size=500)
 
-            # Сортировка по дате счёта (столбец K=10), новые вверху, старые внизу
+            # Сортировка: старые счета вверху, новые внизу.
+            # Сортируем по столбцу A (id, index=0) — ID растёт хронологически.
+            # Текстовая сортировка DD.MM.YYYY по столбцу K некорректна.
             try:
-                self._sort_ws_by_date(ws, sort_col_index=10)
+                self._sort_ws_by_date(ws, sort_col_index=0)
             except Exception:
                 pass  # не критично если сортировка не удалась
 
             return count
 
-    def _sort_ws_by_date(self, ws: gspread.Worksheet, sort_col_index: int = 10) -> None:
-        """Sort worksheet rows 2+ by column (date DD.MM.YYYY), oldest first (new at bottom)."""
+    def _sort_ws_by_date(self, ws: gspread.Worksheet, sort_col_index: int = 0) -> None:
+        """Sort worksheet rows 2+ by column, ASCENDING (oldest/smallest first)."""
         sheet_id = ws._properties["sheetId"]  # noqa: SLF001
         row_count = ws.row_count
         col_count = ws.col_count

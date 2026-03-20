@@ -246,7 +246,7 @@ async def gd_zp_installer_view(cb: CallbackQuery, db: Database) -> None:
     b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
     b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
     b.adjust(2)
-    is_credit = inv.get("is_credit") or inv.get("status") == "credit" or str(inv.get("invoice_number") or "").upper().startswith("ЗМ")
+    is_credit = bool(inv.get("is_credit")) or str(inv.get("invoice_number") or "").upper().startswith("ЗМ")
     credit_warn = "\n🏦 <b>⚠️ КРЕДИТНЫЙ СЧЁТ</b>\n" if is_credit else ""
     await cb.message.answer(  # type: ignore[union-attr]
         f"🔧 <b>ЗП монтажника</b>{credit_warn}\n"

@@ -9,8 +9,9 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..db import Database
 from ..utils import refresh_recipient_keyboard
@@ -20,8 +21,8 @@ from .sheets_sync import export_to_sheets, import_from_source_sheet
 
 log = logging.getLogger(__name__)
 
-# Moscow timezone: UTC+3
-_MSK = timezone(timedelta(hours=3))
+# Moscow timezone (DST-safe, consistent with config.timezone)
+_MSK = ZoneInfo("Europe/Moscow")
 
 
 async def daily_sync_loop(
@@ -44,7 +45,7 @@ async def daily_sync_loop(
             target = now_msk.replace(
                 hour=target_hour, minute=target_minute, second=0, microsecond=0,
             )
-            if now_msk >= target:
+            if now_msk > target:
                 target += timedelta(days=1)
             wait_seconds = (target - now_msk).total_seconds()
             log.info(
@@ -75,6 +76,9 @@ async def _run_sync(
     """Execute one full sync cycle."""
 
     # --- 1. Google Sheets import/export ---
+    # NOTE: import runs first, then export. Manual edits in ОП are preserved
+    # (import reads them into DB, export writes back). If this becomes an issue,
+    # add sheet_modified_at tracking to avoid overwriting concurrent manual edits.
     if integrations.sheets:
         try:
             ok = await import_from_source_sheet(

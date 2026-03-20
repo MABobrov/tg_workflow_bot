@@ -2052,7 +2052,7 @@ async def rp_invoice_closed_view(cb: CallbackQuery, db: Database) -> None:
     except (ValueError, TypeError):
         amount_str = f"{inv.get('amount', 0)}₽"
 
-    is_credit = inv.get("is_credit") or inv.get("status") == "credit"
+    is_credit = bool(inv.get("is_credit"))
     payment_label = "🏦 Кред (кредит)" if is_credit else "💳 б/н (безналичный)"
 
     # Creator info
@@ -3208,7 +3208,7 @@ async def kp_issued_list(cb: CallbackQuery, state: FSMContext, db: Database) -> 
 
     # Count by type
     n_bn = sum(1 for inv in invoices if not inv.get("is_credit"))
-    n_cred = sum(1 for inv in invoices if inv.get("is_credit") or inv.get("status") == "credit")
+    n_cred = sum(1 for inv in invoices if inv.get("is_credit"))
 
     header = f"📑 <b>Выставленные счета</b> ({len(invoices)})\n"
     if n_bn > 0:
@@ -3236,7 +3236,7 @@ async def kp_issued_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    is_credit = inv.get("is_credit") or inv.get("status") == "credit"
+    is_credit = bool(inv.get("is_credit"))
     payment_label = "🏦 Кред (кредит)" if is_credit else "💳 б/н (безналичный)"
 
     status_label = _invoice_status_label(inv.get("status"))

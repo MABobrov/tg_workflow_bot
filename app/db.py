@@ -189,6 +189,8 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_chat_attach_msg ON chat_attachments(chat_message_id);
 
+            -- finance_entries: общий финансовый журнал по каналам (channel-level).
+            -- НЕ привязан к конкретному счёту. Для расходов по кредитным счетам используй credit_expenses.
             CREATE TABLE IF NOT EXISTS finance_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel TEXT NOT NULL,
@@ -250,6 +252,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_invoices_number ON invoices(invoice_number);
             CREATE INDEX IF NOT EXISTS idx_invoices_created_by ON invoices(created_by, status);
             CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
+            CREATE INDEX IF NOT EXISTS idx_invoices_is_credit ON invoices(is_credit);
 
             CREATE TABLE IF NOT EXISTS edo_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -351,6 +354,8 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_razmery_req_inv ON razmery_requests(invoice_id, status);
             CREATE INDEX IF NOT EXISTS idx_razmery_req_inst ON razmery_requests(installer_id, status);
 
+            -- credit_expenses: расходы по конкретному кредитному счёту (invoice_id).
+            -- Авто-запись из каналов через _auto_credit_expense(). НЕ дублирует finance_entries.
             CREATE TABLE IF NOT EXISTS credit_expenses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 invoice_id INTEGER NOT NULL REFERENCES invoices(id),
@@ -1193,10 +1198,14 @@ class Database:
         return [dict(r) for r in rows]
 
     async def list_credit_invoices(self, limit: int = 30) -> list[dict[str, Any]]:
-        """List credit-based invoices (is_credit=1 OR status='credit')."""
+        """List credit-based invoices (is_credit=1).
+
+        Note: _compute_lifecycle_status() ensures status='credit' when is_credit=1,
+        so checking is_credit alone is sufficient.
+        """
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
-            "WHERE is_credit = 1 OR status = 'credit' "
+            "WHERE is_credit = 1 "
             "ORDER BY updated_at DESC LIMIT ?",
             (limit,),
         )
@@ -1206,7 +1215,7 @@ class Database:
     async def count_credit_invoices(self) -> int:
         """Count credit-based invoices."""
         cur = await self.conn.execute(
-            "SELECT COUNT(*) FROM invoices WHERE is_credit = 1 OR status = 'credit'"
+            "SELECT COUNT(*) FROM invoices WHERE is_credit = 1"
         )
         row = await cur.fetchone()
         return row[0] if row else 0
@@ -1622,16 +1631,8 @@ class Database:
             )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def list_invoices_approaching_deadline(self) -> list[dict[str, Any]]:
-        """Активные счета с deadline_end_date: просроченные, сегодня, <=3 дней."""
-        cur = await self.conn.execute(
-            "SELECT * FROM invoices "
-            "WHERE deadline_end_date IS NOT NULL "
-            "AND status NOT IN ('ended', 'cancelled', 'credit') "
-            "AND parent_invoice_id IS NULL "
-            "ORDER BY deadline_end_date ASC",
-        )
-        return [dict(r) for r in await cur.fetchall()]
+    # NOTE: list_invoices_approaching_deadline() defined above (line ~1239).
+    # Duplicate removed during audit 2026-03-21.
 
     async def assign_installer_to_invoice(
         self, invoice_id: int, installer_id: int,
@@ -3111,11 +3112,7 @@ class Database:
         rows = await cur.fetchall()
         result = {"open": 0, "done": 0}
         for row in rows:
-            s = row["status"]
-            if s in result:
-                result[s] = row["cnt"]
-            else:
-                result[s] = row["cnt"]
+            result[row["status"]] = row["cnt"]
         return result
 
     async def update_edo_request(

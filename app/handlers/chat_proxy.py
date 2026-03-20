@@ -166,7 +166,7 @@ async def _auto_credit_expense(
     try:
         cur = await db.conn.execute(
             "SELECT id FROM invoices "
-            "WHERE creator_role = ? AND (is_credit = 1 OR status = 'credit') "
+            "WHERE creator_role = ? AND is_credit = 1 "
             "ORDER BY created_at DESC LIMIT 1",
             (role,),
         )
@@ -531,6 +531,8 @@ async def chat_menu_history(
 async def chat_menu_write(
     message: Message, state: FSMContext
 ) -> None:
+    """Fallback: gd.py:gd_write_pick_target перехватывает раньше (gd.router первый).
+    Этот хэндлер сработает только если gd.router не обработал сообщение."""
     data = await state.get_data()
     channel = data.get("channel", "")
     await enter_writing(message, state, channel)
