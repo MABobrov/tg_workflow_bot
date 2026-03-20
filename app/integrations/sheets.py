@@ -128,7 +128,7 @@ INVOICES_HEADER = [
     "Расходы итого",        # 58
     "Создан",               # 59
     "Обновлён",             # 60
-    # — Статусы жизненного цикла (61-70) —
+    # — Статусы жизненного цикла (61-73) —
     "Лид КВ",              # 61
     "Лид КИА",             # 62
     "Лид НПН",             # 63
@@ -139,6 +139,9 @@ INVOICES_HEADER = [
     "Счет END",            # 68
     "Замеры",              # 69
     "Монтаж Факт",         # 70
+    "Материалы Факт",      # 71
+    "ЗП Монтажник сумма",  # 72
+    "Логистика Факт",      # 73
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -445,6 +448,7 @@ class GoogleSheetsService:
             67: "Да" if invoice.get("status") == "in_progress" else "", # BP В работе
             68: "Да" if invoice.get("status") == "ended" else "",       # BQ Счет END
             69: invoice.get("_zamery_info") or "",                       # BR Замеры
+            73: self._fmt_amount(invoice.get("actual_logistics")),       # BV Логистика Факт
         }
 
         # Расч.мат., Установка, Грузчики, Логистика — из БД
@@ -479,6 +483,8 @@ class GoogleSheetsService:
             zp_inst = float(_c.get("zp_installer") or 0)
             montazh_fact = mat_fact + sp_fact + zp_inst
             cells[70] = self._fmt_amount(montazh_fact) if montazh_fact else ""
+            cells[71] = self._fmt_amount(mat_fact) if mat_fact else ""       # Материалы Факт
+            cells[72] = self._fmt_amount(zp_inst) if zp_inst else ""         # ЗП Монтажник сумма
 
         if is_new:
             cells[12] = (
