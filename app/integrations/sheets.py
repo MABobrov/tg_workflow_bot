@@ -713,7 +713,7 @@ class GoogleSheetsService:
             return count
 
     def _sort_ws_by_date(self, ws: gspread.Worksheet, sort_col_index: int = 10) -> None:
-        """Sort worksheet rows 2+ by column (date DD.MM.YYYY), newest first (old at bottom)."""
+        """Sort worksheet rows 2+ by column (date DD.MM.YYYY), oldest first (new at bottom)."""
         sheet_id = ws._properties["sheetId"]  # noqa: SLF001
         row_count = ws.row_count
         col_count = ws.col_count
@@ -729,7 +729,7 @@ class GoogleSheetsService:
                     },
                     "sortSpecs": [{
                         "dimensionIndex": sort_col_index,
-                        "sortOrder": "DESCENDING",
+                        "sortOrder": "ASCENDING",
                     }],
                 }
             }]
