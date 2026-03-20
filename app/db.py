@@ -2829,33 +2829,62 @@ class Database:
             "zp_approved": inv.get("zp_status") == "approved",
         }
 
-    async def get_lead_info_for_project(self, project_id: int) -> str:
-        """Return lead assignment info string for Invoices sheet col BJ."""
+    async def get_lead_info_for_project(self, project_id: int) -> dict[str, str]:
+        """Return lead info per role for Invoices sheet cols BJ-BL.
+
+        Returns dict with keys: 'kv', 'kia', 'npn' — each a formatted string.
+        Also includes task description (RP comment) via task payload.
+        """
+        from datetime import datetime as _dt
+
         cur = await self.conn.execute(
-            "SELECT lt.assigned_manager_role, lt.assigned_at, u.username "
+            "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id "
             "FROM lead_tracking lt "
-            "LEFT JOIN users u ON u.telegram_id = lt.assigned_manager_id "
             "WHERE lt.project_id = ? "
-            "ORDER BY lt.assigned_at DESC LIMIT 1",
+            "ORDER BY lt.assigned_at ASC",
             (project_id,),
         )
-        row = await cur.fetchone()
-        if not row:
-            return ""
-        row = dict(row)
-        role_map = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}
-        role = role_map.get(row.get("assigned_manager_role", ""), "")
-        username = row.get("username") or ""
-        at = row.get("assigned_at") or ""
-        date_str = ""
-        if at:
-            try:
-                from datetime import datetime
-                date_str = datetime.fromisoformat(at).strftime("%d.%m.%Y")
-            except (ValueError, TypeError):
-                date_str = at[:10] if len(at) >= 10 else at
-        parts = [p for p in [role, f"@{username}" if username else "", date_str] if p]
-        return " ".join(parts)
+        rows = [dict(r) for r in await cur.fetchall()]
+        if not rows:
+            return {}
+
+        role_key_map = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}
+        result: dict[str, str] = {}
+
+        for row in rows:
+            role_raw = row.get("assigned_manager_role", "")
+            key = role_key_map.get(role_raw)
+            if not key:
+                continue
+
+            at = row.get("assigned_at") or ""
+            date_str = ""
+            if at:
+                try:
+                    date_str = _dt.fromisoformat(at).strftime("%d.%m.%Y")
+                except (ValueError, TypeError):
+                    date_str = at[:10] if len(at) >= 10 else at
+
+            # Получить комментарий РП из payload задачи
+            comment = ""
+            task_id = row.get("task_id")
+            if task_id:
+                tcur = await self.conn.execute(
+                    "SELECT payload_json FROM tasks WHERE id = ?", (task_id,)
+                )
+                trow = await tcur.fetchone()
+                if trow:
+                    import json
+                    try:
+                        payload = json.loads(trow[0]) if trow[0] else {}
+                        comment = payload.get("description", "")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+            parts = [date_str, comment] if comment else [date_str]
+            result[key] = " | ".join(p for p in parts if p)
+
+        return result
 
     async def search_invoices(
         self, query: str, limit: int = 20

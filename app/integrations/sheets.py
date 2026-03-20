@@ -128,11 +128,13 @@ INVOICES_HEADER = [
     "Расходы итого",        # 58
     "Создан",               # 59
     "Обновлён",             # 60
-    # — Статусы жизненного цикла (61-64) —
-    "Лид на расчет",        # 61
-    "Счет выставлен",       # 62
-    "В работе",             # 63
-    "Счет END",             # 64
+    # — Статусы жизненного цикла (61-66) —
+    "Лид КВ",              # 61
+    "Лид КИА",             # 62
+    "Лид НПН",             # 63
+    "Счет выставлен",      # 64
+    "В работе",            # 65
+    "Счет END",            # 66
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -430,10 +432,12 @@ class GoogleSheetsService:
             59: format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),
             60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
             # — Статусы жизненного цикла —
-            61: invoice.get("_lead_info") or "",                         # BJ Лид на расчет
-            62: self._fmt_sheet_date(invoice.get("receipt_date")) or "", # BK Счет выставлен
-            63: "Да" if invoice.get("status") == "in_progress" else "", # BL В работе
-            64: "Да" if invoice.get("status") == "ended" else "",       # BM Счет END
+            61: (invoice.get("_lead_info") or {}).get("kv", ""),         # BJ Лид КВ
+            62: (invoice.get("_lead_info") or {}).get("kia", ""),        # BK Лид КИА
+            63: (invoice.get("_lead_info") or {}).get("npn", ""),        # BL Лид НПН
+            64: self._fmt_sheet_date(invoice.get("receipt_date")) or "", # BM Счет выставлен
+            65: "Да" if invoice.get("status") == "in_progress" else "", # BN В работе
+            66: "Да" if invoice.get("status") == "ended" else "",       # BO Счет END
         }
 
         # Расч.мат., Установка, Грузчики, Логистика — из БД
