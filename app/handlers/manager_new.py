@@ -72,7 +72,7 @@ from ..states import (
     ZameryRequestSG,
 )
 from ..utils import answer_service, format_materials_list, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
-from .auth import require_role_callback, require_role_message
+from .auth import RoleFilter, require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -1956,10 +1956,8 @@ async def manager_invoice_materials(cb: CallbackQuery, db: Database) -> None:
 # ПРОБЛЕМА / ВОПРОС (existing Issue flow)
 # =====================================================================
 
-@router.message(F.text == MGR_BTN_ISSUE)
+@router.message(F.text == MGR_BTN_ISSUE, RoleFilter(ALL_MANAGER_ROLES))
 async def start_manager_issue(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
-        return
     await state.clear()
     await state.set_state(IssueSG.project)
     projects = await db.list_recent_projects(limit=20)
@@ -2102,11 +2100,9 @@ async def search_invoice_view(cb: CallbackQuery, db: Database) -> None:
 # ЗАМЕРЫ — структурированные заявки на замер
 # =====================================================================
 
-@router.message(F.text == MGR_BTN_ZAMERY)
+@router.message(F.text == MGR_BTN_ZAMERY, RoleFilter(ALL_MANAGER_ROLES))
 async def mgr_zamery(message: Message, state: FSMContext, db: Database) -> None:
     """Кнопка «📐 Замеры» — дашборд заявок на замер."""
-    if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
-        return
     await state.clear()
     user_id = message.from_user.id  # type: ignore[union-attr]
     requests = await db.list_zamery_requests(requested_by=user_id, limit=20)
@@ -2986,10 +2982,8 @@ async def _chat_proxy_invoice_pick(
     )
 
 
-@router.message(F.text == MGR_BTN_MONTAZH)
+@router.message(F.text == MGR_BTN_MONTAZH, RoleFilter(ALL_MANAGER_ROLES))
 async def mgr_montazh_chat(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
-        return
     await _chat_proxy_invoice_pick(message, state, db, "montazh", "Монтажная гр.", "🔧")
 
 

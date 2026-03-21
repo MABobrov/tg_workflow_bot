@@ -871,6 +871,37 @@ class Database:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def list_tasks_open_by_types(
+        self,
+        task_types: list[str],
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List open/in_progress tasks filtered by task_type (for GD summary drill-down)."""
+        placeholders = ",".join("?" for _ in task_types)
+        cur = await self.conn.execute(
+            f"""
+            SELECT t.*, u.role AS creator_role FROM tasks t
+            LEFT JOIN users u ON t.created_by = u.telegram_id
+            WHERE t.status IN ('open', 'in_progress')
+              AND t.type IN ({placeholders})
+            ORDER BY t.created_at DESC LIMIT ?
+            """,
+            (*task_types, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def list_zp_pending_invoices(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List invoices with any pending ZP request."""
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices "
+            "WHERE zp_installer_status = 'requested' "
+            "   OR zp_status = 'requested' "
+            "   OR zp_manager_status = 'requested' "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
     async def list_tasks_created_by(
         self,
         created_by: int,

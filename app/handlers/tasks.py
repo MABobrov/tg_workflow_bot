@@ -20,7 +20,7 @@ from ..services.menu_context import build_main_menu_for_user
 from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import DeliveryPaymentSG, InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCompleteSG
-from ..utils import answer_service, fmt_task_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
+from ..utils import answer_service, fmt_task_card, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -238,10 +238,13 @@ async def task_actions(
         return
     active_statuses = {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}
 
-    # DELETE — only for GD (admin)
+    # DELETE — GD (admin) and RP
     if action == "delete":
-        if cb.from_user.id not in (config.admin_ids or set()):
-            await cb.answer("⛔️ Удаление доступно только ГД", show_alert=True)
+        u = await db.get_user_optional(cb.from_user.id)
+        user_roles = set(parse_roles(u.role if u else None))
+        is_authorized = cb.from_user.id in (config.admin_ids or set()) or Role.RP in user_roles
+        if not is_authorized:
+            await cb.answer("⛔️ Удаление доступно только ГД и РП", show_alert=True)
             return
         await db.delete_task(task_id)
         await cb.answer(f"🗑 Задача #{task_id} удалена", show_alert=True)
