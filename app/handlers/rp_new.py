@@ -87,7 +87,7 @@ from ..states import (
     RpSupplierInvoiceSG,
 )
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
-from .auth import require_role_callback, require_role_message
+from .auth import RoleFilter, require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -547,10 +547,11 @@ async def rp_chat_invoice_picked(cb: CallbackQuery, state: FSMContext, db: Datab
 #   rp_montazh:work_refresh   — обновить список «В работу»
 # =====================================================================
 
-@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_MONTAZH) or (m.text or "").strip().startswith(RP_SUBBTN_MONTAZH))
+@router.message(
+    lambda m: (m.text or "").strip().startswith(RP_BTN_MONTAZH) or (m.text or "").strip().startswith(RP_SUBBTN_MONTAZH),
+    RoleFilter([Role.RP]),
+)
 async def rp_chat_montazh(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.RP]):
-        return
     await state.clear()
     await state.set_state(ManagerChatProxySG.menu)
     await state.update_data(channel="montazh")
