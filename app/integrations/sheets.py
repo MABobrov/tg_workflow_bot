@@ -520,14 +520,19 @@ class GoogleSheetsService:
         cells[20] = f"=O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row}"              # U (Прибыль)
         cells[23] = f'=IF(O{row}>0,U{row}/O{row}*100,0)'                      # X (Рент-ть)
 
+        # Материалы Факт: ОП (уже закупленные) + дочерние счета (новые)
+        _mat_op = float(invoice.get("materials_fact_op") or 0)
+        _mat_children = _c.get("materials_total", 0) if _c else 0
+        _mat_combined = _mat_op + _mat_children
+        if _mat_combined:
+            cells[71] = self._fmt_amount(_mat_combined)
+
         if _c:
             fact_pct = _c.get("margin_pct", 0)
             fact_margin = _c.get("margin", 0)
             cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""
             cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
             cells[58] = self._fmt_amount(_c.get("total_cost"))
-            # Материалы Факт: ОП (уже закупленные) + дочерние счета (новые)
-            cells[71] = self._fmt_amount(_c.get("materials_combined") or _c.get("materials_total"))
             # Прибыль факт (78) и Рентабельность факт % (79)
             cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CC Прибыль факт
             cells[79] = f"{fact_pct:.1f}%" if fact_pct else ""               # CD Рент-ть факт %
