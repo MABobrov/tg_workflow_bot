@@ -49,7 +49,7 @@ from ..keyboards import (
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
-from ..services.sheets_sync import export_to_sheets
+from ..services.sheets_sync import export_to_sheets, import_from_source_sheet
 from ..states import ChatProxySG, InvoiceSearchSG, SalesWriteSG
 from .chat_proxy import channel_label, enter_chat_menu, gd_channel_menu
 from ..utils import (
@@ -1192,6 +1192,13 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
     # --- 1. Google Sheets sync (if enabled) ---
     if integrations.sheets:
         await message.answer("⏳ Запускаю синхронизацию данных с Google Sheets...")
+
+        # Импорт из ОП (Отдел продаж) → БД бота
+        imported = await import_from_source_sheet(
+            db, integrations.sheets, log_prefix="gd_sync",
+        )
+
+        # Экспорт БД → invoice-лист
         stats = await export_to_sheets(
             db,
             integrations.sheets,
@@ -1201,6 +1208,7 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
 
         await message.answer(
             "✅ Синхронизация Google Sheets завершена.\n"
+            f"Импорт ОП: <b>{imported}</b> | "
             f"Проектов: <b>{stats['projects']}</b> | "
             f"Задач: <b>{stats['tasks']}</b> | "
             f"Счетов: <b>{stats['invoices']}</b>",
