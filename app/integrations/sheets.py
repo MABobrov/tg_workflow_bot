@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from dataclasses import dataclass
 from threading import RLock
@@ -551,10 +552,12 @@ class GoogleSheetsService:
             else:
                 cells[80] = ""
 
-        # Монтаж Факт = zp_installer_amount (сумма запроса ЗП монтажника)
-        zp_inst_amt = invoice.get("zp_installer_amount")
-        if zp_inst_amt:
-            cells[70] = self._fmt_amount(zp_inst_amt)
+        # Монтаж Факт: ОП (уже оплаченный) + ЗП монтажника (новые)
+        _mont_op = float(invoice.get("montazh_fact_op") or 0)
+        _mont_zp = float(invoice.get("zp_installer_amount") or 0)
+        _mont_combined = _mont_op + _mont_zp
+        if _mont_combined:
+            cells[70] = self._fmt_amount(_mont_combined)
 
         if is_new:
             cells[12] = (
@@ -829,7 +832,8 @@ class GoogleSheetsService:
         32: "manager_zp_blank",        # AG: Мен. ЗП (по бланку)
         # 33-36: ЗП выплаты (не импортируем)
         37: "materials_fact_op",          # AL: Материалы Факт
-        # 38-43: факт данные (не импортируем)
+        38: "montazh_fact_op",            # AM: Монтаж Факт
+        # 39-43: факт данные (не импортируем)
         # 44: Команда боту (human-writable)
         # 45: Запрос НПН (не импортируем)
         46: "npn_amount",              # AU: Выдано НПН
@@ -840,6 +844,8 @@ class GoogleSheetsService:
         if not val or not val.strip():
             return None
         v = val.strip().replace("\u00a0", "").replace(" ", "").rstrip("%")
+        # Strip currency suffixes: "1000р.", "1000 руб", "1000₽"
+        v = re.sub(r'[р₽]\.?$|руб\.?$', '', v).strip()
         # Google Sheets uses comma as thousand separator (257,000 = 257000)
         # If comma exists AND digits after comma are exactly 3 → thousand separator
         if "," in v:
@@ -889,6 +895,7 @@ class GoogleSheetsService:
             "profit_tax",
             "rentability_calc",
             "materials_fact_op",
+            "montazh_fact_op",
         }
     )
     _OP_DATE_FIELDS = frozenset(

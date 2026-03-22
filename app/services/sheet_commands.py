@@ -524,6 +524,16 @@ async def _handle_field_change(
         await db.update_invoice(int(invoice["id"]), materials_fact_op=new_mat_val)
         actions.append("materials_fact_op_updated")
 
+    # --- Montazh fact (OP) changed ---
+    new_mont_fact = changed.get("montazh_fact_op")
+    if new_mont_fact is not None:
+        try:
+            new_mont_val = float(str(new_mont_fact).replace(",", ".").replace("\xa0", "").replace(" ", "") or 0)
+        except (TypeError, ValueError):
+            new_mont_val = 0
+        await db.update_invoice(int(invoice["id"]), montazh_fact_op=new_mont_val)
+        actions.append("montazh_fact_op_updated")
+
     # --- Deadline changed ---
     new_deadline = changed.get("deadline_days")
     if new_deadline is not None:

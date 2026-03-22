@@ -452,6 +452,7 @@ class Database:
             ("invoices", "manager_zp_blank", "REAL"),           # Менеджер ЗП по бланку
             ("invoices", "npn_amount", "REAL"),                 # НПН с 10% налог
             ("invoices", "materials_fact_op", "REAL"),            # Материалы Факт из ОП (колонка AL)
+            ("invoices", "montazh_fact_op", "REAL"),             # Монтаж Факт из ОП (колонка AM)
             # --- Монтажник: инициализация ЗП и отслеживание материалов ---
             ("invoices", "materials_ordered", "INTEGER DEFAULT 0"),
             ("users", "zp_init_done", "INTEGER DEFAULT 0"),
@@ -1484,7 +1485,11 @@ class Database:
         materials_fact_op = float(inv.get("materials_fact_op") or 0)
         materials_combined = materials_fact_op + materials_total
 
-        total_cost = materials_combined + supplier_payments_total + zp_total
+        # Монтаж из ОП (уже оплаченный) + ЗП монтажника (новые)
+        montazh_fact_op = float(inv.get("montazh_fact_op") or 0)
+        montazh_combined = montazh_fact_op + zp_installer
+
+        total_cost = materials_combined + supplier_payments_total + zp_zamery + zp_manager + montazh_combined
         margin = invoice_amount - total_cost
         margin_pct = (margin / invoice_amount * 100) if invoice_amount > 0 else 0.0
 
@@ -1494,6 +1499,8 @@ class Database:
             "materials_by_type": materials_by_type,
             "materials_fact_op": materials_fact_op,
             "materials_combined": materials_combined,
+            "montazh_fact_op": montazh_fact_op,
+            "montazh_combined": montazh_combined,
             "supplier_payments_total": supplier_payments_total,
             "supplier_payments_list": sp_list,
             "zp_zamery": zp_zamery,
@@ -2625,6 +2632,7 @@ class Database:
             "profit_tax", "rentability_calc", "payment_terms",
             "description", "contract_type", "closing_docs_status",
             "materials_fact_op",
+            "montazh_fact_op",
         }
 
         created_by, creator_role = await self._resolve_invoice_import_owner(inv_num, payload, existing)

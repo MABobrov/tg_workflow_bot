@@ -592,6 +592,19 @@ def format_cost_card(inv: dict[str, Any], cost: dict[str, Any]) -> str:
                 lines.append(f"  ├ {label}: {amt:,.0f} руб.")
         lines.append(f"  └ <b>Итого материалов: {materials_combined:,.0f} руб.</b>")
 
+    # --- Монтаж ---
+    montazh_fact_op = cost.get("montazh_fact_op", 0)
+    montazh_combined = cost.get("montazh_combined", 0)
+    zp_inst_for_display = cost.get("zp_installer", 0)
+    if montazh_fact_op or zp_inst_for_display:
+        lines.append("")
+        lines.append("🔨 <b>Монтаж:</b>")
+        if montazh_fact_op:
+            lines.append(f"  ├ Оплачено (ОП): {montazh_fact_op:,.0f} руб.")
+        if zp_inst_for_display:
+            lines.append(f"  ├ ЗП монтажник: {zp_inst_for_display:,.0f} руб.")
+        lines.append(f"  └ <b>Итого монтаж: {montazh_combined:,.0f} руб.</b>")
+
     # --- Оплаты поставщикам ---
     sp_list: list[dict[str, Any]] = cost.get("supplier_payments_list", [])
     sp_total = cost.get("supplier_payments_total", 0)
@@ -657,7 +670,7 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any]) -> str:
 
     cost = pf.get("cost_card", {})
     fact_mat = cost.get("materials_combined", cost.get("materials_total", 0)) + cost.get("supplier_payments_total", 0)
-    fact_inst = float(cost.get("zp_installer", 0))
+    fact_inst = cost.get("montazh_combined", float(cost.get("zp_installer", 0)))
     fact_total = pf.get("actual_total_cost", 0)
     fact_profit = pf.get("actual_profit", 0)
     fact_pct = pf.get("actual_profitability", 0)
