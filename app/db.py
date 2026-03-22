@@ -451,6 +451,7 @@ class Database:
             ("invoices", "agent_fee", "REAL"),                  # Агентское вознаграждение
             ("invoices", "manager_zp_blank", "REAL"),           # Менеджер ЗП по бланку
             ("invoices", "npn_amount", "REAL"),                 # НПН с 10% налог
+            ("invoices", "materials_fact_op", "REAL"),            # Материалы Факт из ОП (колонка AL)
             # --- Монтажник: инициализация ЗП и отслеживание материалов ---
             ("invoices", "materials_ordered", "INTEGER DEFAULT 0"),
             ("users", "zp_init_done", "INTEGER DEFAULT 0"),
@@ -1479,7 +1480,11 @@ class Database:
         zp_installer = float(inv.get("zp_installer_amount") or 0) if inv.get("zp_installer_status") == "approved" else 0.0
         zp_total = zp_zamery + zp_manager + zp_installer
 
-        total_cost = materials_total + supplier_payments_total + zp_total
+        # Материалы из ОП (уже закупленные) + дочерние счета (новые)
+        materials_fact_op = float(inv.get("materials_fact_op") or 0)
+        materials_combined = materials_fact_op + materials_total
+
+        total_cost = materials_combined + supplier_payments_total + zp_total
         margin = invoice_amount - total_cost
         margin_pct = (margin / invoice_amount * 100) if invoice_amount > 0 else 0.0
 
@@ -1487,6 +1492,8 @@ class Database:
             "invoice_amount": invoice_amount,
             "materials_total": materials_total,
             "materials_by_type": materials_by_type,
+            "materials_fact_op": materials_fact_op,
+            "materials_combined": materials_combined,
             "supplier_payments_total": supplier_payments_total,
             "supplier_payments_list": sp_list,
             "zp_zamery": zp_zamery,
@@ -2617,6 +2624,7 @@ class Database:
             "manager_zp_blank", "npn_amount",
             "profit_tax", "rentability_calc", "payment_terms",
             "description", "contract_type", "closing_docs_status",
+            "materials_fact_op",
         }
 
         created_by, creator_role = await self._resolve_invoice_import_owner(inv_num, payload, existing)

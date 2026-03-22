@@ -526,7 +526,8 @@ class GoogleSheetsService:
             cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""
             cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
             cells[58] = self._fmt_amount(_c.get("total_cost"))
-            cells[71] = self._fmt_amount(_c.get("materials_total"))          # Материалы Факт
+            # Материалы Факт: ОП (уже закупленные) + дочерние счета (новые)
+            cells[71] = self._fmt_amount(_c.get("materials_combined") or _c.get("materials_total"))
             # Прибыль факт (78) и Рентабельность факт % (79)
             cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CC Прибыль факт
             cells[79] = f"{fact_pct:.1f}%" if fact_pct else ""               # CD Рент-ть факт %
@@ -821,7 +822,9 @@ class GoogleSheetsService:
         # 30: Выплаты. Агент. (не импортируем)
         # 31: Дата выпл. Агент. (не импортируем)
         32: "manager_zp_blank",        # AG: Мен. ЗП (по бланку)
-        # 33-43: ЗП выплаты, факт данные (не импортируем)
+        # 33-36: ЗП выплаты (не импортируем)
+        37: "materials_fact_op",          # AL: Материалы Факт
+        # 38-43: факт данные (не импортируем)
         # 44: Команда боту (human-writable)
         # 45: Запрос НПН (не импортируем)
         46: "npn_amount",              # AU: Выдано НПН
@@ -880,6 +883,7 @@ class GoogleSheetsService:
             "npn_amount",
             "profit_tax",
             "rentability_calc",
+            "materials_fact_op",
         }
     )
     _OP_DATE_FIELDS = frozenset(
