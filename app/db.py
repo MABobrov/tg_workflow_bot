@@ -1742,6 +1742,20 @@ class Database:
         )
         return [dict(r) for r in await cur.fetchall()]
 
+    async def list_chat_messages_for_invoice_channel(
+        self,
+        channel: str,
+        invoice_id: int,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Messages for a specific invoice-bound channel only."""
+        cur = await self.conn.execute(
+            "SELECT * FROM chat_messages WHERE channel = ? AND invoice_id = ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (channel, invoice_id, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
     async def list_tasks_by_invoice(
         self, invoice_id: int, limit: int = 30,
     ) -> list[dict[str, Any]]:
@@ -1867,7 +1881,6 @@ class Database:
 
     async def get_daily_summary(self) -> dict[str, Any]:
         """Агрегированная сводка дня для ГД."""
-        today_iso = date.today().isoformat()
         month_start = date.today().replace(day=1).isoformat()
 
         # Счета по статусам
@@ -2941,8 +2954,6 @@ class Database:
         Returns dict with keys: 'kv', 'kia', 'npn' — each a formatted string.
         Also includes task description (RP comment) via task payload.
         """
-        from datetime import datetime as _dt
-
         cur = await self.conn.execute(
             "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id "
             "FROM lead_tracking lt "

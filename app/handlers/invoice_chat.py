@@ -10,7 +10,6 @@ FSM state: InvoiceChatSG.writing
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -19,11 +18,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
 from ..db import Database
-from ..enums import Role
 from ..services.notifier import Notifier
 from ..states import InvoiceChatSG
-from ..utils import get_initiator_label, refresh_recipient_keyboard, utcnow, to_iso
-from .auth import require_role_callback, require_role_message
+from ..utils import get_initiator_label, refresh_recipient_keyboard
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -36,6 +33,54 @@ CHANNEL = "mgr_installer"
 def invoice_chat_button(invoice_id: int, label: str = "💬 Чат") -> tuple[str, str]:
     """Return (text, callback_data) for the chat button."""
     return label, f"inv_chat:menu:{invoice_id}"
+
+
+def _invoice_chat_participants(invoice: dict[str, object]) -> set[int]:
+    participants: set[int] = set()
+    for raw_id in (invoice.get("created_by"), invoice.get("assigned_to")):
+        try:
+            if raw_id:
+                participants.add(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    return participants
+
+
+def _user_can_access_invoice_chat(invoice: dict[str, object], user_id: int) -> bool:
+    return user_id in _invoice_chat_participants(invoice)
+
+
+def _resolve_invoice_chat_recipient(invoice: dict[str, object], sender_id: int) -> int | None:
+    try:
+        installer_id = int(invoice["assigned_to"]) if invoice.get("assigned_to") else None
+    except (TypeError, ValueError):
+        installer_id = None
+    try:
+        manager_id = int(invoice["created_by"]) if invoice.get("created_by") else None
+    except (TypeError, ValueError):
+        manager_id = None
+
+    if sender_id == installer_id:
+        return manager_id
+    if sender_id == manager_id:
+        return installer_id
+    return None
+
+
+async def _load_invoice_chat_invoice(
+    cb: CallbackQuery,
+    db: Database,
+    *,
+    invoice_id: int,
+) -> dict[str, object] | None:
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return None
+    if not cb.from_user or not _user_can_access_invoice_chat(inv, cb.from_user.id):
+        await cb.message.answer("⛔️ У вас нет доступа к чату по этому счёту.")  # type: ignore[union-attr]
+        return None
+    return inv
 
 
 def _chat_menu_kb(invoice_id: int):
@@ -52,13 +97,11 @@ async def inv_chat_menu(cb: CallbackQuery, state: FSMContext, db: Database) -> N
     """Show chat menu for invoice."""
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    inv = await db.get_invoice(invoice_id)
+    inv = await _load_invoice_chat_invoice(cb, db, invoice_id=invoice_id)
     if not inv:
-        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    # Count messages
-    msgs = await db.list_chat_messages_by_invoice(invoice_id)
+    msgs = await db.list_chat_messages_for_invoice_channel(CHANNEL, invoice_id)
     count = len(msgs)
     text = (
         f"💬 <b>Чат по счёту №{inv['invoice_number']}</b>\n"
@@ -73,12 +116,11 @@ async def inv_chat_history(cb: CallbackQuery, db: Database) -> None:
     """Show chat message history for invoice."""
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    inv = await db.get_invoice(invoice_id)
+    inv = await _load_invoice_chat_invoice(cb, db, invoice_id=invoice_id)
     if not inv:
-        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    msgs = await db.list_chat_messages_by_invoice(invoice_id)
+    msgs = await db.list_chat_messages_for_invoice_channel(CHANNEL, invoice_id)
     u = cb.from_user
     if u:
         await db.mark_messages_read(u.id, f"{CHANNEL}:{invoice_id}")
@@ -117,9 +159,8 @@ async def inv_chat_start_write(cb: CallbackQuery, state: FSMContext, db: Databas
     """Enter writing mode for invoice chat."""
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    inv = await db.get_invoice(invoice_id)
+    inv = await _load_invoice_chat_invoice(cb, db, invoice_id=invoice_id)
     if not inv:
-        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
     await state.set_state(InvoiceChatSG.writing)
@@ -160,16 +201,17 @@ async def inv_chat_send(
     if not u:
         return
 
-    # Determine recipient
     sender_id = u.id
-    installer_id = inv.get("assigned_to")
-    manager_id = inv.get("created_by")
+    if not _user_can_access_invoice_chat(inv, sender_id):
+        await state.clear()
+        await message.answer("⛔️ У вас нет доступа к чату по этому счёту.")
+        return
 
-    # If sender is installer → recipient is manager; and vice versa
-    if sender_id == installer_id:
-        receiver_id = int(manager_id) if manager_id else None
-    else:
-        receiver_id = int(installer_id) if installer_id else None
+    receiver_id = _resolve_invoice_chat_recipient(inv, sender_id)
+    if receiver_id is None:
+        await state.clear()
+        await message.answer("⚠️ Получатель чата для этого счёта не найден.")
+        return
 
     channel = f"{CHANNEL}:{invoice_id}"
     await db.save_chat_message(

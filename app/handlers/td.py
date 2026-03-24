@@ -27,13 +27,14 @@ router = Router()
 router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 
+GD_ACCESS_ROLES = [Role.GD, Role.TD]
 
 # ==================== СЧЁТ END (объединяет подтверждение оплат + Счет End) ====================
 
 @router.message(F.text.startswith(GD_BTN_INVOICE_END_GD))
 async def gd_invoice_end_combined(message: Message, db: Database) -> None:
     """Show both PAYMENT_CONFIRM and INVOICE_END_REQUEST tasks for GD."""
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     user_id = message.from_user.id  # type: ignore[union-attr]
     tasks_pc = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.PAYMENT_CONFIRM)
@@ -133,7 +134,7 @@ async def gd_supplier_pay_dashboard(message: Message, state: FSMContext, db: Dat
     When ZP requests exist → show only ZP buttons (roles already specify invoices).
     When NO ZP requests → show full invoices-in-work list with payment marks.
     """
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     await state.clear()
 
@@ -456,7 +457,7 @@ async def _close_zp_tasks(db: Database, invoice_id: int, task_type: str) -> None
 @router.callback_query(F.data == "supplier_pay_start")
 async def start_supplier_payment(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """Start existing 8-step supplier payment flow from dashboard button."""
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer()
     await state.clear()
@@ -472,7 +473,7 @@ async def start_supplier_payment(cb: CallbackQuery, state: FSMContext, db: Datab
 
 @router.callback_query(ProjectCb.filter(F.ctx == "suppl_pay"))
 async def supplier_pay_pick_project(cb: CallbackQuery, callback_data: ProjectCb, state: FSMContext, db: Database) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer()
     project = await db.get_project(int(callback_data.project_id))
@@ -606,7 +607,7 @@ async def supplier_pay_finalize(
     notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer()
     u = cb.from_user

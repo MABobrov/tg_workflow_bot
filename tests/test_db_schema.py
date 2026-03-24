@@ -11,7 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db import Database
 from app.enums import TaskStatus, TaskType
+from app.handlers.invoice_chat import _resolve_invoice_chat_recipient, _user_can_access_invoice_chat
 from app.services.assignment import apply_user_roles, resolve_default_assignee
+from app.services.sheet_commands import _effective_logistics_cost
 
 
 def test_init_schema_adds_client_contact_to_invoices(tmp_path) -> None:
@@ -69,6 +71,82 @@ def test_import_zamery_invoices_persists_contact_and_skips_invalid_rows(tmp_path
                 "assigned_to": 123,
             }
         ]
+
+    asyncio.run(scenario())
+
+
+def test_invoice_chat_access_and_recipient_resolution() -> None:
+    invoice = {
+        "created_by": 11,
+        "assigned_to": 22,
+    }
+
+    assert _user_can_access_invoice_chat(invoice, 11) is True
+    assert _user_can_access_invoice_chat(invoice, 22) is True
+    assert _user_can_access_invoice_chat(invoice, 33) is False
+
+    assert _resolve_invoice_chat_recipient(invoice, 11) == 22
+    assert _resolve_invoice_chat_recipient(invoice, 22) == 11
+    assert _resolve_invoice_chat_recipient(invoice, 33) is None
+
+
+def test_effective_logistics_cost_prefers_actual_over_estimate() -> None:
+    assert _effective_logistics_cost(1500, None) == 1500
+    assert _effective_logistics_cost(1500, 900) == 900
+    assert _effective_logistics_cost(None, 0) == 0
+
+
+def test_list_chat_messages_for_invoice_channel_filters_other_channels(tmp_path) -> None:
+    async def scenario() -> None:
+        db = Database(str(tmp_path / "bot.sqlite3"))
+        await db.connect()
+        try:
+            await db.init_schema()
+            await db.upsert_user(1, "manager_user", "Manager User")
+            await db.upsert_user(2, "installer_user", "Installer User")
+            await db.upsert_user(3, "rp_user", "RP User")
+            invoice_id = await db.create_invoice(
+                invoice_number="CHAT-77",
+                project_id=None,
+                created_by=1,
+                creator_role="manager_kv",
+            )
+            other_invoice_id = await db.create_invoice(
+                invoice_number="CHAT-88",
+                project_id=None,
+                created_by=1,
+                creator_role="manager_kv",
+            )
+            await db.save_chat_message(
+                channel="mgr_installer",
+                sender_id=1,
+                direction="outgoing",
+                text="installer chat",
+                receiver_id=2,
+                invoice_id=invoice_id,
+            )
+            await db.save_chat_message(
+                channel="rp",
+                sender_id=1,
+                direction="outgoing",
+                text="rp chat",
+                receiver_id=3,
+                invoice_id=invoice_id,
+            )
+            await db.save_chat_message(
+                channel="mgr_installer",
+                sender_id=1,
+                direction="outgoing",
+                text="other invoice",
+                receiver_id=2,
+                invoice_id=other_invoice_id,
+            )
+
+            messages = await db.list_chat_messages_for_invoice_channel("mgr_installer", invoice_id)
+        finally:
+            await db.close()
+
+        assert [msg["text"] for msg in messages] == ["installer chat"]
 
     asyncio.run(scenario())
 

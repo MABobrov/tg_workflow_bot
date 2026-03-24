@@ -28,7 +28,6 @@ from ..enums import (
     Role,
     TaskStatus,
     TaskType,
-    MANAGER_ROLES,
 )
 from ..services.assignment import resolve_default_assignee
 from ..utils import refresh_recipient_keyboard, utcnow, to_iso
@@ -58,6 +57,19 @@ _COMMAND_MAP: dict[str, str] = {
 
 
 _STATS_COMMANDS = {"сводка", "по менеджерам", "выставленные счета", "зп задолженность", "задачи в работе", "документооборот"}
+
+
+def _effective_logistics_cost(estimated: object, actual: object) -> float:
+    """Use actual logistics once known; otherwise fall back to the estimate."""
+    if actual is not None:
+        try:
+            return float(actual)
+        except (TypeError, ValueError):
+            pass
+    try:
+        return float(estimated or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _clean_command(raw: str) -> str:
@@ -893,7 +905,7 @@ async def _cmd_stats_summary(
         "    + COALESCE(i.estimated_profile, 0) as est_mat, "
         "  COALESCE(i.estimated_installation, 0) as est_inst, "
         "  COALESCE(i.estimated_loaders, 0) as est_load, "
-        "  COALESCE(i.estimated_logistics, 0) + COALESCE(i.actual_logistics, 0) as est_log "
+        "  i.estimated_logistics, i.actual_logistics "
         "FROM invoices i "
         "WHERE i.parent_invoice_id IS NULL AND i.status IN ('new', 'in_work', 'closing')"
     )
@@ -903,7 +915,8 @@ async def _cmd_stats_summary(
     total_fact_paid = 0.0
     for cr in cost_rows:
         inv_id = cr["id"]
-        est = cr["est_mat"] + cr["est_inst"] + cr["est_load"] + cr["est_log"]
+        est_log = _effective_logistics_cost(cr["estimated_logistics"], cr["actual_logistics"])
+        est = cr["est_mat"] + cr["est_inst"] + cr["est_load"] + est_log
         total_est_cost += est
         # Фактически оплачено (дочерние счета + supplier payments)
         child_cur = await db.conn.execute(
@@ -1126,7 +1139,7 @@ async def _cmd_stats_zp_pending(
         est_mat = (r["estimated_materials"] or 0) + (r["estimated_glass"] or 0) + (r["estimated_profile"] or 0)
         est_inst = r["estimated_installation"] or 0
         est_load = r["estimated_loaders"] or 0
-        est_log = (r["estimated_logistics"] or 0) + (r["actual_logistics"] or 0)
+        est_log = _effective_logistics_cost(r["estimated_logistics"], r["actual_logistics"])
         est_total = est_mat + est_inst + est_load + est_log
         # НДС: 22/122 (выход - вход)
         refundable = est_mat + est_log

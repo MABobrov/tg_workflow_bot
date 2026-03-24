@@ -13,6 +13,9 @@ if TYPE_CHECKING:
     from ..db import Database
 
 
+_GD_LIKE_ROLES = {Role.GD, Role.TD}
+
+
 async def build_menu_context(
     db: Database,
     user_id: int | None,
@@ -34,14 +37,15 @@ async def build_menu_context(
 
     roles = set(parse_roles(role))
     is_rp = Role.RP in roles or Role.MANAGER_NPN in roles
+    has_gd_access = bool(roles & _GD_LIKE_ROLES)
     unread = await db.count_unread_tasks(user_id)
     context: dict[str, Any] = {
         "unread": unread,
         "unread_channels": await db.count_unread_by_channel(user_id),
-        "gd_inbox_unread": await db.count_gd_inbox_tasks(user_id) if Role.GD in roles else None,
-        "gd_invoice_unread": await db.count_gd_invoice_tasks(user_id) if Role.GD in roles else None,
-        "gd_invoice_end_unread": await db.count_gd_invoice_end_tasks(user_id) if Role.GD in roles else None,
-        "gd_supplier_pay_unread": await db.count_gd_supplier_pay_tasks(user_id) if Role.GD in roles else None,
+        "gd_inbox_unread": await db.count_gd_inbox_tasks(user_id) if has_gd_access else None,
+        "gd_invoice_unread": await db.count_gd_invoice_tasks(user_id) if has_gd_access else None,
+        "gd_invoice_end_unread": await db.count_gd_invoice_end_tasks(user_id) if has_gd_access else None,
+        "gd_supplier_pay_unread": await db.count_gd_supplier_pay_tasks(user_id) if has_gd_access else None,
         "rp_tasks": await db.count_rp_role_tasks(user_id) if is_rp else 0,
         "rp_messages": await db.count_rp_role_messages(user_id) if is_rp else 0,
         "npn_tasks": unread if Role.MANAGER_NPN in roles else 0,

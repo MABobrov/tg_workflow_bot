@@ -9,7 +9,7 @@ from aiogram.exceptions import TelegramBadRequest
 from app.db import Database
 from app.enums import InvoiceStatus, Role
 from app.handlers.tasks import _safe_edit_task_markup
-from app.handlers.common import _menu_context
+from app.handlers.common import _can_delete_task_entries, _menu_context
 from app.integrations.sheets import GoogleSheetsService, SheetsConfig
 from app.keyboards import main_menu
 from app.services.daily_sync import _MSK, _send_deadline_notifications
@@ -211,6 +211,32 @@ def test_menu_context_includes_gd_supplier_payment_badge(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+def test_menu_context_includes_gd_supplier_payment_badge_for_td(tmp_path) -> None:
+    async def scenario() -> None:
+        db = Database(str(tmp_path / "bot.sqlite3"))
+        await db.connect()
+        try:
+            await db.init_schema()
+            await db.upsert_user(1, "td_user", "TD User")
+            await db.set_user_role(1, Role.TD)
+
+            invoice_id = await db.create_invoice(
+                invoice_number="TD-1",
+                project_id=None,
+                created_by=1,
+                creator_role=Role.TD,
+            )
+            await db.set_invoice_zp_status(invoice_id, "requested")
+
+            ctx = await _menu_context(db, 1, Role.TD)
+        finally:
+            await db.close()
+
+        assert ctx["gd_supplier_pay_unread"] == 1
+
+    asyncio.run(scenario())
+
+
 def test_build_main_menu_for_user_uses_shared_badge_context(tmp_path) -> None:
     async def scenario() -> None:
         db = Database(str(tmp_path / "bot.sqlite3"))
@@ -241,6 +267,13 @@ def test_build_main_menu_for_user_uses_shared_badge_context(tmp_path) -> None:
         assert "💸 Оплата поставщику 🔴1" in labels
 
     asyncio.run(scenario())
+
+
+def test_can_delete_task_entries_allows_gd_td_and_rp() -> None:
+    assert _can_delete_task_entries(Role.GD) is True
+    assert _can_delete_task_entries(Role.TD) is True
+    assert _can_delete_task_entries(Role.RP) is True
+    assert _can_delete_task_entries(Role.MANAGER) is False
 
 
 def _menu_labels(role: str) -> list[str]:

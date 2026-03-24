@@ -72,6 +72,7 @@ router = Router()
 router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 
+GD_ACCESS_ROLES = [Role.GD, Role.TD]
 SALES_SOURCE_ROLES = {Role.RP, Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN}
 
 
@@ -130,7 +131,7 @@ async def _is_sales_not_urgent_task(db: Database, task: dict[str, object]) -> bo
 @router.message(lambda m: (m.text or "").strip().startswith("📥 Входящие для ГД"))
 async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
     """Show GD all open tasks (urgent, payment confirm, GD_TASK, etc.)."""
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
 
     user_id = message.from_user.id  # type: ignore[union-attr]
@@ -187,7 +188,7 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
 @router.message(F.text.startswith(GD_BTN_INVOICES))
 async def gd_invoices(message: Message, db: Database, config: Config) -> None:
     """Show full list of invoices in work with payment-request marks."""
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
 
     user_id = message.from_user.id  # type: ignore[union-attr]
@@ -256,7 +257,7 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
 @router.callback_query(F.data == "gd_inv:refresh")
 async def gd_invoices_refresh(cb: CallbackQuery, db: Database) -> None:
     """Refresh the 'Счета на Оплату' dashboard (inline)."""
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer("🔄 Обновлено")
 
@@ -315,7 +316,7 @@ async def gd_invoices_refresh(cb: CallbackQuery, db: Database) -> None:
 @router.message(F.text.startswith(GD_BTN_INVOICES_WORK))
 async def gd_invoices_work(message: Message, db: Database) -> None:
     """Show full list of invoices in work (same view as RP)."""
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
 
     invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
@@ -366,7 +367,7 @@ async def gd_invoices_work(message: Message, db: Database) -> None:
 @router.callback_query(F.data == "gd_work:refresh")
 async def gd_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
     """Refresh the invoices-in-work dashboard for GD."""
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer("🔄 Обновлено")
 
@@ -417,7 +418,7 @@ async def gd_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data.regexp(r"^gd_work:view:\d+$"))
 async def gd_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
     """Invoice card from GD work dashboard — full cost card."""
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer()
 
@@ -477,7 +478,7 @@ async def gd_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
 )
 async def gd_search_invoice_start(message: Message, state: FSMContext, db: Database) -> None:
     """Start invoice search flow."""
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
 
     await state.clear()
@@ -506,7 +507,7 @@ SEARCH_CRITERIA_LABELS = {
 @router.callback_query(F.data.startswith("inv_search:"))
 async def gd_search_pick_criteria(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """User picked a search criterion."""
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer()
     criteria = cb.data.split(":", 1)[1]  # type: ignore[union-attr]
@@ -558,7 +559,7 @@ async def gd_search_execute(message: Message, state: FSMContext, db: Database, c
 @router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_CHAT_RP))
 async def gd_chat_rp(message: Message, state: FSMContext, db: Database) -> None:
     """#51: Чат с РП — с привязкой к счёту."""
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     # Invoice picker перед чатом
     invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
@@ -582,7 +583,7 @@ async def gd_chat_rp(message: Message, state: FSMContext, db: Database) -> None:
 @router.callback_query(F.data.startswith("gd_chat_inv:"))
 async def gd_chat_invoice_picked(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """ГД выбрал счёт для привязки к чату (#51)."""
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer()
     parts = cb.data.split(":")  # type: ignore[union-attr]
@@ -615,21 +616,21 @@ async def gd_chat_invoice_picked(cb: CallbackQuery, state: FSMContext, db: Datab
 
 @router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_ZAMERY))
 async def gd_chat_zamery(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     await enter_chat_menu(message, state, channel="zamery")
 
 
 @router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_ACCOUNTING))
 async def gd_chat_accounting(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     await enter_chat_menu(message, state, channel="accounting")
 
 
 @router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_MONTAZH))
 async def gd_chat_montazh(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     # --- Montazh statistics dashboard ---
     confirmed = await db.list_installer_confirmed_invoices()
@@ -672,7 +673,7 @@ async def gd_chat_montazh(message: Message, state: FSMContext, db: Database) -> 
 @router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_SALES))
 async def gd_chat_sales(message: Message, state: FSMContext, db: Database) -> None:
     """Отд.Продаж — составной канал."""
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     await state.clear()
     await state.set_state(ChatProxySG.menu)
@@ -685,21 +686,21 @@ async def gd_chat_sales(message: Message, state: FSMContext, db: Database) -> No
 
 @router.message(lambda m: any((m.text or "").strip().startswith(b) for b in (GD_BTN_KV_CRED, GD_SUBBTN_KV_CRED)))
 async def gd_chat_kv(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     await enter_chat_menu(message, state, channel="manager_kv")
 
 
 @router.message(lambda m: any((m.text or "").strip().startswith(b) for b in (GD_BTN_KIA_CRED, GD_SUBBTN_KIA_CRED)))
 async def gd_chat_kia(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     await enter_chat_menu(message, state, channel="manager_kia")
 
 
 @router.message(lambda m: any((m.text or "").strip().startswith(b) for b in (GD_BTN_NPN_CRED, GD_SUBBTN_NPN_CRED)))
 async def gd_chat_npn(message: Message, state: FSMContext, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     await enter_chat_menu(message, state, channel="manager_npn")
 
@@ -776,7 +777,7 @@ async def _show_sales_invoice_picker_or_write(
 @router.callback_query(F.data.startswith(f"{_SALES_INV_PREFIX}:"))
 async def gd_write_pick_invoice(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """GD выбрал счёт (или 'Без привязки') перед написанием сообщения."""
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer()
     val = (cb.data or "").split(":", 1)[1]
@@ -957,7 +958,7 @@ async def gd_write_send_message(
 )
 async def gd_daily_summary(message: Message, db: Database, config: Config) -> None:
     """Агрегированная сводка дня для ГД."""
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
 
     text, markup = await _build_summary(db)
@@ -1183,7 +1184,7 @@ async def gd_summary_back(cb: CallbackQuery, db: Database) -> None:
 )
 async def gd_sync_data(message: Message, db: Database, config: Config, integrations: IntegrationHub) -> None:
     """Trigger Google Sheets resync + show detailed task/project summary."""
-    if not await require_role_message(message, db, roles=[Role.GD]):
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
 
     user_id = message.from_user.id  # type: ignore[union-attr]
@@ -1340,7 +1341,7 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
 @router.callback_query(F.data.regexp(r"^inv_stats:\d+$"))
 async def gd_invoice_stats(cb: CallbackQuery, db: Database) -> None:
     """Полная карточка себестоимости по родительскому счёту."""
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer()
     parent_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
@@ -1366,7 +1367,7 @@ async def gd_invoice_stats(cb: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data.regexp(r"^inv_planfact:\d+$"))
 async def gd_invoice_plan_fact(cb: CallbackQuery, db: Database) -> None:
     """Карточка План/Факт для ГД."""
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
@@ -1387,7 +1388,7 @@ async def gd_invoice_plan_fact(cb: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data.regexp(r"^inv_msgs:\d+$"))
 async def gd_invoice_messages(cb: CallbackQuery, db: Database) -> None:
     """Все сообщения из всех каналов, привязанные к конкретному счёту."""
-    if not await require_role_callback(cb, db, roles=[Role.GD]):
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]

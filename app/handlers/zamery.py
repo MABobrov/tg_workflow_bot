@@ -1426,25 +1426,15 @@ async def _render_schedule_main(
     await msg.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
-@router.callback_query(F.data == "zamsched:refresh")
-async def zamery_schedule_refresh(cb: CallbackQuery, db: Database) -> None:
-    """#15: Обновить график замеров."""
-    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
-        return
-    await cb.answer("🔄 Обновлено")
-    uid = cb.from_user.id
-    await _render_schedule_main(cb, db, uid, edit_existing=True)
-
-
-@router.callback_query(F.data.startswith("zamsched:week:"))
-async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
-    """Detailed week view — 7 days with zamery, blackouts, free."""
-    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
-        return
-    await cb.answer()
-
-    uid = cb.from_user.id
-    week_offset = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+async def _render_schedule_week(
+    target: Message | CallbackQuery,
+    db: Database,
+    uid: int,
+    week_offset: int,
+    *,
+    edit_existing: bool = True,
+) -> None:
+    """Render detailed week view and preserve the selected week context."""
     today = date.today()
     mon, sun = _week_range(today, week_offset)
     d_from = mon.isoformat()
@@ -1453,7 +1443,6 @@ async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
     zamery = await db.list_zamery_for_schedule(uid, d_from, d_to)
     blackouts = await db.list_zamery_blackout_dates(uid, d_from, d_to)
 
-    # Group zamery by date
     zam_by_date: dict[str, list[dict]] = {}
     for z in zamery:
         d = z["scheduled_date"]
@@ -1489,8 +1478,6 @@ async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
                 text += f"🟢 <b>{day_label}</b> — свободен\n"
 
     b = InlineKeyboardBuilder()
-    # Кнопки свободных дней → заказать замер
-    free_btns = 0
     for i in range(7):
         day = mon + timedelta(days=i)
         ds = day.isoformat()
@@ -1500,8 +1487,6 @@ async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
                 text=f"🟢 {day.day} {_RU_MONTHS[day.month]} ({wd}) — записать",
                 callback_data=f"zamsched:book:{ds}:{week_offset}",
             )
-            free_btns += 1
-    # Дни с замерами — тоже можно добавить ещё
     for i in range(7):
         day = mon + timedelta(days=i)
         ds = day.isoformat()
@@ -1512,13 +1497,11 @@ async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
                 callback_data=f"zamsched:book:{ds}:{week_offset}",
             )
 
-    # Nav buttons
     if week_offset > 0:
         b.button(text="⬅️ Пред. неделя", callback_data=f"zamsched:week:{week_offset - 1}")
     if week_offset < 8:
         b.button(text="След. неделя ➡️", callback_data=f"zamsched:week:{week_offset + 1}")
     b.button(text="🚫 Добавить выходной", callback_data="zamsched:blackout:add")
-    # Show removable blackouts for this week
     for bl in blackouts:
         bd = date.fromisoformat(bl["blackout_date"])
         b.button(
@@ -1528,10 +1511,36 @@ async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
     b.button(text="⬅️ К списку недель", callback_data="zamsched:main")
     b.adjust(1)
 
-    try:
-        await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
-    except Exception:
-        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    msg = target.message if isinstance(target, CallbackQuery) else target
+    if edit_existing and isinstance(target, CallbackQuery):
+        try:
+            await msg.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+            return
+        except Exception:
+            pass
+    await msg.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "zamsched:refresh")
+async def zamery_schedule_refresh(cb: CallbackQuery, db: Database) -> None:
+    """#15: Обновить график замеров."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer("🔄 Обновлено")
+    uid = cb.from_user.id
+    await _render_schedule_main(cb, db, uid, edit_existing=True)
+
+
+@router.callback_query(F.data.startswith("zamsched:week:"))
+async def zamery_schedule_week(cb: CallbackQuery, db: Database) -> None:
+    """Detailed week view — 7 days with zamery, blackouts, free."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+
+    uid = cb.from_user.id
+    week_offset = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await _render_schedule_week(cb, db, uid, week_offset, edit_existing=True)
 
 
 @router.callback_query(F.data == "zamsched:main")
@@ -2065,8 +2074,7 @@ async def zamery_blackout_remove(cb: CallbackQuery, db: Database) -> None:
 
     await cb.message.answer("✅ Выходной удалён.")  # type: ignore[union-attr]
 
-    # Refresh schedule main view instead of mutating cb.data
-    await _render_schedule_main(cb, db, cb.from_user.id, edit_existing=False)
+    await _render_schedule_week(cb, db, cb.from_user.id, week_offset, edit_existing=False)
 
 
 # =====================================================================
