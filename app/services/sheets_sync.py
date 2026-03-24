@@ -71,6 +71,7 @@ async def export_to_sheets(
                     if project_code:
                         project_code_by_id[int(project_id)] = project_code
                 except Exception:
+                    log.debug("Failed to get project %s for task", project_id, exc_info=True)
                     project_code = ""
         task_items.append((task, project_code))
 
@@ -79,7 +80,10 @@ async def export_to_sheets(
 
     invoice_count = 0
     if sync_invoices:
-        invoices = sorted(await db.list_invoices(limit=10000), key=lambda item: int(item["id"]))
+        invoices = sorted(
+            await db.list_invoices(limit=10000),
+            key=lambda item: (item.get("receipt_date") or "9999-12-31", int(item["id"])),
+        )
         invoice_items: list[tuple[dict[str, Any], str, dict[str, Any] | None]] = []
         for invoice in invoices:
             manager_label = ""
@@ -88,6 +92,15 @@ async def export_to_sheets(
                 if user:
                     manager_label = f"@{user.username}" if user.username else (user.full_name or str(user.telegram_id))
 
+            # Fallback: определить creator_role из роли пользователя
+            if not invoice.get("creator_role") and invoice.get("created_by"):
+                try:
+                    u = await db.get_user_optional(int(invoice["created_by"]))
+                    if u and u.role and u.role.startswith("manager"):
+                        invoice["creator_role"] = u.role
+                except Exception:
+                    log.debug("Failed to resolve creator_role for invoice %s", invoice.get("id"), exc_info=True)
+
             cost = None
             if include_invoice_cost and not invoice.get("parent_invoice_id"):
                 try:
@@ -95,6 +108,51 @@ async def export_to_sheets(
                 except Exception:
                     log.debug("Failed to build invoice cost card for invoice %s", invoice.get("id"), exc_info=True)
                     cost = None
+
+            # Обогатить lead_info и zamery_info для столбцов BJ-BP
+            try:
+                invoice["_lead_info"] = await db.get_lead_info_for_invoice(invoice)
+            except Exception:
+                log.debug("Failed to get lead_info for invoice %s", invoice.get("id"), exc_info=True)
+                invoice["_lead_info"] = {}
+
+            project_id = invoice.get("project_id")
+            if project_id:
+                try:
+                    invoice["_zamery_info"] = await db.get_zamery_info_for_project(int(project_id))
+                except Exception:
+                    log.debug("Failed to get zamery_info for project %s", project_id, exc_info=True)
+                    invoice["_zamery_info"] = ""
+
+            # Расчет vs Факт — сравнение план/факт себестоимости
+            plan_fact_label = ""
+            if cost and not invoice.get("parent_invoice_id"):
+                est_glass = float(invoice.get("estimated_glass") or 0)
+                est_profile = float(invoice.get("estimated_profile") or 0)
+                est_mat = float(invoice.get("estimated_materials") or 0)
+                est_inst = float(invoice.get("estimated_installation") or 0)
+                est_load = float(invoice.get("estimated_loaders") or 0)
+                est_log = float(invoice.get("estimated_logistics") or 0)
+                est_total = est_glass + est_profile + est_mat + est_inst + est_load + est_log
+                if any([est_glass, est_profile, est_mat, est_inst, est_load, est_log]):
+                    if cost["total_cost"] <= est_total:
+                        plan_fact_label = "Расчет ОК"
+                    else:
+                        plan_fact_label = "Перерасчет прибыли"
+            invoice["_plan_fact_label"] = plan_fact_label
+
+            # Кредитные расходы (для столбцов CF-DJ)
+            is_credit = bool(invoice.get("is_credit"))
+            if is_credit:
+                try:
+                    invoice["_credit_expenses"] = await db.get_credit_expenses_summary(
+                        int(invoice["id"])
+                    )
+                except Exception:
+                    log.debug("Failed to get credit_expenses for invoice %s", invoice.get("id"), exc_info=True)
+                    invoice["_credit_expenses"] = {}
+            else:
+                invoice["_credit_expenses"] = {}
 
             invoice_items.append((invoice, manager_label, cost))
 

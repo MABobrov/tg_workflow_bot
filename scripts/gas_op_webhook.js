@@ -35,9 +35,11 @@ var CONFIG = {
   COL_MANAGER: 40,         // AO — Менеджер (КВ/КИА/НПН)
   COL_PRIORITY: 41,        // AP — Приоритет
   COL_COMMENT: 42,         // AQ — Комментарий РП
+  COL_MATERIALS_FACT: 37,  // AL — Материалы Факт
+  COL_MONTAZH_FACT: 38,    // AM — Монтаж Факт
 
   // Total data columns to send for full row sync
-  TOTAL_DATA_COLS: 34,     // A through AH (original OP columns)
+  TOTAL_DATA_COLS: 52,     // A through AZ (all OP columns)
 
   // Bot-managed columns (skip to prevent circular updates)
   COL_BOT_STATUS: 45,      // AT — Статус бота (written by bot)
@@ -70,6 +72,8 @@ TRACKED_FIELDS[CONFIG.COL_MANAGER] = "manager";
 TRACKED_FIELDS[CONFIG.COL_PRIORITY] = "priority";
 TRACKED_FIELDS[CONFIG.COL_COMMENT] = "comment";
 TRACKED_FIELDS[CONFIG.COL_DEBT] = "outstanding_debt";
+TRACKED_FIELDS[CONFIG.COL_MATERIALS_FACT] = "materials_fact_op";
+TRACKED_FIELDS[CONFIG.COL_MONTAZH_FACT] = "montazh_fact_op";
 
 
 function onEditOP(e) {

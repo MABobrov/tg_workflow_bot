@@ -246,7 +246,7 @@ async def gd_zp_installer_view(cb: CallbackQuery, db: Database) -> None:
     b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
     b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
     b.adjust(2)
-    is_credit = inv.get("is_credit") or inv.get("status") == "credit" or str(inv.get("invoice_number") or "").upper().startswith("ЗМ")
+    is_credit = bool(inv.get("is_credit")) or str(inv.get("invoice_number") or "").upper().startswith("ЗМ")
     credit_warn = "\n🏦 <b>⚠️ КРЕДИТНЫЙ СЧЁТ</b>\n" if is_credit else ""
     await cb.message.answer(  # type: ignore[union-attr]
         f"🔧 <b>ЗП монтажника</b>{credit_warn}\n"
@@ -353,6 +353,17 @@ async def gd_zp_manager_view(cb: CallbackQuery, db: Database) -> None:
     if pf.get("has_estimated"):
         pf_text = "\n\n" + format_plan_fact_card(inv, pf)
 
+    # Бейдж перерасчёта прибыли
+    overbudget_text = ""
+    if pf.get("has_estimated") and not pf.get("zp_allowed"):
+        ob_est = pf.get("estimated_total_cost", 0)
+        ob_fact = pf.get("actual_total_cost", 0)
+        overbudget_text = (
+            f"\n\n🔴 <b>ПЕРЕРАСЧЕТ ПРИБЫЛИ</b>\n"
+            f"Расчет: {ob_est:,.0f}₽ → Факт: {ob_fact:,.0f}₽\n"
+            f"Превышение: {ob_fact - ob_est:,.0f}₽"
+        )
+
     b = InlineKeyboardBuilder()
     b.button(text="✅ ЗП ОК", callback_data=f"gdzp_mgr:ok:{invoice_id}")
     b.button(text="❌ Отклонить", callback_data=f"gdzp_mgr:no:{invoice_id}")
@@ -362,6 +373,7 @@ async def gd_zp_manager_view(cb: CallbackQuery, db: Database) -> None:
         f"🔢 Счёт: №{inv['invoice_number']}\n"
         f"📍 Адрес: {inv.get('object_address') or '—'}\n"
         f"💵 Запрос ЗП: {amt:,.0f}₽"
+        f"{overbudget_text}"
         f"{pf_text}",
         reply_markup=b.as_markup(),
     )

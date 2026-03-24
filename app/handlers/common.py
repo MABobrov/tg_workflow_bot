@@ -627,14 +627,16 @@ async def all_tasks_list(message: Message, db: Database, config: Config) -> None
     active_count = sum(1 for t in all_tasks if t.get("status") in ("open", "in_progress"))
     closed_count = len(all_tasks) - active_count
 
-    # GD gets delete buttons
+    # GD and RP get delete buttons
     is_gd = uid in (config.admin_ids or set())
+    user_roles = parse_roles((await db.get_user_optional(uid) or type("U", (), {"role": None})).role)
+    can_delete = is_gd or Role.RP in user_roles
 
     await message.answer(
         f"📋 <b>Все задачи</b>\n"
         f"Активных: {active_count} | Закрытых: {closed_count}\n\n"
         "Нажмите на задачу для просмотра:",
-        reply_markup=tasks_kb(all_tasks, back_callback="nav:home", show_delete=is_gd),
+        reply_markup=tasks_kb(all_tasks, back_callback="nav:home", show_delete=can_delete),
     )
 
 

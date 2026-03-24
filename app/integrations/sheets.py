@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from dataclasses import dataclass
 from threading import RLock
@@ -121,19 +122,48 @@ INVOICES_HEADER = [
     "Этап монтажа",         # 51
     "Монтажник ОК",         # 52
     "Долгов нет",           # 53
-    "ЗП Замерщик",          # 54
-    "ЗП Замерщик сумма",    # 55
+    "",                     # 54 (перенесено в 74)
+    "",                     # 55 (перенесено в 75)
     "ЗП Монтажник статус",  # 56
     "Оплаты пост. итого",   # 57
     "Расходы итого",        # 58
     "Создан",               # 59
     "Обновлён",             # 60
+    # — Статусы жизненного цикла (61-73) —
+    "Лид КВ",              # 61
+    "Лид КИА",             # 62
+    "Лид НПН",             # 63
+    "Счет КВ",             # 64
+    "Счет КИА",            # 65
+    "Счет НПН",            # 66
+    "В работе",            # 67
+    "Счет END",            # 68
+    "",                    # 69 (было Замеры — перенесено в 76)
+    "Монтаж Факт",         # 70
+    "Материалы Факт",      # 71
+    "Логистика Факт",      # 72
+    "Статус лида",         # 73
+    # — Блок Замерщик (74-76, перенос из 54/55/69) —
+    "ЗП Замерщик",         # 74 (перенос из 54)
+    "ЗП Замерщик сумма",   # 75 (перенос из 55)
+    "Замеры",              # 76 (перенос из 69)
+    # — Аналитика (77-80) —
+    "Расчет vs Факт",     # 77
+    "Прибыль факт",       # 78
+    "Рент-ть факт %",     # 79
+    "Перерасчет прибыли",  # 80
+    # — Кредитный учёт (81-85) —
+    "Кредит вход",         # 81 — сумма входящего кредита
+    "Кредит вход коммент", # 82 — Менеджер, адрес
+    "Кредит расход",       # 83 — накопительная сумма расходов
+    "Кредит назначение",   # 84 — лог назначений расходов
+    "Кредит баланс",       # 85 — формула: вход - расход
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
 # Removed 7 (Свой/Атм→client_source), 18,19,21,24 — now bot-managed (Plan/Fact)
-_MANUAL_COLS = frozenset([1, 5, 11, 12, 22, 25, 26, 27, 28, 29,
-                          31, 33, 34, 37, 38, 39, 40, 41, 42, 43, 44, 45])
+_MANUAL_COLS = frozenset([1, 5, 11, 12,
+                          33, 34, 37, 38, 39, 40, 42, 43, 44, 45])
 
 
 @dataclass
@@ -176,16 +206,41 @@ class GoogleSheetsService:
 
     @staticmethod
     def _fmt_sheet_date(value: Any) -> str:
-        """Format DB ISO date/datetime for invoice sheet cells (DD.MM.YYYY)."""
+        """Format DB ISO date/datetime as =DATE() formula for Google Sheets.
+
+        Returns =DATE(YYYY,M,D) so Sheets treats it as a real date —
+        correct chronological sorting and locale-aware display (DD.MM.YYYY).
+        """
         if value in (None, ""):
             return ""
         text = str(value).strip()
         if not text:
             return ""
         try:
-            return datetime.fromisoformat(text).strftime("%d.%m.%Y")
+            dt = datetime.fromisoformat(text)
+            return f"=DATE({dt.year},{dt.month},{dt.day})"
         except ValueError:
             return text
+
+    @staticmethod
+    def _fmt_docs_primary(invoice: dict[str, Any]) -> str:
+        """AF (Договор): contract_signed + docs_edo_signed."""
+        contract = invoice.get("contract_signed") or ""
+        edo = bool(invoice.get("docs_edo_signed"))
+        if edo and contract:
+            return f"{contract} ✅"
+        if edo:
+            return "ЭДО ✅"
+        if contract:
+            return f"{contract} ⏳"
+        return "⏳"
+
+    @staticmethod
+    def _fmt_docs_closing(invoice: dict[str, Any]) -> str:
+        """AG (Закр.док): edo_signed."""
+        if bool(invoice.get("edo_signed")):
+            return "ЭДО ✅"
+        return "⏳"
 
     def _task_payload_fields(self, task: dict[str, Any]) -> dict[str, str]:
         payload = try_json_loads(task.get("payload_json"))
@@ -367,25 +422,33 @@ class GoogleSheetsService:
             "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
         }
         _c = cost or {}
+        _li = invoice.get("_lead_info") or {}
 
         cells: dict[int, Any] = {
             0: invoice.get("id") or "",
             2: manager_label,
             3: "Да" if invoice.get("edo_signed") else "",
             4: invoice.get("client_name") or "",
-            6: "0" if invoice.get("is_credit") else "1",
-            7: {"own": "Свой", "gd_lead": "Атм"}.get(invoice.get("client_source", ""), ""),
+            6: "0" if invoice.get("is_credit") else "1",  # ОП convention: 0=кредит, 1=б.н.
+            7: {"own": 1, "gd_lead": 2}.get(invoice.get("client_source", ""), "")
+               or invoice.get("client_type") or "",
             8: invoice.get("invoice_number") or "",
             9: invoice.get("object_address") or "",
             10: self._fmt_sheet_date(invoice.get("receipt_date")),
             13: self._fmt_sheet_date(invoice.get("actual_completion_date")),
             14: self._fmt_amount(invoice.get("amount")),
             15: self._fmt_amount(invoice.get("first_payment_amount")),
-            30: self._fmt_amount(invoice.get("outstanding_debt")),
-            32: invoice.get("closing_docs_status") or "",
+            25: self._fmt_amount(invoice.get("surcharge_amount")),       # Z Сумма допл
+            26: invoice.get("payment_confirm_status") or "",             # AA Допл подтв
+            27: self._fmt_sheet_date(invoice.get("surcharge_date")),     # AB Дата допл
+            28: self._fmt_amount(invoice.get("final_surcharge_amount")), # AC Оконч допл
+            29: self._fmt_sheet_date(invoice.get("final_surcharge_date")), # AD Дата оконч
+            30: f"=O{row}-P{row}-Z{row}-AC{row}",                          # AE Долг
+            31: self._fmt_docs_primary(invoice),                        # AF Договор
+            32: self._fmt_docs_closing(invoice),                        # AG Закр.док
             35: self._fmt_amount(invoice.get("zp_manager_amount")),
             36: invoice.get("zp_manager_status") or "",
-            46: invoice.get("status") or "",
+            46: "" if invoice.get("status") == "credit" else (invoice.get("status") or ""),
             47: _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
             48: invoice.get("supplier") or "",
             49: invoice.get("material_type") or "",
@@ -393,14 +456,51 @@ class GoogleSheetsService:
             51: invoice.get("montazh_stage") or "",
             52: "Да" if invoice.get("installer_ok") else "",
             53: "Да" if invoice.get("no_debts") else "",
-            54: invoice.get("zp_status") or "",
-            55: self._fmt_amount(invoice.get("zp_zamery_total")),
+            54: "",  # очистка (перенесено в 74)
+            55: "",  # очистка (перенесено в 75)
             56: invoice.get("zp_installer_status") or "",
             59: format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),
             60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
+            # — Статусы жизненного цикла —
+            61: _li.get("kv", ""),            # BJ Лид КВ (дата получения лида)
+            62: _li.get("kia", ""),           # BK Лид КИА
+            63: _li.get("npn", ""),           # BL Лид НПН
+            64: _li.get("inv_kv", ""),        # BM Счет КВ (дата выставления счёта)
+            65: _li.get("inv_kia", ""),       # BN Счет КИА
+            66: _li.get("inv_npn", ""),       # BO Счет НПН
+            67: "Да" if invoice.get("status") == "in_progress" else "", # BP В работе
+            68: "Да" if invoice.get("status") == "ended" else "",       # BQ Счет END
+            69: "",  # очистка (перенесено в 76)
+            72: self._fmt_amount(invoice.get("actual_logistics")),       # BU Логистика Факт
+            73: _li.get("lead_status", ""),   # BV Статус лида
+            # — Блок Замерщик (перенос из 54/55/69) —
+            74: invoice.get("zp_status") or "",                          # BW ЗП Замерщик
+            75: self._fmt_amount(invoice.get("zp_zamery_total")),        # BX ЗП Замерщик сумма
+            76: invoice.get("_zamery_info") or "",                       # BY Замеры
+            # — Аналитика —
+            77: invoice.get("_plan_fact_label") or "",                   # BZ Расчет vs Факт
+            # 78, 79, 80 заполняются ниже из cost_card
+            # — Кредитный учёт —
+            85: f"=IF(CF{row}=\"\",\"\",CF{row}-CH{row})",              # DJ Кредит баланс
         }
 
-        amount = float(invoice.get("amount") or 0)
+        # Кредит входящий (81-82): is_credit=1 — единственный источник правды
+        is_credit = bool(invoice.get("is_credit"))
+        if is_credit:
+            cells[81] = self._fmt_amount(invoice.get("amount"))          # CF Кредит вход
+            mgr_label = manager_label or ""
+            addr = invoice.get("object_address") or ""
+            cells[82] = f"{mgr_label}, {addr}".strip(", ") if (mgr_label or addr) else ""
+        else:
+            cells[81] = ""
+            cells[82] = ""
+
+        # Кредит расход (83) и назначение (84): из _credit_expenses
+        credit_exp = invoice.get("_credit_expenses") or {}
+        cells[83] = self._fmt_amount(credit_exp.get("total")) if credit_exp.get("total") else ""
+        cells[84] = credit_exp.get("log") or ""
+
+        # Расч.мат., Установка, Грузчики, Логистика — из БД
         est_glass = float(invoice.get("estimated_glass") or 0)
         est_profile = float(invoice.get("estimated_profile") or 0)
         est_mat_legacy = float(invoice.get("estimated_materials") or 0)
@@ -408,29 +508,56 @@ class GoogleSheetsService:
         est_load = float(invoice.get("estimated_loaders") or 0)
         est_log = float(invoice.get("estimated_logistics") or 0)
         materials_total = est_glass + est_profile + est_mat_legacy
-        est_total = materials_total + est_inst + est_load + est_log
-
-        refundable_base = est_glass + est_profile
-        output_vat = amount * 22 / 122 if amount > 0 else 0
-        input_vat = refundable_base * 22 / 122 if refundable_base > 0 else 0
-        net_vat = output_vat - input_vat
-        est_profit = amount - est_total - net_vat
-        est_pct = (est_profit / amount * 100) if amount > 0 else 0
-
         if any([est_glass, est_profile, est_mat_legacy, est_inst, est_load, est_log]):
             cells[16] = self._fmt_amount(materials_total)
             cells[17] = self._fmt_amount(est_inst)
             cells[18] = self._fmt_amount(est_load)
             cells[19] = self._fmt_amount(est_log)
-            cells[20] = self._fmt_amount(est_profit)
-            cells[21] = self._fmt_amount(net_vat)
-            cells[23] = f"{est_pct:.1f}%"
+
+        # Формулы: НДС (V), Нал.приб. (W), НПН (AP), Прибыль (U), Рент-ть (X)
+        cells[21] = f"=((O{row}*22/122)-(Q{row}*22/122))*G{row}"              # V
+        cells[22] = f"=((O{row}-Q{row}-R{row}-S{row}-T{row}-V{row})/100*20)*G{row}"  # W
+        cells[41] = f"=(O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row})*10/100"    # AP (НПН 10%)
+        cells[20] = f"=O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row}"              # U (Прибыль)
+        cells[23] = f'=IF(O{row}>0,U{row}/O{row}*100,0)'                      # X (Рент-ть)
+
+        # Материалы Факт: ОП (уже закупленные) + дочерние счета (новые)
+        _mat_op = float(invoice.get("materials_fact_op") or 0)
+        _mat_children = _c.get("materials_total", 0) if _c else 0
+        _mat_combined = _mat_op + _mat_children
+        if _mat_combined:
+            cells[71] = self._fmt_amount(_mat_combined)
 
         if _c:
             fact_pct = _c.get("margin_pct", 0)
+            fact_margin = _c.get("margin", 0)
             cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""
             cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
             cells[58] = self._fmt_amount(_c.get("total_cost"))
+            # Прибыль факт (78) и Рентабельность факт % (79)
+            cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CC Прибыль факт
+            cells[79] = f"{fact_pct:.1f}%" if fact_pct else ""               # CD Рент-ть факт %
+            # Перерасчет прибыли (80): разница план-факт при перерасходе
+            pf_label = invoice.get("_plan_fact_label") or ""
+            if pf_label == "Перерасчет прибыли":
+                est_total = (float(invoice.get("estimated_glass") or 0)
+                             + float(invoice.get("estimated_profile") or 0)
+                             + float(invoice.get("estimated_materials") or 0)
+                             + float(invoice.get("estimated_installation") or 0)
+                             + float(invoice.get("estimated_loaders") or 0)
+                             + float(invoice.get("estimated_logistics") or 0))
+                fact_total = _c.get("total_cost", 0)
+                delta = fact_total - est_total
+                cells[80] = self._fmt_amount(delta)                          # CE Перерасчет
+            else:
+                cells[80] = ""
+
+        # Монтаж Факт: ОП (уже оплаченный) + ЗП монтажника (новые)
+        _mont_op = float(invoice.get("montazh_fact_op") or 0)
+        _mont_zp = float(invoice.get("zp_installer_amount") or 0)
+        _mont_combined = _mont_op + _mont_zp
+        if _mont_combined:
+            cells[70] = self._fmt_amount(_mont_combined)
 
         if is_new:
             cells[12] = (
@@ -520,6 +647,8 @@ class GoogleSheetsService:
             ws = self._get_or_create_ws(self.cfg.invoices_tab, INVOICES_HEADER)
             row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_id)
             cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
+            if not is_new:
+                cells = {k: v for k, v in cells.items() if k not in _MANUAL_COLS}
             batch_data = self._invoice_batch_ranges(row, cells)
             self._flush_batch_update(ws, batch_data, chunk_size=200)
 
@@ -583,10 +712,46 @@ class GoogleSheetsService:
                     continue
                 row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_id)
                 cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
+                if not is_new:
+                    cells = {k: v for k, v in cells.items() if k not in _MANUAL_COLS}
                 batch_data.extend(self._invoice_batch_ranges(row, cells))
                 count += 1
             self._flush_batch_update(ws, batch_data, chunk_size=500)
+
+            # Сортировка: старые счета вверху, новые внизу.
+            # Столбец K (index=10) = receipt_date, записан как =DATE() — корректная сортировка.
+            try:
+                self._sort_ws_by_date(ws, sort_col_index=10)
+            except Exception:
+                pass  # не критично если сортировка не удалась
+
             return count
+
+    def _sort_ws_by_date(self, ws: gspread.Worksheet, sort_col_index: int = 10) -> None:
+        """Sort worksheet rows 2+ by column, ASCENDING (oldest dates first)."""
+        sheet_id = ws._properties["sheetId"]  # noqa: SLF001
+        row_count = ws.row_count
+        col_count = ws.col_count
+        body = {
+            "requests": [{
+                "sortRange": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 1,  # skip header
+                        "endRowIndex": row_count,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": col_count,
+                    },
+                    "sortSpecs": [{
+                        "dimensionIndex": sort_col_index,
+                        "sortOrder": "ASCENDING",
+                    }],
+                }
+            }]
+        }
+        ws.spreadsheet.batch_update(body)
+        # Сбросить кеш строк после сортировки
+        self._row_indexes.pop(self.cfg.invoices_tab, None)
 
     # ---------- async wrappers ----------
 
@@ -632,33 +797,46 @@ class GoogleSheetsService:
 
     # Column mapping: source sheet col index → field name
     _OP_COL_MAP: dict[int, str] = {
-        0: "client_name",           # Контрагент
-        1: "traffic_source",        # Ист.трафика
-        2: "is_credit",             # Б.Н./Кред (0=кредит, 1=б.н.)
-        3: "client_source",         # Свой/Атм (1=Свой, 2=Атм)
-        4: "invoice_number",        # Номер счета (KEY)
-        5: "object_address",        # Адрес
-        6: "receipt_date",          # Дата пост.
-        7: "deadline_days",         # Сроки (дни)
-        9: "actual_completion_date", # Дата Факт
-        10: "amount",              # Сумма
-        11: "first_payment_amount", # Сумма 1пл
-        12: "estimated_materials",  # Расч.мат.
-        13: "estimated_installation", # Установка
-        14: "estimated_loaders",    # Грузчики
-        15: "estimated_logistics",  # Логистика
-        16: "profit_tax",           # Q: Прибыль
-        17: "nds_amount",           # R: НДС
-        19: "rentability_calc",     # T: Рент-ть расч
-        21: "surcharge_amount",     # V: Сумма допл
-        22: "surcharge_date",       # W: Дата допл
-        23: "final_surcharge_amount", # X: Оконч допл
-        24: "final_surcharge_date", # Y: Дата оконч
-        25: "outstanding_debt",     # Z: Долг
-        26: "payment_terms",        # AA: Пояснения
-        27: "agent_fee",            # AB: Агентское
-        28: "manager_zp_blank",     # AC: Мен.ЗП
-        33: "npn_amount",           # AH: НПН 10%
+        0: "client_name",              # A: Контрагент
+        1: "traffic_source",           # B: Ист.трафика
+        2: "is_credit",                # C: Кред (0=кредит, 1=б.н.)
+        3: "client_source",            # D: Свой/Атм (1=Свой, 2=Атм)
+        4: "invoice_number",           # E: Номер счета (KEY)
+        5: "object_address",           # F: Адрес
+        6: "receipt_date",             # G: Дата пост.
+        7: "deadline_days",            # H: Сроки (дни)
+        # 8: пусто
+        9: "actual_completion_date",   # J: Дата Факт
+        10: "amount",                  # K: Сумма
+        11: "first_payment_amount",    # L: Сумма 1пл
+        12: "estimated_materials",     # M: Расч.мат.
+        13: "estimated_installation",  # N: Установка
+        14: "estimated_loaders",       # O: Грузчики
+        15: "estimated_logistics",     # P: Логистика
+        16: "profit_tax",              # Q: Прибыль кред.
+        17: "nds_amount",              # R: НДС
+        # 18: Налог на приб. (не импортируем)
+        # 19: РП - 10% (не импортируем)
+        # 20: Прибыль расч (не импортируем)
+        21: "rentability_calc",        # V: Рент-ть расчетная
+        # 22: Рент-ть факт (не импортируем)
+        23: "surcharge_amount",        # X: Сумма допл
+        24: "surcharge_date",          # Y: Дата допл
+        25: "final_surcharge_amount",  # Z: Финальный платеж
+        26: "final_surcharge_date",    # AA: Дата Финал.пл.
+        27: "outstanding_debt",        # AB: Сумма Долга
+        28: "payment_terms",           # AC: Пояснения
+        29: "agent_fee",               # AD: Агентское
+        # 30: Выплаты. Агент. (не импортируем)
+        # 31: Дата выпл. Агент. (не импортируем)
+        32: "manager_zp_blank",        # AG: Мен. ЗП (по бланку)
+        # 33-36: ЗП выплаты (не импортируем)
+        37: "materials_fact_op",          # AL: Материалы Факт
+        38: "montazh_fact_op",            # AM: Монтаж Факт
+        # 39-43: факт данные (не импортируем)
+        # 44: Команда боту (human-writable)
+        # 45: Запрос НПН (не импортируем)
+        46: "npn_amount",              # AU: Выдано НПН
     }
 
     def _parse_num(self, val: str) -> float | None:
@@ -666,6 +844,8 @@ class GoogleSheetsService:
         if not val or not val.strip():
             return None
         v = val.strip().replace("\u00a0", "").replace(" ", "").rstrip("%")
+        # Strip currency suffixes: "1000р.", "1000 руб", "1000₽"
+        v = re.sub(r'[р₽]\.?$|руб\.?$', '', v).strip()
         # Google Sheets uses comma as thousand separator (257,000 = 257000)
         # If comma exists AND digits after comma are exactly 3 → thousand separator
         if "," in v:
@@ -714,6 +894,8 @@ class GoogleSheetsService:
             "npn_amount",
             "profit_tax",
             "rentability_calc",
+            "materials_fact_op",
+            "montazh_fact_op",
         }
     )
     _OP_DATE_FIELDS = frozenset(

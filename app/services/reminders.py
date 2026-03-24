@@ -71,7 +71,8 @@ async def _send_task_reminder(db: Database, notifier: Notifier, task: dict, tz_n
 
     text = prefix + "\n\n" + fmt_task_card(task, project, tz_name)
     await notifier.safe_send(int(assigned_to), text)
-    await notifier.notify_workchat(text)
+    # NOTE: workchat notification removed to avoid duplicate delivery
+    # (assigned_to already receives the reminder in private chat)
 
 
 # =====================================================================

@@ -574,18 +574,36 @@ def format_cost_card(inv: dict[str, Any], cost: dict[str, Any]) -> str:
         f"💰 Сумма счёта: <b>{inv_amount_s}</b> руб.",
     ]
 
-    # --- Материалы (дочерние счета) ---
+    # --- Материалы ---
     materials_by_type: dict[str, float] = cost.get("materials_by_type", {})
     materials_total = cost.get("materials_total", 0)
-    if materials_by_type:
+    materials_fact_op = cost.get("materials_fact_op", 0)
+    materials_combined = cost.get("materials_combined", 0)
+
+    if materials_fact_op or materials_by_type:
         lines.append("")
-        lines.append("📦 <b>Материалы (дочерние счета):</b>")
-        items = sorted(materials_by_type.items(), key=lambda x: -x[1])
-        for idx, (mat, amt) in enumerate(items):
-            label = MATERIAL_TYPE_LABELS.get(mat, mat)
-            prefix = "  └" if idx == len(items) - 1 else "  ├"
-            lines.append(f"{prefix} {label}: {amt:,.0f} руб.")
-        lines.append(f"Итого материалов: <b>{materials_total:,.0f}</b> руб.")
+        lines.append("📦 <b>Материалы:</b>")
+        if materials_fact_op:
+            lines.append(f"  ├ Закуплено (ОП): {materials_fact_op:,.0f} руб.")
+        if materials_by_type:
+            items = sorted(materials_by_type.items(), key=lambda x: -x[1])
+            for mat, amt in items:
+                label = MATERIAL_TYPE_LABELS.get(mat, mat)
+                lines.append(f"  ├ {label}: {amt:,.0f} руб.")
+        lines.append(f"  └ <b>Итого материалов: {materials_combined:,.0f} руб.</b>")
+
+    # --- Монтаж ---
+    montazh_fact_op = cost.get("montazh_fact_op", 0)
+    montazh_combined = cost.get("montazh_combined", 0)
+    zp_inst_for_display = cost.get("zp_installer", 0)
+    if montazh_fact_op or zp_inst_for_display:
+        lines.append("")
+        lines.append("🔨 <b>Монтаж:</b>")
+        if montazh_fact_op:
+            lines.append(f"  ├ Оплачено (ОП): {montazh_fact_op:,.0f} руб.")
+        if zp_inst_for_display:
+            lines.append(f"  ├ ЗП монтажник: {zp_inst_for_display:,.0f} руб.")
+        lines.append(f"  └ <b>Итого монтаж: {montazh_combined:,.0f} руб.</b>")
 
     # --- Оплаты поставщикам ---
     sp_list: list[dict[str, Any]] = cost.get("supplier_payments_list", [])
@@ -651,8 +669,8 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any]) -> str:
     est_pct = pf.get("estimated_profitability", 0)
 
     cost = pf.get("cost_card", {})
-    fact_mat = cost.get("materials_total", 0) + cost.get("supplier_payments_total", 0)
-    fact_inst = float(cost.get("zp_installer", 0))
+    fact_mat = cost.get("materials_combined", cost.get("materials_total", 0)) + cost.get("supplier_payments_total", 0)
+    fact_inst = cost.get("montazh_combined", float(cost.get("zp_installer", 0)))
     fact_total = pf.get("actual_total_cost", 0)
     fact_profit = pf.get("actual_profit", 0)
     fact_pct = pf.get("actual_profitability", 0)

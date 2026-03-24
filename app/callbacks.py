@@ -42,3 +42,10 @@ class LeadAssignCb(CallbackData, prefix="leadassign"):
 
 class AdminUsersListCb(CallbackData, prefix="admlist"):
     offset: int = 0
+
+
+class SummaryCb(CallbackData, prefix="smry"):
+    section: str  # inv_pending|inv_inprog|inv_paid|inv_closing|
+    #               task_urgent|task_invpay|task_supplpay|
+    #               zp_pending|dl_overdue|dl_today|dl_soon
+    action: str   # list|back

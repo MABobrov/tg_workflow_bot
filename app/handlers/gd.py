@@ -19,7 +19,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from ..callbacks import TaskCb
+from ..callbacks import SummaryCb, TaskCb
 from ..config import Config
 from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
@@ -49,7 +49,7 @@ from ..keyboards import (
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
-from ..services.sheets_sync import export_to_sheets
+from ..services.sheets_sync import export_to_sheets, import_from_source_sheet
 from ..states import ChatProxySG, InvoiceSearchSG, SalesWriteSG
 from .chat_proxy import channel_label, enter_chat_menu, gd_channel_menu
 from ..utils import (
@@ -960,26 +960,30 @@ async def gd_daily_summary(message: Message, db: Database, config: Config) -> No
     if not await require_role_message(message, db, roles=[Role.GD]):
         return
 
+    text, markup = await _build_summary(db)
+    await message.answer(text, reply_markup=markup)
+
+
+async def _build_summary(db: Database) -> tuple[str, "InlineKeyboardBuilder"]:
+    """Build summary text + inline keyboard with drill-down buttons."""
+    from datetime import date as _date
+
     s = await db.get_daily_summary()
 
-    # Счета по статусам
     inv = s["invoices_by_status"]
     pending = inv.get("pending", 0)
     in_progress = inv.get("in_progress", 0)
     paid = inv.get("paid", 0)
     closing = inv.get("closing", 0)
 
-    # Финансы
     total_amt = s["total_amount"] or 0
     total_debt = s["total_debt"] or 0
 
-    # Задачи
-    tasks = s["tasks_open"]
-    urgent = tasks.get("urgent_gd", 0) + tasks.get("not_urgent_gd", 0)
-    inv_pay = tasks.get("invoice_payment", 0)
-    suppl_pay = tasks.get("supplier_payment", 0)
+    tasks_open = s["tasks_open"]
+    urgent = tasks_open.get("urgent_gd", 0) + tasks_open.get("not_urgent_gd", 0)
+    inv_pay = tasks_open.get("invoice_payment", 0)
+    suppl_pay = tasks_open.get("supplier_payment", 0)
 
-    # Дедлайны
     overdue = s["overdue"]
     today_dl = s["today_deadline"]
     soon_dl = s["soon_deadline"]
@@ -1015,7 +1019,159 @@ async def gd_daily_summary(message: Message, db: Database, config: Config) -> No
         if soon_dl:
             lines.append(f"  ⚠️ До 3 дней: {soon_dl}")
 
-    await message.answer("\n".join(lines))
+    lines.append("")
+    lines.append("<i>Нажмите на строку для просмотра деталей:</i>")
+
+    # Build inline keyboard with drill-down buttons for non-zero counts
+    b = InlineKeyboardBuilder()
+    _summary_btn = [
+        ("⏳ Ожидают оплаты", "inv_pending", pending),
+        ("🔧 В работе", "inv_inprog", in_progress),
+        ("💰 Оплачены", "inv_paid", paid),
+        ("🏁 На закрытии", "inv_closing", closing),
+        ("🚨 Срочные ГД", "task_urgent", urgent),
+        ("💳 Счета на оплату", "task_invpay", inv_pay),
+        ("💸 Оплата поставщику", "task_supplpay", suppl_pay),
+        ("💰 ЗП-запросы", "zp_pending", s["zp_pending"]),
+        ("🔴 Просрочено", "dl_overdue", overdue),
+        ("🔴 Срок сегодня", "dl_today", today_dl),
+        ("⚠️ До 3 дней", "dl_soon", soon_dl),
+    ]
+    for label, section, count in _summary_btn:
+        if count:
+            b.button(
+                text=f"{label}: {count}",
+                callback_data=SummaryCb(section=section, action="list").pack(),
+            )
+    b.adjust(1)
+    return "\n".join(lines), b.as_markup()
+
+
+# ---------------------------------------------------------------------------
+# Сводка дня — drill-down по секциям
+# ---------------------------------------------------------------------------
+
+@router.callback_query(SummaryCb.filter(F.action == "list"))
+async def gd_summary_drilldown(
+    cb: CallbackQuery, callback_data: SummaryCb, db: Database,
+) -> None:
+    """Show individual items for a summary section."""
+    from datetime import date as _date, datetime as _dt
+
+    section = callback_data.section
+    b = InlineKeyboardBuilder()
+
+    # ---- Invoice sections ----
+    if section.startswith("inv_"):
+        status_map = {
+            "inv_pending": ("pending", "⏳ Ожидают оплаты"),
+            "inv_inprog": ("in_progress", "🔧 В работе"),
+            "inv_paid": ("paid", "💰 Оплачены"),
+            "inv_closing": ("closing", "🏁 На закрытии"),
+        }
+        status, title = status_map.get(section, ("pending", section))
+        invoices = await db.list_invoices(status=status, limit=50)
+        if not invoices:
+            await cb.answer("Список пуст", show_alert=True)
+            return
+        text = f"<b>📊 {title}</b> ({len(invoices)})\n\nВыберите счёт:"
+        for inv in invoices:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = inv.get("address") or ""
+            label = f"{num} — {addr}"[:60]
+            b.button(text=label, callback_data=f"gd_work:view:{inv['id']}")
+        b.adjust(1)
+
+    # ---- Task sections ----
+    elif section.startswith("task_"):
+        type_map = {
+            "task_urgent": (["urgent_gd", "not_urgent_gd"], "🚨 Срочные ГД"),
+            "task_invpay": (["invoice_payment"], "💳 Счета на оплату"),
+            "task_supplpay": (["supplier_payment"], "💸 Оплата поставщику"),
+        }
+        task_types, title = type_map.get(section, ([], section))
+        task_list = await db.list_tasks_open_by_types(task_types)
+        if not task_list:
+            await cb.answer("Задач нет", show_alert=True)
+            return
+        # Use existing tasks_kb with delete buttons
+        b.button(text="⬅️ Назад к сводке", callback_data=SummaryCb(section="", action="back").pack())
+        kb = tasks_kb(task_list, show_delete=True, back_callback=SummaryCb(section="", action="back").pack())
+        text = f"<b>📊 {title}</b> ({len(task_list)})\n\nНажмите на задачу для действий:"
+        try:
+            await cb.message.edit_text(text, reply_markup=kb)  # type: ignore[union-attr]
+        except Exception:
+            pass
+        await cb.answer()
+        return
+
+    # ---- ZP pending ----
+    elif section == "zp_pending":
+        invoices = await db.list_zp_pending_invoices()
+        if not invoices:
+            await cb.answer("ЗП-запросов нет", show_alert=True)
+            return
+        text = f"<b>📊 💰 ЗП-запросы</b> ({len(invoices)})\n\nВыберите счёт:"
+        for inv in invoices:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = inv.get("address") or ""
+            label = f"{num} — {addr}"[:60]
+            b.button(text=label, callback_data=f"gd_work:view:{inv['id']}")
+        b.adjust(1)
+
+    # ---- Deadline sections ----
+    elif section.startswith("dl_"):
+        deadlines = await db.list_invoices_approaching_deadline()
+        dl_map = {
+            "dl_overdue": ("🔴 Просрочено", lambda d: d < 0),
+            "dl_today": ("🔴 Срок сегодня", lambda d: d == 0),
+            "dl_soon": ("⚠️ До 3 дней", lambda d: 0 < d <= 3),
+        }
+        title, pred = dl_map.get(section, ("Дедлайны", lambda d: True))
+        filtered: list[dict] = []
+        for inv in deadlines:
+            raw = inv.get("deadline_end_date")
+            if not raw:
+                continue
+            try:
+                end = _dt.fromisoformat(str(raw)).date()
+            except (ValueError, TypeError):
+                continue
+            delta = (end - _date.today()).days
+            if pred(delta):
+                filtered.append(inv)
+        if not filtered:
+            await cb.answer("Список пуст", show_alert=True)
+            return
+        text = f"<b>📊 {title}</b> ({len(filtered)})\n\nВыберите счёт:"
+        for inv in filtered:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = inv.get("address") or ""
+            label = f"{num} — {addr}"[:60]
+            b.button(text=label, callback_data=f"gd_work:view:{inv['id']}")
+        b.adjust(1)
+    else:
+        await cb.answer("Неизвестная секция", show_alert=True)
+        return
+
+    b.button(text="⬅️ Назад к сводке", callback_data=SummaryCb(section="", action="back").pack())
+    b.adjust(1)
+    try:
+        await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@router.callback_query(SummaryCb.filter(F.action == "back"))
+async def gd_summary_back(cb: CallbackQuery, db: Database) -> None:
+    """Return to the daily summary view."""
+    text, markup = await _build_summary(db)
+    try:
+        await cb.message.edit_text(text, reply_markup=markup)  # type: ignore[union-attr]
+    except Exception:
+        pass
+    await cb.answer()
 
 
 # ---------------------------------------------------------------------------
@@ -1037,6 +1193,13 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
     # --- 1. Google Sheets sync (if enabled) ---
     if integrations.sheets:
         await message.answer("⏳ Запускаю синхронизацию данных с Google Sheets...")
+
+        # Импорт из ОП (Отдел продаж) → БД бота
+        imported = await import_from_source_sheet(
+            db, integrations.sheets, log_prefix="gd_sync",
+        )
+
+        # Экспорт БД → invoice-лист
         stats = await export_to_sheets(
             db,
             integrations.sheets,
@@ -1046,6 +1209,7 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
 
         await message.answer(
             "✅ Синхронизация Google Sheets завершена.\n"
+            f"Импорт ОП: <b>{imported}</b> | "
             f"Проектов: <b>{stats['projects']}</b> | "
             f"Задач: <b>{stats['tasks']}</b> | "
             f"Счетов: <b>{stats['invoices']}</b>",

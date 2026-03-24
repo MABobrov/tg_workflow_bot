@@ -2,11 +2,32 @@ from __future__ import annotations
 
 from typing import Iterable
 
+from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, Message
 
 from ..config import Config
 from ..db import Database
 from ..utils import has_any_role, parse_roles
+
+
+class RoleFilter(BaseFilter):
+    """Aiogram filter: passes only if user has one of the given roles.
+
+    Use in handler decorators so that aiogram **skips** the handler entirely
+    for users with a different role (instead of matching and sending
+    '⛔️ Нет доступа').
+    """
+
+    def __init__(self, roles: Iterable[str]) -> None:
+        self.roles = set(roles)
+
+    async def __call__(self, message: Message, db: Database) -> bool:  # type: ignore[override]
+        if not message.from_user:
+            return False
+        u = await db.get_user_optional(message.from_user.id)
+        if not u or not u.role:
+            return False
+        return has_any_role(u.role, self.roles)
 
 
 async def get_role(db: Database, user_id: int) -> str | None:

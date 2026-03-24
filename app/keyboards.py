@@ -1077,7 +1077,7 @@ def kp_issued_list_kb(
     """Inline-кнопки «Выставленные счета» для РП."""
     b = InlineKeyboardBuilder()
     for inv in invoices:
-        is_credit = inv.get("is_credit") or inv.get("status") == "credit"
+        is_credit = bool(inv.get("is_credit"))
         status_emoji = {
             "new": "🆕", "pending": "⏳", "in_progress": "🔄",
             "paid": "✅", "on_hold": "⏸", "rejected": "❌",

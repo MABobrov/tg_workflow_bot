@@ -189,6 +189,8 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_chat_attach_msg ON chat_attachments(chat_message_id);
 
+            -- finance_entries: общий финансовый журнал по каналам (channel-level).
+            -- НЕ привязан к конкретному счёту. Для расходов по кредитным счетам используй credit_expenses.
             CREATE TABLE IF NOT EXISTS finance_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel TEXT NOT NULL,
@@ -250,6 +252,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_invoices_number ON invoices(invoice_number);
             CREATE INDEX IF NOT EXISTS idx_invoices_created_by ON invoices(created_by, status);
             CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
+            CREATE INDEX IF NOT EXISTS idx_invoices_is_credit ON invoices(is_credit);
 
             CREATE TABLE IF NOT EXISTS edo_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -350,6 +353,20 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_razmery_req_inv ON razmery_requests(invoice_id, status);
             CREATE INDEX IF NOT EXISTS idx_razmery_req_inst ON razmery_requests(installer_id, status);
+
+            -- credit_expenses: расходы по конкретному кредитному счёту (invoice_id).
+            -- Авто-запись из каналов через _auto_credit_expense(). НЕ дублирует finance_entries.
+            CREATE TABLE IF NOT EXISTS credit_expenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+                amount REAL NOT NULL,
+                description TEXT,
+                entered_by INTEGER NOT NULL,
+                chat_message_id INTEGER REFERENCES chat_messages(id),
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_credit_exp_inv ON credit_expenses(invoice_id);
             """
         )
         await self.conn.commit()
@@ -434,6 +451,8 @@ class Database:
             ("invoices", "agent_fee", "REAL"),                  # Агентское вознаграждение
             ("invoices", "manager_zp_blank", "REAL"),           # Менеджер ЗП по бланку
             ("invoices", "npn_amount", "REAL"),                 # НПН с 10% налог
+            ("invoices", "materials_fact_op", "REAL"),            # Материалы Факт из ОП (колонка AL)
+            ("invoices", "montazh_fact_op", "REAL"),             # Монтаж Факт из ОП (колонка AM)
             # --- Монтажник: инициализация ЗП и отслеживание материалов ---
             ("invoices", "materials_ordered", "INTEGER DEFAULT 0"),
             ("users", "zp_init_done", "INTEGER DEFAULT 0"),
@@ -454,6 +473,12 @@ class Database:
             ("zamery_requests", "completed_at", "TEXT"),
             # --- Фактическая стоимость доставки ---
             ("invoices", "actual_logistics", "REAL"),
+            # --- Подтверждение оплаты ГД ---
+            ("invoices", "payment_confirm_status", "TEXT DEFAULT ''"),
+            # --- Lead lifecycle: статус лида + привязка к счёту ---
+            ("lead_tracking", "status", "TEXT DEFAULT 'lead'"),
+            ("lead_tracking", "invoice_id", "INTEGER"),
+            ("lead_tracking", "invoice_issued_at", "TEXT"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -848,6 +873,37 @@ class Database:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def list_tasks_open_by_types(
+        self,
+        task_types: list[str],
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List open/in_progress tasks filtered by task_type (for GD summary drill-down)."""
+        placeholders = ",".join("?" for _ in task_types)
+        cur = await self.conn.execute(
+            f"""
+            SELECT t.*, u.role AS creator_role FROM tasks t
+            LEFT JOIN users u ON t.created_by = u.telegram_id
+            WHERE t.status IN ('open', 'in_progress')
+              AND t.type IN ({placeholders})
+            ORDER BY t.created_at DESC LIMIT ?
+            """,
+            (*task_types, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def list_zp_pending_invoices(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List invoices with any pending ZP request."""
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices "
+            "WHERE zp_installer_status = 'requested' "
+            "   OR zp_status = 'requested' "
+            "   OR zp_manager_status = 'requested' "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
     async def list_tasks_created_by(
         self,
         created_by: int,
@@ -1175,10 +1231,14 @@ class Database:
         return [dict(r) for r in rows]
 
     async def list_credit_invoices(self, limit: int = 30) -> list[dict[str, Any]]:
-        """List credit-based invoices (is_credit=1 OR status='credit')."""
+        """List credit-based invoices (is_credit=1).
+
+        Note: _compute_lifecycle_status() ensures status='credit' when is_credit=1,
+        so checking is_credit alone is sufficient.
+        """
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
-            "WHERE is_credit = 1 OR status = 'credit' "
+            "WHERE is_credit = 1 "
             "ORDER BY updated_at DESC LIMIT ?",
             (limit,),
         )
@@ -1188,7 +1248,7 @@ class Database:
     async def count_credit_invoices(self) -> int:
         """Count credit-based invoices."""
         cur = await self.conn.execute(
-            "SELECT COUNT(*) FROM invoices WHERE is_credit = 1 OR status = 'credit'"
+            "SELECT COUNT(*) FROM invoices WHERE is_credit = 1"
         )
         row = await cur.fetchone()
         return row[0] if row else 0
@@ -1212,7 +1272,7 @@ class Database:
             "SELECT * FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid') "
             f"{fmt_clause}"
-            "ORDER BY updated_at DESC LIMIT ?",
+            "ORDER BY receipt_date ASC, updated_at ASC LIMIT ?",
             (limit,),
         )
         rows = await cur.fetchall()
@@ -1280,7 +1340,7 @@ class Database:
             "SELECT * FROM invoices "
             "WHERE status IN ('pending', 'in_progress', 'paid', 'ended') "
             f"{fmt_clause}"
-            "ORDER BY updated_at DESC LIMIT ?",
+            "ORDER BY receipt_date ASC, updated_at ASC LIMIT ?",
             (limit,),
         )
         return [dict(r) for r in await cur.fetchall()]
@@ -1421,7 +1481,15 @@ class Database:
         zp_installer = float(inv.get("zp_installer_amount") or 0) if inv.get("zp_installer_status") == "approved" else 0.0
         zp_total = zp_zamery + zp_manager + zp_installer
 
-        total_cost = materials_total + supplier_payments_total + zp_total
+        # Материалы из ОП (уже закупленные) + дочерние счета (новые)
+        materials_fact_op = float(inv.get("materials_fact_op") or 0)
+        materials_combined = materials_fact_op + materials_total
+
+        # Монтаж из ОП (уже оплаченный) + ЗП монтажника (новые)
+        montazh_fact_op = float(inv.get("montazh_fact_op") or 0)
+        montazh_combined = montazh_fact_op + zp_installer
+
+        total_cost = materials_combined + supplier_payments_total + zp_zamery + zp_manager + montazh_combined
         margin = invoice_amount - total_cost
         margin_pct = (margin / invoice_amount * 100) if invoice_amount > 0 else 0.0
 
@@ -1429,6 +1497,10 @@ class Database:
             "invoice_amount": invoice_amount,
             "materials_total": materials_total,
             "materials_by_type": materials_by_type,
+            "materials_fact_op": materials_fact_op,
+            "materials_combined": materials_combined,
+            "montazh_fact_op": montazh_fact_op,
+            "montazh_combined": montazh_combined,
             "supplier_payments_total": supplier_payments_total,
             "supplier_payments_list": sp_list,
             "zp_zamery": zp_zamery,
@@ -1605,15 +1677,8 @@ class Database:
         return [dict(r) for r in await cur.fetchall()]
 
     async def list_invoices_with_deadline(self) -> list[dict[str, Any]]:
-        """Активные счета с deadline_end_date: просроченные, сегодня, <=3 дней."""
-        cur = await self.conn.execute(
-            "SELECT * FROM invoices "
-            "WHERE deadline_end_date IS NOT NULL "
-            "AND status NOT IN ('ended', 'cancelled', 'credit') "
-            "AND parent_invoice_id IS NULL "
-            "ORDER BY deadline_end_date ASC",
-        )
-        return [dict(r) for r in await cur.fetchall()]
+        """Backward-compatible alias for deadline dashboards and legacy callers."""
+        return await self.list_invoices_approaching_deadline()
 
     async def assign_installer_to_invoice(
         self, invoice_id: int, installer_id: int,
@@ -2567,6 +2632,8 @@ class Database:
             "manager_zp_blank", "npn_amount",
             "profit_tax", "rentability_calc", "payment_terms",
             "description", "contract_type", "closing_docs_status",
+            "materials_fact_op",
+            "montazh_fact_op",
         }
 
         created_by, creator_role = await self._resolve_invoice_import_owner(inv_num, payload, existing)
@@ -2676,7 +2743,7 @@ class Database:
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(limit)
         cur = await self.conn.execute(
-            f"SELECT * FROM invoices {where} ORDER BY created_at DESC LIMIT ?",
+            f"SELECT * FROM invoices {where} ORDER BY receipt_date ASC, created_at ASC LIMIT ?",
             tuple(params),
         )
         rows = await cur.fetchall()
@@ -2827,6 +2894,179 @@ class Database:
             "zp_approved": inv.get("zp_status") == "approved",
         }
 
+    async def get_lead_info_for_project(self, project_id: int) -> dict[str, str]:
+        """Return lead info per role for Invoices sheet cols BJ-BL.
+
+        Returns dict with keys: 'kv', 'kia', 'npn' — each a formatted string.
+        Also includes task description (RP comment) via task payload.
+        """
+        from datetime import datetime as _dt
+
+        cur = await self.conn.execute(
+            "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id "
+            "FROM lead_tracking lt "
+            "WHERE lt.project_id = ? "
+            "ORDER BY lt.assigned_at ASC",
+            (project_id,),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        if not rows:
+            return {}
+
+        return await self._format_lead_rows(rows)
+
+    async def get_lead_info_for_invoice(self, invoice: dict) -> dict[str, str]:
+        """Return lead info per role for Invoices sheet.
+
+        Returns dict with keys:
+        - kv, kia, npn: lead dates (Лид КВ/КИА/НПН)
+        - inv_kv, inv_kia, inv_npn: invoice issued dates (Счет КВ/КИА/НПН)
+        - lead_status: текущий статус лида
+
+        Tries project_id first, then falls back to matching by
+        created_by == assigned_manager_id + creator_role == assigned_manager_role.
+        """
+        rows: list[dict] = []
+
+        # 1) По project_id (если есть)
+        project_id = invoice.get("project_id")
+        if project_id:
+            cur = await self.conn.execute(
+                "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id, "
+                "lt.status, lt.invoice_issued_at "
+                "FROM lead_tracking lt "
+                "WHERE lt.project_id = ? "
+                "ORDER BY lt.assigned_at ASC",
+                (int(project_id),),
+            )
+            rows = [dict(r) for r in await cur.fetchall()]
+
+        # 2) Fallback: по менеджеру, создавшему счёт
+        if not rows:
+            created_by = invoice.get("created_by")
+            creator_role = invoice.get("creator_role")
+            if created_by and creator_role:
+                cur = await self.conn.execute(
+                    "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id, "
+                    "lt.status, lt.invoice_issued_at "
+                    "FROM lead_tracking lt "
+                    "WHERE lt.assigned_manager_id = ? AND lt.assigned_manager_role = ? "
+                    "ORDER BY lt.assigned_at DESC LIMIT 1",
+                    (int(created_by), creator_role),
+                )
+                rows = [dict(r) for r in await cur.fetchall()]
+
+        if not rows:
+            return {}
+
+        return await self._format_lead_rows(rows)
+
+    async def _format_lead_rows(self, rows: list[dict]) -> dict[str, str]:
+        """Format lead_tracking rows into sheet-ready dict.
+
+        Returns:
+        - kv, kia, npn: lead dates grouped by day (count if >1)
+        - inv_kv, inv_kia, inv_npn: invoice_issued dates per role
+        - lead_status: latest status
+        """
+        from collections import defaultdict
+        from datetime import datetime as _dt
+
+        role_key_map = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}
+        # {role_key: {date_str: count}}
+        lead_dates: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        inv_dates: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        latest_status = "lead"
+
+        for row in rows:
+            role_raw = row.get("assigned_manager_role", "")
+            key = role_key_map.get(role_raw)
+            if not key:
+                continue
+
+            # Lead date
+            at = row.get("assigned_at") or ""
+            if at:
+                try:
+                    date_str = _dt.fromisoformat(at).strftime("%d.%m.%Y")
+                except (ValueError, TypeError):
+                    date_str = at[:10] if len(at) >= 10 else at
+                if date_str:
+                    lead_dates[key][date_str] += 1
+
+            # Invoice issued date (grouped by day, count)
+            inv_at = row.get("invoice_issued_at") or ""
+            if inv_at:
+                try:
+                    inv_date_str = _dt.fromisoformat(inv_at).strftime("%d.%m.%Y")
+                except (ValueError, TypeError):
+                    inv_date_str = inv_at[:10] if len(inv_at) >= 10 else inv_at
+                if inv_date_str:
+                    inv_dates[f"inv_{key}"][inv_date_str] += 1
+
+            # Status
+            row_status = row.get("status") or "lead"
+            if row_status == "invoice_issued":
+                latest_status = "invoice_issued"
+
+        result: dict[str, str] = {}
+
+        # Lead dates (grouped by day, count)
+        for key, dates in lead_dates.items():
+            parts = []
+            for dt_str, cnt in dates.items():
+                if cnt > 1:
+                    parts.append(f"{dt_str} ({cnt})")
+                else:
+                    parts.append(dt_str)
+            result[key] = "\n".join(parts)
+
+        # Invoice issued dates (grouped by day, count)
+        for key, dates in inv_dates.items():
+            parts = []
+            for dt_str, cnt in dates.items():
+                if cnt > 1:
+                    parts.append(f"{dt_str} ({cnt})")
+                else:
+                    parts.append(dt_str)
+            result[key] = "\n".join(parts)
+
+        # Status
+        result["lead_status"] = latest_status
+
+        return result
+
+    async def get_zamery_info_for_project(self, project_id: int) -> str:
+        """Return zamery info string for Invoices sheet col BP."""
+        from datetime import datetime as _dt
+        cur = await self.conn.execute(
+            "SELECT zr.address, zr.total_cost, zr.scheduled_date, zr.created_at "
+            "FROM zamery_requests zr "
+            "JOIN lead_tracking lt ON lt.id = zr.lead_id "
+            "WHERE lt.project_id = ? "
+            "ORDER BY zr.created_at ASC",
+            (project_id,),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        if not rows:
+            return ""
+        parts = []
+        for r in rows:
+            date_raw = r.get("scheduled_date") or r.get("created_at") or ""
+            date_str = ""
+            if date_raw:
+                try:
+                    date_str = _dt.fromisoformat(date_raw).strftime("%d.%m.%Y")
+                except (ValueError, TypeError):
+                    date_str = str(date_raw)[:10]
+            addr = r.get("address") or ""
+            cost = r.get("total_cost")
+            cost_str = f"{int(cost)}₽" if cost else ""
+            line = " | ".join(p for p in [date_str, addr, cost_str] if p)
+            if line:
+                parts.append(line)
+        return "\n".join(parts)
+
     async def search_invoices(
         self, query: str, limit: int = 20
     ) -> list[dict[str, Any]]:
@@ -2920,11 +3160,7 @@ class Database:
         rows = await cur.fetchall()
         result = {"open": 0, "done": 0}
         for row in rows:
-            s = row["status"]
-            if s in result:
-                result[s] = row["cnt"]
-            else:
-                result[s] = row["cnt"]
+            result[row["status"]] = row["cnt"]
         return result
 
     async def update_edo_request(
@@ -3070,6 +3306,97 @@ class Database:
             tuple(values),
         )
         await self.conn.commit()
+
+    async def update_lead_to_invoice_issued(
+        self, project_id: int, invoice_id: int,
+        *,
+        manager_id: int | None = None,
+        manager_role: str | None = None,
+    ) -> None:
+        """Лид → 'счет выставлен': привязка к счёту, фиксация даты.
+
+        Если записи lead_tracking нет — создаёт её (привязка менеджера
+        к счёту на этапе выставления).
+        """
+        now = to_iso(utcnow())
+
+        # Проверяем есть ли уже запись
+        cur = await self.conn.execute(
+            "SELECT id FROM lead_tracking WHERE project_id = ?",
+            (project_id,),
+        )
+        existing = await cur.fetchone()
+
+        if existing:
+            # Обновить существующий лид
+            await self.conn.execute(
+                "UPDATE lead_tracking SET status = 'invoice_issued', "
+                "invoice_id = ?, invoice_issued_at = ? "
+                "WHERE project_id = ?",
+                (invoice_id, now, project_id),
+            )
+        else:
+            # Создать запись — привязка менеджера к счёту при выставлении
+            await self.conn.execute(
+                "INSERT INTO lead_tracking "
+                "(project_id, assigned_manager_id, assigned_manager_role, "
+                "assigned_at, status, invoice_id, invoice_issued_at) "
+                "VALUES (?, ?, ?, ?, 'invoice_issued', ?, ?)",
+                (project_id, manager_id, manager_role, now, invoice_id, now),
+            )
+
+        await self.conn.commit()
+
+    # ---------- Кредитный учёт ----------
+
+    async def add_credit_expense(
+        self,
+        invoice_id: int,
+        amount: float,
+        description: str,
+        entered_by: int,
+        chat_message_id: int | None = None,
+    ) -> int:
+        """Добавить расход кредитных средств по счёту."""
+        now = to_iso(utcnow())
+        cur = await self.conn.execute(
+            "INSERT INTO credit_expenses "
+            "(invoice_id, amount, description, entered_by, chat_message_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (invoice_id, amount, description, entered_by, chat_message_id, now),
+        )
+        await self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def get_credit_expenses_summary(self, invoice_id: int) -> dict[str, Any]:
+        """Получить сводку расходов кредитных средств по счёту.
+
+        Returns: {"total": float, "log": str, "items": list[dict]}
+        """
+        cur = await self.conn.execute(
+            "SELECT amount, description, created_at "
+            "FROM credit_expenses WHERE invoice_id = ? "
+            "ORDER BY created_at ASC",
+            (invoice_id,),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        if not rows:
+            return {"total": 0, "log": "", "items": []}
+
+        total = sum(r["amount"] for r in rows)
+        from datetime import datetime as _dt
+        log_parts = []
+        for r in rows:
+            dt_str = ""
+            if r.get("created_at"):
+                try:
+                    dt_str = _dt.fromisoformat(r["created_at"]).strftime("%d.%m.%Y")
+                except (ValueError, TypeError):
+                    dt_str = r["created_at"][:10]
+            desc = r.get("description") or "—"
+            log_parts.append(f"{dt_str}: {r['amount']:,.0f}₽ — {desc}")
+
+        return {"total": total, "log": "\n".join(log_parts), "items": rows}
 
     async def list_leads(
         self,
