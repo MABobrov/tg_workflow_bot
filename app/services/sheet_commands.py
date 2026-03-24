@@ -194,6 +194,7 @@ async def _cmd_docs_request(
             "invoice_number": invoice["invoice_number"],
             "invoice_id": invoice["id"],
             "source": f"sheets_{source}",
+            "assigned_role": invoice.get("creator_role"),
         },
     )
     text = (
@@ -233,6 +234,7 @@ async def _cmd_quote_request(
             "invoice_number": invoice["invoice_number"],
             "invoice_id": invoice["id"],
             "source": f"sheets_{source}",
+            "assigned_role": invoice.get("creator_role"),
         },
     )
     text = (

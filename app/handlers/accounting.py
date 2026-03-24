@@ -16,7 +16,7 @@ from ..keyboards import main_menu, task_actions_kb, tasks_kb
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
 from ..states import ManagerInfoRequestSG
-from ..utils import private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
+from ..utils import parse_roles, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -113,7 +113,13 @@ async def pick_manager_for_request(cb: CallbackQuery, state: FSMContext, db: Dat
         return
 
     label_plain, label_html = _manager_label(manager)
-    await state.update_data(manager_id=manager_id, manager_label=label_html, manager_label_plain=label_plain)
+    manager_roles = [role for role in parse_roles(manager.role) if role in {Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN}]
+    await state.update_data(
+        manager_id=manager_id,
+        manager_label=label_html,
+        manager_label_plain=label_plain,
+        manager_role=manager_roles[0] if manager_roles else None,
+    )
     await state.set_state(ManagerInfoRequestSG.description)
     await cb.message.answer(f"Введите запрос недостающей информации для <b>{label_html}</b>:")  # type: ignore
 
@@ -213,6 +219,7 @@ async def manager_request_finalize(
             "source": "accounting",
             "accounting_id": u.id,
             "accounting_username": u.username,
+            "assigned_role": data.get("manager_role"),
         },
     )
 

@@ -74,7 +74,7 @@ from ..keyboards import (
     rp_montazh_submenu,
     tasks_kb,
 )
-from ..services.assignment import resolve_default_assignee
+from ..services.assignment import apply_user_roles, resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.integration_hub import IntegrationHub
 from ..services.notifier import Notifier
@@ -86,7 +86,7 @@ from ..states import (
     RpRazmerySG,
     RpSupplierInvoiceSG,
 )
-from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
+from ..utils import answer_service, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import RoleFilter, require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -2559,6 +2559,7 @@ async def lead_finalize(
             "description": description,
             "source": source,
             "manager_role": manager_role,
+            "assigned_role": manager_role,
         },
     )
     await db.link_lead_tracking(lead_id, task_id=int(task["id"]))
@@ -2637,7 +2638,15 @@ async def role_switch_to_other(message: Message, state: FSMContext, db: Database
         role_label_str = "РП"
 
     # Switch role in DB
-    await db.switch_user_role(u.id, target_role)
+    current_user = await db.get_user_optional(u.id)
+    current_roles = set(parse_roles(current_user.role if current_user else None))
+    preserved_roles = {
+        role
+        for role in current_roles
+        if role not in {Role.RP, Role.MANAGER_NPN}
+    }
+    updated_roles = preserved_roles | {target_role}
+    await apply_user_roles(db, config, u.id, updated_roles)
 
     is_admin = u.id in (config.admin_ids or set())
     await message.answer(

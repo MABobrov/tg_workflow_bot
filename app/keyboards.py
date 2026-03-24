@@ -331,7 +331,14 @@ def _is_pure_manager(role: str | None) -> bool:
     if not role:
         return False
     roles = parse_roles(role)
-    return len(roles) == 1 and roles[0] in MANAGER_ROLES
+    return len(roles) == 1 and roles[0] in (MANAGER_ROLES | {Role.MANAGER})
+
+
+def _is_pure_td(role: str | None) -> bool:
+    if not role:
+        return False
+    roles = parse_roles(role)
+    return roles == [Role.TD]
 
 
 def _is_pure_rp(role: str | None) -> bool:
@@ -505,8 +512,9 @@ def main_menu(
                     row[i] = f"{RP_BTN_MONTAZH} 🔴{rp_ch_montazh}"
 
     # GD gets a custom layout — Отмена и Ещё уже в grid, админ в подменю
-    if _is_pure_gd(role):
-        rows: list[list[str]] = [list(r) for r in _role_primary_action_rows(Role.GD)]
+    if _is_pure_gd(role) or _is_pure_td(role):
+        gd_like_role = Role.TD if _is_pure_td(role) else Role.GD
+        rows: list[list[str]] = [list(r) for r in _role_primary_action_rows(gd_like_role)]
         _patch_inbox(rows)
         return _build_reply_rows(rows)
 

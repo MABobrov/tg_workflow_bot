@@ -562,7 +562,12 @@ async def assign_lead_pick(cb: CallbackQuery, state: FSMContext, db: Database) -
         await cb.message.answer("Менеджер не найден.")  # type: ignore
         return
     label = (manager.full_name or "") or f"@{manager.username or manager_id}"
-    await state.update_data(manager_id=manager_id, manager_label=label)
+    manager_roles = [role for role in parse_roles(manager.role) if role in {Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN}]
+    await state.update_data(
+        manager_id=manager_id,
+        manager_label=label,
+        manager_role=manager_roles[0] if manager_roles else None,
+    )
     await state.set_state(AssignLeadSG.description)
     await cb.message.answer(f"Опишите лид для <b>{label}</b> (источник, контакт, суть запроса):")  # type: ignore
 
@@ -621,6 +626,7 @@ async def assign_lead_finalize(
     description = data.get("description") or ""
     comment = data.get("comment") or ""
     manager_label = data.get("manager_label") or str(manager_id)
+    manager_role = data.get("manager_role")
 
     due = utcnow() + timedelta(hours=4)
     task = await db.create_task(
@@ -635,6 +641,7 @@ async def assign_lead_finalize(
             "comment": comment,
             "rp_id": u.id,
             "rp_username": u.username,
+            "assigned_role": manager_role,
         },
     )
 

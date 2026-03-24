@@ -691,6 +691,7 @@ async def acc_work_request_send(
             "request_text": request_text,
             "sender_id": sender_id,
             "source": "accounting_request",
+            "assigned_role": inv.get("creator_role") if inv else None,
         },
     )
 

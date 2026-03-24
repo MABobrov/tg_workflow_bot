@@ -785,8 +785,19 @@ class Database:
         due_at_iso: str | None,
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        task_payload = dict(payload or {})
+        if assigned_to is not None:
+            assignee = await self.get_user_optional(int(assigned_to))
+            if assignee and not assignee.is_active:
+                raise ValueError(f"task assignee {assigned_to} is inactive")
+            if assignee and not parse_roles(assignee.role):
+                raise ValueError(f"task assignee {assigned_to} has no role")
+            assigned_role = str(task_payload.get("assigned_role") or "").strip().lower()
+            if assigned_role and assignee and assigned_role not in set(parse_roles(assignee.role)):
+                raise ValueError(f"task assignee {assigned_to} does not have role {assigned_role}")
+
         now = to_iso(utcnow())
-        payload_json = _json_dumps(payload or {})
+        payload_json = _json_dumps(task_payload)
         cur = await self.conn.execute(
             """
             INSERT INTO tasks(project_id, type, status, created_by, assigned_to, due_at, payload_json, created_at, updated_at)
@@ -957,6 +968,36 @@ class Database:
         await self.conn.commit()
         if expected_statuses and cur.rowcount == 0:
             return None
+        return await self.get_task(task_id)
+
+    async def update_task_assignee(
+        self,
+        task_id: int,
+        assigned_to: int,
+        *,
+        assigned_role: str | None = None,
+    ) -> dict[str, Any]:
+        assignee = await self.get_user_optional(int(assigned_to))
+        if assignee and not assignee.is_active:
+            raise ValueError(f"task assignee {assigned_to} is inactive")
+        if assignee and not parse_roles(assignee.role):
+            raise ValueError(f"task assignee {assigned_to} has no role")
+
+        task = await self.get_task(task_id)
+        payload = {}
+        try:
+            payload = json.loads(task.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+        if assigned_role:
+            payload["assigned_role"] = assigned_role
+
+        now = to_iso(utcnow())
+        await self.conn.execute(
+            "UPDATE tasks SET assigned_to = ?, payload_json = ?, updated_at = ? WHERE id = ?",
+            (int(assigned_to), _json_dumps(payload), now, task_id),
+        )
+        await self.conn.commit()
         return await self.get_task(task_id)
 
     async def close_tasks_by_invoice(self, invoice_id: int, task_type: str) -> int:

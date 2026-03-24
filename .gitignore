@@ -16,3 +16,18 @@ secrets/
 .worktrees/
 .security-key
 logs/security/
+
+# Codex local configuration
+.codex/
+
+# Claude Flow runtime data
+.claude-flow/data/
+.claude-flow/logs/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Claude Code local config
+CLAUDE.local.md

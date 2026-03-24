@@ -25,6 +25,7 @@ from ..keyboards import (
     main_menu,
 )
 from ..services.integration_hub import IntegrationHub
+from ..services.assignment import apply_user_roles
 from ..services.notifier import Notifier
 from ..services.sheets_sync import export_to_sheets
 from ..utils import (
@@ -332,10 +333,11 @@ async def cmd_setrole(message: Message, db: Database, config: Config) -> None:
 
     role_raw = ",".join(p.strip() for p in parts[2:]).lower()
     if role_raw == "none":
-        await db.set_user_role(tg_id, None)
+        reassigned = await apply_user_roles(db, config, tg_id, [])
         pushed = await _push_menu_to_user(message, db, tg_id, None, is_admin=tg_id in (config.admin_ids or set()))
         note = "" if pushed else "\n⚠️ Не смог отправить меню пользователю (пусть напишет боту /start)."
-        await message.answer(f"Роль пользователю {label or tg_id} очищена.{note}")
+        reassign_note = f"\n↪️ Активных задач переназначено: <b>{len(reassigned)}</b>." if reassigned else ""
+        await message.answer(f"Роль пользователю {label or tg_id} очищена.{reassign_note}{note}")
         return
 
     roles = parse_roles(role_raw)
@@ -354,11 +356,12 @@ async def cmd_setrole(message: Message, db: Database, config: Config) -> None:
         await message.answer("Пользователь не найден в базе. Попросите его сначала написать боту /start.")
         return
 
-    await db.set_user_roles(tg_id, roles)
+    reassigned = await apply_user_roles(db, config, tg_id, roles)
     role_storage = roles_to_storage(set(roles))
     pushed = await _push_menu_to_user(message, db, tg_id, role_storage, is_admin=tg_id in (config.admin_ids or set()))
     note = "" if pushed else "\n⚠️ Не смог отправить меню пользователю (пусть напишет боту /start)."
-    await message.answer(f"Роли пользователю {label or tg_id} установлены: <b>{role_label(role_storage)}</b>{note}")
+    reassign_note = f"\n↪️ Активных задач переназначено: <b>{len(reassigned)}</b>." if reassigned else ""
+    await message.answer(f"Роли пользователю {label or tg_id} установлены: <b>{role_label(role_storage)}</b>{reassign_note}{note}")
 
 
 @router.message(Command("addrole"))
@@ -391,11 +394,12 @@ async def cmd_addrole(message: Message, db: Database, config: Config) -> None:
         return
     current = set(parse_roles(user.role if user else None))
     merged = current | add_roles
-    await db.set_user_roles(tg_id, merged)
+    reassigned = await apply_user_roles(db, config, tg_id, merged)
     stored = roles_to_storage(merged)
     pushed = await _push_menu_to_user(message, db, tg_id, stored, is_admin=tg_id in (config.admin_ids or set()))
     note = "" if pushed else "\n⚠️ Не смог отправить меню пользователю."
-    await message.answer(f"✅ Роли обновлены для {label or tg_id}: <b>{role_label(stored)}</b>{note}")
+    reassign_note = f"\n↪️ Активных задач переназначено: <b>{len(reassigned)}</b>." if reassigned else ""
+    await message.answer(f"✅ Роли обновлены для {label or tg_id}: <b>{role_label(stored)}</b>{reassign_note}{note}")
 
 
 @router.message(Command("removerole"))
@@ -425,14 +429,15 @@ async def cmd_remove_role(message: Message, db: Database, config: Config) -> Non
         return
     current = set(parse_roles(user.role if user else None))
     updated = current - remove_roles
-    await db.set_user_roles(tg_id, updated)
+    reassigned = await apply_user_roles(db, config, tg_id, updated)
     stored = roles_to_storage(updated)
     pushed = await _push_menu_to_user(message, db, tg_id, stored, is_admin=tg_id in (config.admin_ids or set()))
     note = "" if pushed else "\n⚠️ Не смог отправить меню пользователю."
+    reassign_note = f"\n↪️ Активных задач переназначено: <b>{len(reassigned)}</b>." if reassigned else ""
     if stored:
-        text = f"✅ Роли обновлены для {label or tg_id}: <b>{role_label(stored)}</b>{note}"
+        text = f"✅ Роли обновлены для {label or tg_id}: <b>{role_label(stored)}</b>{reassign_note}{note}"
     else:
-        text = f"✅ У пользователя {label or tg_id} больше нет ролей.{note}"
+        text = f"✅ У пользователя {label or tg_id} больше нет ролей.{reassign_note}{note}"
     await message.answer(text)
 
 @router.message(Command("users"))
@@ -693,7 +698,7 @@ async def admin_role_action(cb: CallbackQuery, callback_data: AdminRoleCb, db: D
         await cb.answer("Неизвестное действие", show_alert=True)
         return
 
-    await db.set_user_roles(user_id, updated_roles)
+    reassigned = await apply_user_roles(db, config, user_id, updated_roles)
     updated = await db.get_user_optional(user_id)
     if not updated:
         await cb.answer("Пользователь не найден", show_alert=True)
@@ -711,7 +716,8 @@ async def admin_role_action(cb: CallbackQuery, callback_data: AdminRoleCb, db: D
             await cb.message.answer("⚠️ Не смог отправить пользователю обновлённое меню.")  # type: ignore[arg-type]
 
     await _show_employee_card(cb, db, user_id)
-    await cb.answer("Роли обновлены")
+    suffix = f", задач переназначено: {len(reassigned)}" if reassigned else ""
+    await cb.answer(f"Роли обновлены{suffix}")
 
 
 @router.message(Command("stats"))
