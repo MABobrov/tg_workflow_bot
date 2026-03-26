@@ -451,10 +451,10 @@ class GoogleSheetsService:
             36: invoice.get("zp_manager_status") or "",
             38: self._fmt_amount(invoice.get("agent_payout_op")),   # AM ← ОП AE
             39: self._fmt_amount(invoice.get("zp_manager_payout")), # AN ← ОП AI
-            40: invoice.get("zp_manager_payout_date") or "",        # AO ← ОП AJ
+            40: self._fmt_sheet_date(invoice.get("zp_manager_payout_date")),  # AO ← ОП AJ
             42: self._fmt_amount(invoice.get("npn_amount")),        # AQ ← ОП AT
             43: self._fmt_amount(invoice.get("npn_payout_op")),     # AR ← ОП AU
-            44: invoice.get("npn_payout_date_op") or "",            # AS ← ОП AV
+            44: self._fmt_sheet_date(invoice.get("npn_payout_date_op")),  # AS ← ОП AV
             46: "" if invoice.get("status") == "credit" else (invoice.get("status") or ""),
             47: _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
             48: invoice.get("supplier") or "",
