@@ -147,18 +147,17 @@ INVOICES_HEADER = [
     "ЗП Замерщик",         # 74 (перенос из 54)
     "ЗП Замерщик сумма",   # 75 (перенос из 55)
     "Замеры",              # 76 (перенос из 69)
-    # — Аналитика (77-80) —
+    # — Аналитика (77-79) —
     "Расчет vs Факт",     # 77
     "Прибыль факт",       # 78
-    "Рент-ть факт %",     # 79
-    "Перерасчет прибыли",  # 80
-    # — Кредитный учёт (81-86) —
-    "Кредит вход",         # 81 — сумма входящего кредита
-    "Кредит вход коммент", # 82 — Менеджер, адрес
-    "Кредит расход",       # 83 — накопительная сумма расходов
-    "Дата расход кред",    # 84 — дата расхода кредитных средств
-    "Кредит назначение",   # 85 — лог назначений расходов
-    "Кредит баланс",       # 86 — формула: вход - расход
+    "Перерасчет прибыли",  # 79
+    # — Кредитный учёт (80-85) —
+    "Кредит вход",         # 80 — сумма входящего кредита
+    "Кредит вход коммент", # 81 — Менеджер, адрес
+    "Кредит расход",       # 82 — накопительная сумма расходов
+    "Дата расход кред",    # 83 — дата расхода кредитных средств
+    "Кредит назначение",   # 84 — лог назначений расходов
+    "Кредит баланс",       # 85 — формула: вход - расход
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -487,28 +486,27 @@ class GoogleSheetsService:
             76: invoice.get("zamery_info_op") or invoice.get("_zamery_info") or "",  # BY Замеры ← ОП I (fallback: бот)
             # — Аналитика —
             77: invoice.get("_plan_fact_label") or "",                   # BZ Расчет vs Факт
-            # 78, 79, 80 заполняются ниже из cost_card
+            # 78, 79 заполняются ниже из cost_card
             # — Кредитный учёт —
-            86: f"=IF(CD{row}=\"\",\"\",CD{row}-CF{row})",              # CI Кредит баланс
+            85: f"=IF(CC{row}=\"\",\"\",CC{row}-CE{row})",              # CH Кредит баланс
         }
 
-        # Кредит входящий (81-82): is_credit=1 — единственный источник правды
+        # Кредит входящий (80-81): is_credit=1 — единственный источник правды
         is_credit = bool(invoice.get("is_credit"))
         if is_credit:
-            cells[81] = self._fmt_amount(invoice.get("amount"))          # CD Кредит вход
+            cells[80] = self._fmt_amount(invoice.get("amount"))          # CC Кредит вход
             mgr_label = manager_label or ""
             addr = invoice.get("object_address") or ""
-            cells[82] = f"{mgr_label}, {addr}".strip(", ") if (mgr_label or addr) else ""
+            cells[81] = f"{mgr_label}, {addr}".strip(", ") if (mgr_label or addr) else ""
         else:
+            cells[80] = ""
             cells[81] = ""
-            cells[82] = ""
 
-        # Кредит расход (83), дата (84), назначение (85): прямая сумма ВСЕХ расходов
+        # Кредит расход (82), дата (83), назначение (84): прямая сумма ВСЕХ расходов
         credit_exp = invoice.get("_credit_expenses") or {}
         credit_exp_total = credit_exp.get("total") or 0
         if is_credit:
             # ВСЕ затраты КВ (кредитные/наличные) без привязки к мат. счёту
-            # 1) ОП-поля текущего счёта
             _cf_op = sum(float(invoice.get(f) or 0) for f in (
                 "materials_fact_op",      # Материалы
                 "montazh_fact_op",        # Монтаж
@@ -519,31 +517,29 @@ class GoogleSheetsService:
                 "npn_payout_op",          # НПН
                 "zp_manager_payout",      # ЗП менеджера (выплата)
             ))
-            # 2) Оплаты поставщикам + дочерние счета из бота
             _cf_bot = 0.0
             if _c:
                 _cf_bot = _c.get("supplier_payments_total", 0) + _c.get("materials_total", 0)
-            # 3) Ручные записи credit_expenses
             cf_total = _cf_op + _cf_bot + credit_exp_total
-            cells[83] = self._fmt_amount(cf_total) if cf_total else ""
+            cells[82] = self._fmt_amount(cf_total) if cf_total else ""
         elif credit_exp_total:
-            cells[83] = self._fmt_amount(credit_exp_total)
+            cells[82] = self._fmt_amount(credit_exp_total)
         else:
-            cells[83] = ""
+            cells[82] = ""
         # Дата расхода кредитных средств
         credit_items = credit_exp.get("items") or []
         if credit_items:
             from datetime import datetime as _dt
             try:
                 last_dt = _dt.fromisoformat(credit_items[-1]["created_at"])
-                cells[84] = last_dt.strftime("%d.%m.%Y")
+                cells[83] = last_dt.strftime("%d.%m.%Y")
             except (ValueError, TypeError, KeyError):
-                cells[84] = ""
+                cells[83] = ""
         elif is_credit and invoice.get("updated_at"):
-            cells[84] = format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name)[:10] if invoice.get("updated_at") else ""
+            cells[83] = format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name)[:10] if invoice.get("updated_at") else ""
         else:
-            cells[84] = ""
-        cells[85] = credit_exp.get("log") or ""
+            cells[83] = ""
+        cells[84] = credit_exp.get("log") or ""
 
         # Расч.мат., Установка, Грузчики, Логистика — из БД
         est_glass = float(invoice.get("estimated_glass") or 0)
@@ -594,10 +590,9 @@ class GoogleSheetsService:
             cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""
             cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
             cells[58] = self._fmt_amount(_c.get("total_cost"))
-            # Прибыль факт (78) и Рентабельность факт % (79)
+            # Прибыль факт (78)
             cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CA Прибыль факт
-            cells[79] = f"{fact_pct:.1f}%" if fact_pct else ""               # CB Рент-ть факт %
-            # Перерасчет прибыли (80): разница план-факт при перерасходе
+            # Перерасчет прибыли (79): разница план-факт при перерасходе
             pf_label = invoice.get("_plan_fact_label") or ""
             if pf_label == "Перерасчет прибыли":
                 est_total = (float(invoice.get("estimated_glass") or 0)
@@ -608,9 +603,9 @@ class GoogleSheetsService:
                              + float(invoice.get("estimated_logistics") or 0))
                 fact_total = _c.get("total_cost", 0)
                 delta = fact_total - est_total
-                cells[80] = self._fmt_amount(delta)                          # CC Перерасчет
+                cells[79] = self._fmt_amount(delta)                          # CB Перерасчет
             else:
-                cells[80] = ""
+                cells[79] = ""
 
         # Монтаж Факт: ОП (уже оплаченный) + ЗП монтажника (новые)
         _mont_op = float(invoice.get("montazh_fact_op") or 0)
