@@ -502,12 +502,24 @@ class GoogleSheetsService:
             cells[81] = ""
             cells[82] = ""
 
-        # Кредит расход (83), дата (84), назначение (85): из cost_card + credit_expenses
+        # Кредит расход (83), дата (84), назначение (85): ВСЕ расходы кредитных средств
         credit_exp = invoice.get("_credit_expenses") or {}
         credit_exp_total = credit_exp.get("total") or 0
-        # Для кредитных счетов: используем total_cost из cost card если он больше
-        if is_credit and _c and _c.get("total_cost", 0) > 0:
-            cells[83] = self._fmt_amount(max(credit_exp_total, _c["total_cost"]))
+        if is_credit:
+            # Полный расход: total_cost + ЗП + налоги + НПН
+            _tc = _c.get("total_cost", 0) if _c else 0
+            _zp_z = _c.get("zp_zamery", 0) if _c else 0
+            _zp_m = _c.get("zp_manager", 0) if _c else 0
+            _zp_i = _c.get("zp_installer", 0) if _c else 0
+            _taxes = float(invoice.get("taxes_fact_op") or 0)
+            _npn = float(invoice.get("npn_payout_op") or invoice.get("npn_amount") or 0)
+            # zp_installer может быть уже в total_cost (если montazh_fact_op=0)
+            # Если montazh_fact_op > 0, zp_installer НЕ в total_cost → добавляем
+            _mont_op = _c.get("montazh_fact_op", 0) if _c else 0
+            _extra_zp_i = _zp_i if (_mont_op > 0 and _zp_i > 0) else 0
+            cf_full = _tc + _zp_z + _zp_m + _extra_zp_i + _taxes + _npn
+            cf_total = max(cf_full, credit_exp_total)
+            cells[83] = self._fmt_amount(cf_total) if cf_total else ""
         elif credit_exp_total:
             cells[83] = self._fmt_amount(credit_exp_total)
         else:
