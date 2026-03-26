@@ -862,20 +862,39 @@ class GoogleSheetsService:
             return None
 
     def _parse_date_dmy(self, val: str) -> str | None:
-        """Parse DD.MM.YYYY → YYYY-MM-DD ISO."""
+        """Parse date string → YYYY-MM-DD ISO.
+
+        Supported formats: DD.MM.YYYY, DD/MM/YYYY, DD.MM.YY,
+        YYYY-MM-DD (ISO passthrough), Google Sheets serial number.
+        """
         if not val or not val.strip():
             return None
         raw = val.strip()
+        # ISO passthrough
         if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
             return raw
-        parts = raw.split(".")
-        if len(parts) != 3:
-            return None
+        # Google Sheets serial number (integer or float like 46107 or 46107.0)
         try:
-            d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
-            return f"{y:04d}-{m:02d}-{d:02d}"
-        except (ValueError, IndexError):
-            return None
+            serial = float(raw)
+            if 30000 < serial < 60000:  # reasonable range: ~1982–2064
+                from datetime import datetime, timedelta
+                base = datetime(1899, 12, 30)
+                dt = base + timedelta(days=int(serial))
+                return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+        # DD.MM.YYYY or DD/MM/YYYY or DD.MM.YY
+        for sep in (".", "/"):
+            parts = raw.split(sep)
+            if len(parts) == 3:
+                try:
+                    d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+                    if y < 100:
+                        y += 2000
+                    return f"{y:04d}-{m:02d}-{d:02d}"
+                except (ValueError, IndexError):
+                    continue
+        return None
 
     _OP_NUMERIC_FIELDS = frozenset(
         {
@@ -930,6 +949,8 @@ class GoogleSheetsService:
                 parsed_date = self._parse_date_dmy(raw_value)
                 if parsed_date:
                     parsed[field] = parsed_date
+                else:
+                    log.warning("ОП import: cannot parse date field '%s' = '%s' (invoice %s)", field, raw_value, inv_num)
             elif field == "deadline_days":
                 num = self._parse_num(raw_value)
                 if num is not None:
@@ -989,6 +1010,19 @@ class GoogleSheetsService:
             return []
 
         start_row = self._detect_op_sheet_start_row(all_data)
+
+        # Diagnostic: log first 3 non-empty values from col AA (index 26)
+        aa_samples = []
+        for row in all_data[start_row:]:
+            if len(row) > 26 and str(row[26]).strip():
+                aa_samples.append(str(row[26]).strip())
+                if len(aa_samples) >= 3:
+                    break
+        if aa_samples:
+            log.info("ОП col AA (final_surcharge_date) samples: %s", aa_samples)
+        else:
+            log.warning("ОП col AA (final_surcharge_date): all values empty")
+
         results: list[dict[str, Any]] = []
         for row_idx in range(start_row, len(all_data)):
             parsed = self._parse_op_row(all_data[row_idx])
