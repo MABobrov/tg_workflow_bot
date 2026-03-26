@@ -559,8 +559,8 @@ class GoogleSheetsService:
             cells[19] = self._fmt_amount(est_log)
 
         # Формулы: НДС (V), Нал.приб. (W), НПН (AP), Прибыль (U), Рент-ть (X)
-        cells[21] = f"=((O{row}*22/122)-(Q{row}*22/122))*G{row}"              # V
-        cells[22] = f"=((O{row}-Q{row}-R{row}-S{row}-T{row}-V{row})/100*20)*G{row}"  # W
+        cells[21] = f"=((O{row}*22/122)-(Q{row}*22/122))"                      # V НДС (без кред.коэф.)
+        cells[22] = f"=((O{row}-Q{row}-R{row}-S{row}-T{row}-V{row})/100*20)"          # W Нал.приб. (без кред.коэф.)
         cells[41] = f"=(O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row})*10/100"    # AP (НПН 10%)
         cells[20] = f"=O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row}"              # U (Прибыль)
         cells[23] = f'=IF(O{row}>0,U{row}/O{row}*100,0)'                      # X (Рент-ть)
