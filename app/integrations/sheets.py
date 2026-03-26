@@ -138,7 +138,7 @@ INVOICES_HEADER = [
     "Счет НПН",            # 66
     "В работе",            # 67
     "Счет END",            # 68
-    "",                    # 69 (было Замеры — перенесено в 76)
+    "Грузчики факт",       # 69
     "Монтаж Факт",         # 70
     "Материалы Факт",      # 71
     "Логистика Факт",      # 72
@@ -163,7 +163,7 @@ INVOICES_HEADER = [
 # Column indices the bot NEVER overwrites (manual-only + formula)
 # Removed 7 (Свой/Атм→client_source), 18,19,21,24 — now bot-managed (Plan/Fact)
 _MANUAL_COLS = frozenset([1, 5, 11, 12,
-                          33, 34, 37, 38, 39, 40, 42, 43, 44, 45])
+                          33, 34, 37, 40, 45])
 
 
 @dataclass
@@ -446,8 +446,13 @@ class GoogleSheetsService:
             30: f"=O{row}-P{row}-Z{row}-AC{row}",                          # AE Долг
             31: self._fmt_docs_primary(invoice),                        # AF Договор
             32: self._fmt_docs_closing(invoice),                        # AG Закр.док
-            35: self._fmt_amount(invoice.get("zp_manager_amount")),
+            35: self._fmt_amount(invoice.get("manager_zp_blank")),   # AJ ← ОП AG
             36: invoice.get("zp_manager_status") or "",
+            38: self._fmt_amount(invoice.get("agent_payout_op")),   # AM ← ОП AE
+            39: self._fmt_amount(invoice.get("men_zp_payout_op")),  # AN ← ОП AF
+            42: self._fmt_amount(invoice.get("npn_amount")),        # AQ ← ОП AT
+            43: self._fmt_amount(invoice.get("npn_payout_op")),     # AR ← ОП AU
+            44: invoice.get("npn_payout_date_op") or "",            # AS ← ОП AV
             46: "" if invoice.get("status") == "credit" else (invoice.get("status") or ""),
             47: _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
             48: invoice.get("supplier") or "",
@@ -470,24 +475,24 @@ class GoogleSheetsService:
             66: _li.get("inv_npn", ""),       # BO Счет НПН
             67: "Да" if invoice.get("status") == "in_progress" else "", # BP В работе
             68: "Да" if invoice.get("status") == "ended" else "",       # BQ Счет END
-            69: "",  # очистка (перенесено в 76)
-            72: self._fmt_amount(invoice.get("actual_logistics")),       # BU Логистика Факт
+            69: self._fmt_amount(invoice.get("loaders_fact_op")),    # BR Грузчики факт ← ОП AP
+            72: self._fmt_amount(invoice.get("logistics_fact_op") or invoice.get("actual_logistics")),  # BU Логистика Факт
             73: _li.get("lead_status", ""),   # BV Статус лида
             # — Блок Замерщик (перенос из 54/55/69) —
             74: invoice.get("zp_status") or "",                          # BW ЗП Замерщик
             75: self._fmt_amount(invoice.get("zp_zamery_total")),        # BX ЗП Замерщик сумма
-            76: invoice.get("_zamery_info") or "",                       # BY Замеры
+            76: invoice.get("zamery_info_op") or invoice.get("_zamery_info") or "",  # BY Замеры ← ОП I (fallback: бот)
             # — Аналитика —
             77: invoice.get("_plan_fact_label") or "",                   # BZ Расчет vs Факт
             # 78, 79, 80 заполняются ниже из cost_card
             # — Кредитный учёт —
-            85: f"=IF(CF{row}=\"\",\"\",CF{row}-CH{row})",              # DJ Кредит баланс
+            85: f"=IF(CD{row}=\"\",\"\",CD{row}-CF{row})",              # CH Кредит баланс
         }
 
         # Кредит входящий (81-82): is_credit=1 — единственный источник правды
         is_credit = bool(invoice.get("is_credit"))
         if is_credit:
-            cells[81] = self._fmt_amount(invoice.get("amount"))          # CF Кредит вход
+            cells[81] = self._fmt_amount(invoice.get("amount"))          # CD Кредит вход
             mgr_label = manager_label or ""
             addr = invoice.get("object_address") or ""
             cells[82] = f"{mgr_label}, {addr}".strip(", ") if (mgr_label or addr) else ""
@@ -535,8 +540,8 @@ class GoogleSheetsService:
             cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
             cells[58] = self._fmt_amount(_c.get("total_cost"))
             # Прибыль факт (78) и Рентабельность факт % (79)
-            cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CC Прибыль факт
-            cells[79] = f"{fact_pct:.1f}%" if fact_pct else ""               # CD Рент-ть факт %
+            cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CA Прибыль факт
+            cells[79] = f"{fact_pct:.1f}%" if fact_pct else ""               # CB Рент-ть факт %
             # Перерасчет прибыли (80): разница план-факт при перерасходе
             pf_label = invoice.get("_plan_fact_label") or ""
             if pf_label == "Перерасчет прибыли":
@@ -548,7 +553,7 @@ class GoogleSheetsService:
                              + float(invoice.get("estimated_logistics") or 0))
                 fact_total = _c.get("total_cost", 0)
                 delta = fact_total - est_total
-                cells[80] = self._fmt_amount(delta)                          # CE Перерасчет
+                cells[80] = self._fmt_amount(delta)                          # CC Перерасчет
             else:
                 cells[80] = ""
 
@@ -805,7 +810,7 @@ class GoogleSheetsService:
         5: "object_address",           # F: Адрес
         6: "receipt_date",             # G: Дата пост.
         7: "deadline_days",            # H: Сроки (дни)
-        # 8: пусто
+        8: "zamery_info_op",             # I: Замеры (из ОП)
         9: "actual_completion_date",   # J: Дата Факт
         10: "amount",                  # K: Сумма
         11: "first_payment_amount",    # L: Сумма 1пл
@@ -827,8 +832,8 @@ class GoogleSheetsService:
         27: "outstanding_debt",        # AB: Сумма Долга
         28: "payment_terms",           # AC: Пояснения
         29: "agent_fee",               # AD: Агентское
-        # 30: Выплаты. Агент. (не импортируем)
-        # 31: Дата выпл. Агент. (не импортируем)
+        30: "agent_payout_op",           # AE: Выпл. Агент.
+        31: "men_zp_payout_op",          # AF: Выпл.МенЗП
         32: "manager_zp_blank",        # AG: Мен. ЗП (по бланку)
         33: "zp_manager_request_text",   # AH: Запрос суммы на выплату
         34: "zp_manager_payout",         # AI: Выплата. Мен. ЗП
@@ -841,8 +846,12 @@ class GoogleSheetsService:
         41: "loaders_fact_op",           # AP: Грузчики факт
         42: "loaders_fact_date",         # AQ: Дата груз.
         # 43: AR — Команда боту (human-writable)
-        # 44: AS — Запрос НПН (не импортируем)
+        44: "npn_request_op",            # AS: Запрос НПН
         45: "npn_amount",               # AT: Выдано НПН
+        46: "npn_payout_op",            # AU: Выдано НПН (сумма)
+        47: "npn_payout_date_op",        # AV: Дата НПН
+        # 48: AW (пусто)
+        49: "taxes_fact_op",             # AX: Налоги факт
     }
 
     def _parse_num(self, val: str) -> float | None:
@@ -924,6 +933,10 @@ class GoogleSheetsService:
             "zp_manager_payout",
             "logistics_fact_op",
             "loaders_fact_op",
+            "agent_payout_op",
+            "men_zp_payout_op",
+            "npn_payout_op",
+            "taxes_fact_op",
         }
     )
     _OP_DATE_FIELDS = frozenset(
@@ -935,6 +948,7 @@ class GoogleSheetsService:
             "zp_manager_payout_date",
             "logistics_fact_date",
             "loaders_fact_date",
+            "npn_payout_date_op",
         }
     )
 

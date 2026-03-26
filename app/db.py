@@ -462,6 +462,14 @@ class Database:
             ("invoices", "logistics_fact_date", "TEXT"),        # AO: Дата лог.
             ("invoices", "loaders_fact_op", "REAL"),            # AP: Грузчики факт
             ("invoices", "loaders_fact_date", "TEXT"),          # AQ: Дата груз.
+            # --- Новые поля из ОП (Импорт ОП) ---
+            ("invoices", "zamery_info_op", "TEXT"),             # I: Замеры (из ОП)
+            ("invoices", "agent_payout_op", "REAL"),            # AE: Выпл. Агент.
+            ("invoices", "men_zp_payout_op", "REAL"),           # AF: Выпл.МенЗП
+            ("invoices", "npn_request_op", "TEXT"),             # AS: Запрос НПН
+            ("invoices", "npn_payout_op", "REAL"),              # AU: Выдано НПН (сумма)
+            ("invoices", "npn_payout_date_op", "TEXT"),         # AV: Дата НПН
+            ("invoices", "taxes_fact_op", "REAL"),              # AX: Налоги факт
             # --- Монтажник: инициализация ЗП и отслеживание материалов ---
             ("invoices", "materials_ordered", "INTEGER DEFAULT 0"),
             ("users", "zp_init_done", "INTEGER DEFAULT 0"),
@@ -1525,7 +1533,7 @@ class Database:
         sp_list = await self.list_supplier_payments_for_invoice(invoice_id)
         supplier_payments_total = sum(s["amount"] for s in sp_list)
 
-        # 3) ЗП (только approved)
+        # 3) ЗП (только approved) — для информации, НЕ входят в total_cost
         zp_zamery = float(inv.get("zp_zamery_total") or 0) if inv.get("zp_status") == "approved" else 0.0
         zp_manager = float(inv.get("zp_manager_amount") or 0) if inv.get("zp_manager_status") == "approved" else 0.0
         zp_installer = float(inv.get("zp_installer_amount") or 0) if inv.get("zp_installer_status") == "approved" else 0.0
@@ -1535,11 +1543,23 @@ class Database:
         materials_fact_op = float(inv.get("materials_fact_op") or 0)
         materials_combined = materials_fact_op + materials_total
 
-        # Монтаж из ОП (уже оплаченный) + ЗП монтажника (новые)
+        # Монтаж из ОП (уже оплаченный) или ЗП монтажника
         montazh_fact_op = float(inv.get("montazh_fact_op") or 0)
-        montazh_combined = montazh_fact_op + zp_installer
+        montazh_combined = montazh_fact_op if montazh_fact_op > 0 else zp_installer
 
-        total_cost = materials_combined + supplier_payments_total + zp_zamery + zp_manager + montazh_combined
+        # Дедупликация: берём MAX(materials_combined, supplier_payments)
+        # чтобы не считать одни и те же расходы дважды
+        mat_and_suppliers = max(materials_combined, supplier_payments_total)
+
+        # Вычитаемые позиции (отслеживаются в отдельных столбцах ОП)
+        logistics_fact = float(inv.get("logistics_fact_op") or 0)
+        loaders_fact = float(inv.get("loaders_fact_op") or 0)
+        agent_payout = float(inv.get("agent_payout_op") or inv.get("agent_fee") or 0)
+        taxes_fact = float(inv.get("taxes_fact_op") or 0)
+
+        # Итого расходы = материалы + монтаж - (логистика + грузчики + агентское + налоги)
+        total_cost = (mat_and_suppliers + montazh_combined
+                      - logistics_fact - loaders_fact - agent_payout - taxes_fact)
         margin = invoice_amount - total_cost
         margin_pct = (margin / invoice_amount * 100) if invoice_amount > 0 else 0.0
 
@@ -1557,6 +1577,11 @@ class Database:
             "zp_manager": zp_manager,
             "zp_installer": zp_installer,
             "zp_total": zp_total,
+            "mat_and_suppliers": mat_and_suppliers,
+            "logistics_fact": logistics_fact,
+            "loaders_fact": loaders_fact,
+            "agent_payout": agent_payout,
+            "taxes_fact": taxes_fact,
             "total_cost": total_cost,
             "margin": margin,
             "margin_pct": margin_pct,
@@ -2704,6 +2729,13 @@ class Database:
             "logistics_fact_date",
             "loaders_fact_op",
             "loaders_fact_date",
+            "zamery_info_op",
+            "agent_payout_op",
+            "men_zp_payout_op",
+            "npn_request_op",
+            "npn_payout_op",
+            "npn_payout_date_op",
+            "taxes_fact_op",
         }
 
         created_by, creator_role = await self._resolve_invoice_import_owner(inv_num, payload, existing)
