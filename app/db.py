@@ -453,6 +453,15 @@ class Database:
             ("invoices", "npn_amount", "REAL"),                 # НПН с 10% налог
             ("invoices", "materials_fact_op", "REAL"),            # Материалы Факт из ОП (колонка AL)
             ("invoices", "montazh_fact_op", "REAL"),             # Монтаж Факт из ОП (колонка AM)
+            # --- ЗП менеджера: выплаты из ОП ---
+            ("invoices", "zp_manager_request_text", "TEXT"),    # AH: Запрос суммы на выплату
+            ("invoices", "zp_manager_payout", "REAL"),          # AI: Выплата. Мен. ЗП
+            ("invoices", "zp_manager_payout_date", "TEXT"),     # AJ: Дата выпл. мен.
+            # --- Факт данные из ОП ---
+            ("invoices", "logistics_fact_op", "REAL"),          # AN: Логистика факт
+            ("invoices", "logistics_fact_date", "TEXT"),        # AO: Дата лог.
+            ("invoices", "loaders_fact_op", "REAL"),            # AP: Грузчики факт
+            ("invoices", "loaders_fact_date", "TEXT"),          # AQ: Дата груз.
             # --- Монтажник: инициализация ЗП и отслеживание материалов ---
             ("invoices", "materials_ordered", "INTEGER DEFAULT 0"),
             ("users", "zp_init_done", "INTEGER DEFAULT 0"),
@@ -2688,6 +2697,13 @@ class Database:
             "description", "contract_type", "closing_docs_status",
             "materials_fact_op",
             "montazh_fact_op",
+            "zp_manager_request_text",
+            "zp_manager_payout",
+            "zp_manager_payout_date",
+            "logistics_fact_op",
+            "logistics_fact_date",
+            "loaders_fact_op",
+            "loaders_fact_date",
         }
 
         created_by, creator_role = await self._resolve_invoice_import_owner(inv_num, payload, existing)

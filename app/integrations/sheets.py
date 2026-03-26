@@ -830,13 +830,19 @@ class GoogleSheetsService:
         # 30: Выплаты. Агент. (не импортируем)
         # 31: Дата выпл. Агент. (не импортируем)
         32: "manager_zp_blank",        # AG: Мен. ЗП (по бланку)
-        # 33-36: ЗП выплаты (не импортируем)
-        37: "materials_fact_op",          # AL: Материалы Факт
-        38: "montazh_fact_op",            # AM: Монтаж Факт
-        # 39-43: факт данные (не импортируем)
-        # 44: Команда боту (human-writable)
-        # 45: Запрос НПН (не импортируем)
-        46: "npn_amount",              # AU: Выдано НПН
+        33: "zp_manager_request_text",   # AH: Запрос суммы на выплату
+        34: "zp_manager_payout",         # AI: Выплата. Мен. ЗП
+        35: "zp_manager_payout_date",    # AJ: Дата выпл. мен.
+        # 36: AK (пустая колонка)
+        37: "materials_fact_op",         # AL: Материалы Факт
+        38: "montazh_fact_op",           # AM: Монтаж Факт
+        39: "logistics_fact_op",         # AN: Логистика факт
+        40: "logistics_fact_date",       # AO: Дата лог.
+        41: "loaders_fact_op",           # AP: Грузчики факт
+        42: "loaders_fact_date",         # AQ: Дата груз.
+        # 43: AR — Команда боту (human-writable)
+        # 44: AS — Запрос НПН (не импортируем)
+        45: "npn_amount",               # AT: Выдано НПН
     }
 
     def _parse_num(self, val: str) -> float | None:
@@ -915,6 +921,9 @@ class GoogleSheetsService:
             "rentability_calc",
             "materials_fact_op",
             "montazh_fact_op",
+            "zp_manager_payout",
+            "logistics_fact_op",
+            "loaders_fact_op",
         }
     )
     _OP_DATE_FIELDS = frozenset(
@@ -923,6 +932,9 @@ class GoogleSheetsService:
             "actual_completion_date",
             "surcharge_date",
             "final_surcharge_date",
+            "zp_manager_payout_date",
+            "logistics_fact_date",
+            "loaders_fact_date",
         }
     )
 
