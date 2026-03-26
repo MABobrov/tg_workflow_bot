@@ -506,8 +506,9 @@ class GoogleSheetsService:
         credit_exp = invoice.get("_credit_expenses") or {}
         credit_exp_total = credit_exp.get("total") or 0
         if is_credit:
-            # Прямая сумма всех разовых расходов (без привязки к BG)
-            _cf = sum(float(invoice.get(f) or 0) for f in (
+            # ВСЕ затраты КВ (кредитные/наличные) без привязки к мат. счёту
+            # 1) ОП-поля текущего счёта
+            _cf_op = sum(float(invoice.get(f) or 0) for f in (
                 "materials_fact_op",      # Материалы
                 "montazh_fact_op",        # Монтаж
                 "logistics_fact_op",      # Логистика
@@ -517,7 +518,12 @@ class GoogleSheetsService:
                 "npn_payout_op",          # НПН
                 "zp_manager_payout",      # ЗП менеджера (выплата)
             ))
-            cf_total = max(_cf, credit_exp_total)
+            # 2) Оплаты поставщикам + дочерние счета из бота
+            _cf_bot = 0.0
+            if _c:
+                _cf_bot = _c.get("supplier_payments_total", 0) + _c.get("materials_total", 0)
+            # 3) Ручные записи credit_expenses
+            cf_total = _cf_op + _cf_bot + credit_exp_total
             cells[83] = self._fmt_amount(cf_total) if cf_total else ""
         elif credit_exp_total:
             cells[83] = self._fmt_amount(credit_exp_total)
