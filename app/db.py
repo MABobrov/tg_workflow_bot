@@ -1557,9 +1557,12 @@ class Database:
         agent_payout = float(inv.get("agent_payout_op") or inv.get("agent_fee") or 0)
         taxes_fact = float(inv.get("taxes_fact_op") or 0)
 
-        # Итого расходы = материалы + монтаж + логистика + грузчики + агентское
-        total_cost = (mat_and_suppliers + montazh_combined
-                      + logistics_fact + loaders_fact + agent_payout)
+        # Итого расходы = материалы + (монтаж + логистика + грузчики + агентское) * 1.22
+        total_cost = (mat_and_suppliers
+                      + montazh_combined * 1.22
+                      + logistics_fact * 1.22
+                      + loaders_fact * 1.22
+                      + agent_payout * 1.22)
         # Прибыль факт = сумма счёта - расходы - налоги
         margin = invoice_amount - total_cost - taxes_fact
         margin_pct = (margin / invoice_amount * 100) if invoice_amount > 0 else 0.0
