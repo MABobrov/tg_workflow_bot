@@ -455,7 +455,7 @@ class GoogleSheetsService:
             42: self._fmt_amount(invoice.get("npn_amount")),        # AQ ← ОП AT
             43: self._fmt_amount(invoice.get("npn_payout_op")),     # AR ← ОП AU
             44: self._fmt_sheet_date(invoice.get("npn_payout_date_op")),  # AS ← ОП AV
-            46: "" if invoice.get("status") == "credit" else (invoice.get("status") or ""),
+            46: invoice.get("status") or "",
             47: _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
             48: invoice.get("supplier") or "",
             49: invoice.get("material_type") or "",
