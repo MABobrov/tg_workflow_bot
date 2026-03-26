@@ -69,10 +69,8 @@ def _can_delete_task_entries(role_value: str | None, *, is_admin: bool = False) 
 
 
 async def _answer_menu_silent(message: Message, reply_markup: object) -> None:
-    await answer_service(
-        message,
+    await message.answer(
         _SILENT_MENU_TEXT,
-        delay_seconds=1,
         reply_markup=private_only_reply_markup(message, reply_markup),
     )
 
