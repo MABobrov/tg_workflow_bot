@@ -102,7 +102,10 @@ async def export_to_sheets(
                     log.debug("Failed to resolve creator_role for invoice %s", invoice.get("id"), exc_info=True)
 
             cost = None
-            if include_invoice_cost and not invoice.get("parent_invoice_id"):
+            # Cost card нужен: 1) если явно запрошен, 2) для кредитных счетов (CF расход)
+            _need_cost = (include_invoice_cost or bool(invoice.get("is_credit"))) \
+                         and not invoice.get("parent_invoice_id")
+            if _need_cost:
                 try:
                     cost = await db.get_full_invoice_cost_card(int(invoice["id"]))
                 except Exception:
