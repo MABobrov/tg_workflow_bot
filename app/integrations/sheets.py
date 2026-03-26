@@ -571,7 +571,14 @@ class GoogleSheetsService:
         cells[21] = self._fmt_amount(_nds)                                     # V НДС
         cells[22] = self._fmt_amount(_profit_tax)                              # W Нал.приб.
         cells[20] = self._fmt_amount(_profit)                                  # U Прибыль
-        cells[23] = f"{_rentability:.1f}%" if _amount > 0 else ""              # X Рент-ть расч
+        # X Рент-ть расч: из ОП (rentability_calc) если есть, иначе Python-расчёт
+        _rent_op = invoice.get("rentability_calc")
+        if _rent_op is not None and _rent_op != 0:
+            cells[23] = f"{float(_rent_op):.0f}%"
+        elif _amount > 0:
+            cells[23] = f"{_rentability:.1f}%"
+        else:
+            cells[23] = ""
         cells[41] = self._fmt_amount(_npn_10)                                  # AP НПН 10%
 
         # Материалы Факт: ОП (уже закупленные) + дочерние счета (новые)
