@@ -163,7 +163,7 @@ INVOICES_HEADER = [
 # Column indices the bot NEVER overwrites (manual-only + formula)
 # Removed 7 (Свой/Атм→client_source), 18,19,21,24 — now bot-managed (Plan/Fact)
 _MANUAL_COLS = frozenset([1, 5, 11, 12,
-                          33, 34, 37, 40, 45])
+                          33, 34, 37, 45])
 
 
 @dataclass
@@ -449,7 +449,8 @@ class GoogleSheetsService:
             35: self._fmt_amount(invoice.get("manager_zp_blank")),   # AJ ← ОП AG
             36: invoice.get("zp_manager_status") or "",
             38: self._fmt_amount(invoice.get("agent_payout_op")),   # AM ← ОП AE
-            39: self._fmt_amount(invoice.get("men_zp_payout_op")),  # AN ← ОП AF
+            39: self._fmt_amount(invoice.get("zp_manager_payout")), # AN ← ОП AI
+            40: invoice.get("zp_manager_payout_date") or "",        # AO ← ОП AJ
             42: self._fmt_amount(invoice.get("npn_amount")),        # AQ ← ОП AT
             43: self._fmt_amount(invoice.get("npn_payout_op")),     # AR ← ОП AU
             44: invoice.get("npn_payout_date_op") or "",            # AS ← ОП AV
