@@ -152,12 +152,13 @@ INVOICES_HEADER = [
     "Прибыль факт",       # 78
     "Рент-ть факт %",     # 79
     "Перерасчет прибыли",  # 80
-    # — Кредитный учёт (81-85) —
+    # — Кредитный учёт (81-86) —
     "Кредит вход",         # 81 — сумма входящего кредита
     "Кредит вход коммент", # 82 — Менеджер, адрес
     "Кредит расход",       # 83 — накопительная сумма расходов
-    "Кредит назначение",   # 84 — лог назначений расходов
-    "Кредит баланс",       # 85 — формула: вход - расход
+    "Дата расход кред",    # 84 — дата расхода кредитных средств
+    "Кредит назначение",   # 85 — лог назначений расходов
+    "Кредит баланс",       # 86 — формула: вход - расход
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -487,7 +488,7 @@ class GoogleSheetsService:
             77: invoice.get("_plan_fact_label") or "",                   # BZ Расчет vs Факт
             # 78, 79, 80 заполняются ниже из cost_card
             # — Кредитный учёт —
-            85: f"=IF(CD{row}=\"\",\"\",CD{row}-CF{row})",              # CH Кредит баланс
+            86: f"=IF(CD{row}=\"\",\"\",CD{row}-CF{row})",              # CI Кредит баланс
         }
 
         # Кредит входящий (81-82): is_credit=1 — единственный источник правды
@@ -501,10 +502,30 @@ class GoogleSheetsService:
             cells[81] = ""
             cells[82] = ""
 
-        # Кредит расход (83) и назначение (84): из _credit_expenses
+        # Кредит расход (83), дата (84), назначение (85): из cost_card + credit_expenses
         credit_exp = invoice.get("_credit_expenses") or {}
-        cells[83] = self._fmt_amount(credit_exp.get("total")) if credit_exp.get("total") else ""
-        cells[84] = credit_exp.get("log") or ""
+        credit_exp_total = credit_exp.get("total") or 0
+        # Для кредитных счетов: используем total_cost из cost card если он больше
+        if is_credit and _c and _c.get("total_cost", 0) > 0:
+            cells[83] = self._fmt_amount(max(credit_exp_total, _c["total_cost"]))
+        elif credit_exp_total:
+            cells[83] = self._fmt_amount(credit_exp_total)
+        else:
+            cells[83] = ""
+        # Дата расхода кредитных средств
+        credit_items = credit_exp.get("items") or []
+        if credit_items:
+            from datetime import datetime as _dt
+            try:
+                last_dt = _dt.fromisoformat(credit_items[-1]["created_at"])
+                cells[84] = last_dt.strftime("%d.%m.%Y")
+            except (ValueError, TypeError, KeyError):
+                cells[84] = ""
+        elif is_credit and invoice.get("updated_at"):
+            cells[84] = format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name)[:10] if invoice.get("updated_at") else ""
+        else:
+            cells[84] = ""
+        cells[85] = credit_exp.get("log") or ""
 
         # Расч.мат., Установка, Грузчики, Логистика — из БД
         est_glass = float(invoice.get("estimated_glass") or 0)
