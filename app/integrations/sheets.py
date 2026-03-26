@@ -163,8 +163,8 @@ INVOICES_HEADER = [
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
 # Removed 7 (Свой/Атм→client_source), 18,19,21,24 — now bot-managed (Plan/Fact)
-_MANUAL_COLS = frozenset([1, 5, 11, 12,
-                          33, 34, 37, 45])
+_MANUAL_COLS = frozenset([1, 5,
+                          33, 34, 37])
 
 
 @dataclass
@@ -436,6 +436,7 @@ class GoogleSheetsService:
             8: invoice.get("invoice_number") or "",
             9: invoice.get("object_address") or "",
             10: self._fmt_sheet_date(invoice.get("receipt_date")),
+            11: int(invoice.get("deadline_days")) if invoice.get("deadline_days") else "",  # L Сроки (дни)
             13: self._fmt_sheet_date(invoice.get("actual_completion_date")),
             14: self._fmt_amount(invoice.get("amount")),
             15: self._fmt_amount(invoice.get("first_payment_amount")),
