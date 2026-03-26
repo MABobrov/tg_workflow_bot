@@ -558,12 +558,20 @@ class GoogleSheetsService:
             cells[18] = self._fmt_amount(est_load)
             cells[19] = self._fmt_amount(est_log)
 
-        # Формулы: НДС (V), Нал.приб. (W), НПН (AP), Прибыль (U), Рент-ть (X)
-        cells[21] = f"=((O{row}*22/122)-(Q{row}*22/122))"                      # V НДС (без кред.коэф.)
-        cells[22] = f"=((O{row}-Q{row}-R{row}-S{row}-T{row}-V{row})/100*20)"          # W Нал.приб. (без кред.коэф.)
-        cells[41] = f"=(O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row})*10/100"    # AP (НПН 10%)
-        cells[20] = f"=O{row}-Q{row}-R{row}-S{row}-T{row}-V{row}-W{row}"              # U (Прибыль)
-        cells[23] = f'=IF(O{row}>0,U{row}/O{row}*100,0)'                      # X (Рент-ть)
+        # Python-вычисления: НДС, Нал.приб., Прибыль, Рент-ть (вместо формул)
+        _amount = float(invoice.get("amount") or 0)
+        _est_total = materials_total + est_inst + est_load + est_log
+        _nds = (_amount * 22 / 122) - (materials_total * 22 / 122) if _amount else 0
+        _profit_tax = ((_amount - _est_total - _nds) / 100 * 20) if _amount else 0
+        _profit = _amount - _est_total - _nds - _profit_tax
+        _rentability = (_profit / _amount * 100) if _amount > 0 else 0
+        _npn_10 = _profit * 10 / 100
+
+        cells[21] = self._fmt_amount(_nds)                                     # V НДС
+        cells[22] = self._fmt_amount(_profit_tax)                              # W Нал.приб.
+        cells[20] = self._fmt_amount(_profit)                                  # U Прибыль
+        cells[23] = f"{_rentability:.1f}%" if _amount > 0 else ""              # X Рент-ть расч
+        cells[41] = self._fmt_amount(_npn_10)                                  # AP НПН 10%
 
         # Материалы Факт: ОП (уже закупленные) + дочерние счета (новые)
         _mat_op = float(invoice.get("materials_fact_op") or 0)
@@ -603,18 +611,29 @@ class GoogleSheetsService:
         if _mont_combined:
             cells[70] = self._fmt_amount(_mont_combined)
 
-        if is_new:
-            cells[12] = (
-                f'=IF(OR(K{row}="",L{row}=""),"",TEXT('
-                f'DATEVALUE(MID(K{row},7,4)&"-"&MID(K{row},4,2)&"-"&LEFT(K{row},2))'
-                f'+L{row},"DD.MM.YYYY"))'
-            )
-            cells[45] = (
-                f'=IF(K{row}="","",SWITCH(VALUE(MID(K{row},4,2)),'
-                f'1,"Январь",2,"Февраль",3,"Март",4,"Апрель",'
-                f'5,"Май",6,"Июнь",7,"Июль",8,"Август",'
-                f'9,"Сентябрь",10,"Октябрь",11,"Ноябрь",12,"Декабрь"))'
-            )
+        # M (12): Дата окончания = receipt_date + deadline_days
+        _receipt = invoice.get("receipt_date")
+        _deadline_d = invoice.get("deadline_days")
+        if _receipt and _deadline_d:
+            try:
+                from datetime import datetime as _dt, timedelta as _td
+                _rd = _dt.fromisoformat(str(_receipt).strip())
+                _end = _rd + _td(days=int(_deadline_d))
+                cells[12] = f"=DATE({_end.year},{_end.month},{_end.day})"
+            except (ValueError, TypeError):
+                pass
+
+        # AT (45): Месяц из receipt_date
+        if _receipt:
+            _months = {1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+                       5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+                       9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"}
+            try:
+                from datetime import datetime as _dt
+                _rd = _dt.fromisoformat(str(_receipt).strip())
+                cells[45] = _months.get(_rd.month, "")
+            except (ValueError, TypeError):
+                pass
 
         return cells
 
