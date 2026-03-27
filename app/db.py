@@ -1558,7 +1558,8 @@ class Database:
         taxes_fact = float(inv.get("taxes_fact_op") or 0)
 
         # Итого расходы (без НДС — налоги вычитаются отдельно в прибыли)
-        total_cost = (mat_and_suppliers + montazh_combined
+        # ЗП не входит — используем только факт из ОП
+        total_cost = (mat_and_suppliers + montazh_fact_op
                       + logistics_fact + loaders_fact + agent_payout)
         # Прибыль факт = сумма счёта - расходы - налоги
         margin = invoice_amount - total_cost - taxes_fact

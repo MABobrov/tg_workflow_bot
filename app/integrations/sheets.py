@@ -435,7 +435,7 @@ class GoogleSheetsService:
             8: invoice.get("invoice_number") or "",
             9: invoice.get("object_address") or "",
             10: self._fmt_sheet_date(invoice.get("receipt_date")),
-            11: f'{int(invoice.get("deadline_days"))} дн.' if invoice.get("deadline_days") else "",  # L Сроки (дни)
+            11: f'={int(invoice.get("deadline_days"))}' if invoice.get("deadline_days") else "",  # L Сроки (число дней)
             13: self._fmt_sheet_date(invoice.get("actual_completion_date")),
             14: self._fmt_amount(invoice.get("amount")),
             15: self._fmt_amount(invoice.get("first_payment_amount")),
