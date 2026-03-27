@@ -22,10 +22,11 @@ _ALLOWED_GROUP_CALLBACK_PREFIXES = ("lead:", "leadassign:", "reply_to_gd:", "tas
 @router.message(F.text)
 async def cleanup_group_reply_keyboard(message: Message) -> None:
     text = (message.text or "").strip()
-    # In group chats remove legacy keyboards on command/button interactions.
+    # Удаляем reply-клавиатуру при любом взаимодействии в группе,
+    # которое похоже на команду или кнопку бота.
     if text.startswith("/") or text in MENU_BUTTONS:
         await message.answer(
-            "Кнопки в группах отключены. Используйте бота в личном чате.",
+            "Бот работает только в личном чате.",
             reply_markup=ReplyKeyboardRemove(),
         )
 

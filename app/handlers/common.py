@@ -31,6 +31,9 @@ from ..utils import answer_service, parse_roles, private_only_reply_markup, role
 log = logging.getLogger(__name__)
 
 router = Router()
+# Все message-хендлеры работают только в личном чате с ботом.
+# my_chat_member (добавление в группу) не затронут — это отдельный тип события.
+router.message.filter(F.chat.type == "private")
 _GD_LIKE_ROLES = {Role.GD, Role.TD}
 _SILENT_MENU_TEXT = "\u2063"
 

@@ -137,7 +137,8 @@ class Notifier:
         if not self.work_chat_id:
             return
         chat_id = int(self.work_chat_id)
-        result = await self.safe_send(chat_id, text, reply_markup=reply_markup, return_error=True)
+        # В рабочем чате клавиатура не нужна — только текст уведомления
+        result = await self.safe_send(chat_id, text, return_error=True)
         ok, err = result if isinstance(result, tuple) else (bool(result), None)
         if not ok and err and "chat not found" in err.lower():
             self.work_chat_id = None

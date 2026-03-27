@@ -9,6 +9,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import ReplyKeyboardRemove
 from dotenv import load_dotenv
 
 from .config import load_config
@@ -360,6 +361,17 @@ async def main() -> None:
         site = web.TCPSite(webhook_runner, "0.0.0.0", config.sheets_webhook_port)
         await site.start()
         log.info("Sheets webhook server started on port %d", config.sheets_webhook_port)
+
+    # Убираем застрявшую reply-клавиатуру из рабочего чата при старте
+    if work_chat_id:
+        try:
+            await bot.send_message(
+                chat_id=int(work_chat_id),
+                text="🤖 Бот перезапущен.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+        except Exception:
+            log.warning("Could not clear work chat keyboard (chat_id=%s)", work_chat_id)
 
     try:
         await dp.start_polling(
