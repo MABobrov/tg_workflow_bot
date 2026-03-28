@@ -490,6 +490,9 @@ class Database:
             ("zamery_requests", "completed_at", "TEXT"),
             # --- Фактическая стоимость доставки ---
             ("invoices", "actual_logistics", "REAL"),
+            # --- Фактическая прибыль из ОП ---
+            ("invoices", "profit_fact_credit_op", "REAL"),   # AY: Прибыль факт (кредитные)
+            ("invoices", "profit_fact_op", "REAL"),           # AZ: Прибыль факт (по счёту)
             # --- Подтверждение оплаты ГД ---
             ("invoices", "payment_confirm_status", "TEXT DEFAULT ''"),
             # --- Lead lifecycle: статус лида + привязка к счёту ---

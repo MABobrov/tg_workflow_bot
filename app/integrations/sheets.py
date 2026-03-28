@@ -158,6 +158,10 @@ INVOICES_HEADER = [
     "Дата расход кред",    # 83 — дата расхода кредитных средств
     "Кредит назначение",   # 84 — лог назначений расходов
     "Кредит баланс",       # 85 — формула: вход - расход
+    "",                     # 86 — очистка (legacy CI)
+    # — Прибыль факт из ОП (87-88) —
+    "Прибыль факт кред ОП", # 87 — AY: Факт.прибыль кредитных
+    "Прибыль факт ОП",      # 88 — AZ: Факт.прибыль по счёту
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -490,6 +494,9 @@ class GoogleSheetsService:
             # — Кредитный учёт —
             85: f"=IF(CC{row}=\"\",\"\",CC{row}-CE{row})",              # CH Кредит баланс
             86: "",  # очистка старого CI (после удаления столбца CB)
+            # — Прибыль факт из ОП —
+            87: self._fmt_amount(invoice.get("profit_fact_credit_op")),  # Прибыль факт кред ОП (AY)
+            88: self._fmt_amount(invoice.get("profit_fact_op")),         # Прибыль факт ОП (AZ)
         }
 
         # Кредит входящий (80-81): is_credit=1 — единственный источник правды
@@ -912,8 +919,10 @@ class GoogleSheetsService:
         45: "npn_amount",               # AT: Выдано НПН
         46: "npn_payout_op",            # AU: Выдано НПН (сумма)
         47: "npn_payout_date_op",        # AV: Дата НПН
-        # 48: AW (пусто)
+        # 48: AW (Месяц — не импортируем)
         49: "taxes_fact_op",             # AX: Налоги факт
+        50: "profit_fact_credit_op",     # AY: Фактическая прибыль по кредитным счетам
+        51: "profit_fact_op",            # AZ: Фактическая прибыль по каждому счёту
     }
 
     def _parse_num(self, val: str) -> float | None:
