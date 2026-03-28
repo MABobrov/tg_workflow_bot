@@ -2758,28 +2758,25 @@ async def role_switch_to_other(message: Message, state: FSMContext, db: Database
         target_role = Role.RP
         role_label_str = "РП"
 
-    # Switch role in DB
+    # Switch role in DB — keep both RP+NPN, target first (= active menu)
     current_user = await db.get_user_optional(u.id)
-    current_roles = set(parse_roles(current_user.role if current_user else None))
-    preserved_roles = {
-        role
-        for role in current_roles
-        if role not in {Role.RP, Role.MANAGER_NPN}
-    }
-    updated_roles = preserved_roles | {target_role}
-    await apply_user_roles(db, config, u.id, updated_roles)
+    current_roles = parse_roles(current_user.role if current_user else None)
+    other_role = Role.RP if target_role == Role.MANAGER_NPN else Role.MANAGER_NPN
+    new_roles: list[str] = [target_role, other_role]
+    for r in current_roles:
+        if r not in {Role.RP, Role.MANAGER_NPN}:
+            new_roles.append(r)
+    await db.set_user_roles(u.id, new_roles)
 
     is_admin = u.id in (config.admin_ids or set())
+    full_role = ",".join(new_roles)  # pass full DB role for combined menu detection
+    from ..services.menu_context import build_menu_context
+    menu_ctx = await build_menu_context(db, u.id, full_role)
     await message.answer(
         f"✅ Роль изменена на: <b>{role_label_str}</b>",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(
-                target_role, is_admin=is_admin,
-                unread=await db.count_unread_tasks(u.id),
-                rp_tasks=await db.count_rp_role_tasks(u.id),
-                rp_messages=await db.count_rp_role_messages(u.id),
-            ),
+            main_menu(full_role, is_admin=is_admin, **menu_ctx),
         ),
     )
 
@@ -2794,23 +2791,19 @@ async def role_switch_already_active(message: Message, db: Database, config: Con
     if not u:
         return
 
+    current_user = await db.get_user_optional(u.id)
+    full_role = current_user.role if current_user else None
     role = await _current_role(db, u.id)
-    menu_role, isolated_role = await _current_menu(db, u.id)
     is_admin = u.id in (config.admin_ids or set())
     role_label_str = "РП" if role == Role.RP else "Менеджер НПН"
 
+    from ..services.menu_context import build_menu_context
+    menu_ctx = await build_menu_context(db, u.id, full_role)
     await message.answer(
         f"Вы уже в роли <b>{role_label_str}</b>.",
         reply_markup=private_only_reply_markup(
             message,
-            main_menu(
-                menu_role,
-                is_admin=is_admin,
-                unread=await db.count_unread_tasks(u.id),
-                isolated_role=isolated_role,
-                rp_tasks=await db.count_rp_role_tasks(u.id),
-                rp_messages=await db.count_rp_role_messages(u.id),
-            ),
+            main_menu(full_role, is_admin=is_admin, **menu_ctx),
         ),
     )
 

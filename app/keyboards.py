@@ -357,6 +357,14 @@ def _is_pure_manager_npn(role: str | None) -> bool:
     return roles == [Role.MANAGER_NPN]
 
 
+def _has_rp_npn_combined(role: str | None) -> bool:
+    """Check if user has both RP and MANAGER_NPN roles (combined)."""
+    if not role:
+        return False
+    roles = set(parse_roles(role))
+    return Role.RP in roles and Role.MANAGER_NPN in roles
+
+
 def _is_pure_accounting(role: str | None) -> bool:
     if not role:
         return False
@@ -518,7 +526,25 @@ def main_menu(
         _patch_inbox(rows)
         return _build_reply_rows(rows)
 
-    # MANAGER_NPN (switched from RP) — role-switching row + NPN manager menu
+    # Combined RP + NPN — show active role menu with switcher row
+    if _has_rp_npn_combined(role):
+        active = parse_roles(role)[0]  # first role = active
+        if active == Role.MANAGER_NPN:
+            rp_label = _format_role_badge(RP_BTN_ROLE_RP_INACTIVE, rp_tasks, rp_messages)
+            npn_label = _format_role_badge(RP_BTN_ROLE_NPN_ACTIVE, npn_tasks, npn_messages)
+            rows: list[list[str]] = [[rp_label, npn_label]]
+            rows.extend([list(row) for row in _role_primary_action_rows(Role.MANAGER_NPN)])
+        else:
+            rp_label = _format_role_badge(RP_BTN_ROLE_RP, rp_tasks, rp_messages)
+            npn_label = _format_role_badge(RP_BTN_ROLE_NPN, npn_tasks, npn_messages)
+            rows = [[rp_label, npn_label]]
+            rows.extend([list(row) for row in _role_primary_action_rows(Role.RP)])
+        if is_admin:
+            rows.append([OPEN_ADMIN_PANEL])
+        _patch_inbox(rows)
+        return _build_reply_rows(rows)
+
+    # MANAGER_NPN (pure, no RP) — role-switching row + NPN manager menu
     if _is_pure_manager_npn(role):
         rp_label = _format_role_badge(RP_BTN_ROLE_RP_INACTIVE, rp_tasks, rp_messages)
         npn_label = _format_role_badge(RP_BTN_ROLE_NPN_ACTIVE, npn_tasks, npn_messages)
@@ -538,7 +564,7 @@ def main_menu(
         _patch_inbox(rows)
         return _build_reply_rows(rows)
 
-    # RP — custom layout with role-switching row + built-in "Еще" button
+    # RP (pure, no NPN) — custom layout with role-switching row
     if _is_pure_rp(role):
         rp_label = _format_role_badge(RP_BTN_ROLE_RP, rp_tasks, rp_messages)
         npn_label = _format_role_badge(RP_BTN_ROLE_NPN, npn_tasks, npn_messages)
