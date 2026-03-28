@@ -528,7 +528,9 @@ def main_menu(
 
     # Combined RP + NPN — show active role menu with switcher row
     if _has_rp_npn_combined(role):
-        active = parse_roles(role)[0]  # first role = active
+        # Use raw role order from DB (not sorted parse_roles) to determine active
+        _raw = [r.strip().lower() for r in (role or "").split(",") if r.strip()]
+        active = _raw[0] if _raw else Role.RP
         if active == Role.MANAGER_NPN:
             rp_label = _format_role_badge(RP_BTN_ROLE_RP_INACTIVE, rp_tasks, rp_messages)
             npn_label = _format_role_badge(RP_BTN_ROLE_NPN_ACTIVE, npn_tasks, npn_messages)

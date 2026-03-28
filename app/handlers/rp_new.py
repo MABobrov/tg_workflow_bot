@@ -2759,14 +2759,20 @@ async def role_switch_to_other(message: Message, state: FSMContext, db: Database
         role_label_str = "РП"
 
     # Switch role in DB — keep both RP+NPN, target first (= active menu)
+    # Write directly to bypass parse_roles sorting which would reorder roles
     current_user = await db.get_user_optional(u.id)
-    current_roles = parse_roles(current_user.role if current_user else None)
+    current_roles_set = set(parse_roles(current_user.role if current_user else None))
     other_role = Role.RP if target_role == Role.MANAGER_NPN else Role.MANAGER_NPN
     new_roles: list[str] = [target_role, other_role]
-    for r in current_roles:
+    for r in current_roles_set:
         if r not in {Role.RP, Role.MANAGER_NPN}:
             new_roles.append(r)
-    await db.set_user_roles(u.id, new_roles)
+    role_str = ",".join(new_roles)
+    await db.conn.execute(
+        "UPDATE users SET role = ?, updated_at = datetime('now') WHERE telegram_id = ?",
+        (role_str, u.id),
+    )
+    await db.conn.commit()
 
     is_admin = u.id in (config.admin_ids or set())
     full_role = ",".join(new_roles)  # pass full DB role for combined menu detection

@@ -22,10 +22,18 @@ def get_active_menu_role(user_id: int | None) -> str | None:
 
 
 def resolve_active_menu_role(user_id: int | None, role_value: str | None) -> str | None:
-    """Return the user's role (first if comma-separated for legacy data)."""
+    """Return the user's active role (first in raw DB order, not sorted)."""
+    if not role_value:
+        return role_value
+    # Use raw order from DB to preserve intentional role switching order
+    raw = [r.strip().lower() for r in role_value.split(",") if r.strip()]
+    # Validate against known roles
     roles = parse_roles(role_value)
     if not roles:
         return role_value
+    # Return first from raw order if it's a valid role
+    if raw and raw[0] in set(roles):
+        return raw[0]
     return roles[0]
 
 
