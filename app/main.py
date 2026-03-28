@@ -362,16 +362,7 @@ async def main() -> None:
         await site.start()
         log.info("Sheets webhook server started on port %d", config.sheets_webhook_port)
 
-    # Убираем застрявшую reply-клавиатуру из рабочего чата при старте
-    if work_chat_id:
-        try:
-            await bot.send_message(
-                chat_id=int(work_chat_id),
-                text="🤖 Бот перезапущен.",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-        except Exception:
-            log.warning("Could not clear work chat keyboard (chat_id=%s)", work_chat_id)
+    # NOTE: startup message in work chat removed — not needed in group chats
 
     try:
         await dp.start_polling(
