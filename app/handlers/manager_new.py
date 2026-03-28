@@ -542,6 +542,7 @@ async def invoice_start_number(message: Message, state: FSMContext, db: Database
     b = InlineKeyboardBuilder()
     b.button(text="👤 Мой клиент (50/50)", callback_data="inv_src:own")
     b.button(text="📋 Лид от ГД (75/25)", callback_data="inv_src:gd_lead")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     await message.answer(
@@ -708,6 +709,7 @@ async def invoice_start_est_logistics(message: Message, state: FSMContext) -> No
     b = InlineKeyboardBuilder()
     b.button(text="✅ Отправить ГД", callback_data="inv_start:send")
     b.button(text="⏭ Без вложений", callback_data="inv_start:send_no_attach")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     await message.answer(

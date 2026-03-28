@@ -71,18 +71,32 @@ async def acc_inbox_tasks(message: Message, db: Database) -> None:
         return
 
     await message.answer(f"📥 <b>Входящие задачи</b> ({len(unconfirmed)}):")
+
+    # #13: Batch-загрузка счетов для карточек (вместо N+1 запросов)
+    _payloads: list[dict] = []
+    _inv_ids: set[int] = set()
     for t in unconfirmed[:15]:
-        tid = int(t["id"])
-        payload = {}
+        p = {}
         if t.get("payload_json"):
             try:
-                payload = (
-                    json.loads(t["payload_json"])
-                    if isinstance(t["payload_json"], str)
-                    else t["payload_json"]
-                )
+                p = json.loads(t["payload_json"]) if isinstance(t["payload_json"], str) else t["payload_json"]
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
+        _payloads.append(p)
+        iid = p.get("invoice_id")
+        if iid:
+            _inv_ids.add(int(iid))
+
+    # Один запрос на все счета
+    _inv_cache: dict[int, dict] = {}
+    for iid in _inv_ids:
+        inv_row = await db.get_invoice(iid)
+        if inv_row:
+            _inv_cache[iid] = inv_row
+
+    for idx, t in enumerate(unconfirmed[:15]):
+        tid = int(t["id"])
+        payload = _payloads[idx]
         inv_num = payload.get("invoice_number", "")
         inv_id = payload.get("invoice_id")
         req_text = str(payload.get("request_text") or payload.get("comment") or "")[:100]
@@ -91,25 +105,23 @@ async def acc_inbox_tasks(message: Message, db: Database) -> None:
         text = f"📋 <b>Задача #{tid}</b>\n"
         if inv_num:
             text += f"📄 Счёт: <b>{inv_num}</b>\n"
-        # Загрузить данные счёта для расширенной карточки
-        if inv_id:
-            _inv = await db.get_invoice(int(inv_id))
-            if _inv:
-                mgr = _inv.get("creator_role") or ""
-                text += f"👤 Менеджер: {mgr}\n"
-                rd = (_inv.get("receipt_date") or "")[:10]
-                dd = _inv.get("deadline_days") or ""
-                if rd:
-                    text += f"📅 Сроки: {rd}"
-                    if dd:
-                        text += f" ({dd} дн.)"
-                    text += "\n"
-                amt = float(_inv.get("amount") or 0)
-                debt = float(_inv.get("outstanding_debt") or 0)
-                text += f"💰 Сумма: {amt:,.0f}₽ | Долг: {debt:,.0f}₽\n"
-                edo = _inv.get("edo_signed")
-                if edo:
-                    text += f"📝 ЭДО: подписан\n"
+        # Данные счёта из кеша
+        if inv_id and int(inv_id) in _inv_cache:
+            _inv = _inv_cache[int(inv_id)]
+            mgr = _inv.get("creator_role") or ""
+            text += f"👤 Менеджер: {mgr}\n"
+            rd = (_inv.get("receipt_date") or "")[:10]
+            dd = _inv.get("deadline_days") or ""
+            if rd:
+                text += f"📅 Сроки: {rd}"
+                if dd:
+                    text += f" ({dd} дн.)"
+                text += "\n"
+            amt = float(_inv.get("amount") or 0)
+            debt = float(_inv.get("outstanding_debt") or 0)
+            text += f"💰 Сумма: {amt:,.0f}₽ | Долг: {debt:,.0f}₽\n"
+            if _inv.get("edo_signed"):
+                text += f"📝 ЭДО: подписан\n"
         text += f"💬 {req_text}\n" if req_text else ""
         text += f"📅 {(t.get('created_at') or '-')[:10]}"
 

@@ -13,7 +13,7 @@ from ..callbacks import TaskCb
 from ..config import Config
 from ..db import Database
 from ..enums import InvoiceStatus, ProjectStatus, Role, TaskStatus, TaskType
-from ..keyboards import manager_project_actions_kb, task_actions_kb
+from ..keyboards import main_menu, manager_project_actions_kb, task_actions_kb
 from ..services.integration_hub import IntegrationHub
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_context import build_main_menu_for_user

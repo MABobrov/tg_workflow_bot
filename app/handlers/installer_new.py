@@ -2066,7 +2066,7 @@ async def installer_work_confirm(
     # #2: Привязать счёт к монтажнику при «В работу»
     await db.conn.execute(
         "UPDATE invoices SET assigned_to = ?, updated_at = ? WHERE id = ?",
-        (u.id, __import__('datetime').datetime.now().isoformat(), invoice_id),
+        (u.id, datetime.now().isoformat(), invoice_id),
     )
     await db.conn.commit()
 
