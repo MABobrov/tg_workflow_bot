@@ -285,28 +285,30 @@ async def gd_invoices_refresh(cb: CallbackQuery, db: Database) -> None:
 
     n_tasks = len(inv_task_map)
     b = InlineKeyboardBuilder()
+    # #47: Сначала задачи оплаты от РП (приоритет) — синхронизировано с gd_invoices
+    for t in invoice_tasks:
+        payload = try_json_loads(t.get("payload_json") or "{}")
+        inv_num = payload.get("invoice_number") or f"#{t['id']}"
+        label = f"💰 №{inv_num}"
+        b.button(text=label[:60], callback_data=TaskCb(task_id=int(t["id"]), action="open").pack())
+    task_inv_ids = set(inv_task_map.keys())
     for inv in invoices[:20]:
+        if inv["id"] in task_inv_ids:
+            continue
         num = inv.get("invoice_number") or f"#{inv['id']}"
         addr = (inv.get("object_address") or "")[:25]
-        task = inv_task_map.get(inv["id"])
-        if task:
-            label = f"💰 №{num}"
-            if addr:
-                label += f" — {addr}"
-            b.button(text=label[:60], callback_data=TaskCb(task_id=int(task["id"]), action="open").pack())
-        else:
-            status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
-            label = f"{status_icon} №{num}"
-            if addr:
-                label += f" — {addr}"
-            b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
+        status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
+        label = f"{status_icon} №{num}"
+        if addr:
+            label += f" — {addr}"
+        b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
     b.button(text="🔄 Обновить", callback_data="gd_inv:refresh")
     b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     header = f"<b>Счета на Оплату</b> ({len(invoices)})"
     if n_tasks:
-        header += f"\n💰 Запросы на оплату: {n_tasks}"
+        header += f"\n💰 Запросы оплаты от РП: {n_tasks}"
     header += "\n\nНажмите на счёт для просмотра:"
 
     await cb.message.answer(header, reply_markup=b.as_markup())  # type: ignore[union-attr]
@@ -651,7 +653,7 @@ async def gd_zamery_create_task(
     await cb.answer()
     from ..states import GdTaskCreateSG
     await state.clear()
-    await state.set_state(GdTaskCreateSG.text)
+    await state.set_state(GdTaskCreateSG.description)
     await state.update_data(task_channel="zamery", task_type="zamery_request")
     await cb.message.answer(  # type: ignore[union-attr]
         "📋 <b>Задача на замер</b>\n\n"

@@ -224,6 +224,7 @@ async def order_mat_comment(message: Message, state: FSMContext) -> None:
     b = InlineKeyboardBuilder()
     b.button(text="✅ Отправить РП", callback_data="inst_order:create")
     b.button(text="⏭ Без вложений", callback_data="inst_order:create")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
     await message.answer(
         "Шаг 3/3: Прикрепите фото/документы с размерами или нажмите кнопку:",
@@ -382,9 +383,14 @@ async def start_invoice_ok(message: Message, state: FSMContext, db: Database) ->
 
     # #2: Передаём user_id чтобы показывать только счета этого монтажника
     all_invoices = await db.list_installer_confirmed_invoices(user_id=message.from_user.id)
-    # Также загружаем общий список (без user_id) на случай если assigned_to не заполнен
+    # Fallback: если assigned_to не заполнен (старые данные) — показать все
     if not all_invoices:
         all_invoices = await db.list_installer_confirmed_invoices()
+        # Но только те, где assigned_to не заполнен (не принадлежат другому монтажнику)
+        all_invoices = [
+            i for i in all_invoices
+            if not i.get("assigned_to") or int(i.get("assigned_to", 0)) == message.from_user.id
+        ]
     # Счета без actual_completion_date (ещё не завершены), стадии in_work/razmery_ok
     invoices = [
         i for i in all_invoices
@@ -737,6 +743,7 @@ async def razmery_comment(message: Message, state: FSMContext) -> None:
     b = InlineKeyboardBuilder()
     b.button(text="📤 Отправить РП", callback_data="razmok_new:create")
     b.button(text="⏭ Без вложений", callback_data="razmok_new:create")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
     await message.answer(
         "Прикрепите бланк размеров (фото/документ).\n"
@@ -844,7 +851,8 @@ async def razmery_check_view(cb: CallbackQuery, db: Database) -> None:
     b = InlineKeyboardBuilder()
     b.button(text="✅ Размеры ОК", callback_data=f"razmok_inst:ok:{req_id}")
     b.button(text="❌ Ошибка", callback_data=f"razmok_inst:error:{req_id}")
-    b.adjust(2)
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
+    b.adjust(2, 1)
 
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
@@ -897,6 +905,7 @@ async def razmery_result_comment(message: Message, state: FSMContext) -> None:
     b = InlineKeyboardBuilder()
     b.button(text="📤 Отправить", callback_data="razmok_inst:result_send")
     b.button(text="⏭ Без вложений", callback_data="razmok_inst:result_send")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
     await message.answer(
         "Прикрепите файлы (опционально). Когда готовы — нажмите кнопку:",
@@ -1581,6 +1590,7 @@ async def zpadj_comment(message: Message, state: FSMContext) -> None:
 
     b = InlineKeyboardBuilder()
     b.button(text="⏩ Пропустить", callback_data="instzpadj:skip_attach")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
     await message.answer(
         "📎 Приложите фото/видео (можно несколько) или нажмите Пропустить:",
@@ -1622,6 +1632,7 @@ async def zpadj_attachments(message: Message, state: FSMContext) -> None:
 
     b = InlineKeyboardBuilder()
     b.button(text="⏩ Готово", callback_data="instzpadj:skip_attach")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
     await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.", reply_markup=b.as_markup())
 
@@ -1637,6 +1648,7 @@ async def zpadj_to_mode(cb: CallbackQuery, state: FSMContext) -> None:
     b = InlineKeyboardBuilder()
     b.button(text=f"➕ Добавить к расч. ({est_val:,}₽)", callback_data="instzpadj:mode:add")
     b.button(text="🔄 Указать свою сумму", callback_data="instzpadj:mode:replace")
+    b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
     await cb.message.answer(  # type: ignore[union-attr]
         "Выберите как рассчитать сумму ЗП:",
@@ -2051,6 +2063,13 @@ async def installer_work_confirm(
         return
 
     await db.update_montazh_stage(invoice_id, MontazhStage.IN_WORK)
+    # #2: Привязать счёт к монтажнику при «В работу»
+    await db.conn.execute(
+        "UPDATE invoices SET assigned_to = ?, updated_at = ? WHERE id = ?",
+        (u.id, __import__('datetime').datetime.now().isoformat(), invoice_id),
+    )
+    await db.conn.commit()
+
     await integrations.sync_invoice_status(
         inv["invoice_number"], inv.get("status", ""), MontazhStage.IN_WORK,
     )

@@ -513,15 +513,27 @@ async def task_cancel_with_reason(
 
     data = await state.get_data()
     task_id = data.get("cancel_task_id")
-    if not task_id:
+    if not task_id or not isinstance(task_id, int) or task_id <= 0:
         await state.clear()
-        await message.answer("❌ Задача не найдена.")
+        role_now, isolated_role = await _current_menu(db, message.from_user.id)
+        await message.answer(
+            "❌ Задача не найдена.",
+            reply_markup=private_only_reply_markup(
+                message, main_menu(role_now, is_admin=message.from_user.id in (config.admin_ids or set()),
+                                   unread=await db.count_unread_tasks(message.from_user.id), isolated_role=isolated_role)),
+        )
         return
 
     task = await db.get_task(task_id)
     if not task or task.get("status") not in ("open", "in_progress"):
         await state.clear()
-        await message.answer("❌ Задача уже закрыта.")
+        role_now, isolated_role = await _current_menu(db, message.from_user.id)
+        await message.answer(
+            "❌ Задача уже закрыта или обработана.",
+            reply_markup=private_only_reply_markup(
+                message, main_menu(role_now, is_admin=message.from_user.id in (config.admin_ids or set()),
+                                   unread=await db.count_unread_tasks(message.from_user.id), isolated_role=isolated_role)),
+        )
         return
 
     task = await db.update_task_status(
@@ -530,7 +542,13 @@ async def task_cancel_with_reason(
     )
     if task is None:
         await state.clear()
-        await message.answer("❌ Задача уже была обработана.")
+        role_now, isolated_role = await _current_menu(db, message.from_user.id)
+        await message.answer(
+            "❌ Задача уже была обработана другим пользователем.",
+            reply_markup=private_only_reply_markup(
+                message, main_menu(role_now, is_admin=message.from_user.id in (config.admin_ids or set()),
+                                   unread=await db.count_unread_tasks(message.from_user.id), isolated_role=isolated_role)),
+        )
         return
 
     await state.clear()
