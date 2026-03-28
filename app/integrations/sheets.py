@@ -130,12 +130,12 @@ INVOICES_HEADER = [
     "Создан",               # 59
     "Обновлён",             # 60
     # — Статусы жизненного цикла (61-73) —
-    "Лид КВ",              # 61
-    "Лид КИА",             # 62
-    "Лид НПН",             # 63
-    "Счет КВ",             # 64
-    "Счет КИА",            # 65
-    "Счет НПН",            # 66
+    "",                     # 61 — (перенесено в 93-122)
+    "",                     # 62
+    "",                     # 63
+    "",                     # 64
+    "",                     # 65
+    "",                     # 66
     "В работе",            # 67
     "Счет END",            # 68
     "Грузчики факт",       # 69
@@ -509,12 +509,7 @@ class GoogleSheetsService:
             59: format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),
             60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
             # — Статусы жизненного цикла —
-            61: _li.get("kv", ""),            # BJ Лид КВ (дата получения лида)
-            62: _li.get("kia", ""),           # BK Лид КИА
-            63: _li.get("npn", ""),           # BL Лид НПН
-            64: _li.get("inv_kv", ""),        # BM Счет КВ (дата выставления счёта)
-            65: _li.get("inv_kia", ""),       # BN Счет КИА
-            66: _li.get("inv_npn", ""),       # BO Счет НПН
+            # 61-66: перенесено в колонки 93-122 (lead_*/inv_* в invoices)
             67: "Да" if invoice.get("status") == "in_progress" else "", # BP В работе
             68: "Да" if invoice.get("status") == "ended" else "",       # BQ Счет END
             69: self._fmt_amount(invoice.get("loaders_fact_op")),    # BR Грузчики факт ← ОП AP
