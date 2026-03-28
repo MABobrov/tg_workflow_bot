@@ -1417,6 +1417,7 @@ class Database:
               AND status IN ('pending', 'in_progress', 'paid', 'closing')
               AND (is_credit = 0 OR is_credit IS NULL)
               AND parent_invoice_id IS NULL
+              AND (actual_completion_date IS NULL OR TRIM(actual_completion_date) = '')
               AND date(substr(deadline_end_date, 1, 10)) <= date(?)
             ORDER BY date(substr(deadline_end_date, 1, 10)) ASC, updated_at DESC, id DESC
             """,
