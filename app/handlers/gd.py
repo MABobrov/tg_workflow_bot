@@ -187,15 +187,13 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
 
 @router.message(F.text.startswith(GD_BTN_INVOICES))
 async def gd_invoices(message: Message, db: Database, config: Config) -> None:
-    """Show full list of invoices in work with payment-request marks."""
+    """Show only invoice_payment tasks (requests from RP/Manager)."""
     if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
 
     user_id = message.from_user.id  # type: ignore[union-attr]
 
-    invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
-
-    # Pending INVOICE_PAYMENT tasks — to mark invoices
+    # Only show invoice_payment tasks — actual payment requests
     invoice_tasks = await db.list_tasks_for_user(
         assigned_to=user_id,
         statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
@@ -203,55 +201,28 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
         limit=100,
     )
 
-    # Map: invoice_id → task (via payload)
-    inv_task_map: dict[int, dict] = {}
-    for t in invoice_tasks:
-        payload = try_json_loads(t.get("payload_json") or "{}")
-        linked_inv = payload.get("invoice_id") or payload.get("parent_invoice_id")
-        if linked_inv:
-            try:
-                inv_task_map[int(linked_inv)] = t
-            except (ValueError, TypeError):
-                pass
-
     is_admin = user_id in (config.admin_ids or set())
 
-    if not invoices and not invoice_tasks:
+    if not invoice_tasks:
         await answer_service(
             message,
-            "✅ Нет счетов в работе.",
+            "✅ Нет счетов на оплату.",
             delay_seconds=60,
             reply_markup=private_only_reply_markup(message, main_menu(Role.GD, is_admin=is_admin, unread=await db.count_unread_tasks(user_id), unread_channels=await db.count_unread_by_channel(user_id), gd_inbox_unread=await db.count_gd_inbox_tasks(user_id), gd_invoice_unread=await db.count_gd_invoice_tasks(user_id), gd_invoice_end_unread=await db.count_gd_invoice_end_tasks(user_id), gd_supplier_pay_unread=await db.count_gd_supplier_pay_tasks(user_id))),
         )
         return
 
-    n_tasks = len(inv_task_map)
     b = InlineKeyboardBuilder()
-    # #47/49: Сначала задачи оплаты от РП (приоритет)
     for t in invoice_tasks:
         payload = try_json_loads(t.get("payload_json") or "{}")
         inv_num = payload.get("invoice_number") or f"#{t['id']}"
         label = f"💰 №{inv_num}"
         b.button(text=label[:60], callback_data=TaskCb(task_id=int(t["id"]), action="open").pack())
-    # Затем счета в работе (без дублирования задач)
-    task_inv_ids = set(inv_task_map.keys())
-    for inv in invoices[:20]:
-        if inv["id"] in task_inv_ids:
-            continue
-        num = inv.get("invoice_number") or f"#{inv['id']}"
-        addr = (inv.get("object_address") or "")[:25]
-        status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
-        label = f"{status_icon} №{num}"
-        if addr:
-            label += f" — {addr}"
-        b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
     b.button(text="🔄 Обновить", callback_data="gd_inv:refresh")
     b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
-    header = f"<b>Счета на Оплату</b> ({len(invoices)})"
-    if n_tasks:
-        header += f"\n💰 Запросы оплаты от РП: {n_tasks}"
+    header = f"<b>Счета на Оплату</b> ({len(invoice_tasks)})"
     header += "\n\nНажмите на счёт для просмотра:"
 
     await message.answer(header, reply_markup=b.as_markup())
@@ -265,7 +236,6 @@ async def gd_invoices_refresh(cb: CallbackQuery, db: Database) -> None:
     await cb.answer("🔄 Обновлено")
 
     user_id = cb.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
 
     invoice_tasks = await db.list_tasks_for_user(
         assigned_to=user_id,
@@ -273,43 +243,22 @@ async def gd_invoices_refresh(cb: CallbackQuery, db: Database) -> None:
         type_filter=TaskType.INVOICE_PAYMENT,
         limit=100,
     )
-    inv_task_map: dict[int, dict] = {}
-    for t in invoice_tasks:
-        payload = try_json_loads(t.get("payload_json") or "{}")
-        linked_inv = payload.get("invoice_id") or payload.get("parent_invoice_id")
-        if linked_inv:
-            try:
-                inv_task_map[int(linked_inv)] = t
-            except (ValueError, TypeError):
-                pass
 
-    n_tasks = len(inv_task_map)
     b = InlineKeyboardBuilder()
-    # #47: Сначала задачи оплаты от РП (приоритет) — синхронизировано с gd_invoices
     for t in invoice_tasks:
         payload = try_json_loads(t.get("payload_json") or "{}")
         inv_num = payload.get("invoice_number") or f"#{t['id']}"
         label = f"💰 №{inv_num}"
         b.button(text=label[:60], callback_data=TaskCb(task_id=int(t["id"]), action="open").pack())
-    task_inv_ids = set(inv_task_map.keys())
-    for inv in invoices[:20]:
-        if inv["id"] in task_inv_ids:
-            continue
-        num = inv.get("invoice_number") or f"#{inv['id']}"
-        addr = (inv.get("object_address") or "")[:25]
-        status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
-        label = f"{status_icon} №{num}"
-        if addr:
-            label += f" — {addr}"
-        b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
     b.button(text="🔄 Обновить", callback_data="gd_inv:refresh")
     b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
-    header = f"<b>Счета на Оплату</b> ({len(invoices)})"
-    if n_tasks:
-        header += f"\n💰 Запросы оплаты от РП: {n_tasks}"
-    header += "\n\nНажмите на счёт для просмотра:"
+    if not invoice_tasks:
+        header = "✅ Нет счетов на оплату."
+    else:
+        header = f"<b>Счета на Оплату</b> ({len(invoice_tasks)})"
+        header += "\n\nНажмите на счёт для просмотра:"
 
     await cb.message.answer(header, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
