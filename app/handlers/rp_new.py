@@ -1140,7 +1140,9 @@ async def _show_invoices_work_dashboard(
     db: Database,
 ) -> None:
     """Общий хелпер: показать дашборд «Счета в Работе»."""
-    invoices = await db.list_invoices_in_work(limit=50)
+    all_invoices = await db.list_invoices_in_work(limit=50)
+    # RP sees only pending + in_progress (not paid — those are done)
+    invoices = [inv for inv in all_invoices if inv.get("status") != "paid"]
 
     if not invoices:
         b = InlineKeyboardBuilder()
