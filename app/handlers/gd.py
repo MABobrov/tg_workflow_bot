@@ -1042,13 +1042,21 @@ async def _build_summary(db: Database) -> tuple[str, "InlineKeyboardBuilder"]:
         "<b>💵 Финансы (активные счета):</b>",
         f"  Сумма: <b>{total_amt:,.0f}₽</b>".replace(",", " "),
         f"  Долг: <b>{total_debt:,.0f}₽</b>".replace(",", " "),
-        "",
-        "<b>📋 Открытые задачи:</b>",
-        f"  🚨 Срочные/Не срочные ГД: {urgent}",
-        f"  💳 Счета на оплату: {inv_pay}",
-        f"  💸 Оплата поставщику: {suppl_pay}",
-        f"  💰 ЗП-запросы: {s['zp_pending']}",
     ]
+
+    # Секция «Открытые задачи» — только если есть хоть одна
+    total_tasks = urgent + inv_pay + suppl_pay + s["zp_pending"]
+    if total_tasks:
+        lines.append("")
+        lines.append("<b>📋 Открытые задачи:</b>")
+        if urgent:
+            lines.append(f"  🚨 Срочные/Не срочные ГД: {urgent}")
+        if inv_pay:
+            lines.append(f"  💳 Счета на оплату: {inv_pay}")
+        if suppl_pay:
+            lines.append(f"  💸 Оплата поставщику: {suppl_pay}")
+        if s["zp_pending"]:
+            lines.append(f"  💰 ЗП-запросы: {s['zp_pending']}")
 
     if overdue or today_dl or soon_dl:
         lines.append("")
