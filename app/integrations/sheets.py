@@ -167,6 +167,37 @@ INVOICES_HEADER = [
     "РП 10% ОП",            # 90 — T: РП - 10% из ОП
     "Прибыль расч ОП",      # 91 — U: Прибыль расчётная из ОП
     "Рент-ть факт ОП",      # 92 — W: Рентабельность факт из ОП
+    # — Лид/Счёт по менеджерам (93-122) —
+    "Лид КВ №",             # 93
+    "Лид КВ Имя",           # 94
+    "Лид КВ Телефон",       # 95
+    "Лид КВ Город",         # 96
+    "Лид КВ Дата",          # 97
+    "Лид КИА №",            # 98
+    "Лид КИА Имя",          # 99
+    "Лид КИА Телефон",      # 100
+    "Лид КИА Город",        # 101
+    "Лид КИА Дата",         # 102
+    "Лид НПН №",            # 103
+    "Лид НПН Имя",          # 104
+    "Лид НПН Телефон",      # 105
+    "Лид НПН Город",        # 106
+    "Лид НПН Дата",         # 107
+    "Счёт КВ №",            # 108
+    "Счёт КВ Имя",          # 109
+    "Счёт КВ Телефон",      # 110
+    "Счёт КВ Город",        # 111
+    "Счёт КВ Дата",         # 112
+    "Счёт КИА №",           # 113
+    "Счёт КИА Имя",         # 114
+    "Счёт КИА Телефон",     # 115
+    "Счёт КИА Город",       # 116
+    "Счёт КИА Дата",        # 117
+    "Счёт НПН №",           # 118
+    "Счёт НПН Имя",         # 119
+    "Счёт НПН Телефон",     # 120
+    "Счёт НПН Город",       # 121
+    "Счёт НПН Дата",        # 122
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -507,6 +538,37 @@ class GoogleSheetsService:
             90: self._fmt_amount(invoice.get("rp_10_pct_op")),           # РП 10% ОП (T)
             91: self._fmt_amount(invoice.get("profit_calc_op")),         # Прибыль расч ОП (U)
             92: self._fmt_amount(invoice.get("rentability_fact_op")),    # Рент-ть факт ОП (W)
+            # — Лид/Счёт по менеджерам —
+            93: invoice.get("lead_kv_num", ""),
+            94: invoice.get("lead_kv_name", ""),
+            95: invoice.get("lead_kv_phone", ""),
+            96: invoice.get("lead_kv_city", ""),
+            97: invoice.get("lead_kv_date", ""),
+            98: invoice.get("lead_kia_num", ""),
+            99: invoice.get("lead_kia_name", ""),
+            100: invoice.get("lead_kia_phone", ""),
+            101: invoice.get("lead_kia_city", ""),
+            102: invoice.get("lead_kia_date", ""),
+            103: invoice.get("lead_npn_num", ""),
+            104: invoice.get("lead_npn_name", ""),
+            105: invoice.get("lead_npn_phone", ""),
+            106: invoice.get("lead_npn_city", ""),
+            107: invoice.get("lead_npn_date", ""),
+            108: invoice.get("inv_kv_num", ""),
+            109: invoice.get("inv_kv_name", ""),
+            110: invoice.get("inv_kv_phone", ""),
+            111: invoice.get("inv_kv_city", ""),
+            112: invoice.get("inv_kv_date", ""),
+            113: invoice.get("inv_kia_num", ""),
+            114: invoice.get("inv_kia_name", ""),
+            115: invoice.get("inv_kia_phone", ""),
+            116: invoice.get("inv_kia_city", ""),
+            117: invoice.get("inv_kia_date", ""),
+            118: invoice.get("inv_npn_num", ""),
+            119: invoice.get("inv_npn_name", ""),
+            120: invoice.get("inv_npn_phone", ""),
+            121: invoice.get("inv_npn_city", ""),
+            122: invoice.get("inv_npn_date", ""),
         }
 
         # Кредит входящий (80-81): is_credit=1 — единственный источник правды

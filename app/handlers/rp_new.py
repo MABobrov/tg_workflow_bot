@@ -2721,6 +2721,28 @@ async def lead_finalize(
         project_id=project_id,
     )
 
+    # Создать invoice для экспорта лида в Google Sheet
+    from ..utils import utcnow
+    role_suffix = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}.get(manager_role, "npn")
+    now_date = utcnow().strftime("%Y-%m-%d")
+
+    invoice_id = await db.create_invoice(
+        invoice_number=f"LEAD-{lead_id}",
+        project_id=project_id,
+        created_by=u.id,
+        creator_role="rp",
+        client_name=lead_name,
+        description=f"{lead_name}, {lead_phone}, {lead_city}",
+    )
+    await db.update_invoice(invoice_id, **{
+        f"lead_{role_suffix}_num": str(lead_id),
+        f"lead_{role_suffix}_name": lead_name,
+        f"lead_{role_suffix}_phone": lead_phone,
+        f"lead_{role_suffix}_city": lead_city,
+        f"lead_{role_suffix}_date": now_date,
+    })
+    await db.link_lead_tracking(lead_id, invoice_id=invoice_id)
+
     task = await db.create_task(
         project_id=project_id,
         type_=TaskType.LEAD_TO_PROJECT,

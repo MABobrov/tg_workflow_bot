@@ -500,6 +500,37 @@ class Database:
             ("invoices", "profit_fact_op", "REAL"),           # AZ: Прибыль факт (по счёту)
             # --- Подтверждение оплаты ГД ---
             ("invoices", "payment_confirm_status", "TEXT DEFAULT ''"),
+            # --- Лид/Счёт по менеджерам (данные из flow лида) ---
+            ("invoices", "lead_kv_num", "TEXT"),
+            ("invoices", "lead_kv_name", "TEXT"),
+            ("invoices", "lead_kv_phone", "TEXT"),
+            ("invoices", "lead_kv_city", "TEXT"),
+            ("invoices", "lead_kv_date", "TEXT"),
+            ("invoices", "lead_kia_num", "TEXT"),
+            ("invoices", "lead_kia_name", "TEXT"),
+            ("invoices", "lead_kia_phone", "TEXT"),
+            ("invoices", "lead_kia_city", "TEXT"),
+            ("invoices", "lead_kia_date", "TEXT"),
+            ("invoices", "lead_npn_num", "TEXT"),
+            ("invoices", "lead_npn_name", "TEXT"),
+            ("invoices", "lead_npn_phone", "TEXT"),
+            ("invoices", "lead_npn_city", "TEXT"),
+            ("invoices", "lead_npn_date", "TEXT"),
+            ("invoices", "inv_kv_num", "TEXT"),
+            ("invoices", "inv_kv_name", "TEXT"),
+            ("invoices", "inv_kv_phone", "TEXT"),
+            ("invoices", "inv_kv_city", "TEXT"),
+            ("invoices", "inv_kv_date", "TEXT"),
+            ("invoices", "inv_kia_num", "TEXT"),
+            ("invoices", "inv_kia_name", "TEXT"),
+            ("invoices", "inv_kia_phone", "TEXT"),
+            ("invoices", "inv_kia_city", "TEXT"),
+            ("invoices", "inv_kia_date", "TEXT"),
+            ("invoices", "inv_npn_num", "TEXT"),
+            ("invoices", "inv_npn_name", "TEXT"),
+            ("invoices", "inv_npn_phone", "TEXT"),
+            ("invoices", "inv_npn_city", "TEXT"),
+            ("invoices", "inv_npn_date", "TEXT"),
             # --- Lead lifecycle: статус лида + привязка к счёту ---
             ("lead_tracking", "status", "TEXT DEFAULT 'lead'"),
             ("lead_tracking", "invoice_id", "INTEGER"),
@@ -3400,12 +3431,15 @@ class Database:
         *,
         task_id: int | None = None,
         project_id: int | None = None,
+        invoice_id: int | None = None,
     ) -> None:
         fields: dict[str, Any] = {}
         if task_id is not None:
             fields["task_id"] = task_id
         if project_id is not None:
             fields["project_id"] = project_id
+        if invoice_id is not None:
+            fields["invoice_id"] = invoice_id
         if not fields:
             return
 
