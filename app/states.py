@@ -497,3 +497,8 @@ class AccRequestToManagerSG(StatesGroup):
     """Бухгалтерия: запрос/задача менеджеру счёта."""
     text = State()               # текст запроса
     attachments = State()        # вложения
+
+
+class TaskCancelReasonSG(StatesGroup):
+    """#33: Отмена задачи с причиной (после подтверждения получателем)."""
+    reason = State()             # текст причины

@@ -600,13 +600,27 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
 
             await acc_inbox_tasks(message, db)
             return
-    tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)
+    uid = message.from_user.id
+    tasks = await db.list_tasks_for_user(uid, limit=30)
+    # #35: Для менеджеров — показываем и исходящие (созданные) задачи
+    created = await db.list_tasks_created_by(uid, statuses=("open", "in_progress"), limit=15)
+    # Дедупликация
+    seen: set[int] = {int(t["id"]) for t in tasks}
+    for ct in created:
+        if int(ct["id"]) not in seen:
+            tasks.append(ct)
+            seen.add(int(ct["id"]))
     if not tasks:
-        await answer_service(message, "📥 Входящих задач нет ✅", delay_seconds=60)
+        await answer_service(message, "📥 Задач нет ✅", delay_seconds=60)
         return
+    incoming_count = sum(1 for t in tasks if int(t.get("assigned_to") or 0) == uid)
+    outgoing_count = len(tasks) - incoming_count
+    header = f"📥 <b>Задачи</b> ({len(tasks)})"
+    if outgoing_count:
+        header += f"\n📤 Исходящие: {outgoing_count} | 📥 Входящие: {incoming_count}"
+    header += "\n\nНажмите на задачу для просмотра:"
     await message.answer(
-        f"📥 <b>Входящие задачи</b> ({len(tasks)}):\n\n"
-        "Нажмите на задачу для просмотра:",
+        header,
         reply_markup=tasks_kb(tasks, back_callback="nav:home"),
     )
 

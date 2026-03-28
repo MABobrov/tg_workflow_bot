@@ -49,6 +49,8 @@ from ..keyboards import (
     RP_BTN_INVOICES_WORK,
     RP_BTN_ISSUE,
     RP_BTN_LEAD,
+    RP_BTN_SEARCH_INVOICE,
+    RP_BTN_SYNC,
     RP_BTN_MGR_KIA,
     RP_BTN_MGR_KV,
     RP_BTN_MONTAZH,
@@ -1748,6 +1750,8 @@ def _edo_requests_list_kb(
             text += f" №{inv_num}"
         b.button(text=text[:60], callback_data=f"rp_edo:view:{r['id']}")
     b.button(text="➕ Новый запрос ЭДО", callback_data="rp_edo:create")
+    # #40: Кнопки «Подписать УПД» для счетов в работе (если переданы)
+    b.button(text="📝 Подписать УПД", callback_data="rp_edo:upd_list")
     b.button(text="🔄 Обновить", callback_data="rp_edo:refresh")
     b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
@@ -1763,8 +1767,15 @@ async def _show_edo_dashboard(
     requests = await db.list_edo_requests(requested_by=user_id, limit=30)
     counts = await db.count_edo_requests_by_user(user_id)
 
+    # #40: Счета в работе для подписания УПД
+    work_invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+
     if not requests:
         b = InlineKeyboardBuilder()
+        # #40: Кнопки «Подписать УПД» для каждого счёта в работе
+        for wi in work_invoices[:10]:
+            wi_num = wi.get("invoice_number") or f"#{wi['id']}"
+            b.button(text=f"📝 УПД: №{wi_num}"[:50], callback_data=f"rp_edo:upd:{wi['id']}")
         b.button(text="➕ Новый запрос ЭДО", callback_data="rp_edo:create")
         b.adjust(1)
         text = (
@@ -1833,6 +1844,84 @@ async def rp_edo_refresh(cb: CallbackQuery, state: FSMContext, db: Database) -> 
     if not u:
         return
     await _show_edo_dashboard(cb, db, u.id)
+
+
+# #40: Список счетов для подписания УПД
+@router.callback_query(F.data == "rp_edo:upd_list")
+async def rp_edo_upd_list(cb: CallbackQuery, db: Database) -> None:
+    """Показать счета в работе для подписания УПД."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+    if not invoices:
+        await cb.message.answer("✅ Нет счетов в работе.")  # type: ignore[union-attr]
+        return
+    b = InlineKeyboardBuilder()
+    for inv in invoices[:10]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:20]
+        label = f"📝 №{num}"
+        if addr:
+            label += f" — {addr}"
+        b.button(text=label[:50], callback_data=f"rp_edo:upd:{inv['id']}")
+    b.button(text="⬅️ Назад", callback_data="rp_edo:refresh")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📝 <b>Подписать УПД</b>\n\nВыберите счёт:",
+        reply_markup=b.as_markup(),
+    )
+
+
+# #40: Создать задачу «Подписать УПД» для бухгалтера
+@router.callback_query(F.data.regexp(r"^rp_edo:upd:\d+$"))
+async def rp_edo_upd_create(
+    cb: CallbackQuery, db: Database, config: Config, notifier: "Notifier",
+) -> None:
+    """Создать задачу на подписание УПД для бухгалтера."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    from ..services.assignment import resolve_default_assignee
+    acc_id = await resolve_default_assignee(db, config, Role.ACCOUNTING)
+    if not acc_id:
+        await cb.message.answer("❌ Бухгалтер не назначен.")  # type: ignore[union-attr]
+        return
+
+    await db.create_task(
+        project_id=None,
+        type_=TaskType.EDO_REQUEST,
+        status=TaskStatus.OPEN,
+        created_by=cb.from_user.id,
+        assigned_to=int(acc_id),
+        due_at_iso=None,
+        payload={
+            "invoice_id": inv_id,
+            "invoice_number": inv["invoice_number"],
+            "request_type": "sign_upd",
+            "request_text": f"Подписать УПД по счёту №{inv['invoice_number']}",
+        },
+    )
+
+    from .common import get_initiator_label, refresh_recipient_keyboard
+    initiator = await get_initiator_label(db, cb.from_user.id)
+    msg = (
+        f"📝 <b>Запрос: Подписать УПД</b>\n"
+        f"👤 От: {initiator}\n"
+        f"📄 Счёт: №{inv['invoice_number']}\n"
+    )
+    await notifier.safe_send(int(acc_id), msg)
+    await refresh_recipient_keyboard(notifier, db, config, int(acc_id))
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Задача «Подписать УПД» по счёту №{inv['invoice_number']} отправлена бухгалтеру.",
+    )
 
 
 @router.callback_query(F.data.regexp(r"^rp_edo:view:\d+$"))
@@ -2116,6 +2205,38 @@ async def rp_invoice_closed_search(cb: CallbackQuery, state: FSMContext, db: Dat
         "🔍 <b>Поиск счёта</b>\n\n"
         "Введите номер счёта или адрес для поиска:",
     )
+
+
+# =====================================================================
+# ПОИСК СЧЁТА (кнопка подменю «Ещё») — #44
+# =====================================================================
+
+@router.message(lambda m: (m.text or "").strip() in {RP_BTN_SEARCH_INVOICE, "🔍 Поиск счёта", "Поиск счёта"})
+async def rp_search_invoice_btn(message: Message, state: FSMContext, db: Database) -> None:
+    """#44: Хендлер кнопки «Поиск счёта» в подменю РП."""
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    from ..states import InvoiceSearchSG
+    await state.clear()
+    await state.set_state(InvoiceSearchSG.value)
+    await message.answer(
+        "🔍 <b>Поиск счёта</b>\n\n"
+        "Введите номер счёта или адрес для поиска:",
+    )
+
+
+# =====================================================================
+# СИНХРОНИЗАЦИЯ (кнопка подменю «Ещё»)
+# =====================================================================
+
+@router.message(lambda m: (m.text or "").strip() in {RP_BTN_SYNC, "🔄 Синхронизация данных"})
+async def rp_sync_data(message: Message, db: Database, config: Config) -> None:
+    """Хендлер кнопки «Синхронизация данных» в подменю РП."""
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    # Делегируем в общий обработчик синхронизации
+    from .common import sync_data_non_gd
+    await sync_data_non_gd(message, db, config)
 
 
 # =====================================================================

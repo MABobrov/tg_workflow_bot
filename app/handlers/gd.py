@@ -227,28 +227,31 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
 
     n_tasks = len(inv_task_map)
     b = InlineKeyboardBuilder()
+    # #47/49: Сначала задачи оплаты от РП (приоритет)
+    for t in invoice_tasks:
+        payload = try_json_loads(t.get("payload_json") or "{}")
+        inv_num = payload.get("invoice_number") or f"#{t['id']}"
+        label = f"💰 №{inv_num}"
+        b.button(text=label[:60], callback_data=TaskCb(task_id=int(t["id"]), action="open").pack())
+    # Затем счета в работе (без дублирования задач)
+    task_inv_ids = set(inv_task_map.keys())
     for inv in invoices[:20]:
+        if inv["id"] in task_inv_ids:
+            continue
         num = inv.get("invoice_number") or f"#{inv['id']}"
         addr = (inv.get("object_address") or "")[:25]
-        task = inv_task_map.get(inv["id"])
-        if task:
-            label = f"💰 №{num}"
-            if addr:
-                label += f" — {addr}"
-            b.button(text=label[:60], callback_data=TaskCb(task_id=int(task["id"]), action="open").pack())
-        else:
-            status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
-            label = f"{status_icon} №{num}"
-            if addr:
-                label += f" — {addr}"
-            b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
+        status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
+        label = f"{status_icon} №{num}"
+        if addr:
+            label += f" — {addr}"
+        b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
     b.button(text="🔄 Обновить", callback_data="gd_inv:refresh")
     b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
 
     header = f"<b>Счета на Оплату</b> ({len(invoices)})"
     if n_tasks:
-        header += f"\n💰 Запросы на оплату: {n_tasks}"
+        header += f"\n💰 Запросы оплаты от РП: {n_tasks}"
     header += "\n\nНажмите на счёт для просмотра:"
 
     await message.answer(header, reply_markup=b.as_markup())
@@ -616,9 +619,44 @@ async def gd_chat_invoice_picked(cb: CallbackQuery, state: FSMContext, db: Datab
 
 @router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_ZAMERY))
 async def gd_chat_zamery(message: Message, state: FSMContext, db: Database) -> None:
+    """#59: ГД Замеры — подменю: чат + создание задачи."""
     if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
-    await enter_chat_menu(message, state, channel="zamery")
+    b = InlineKeyboardBuilder()
+    b.button(text="💬 Чат с замерщиками", callback_data="gd_zamery:chat")
+    b.button(text="📋 Создать задачу на замер", callback_data="gd_zamery:create_task")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
+    b.adjust(1)
+    await message.answer(
+        "📐 <b>Замеры</b>\n\nВыберите действие:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "gd_zamery:chat")
+async def gd_zamery_chat(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    await cb.answer()
+    await enter_chat_menu(cb.message, state, channel="zamery")  # type: ignore[arg-type]
+
+
+@router.callback_query(F.data == "gd_zamery:create_task")
+async def gd_zamery_create_task(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """#59: Начать создание задачи на замер от ГД."""
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    await cb.answer()
+    from ..states import GdTaskCreateSG
+    await state.clear()
+    await state.set_state(GdTaskCreateSG.text)
+    await state.update_data(task_channel="zamery", task_type="zamery_request")
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📋 <b>Задача на замер</b>\n\n"
+        "Опишите задачу (адрес, дата/время, контакт клиента):",
+    )
 
 
 @router.message(lambda m: (m.text or "").strip().startswith(GD_BTN_ACCOUNTING))

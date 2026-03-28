@@ -84,10 +84,32 @@ async def acc_inbox_tasks(message: Message, db: Database) -> None:
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
         inv_num = payload.get("invoice_number", "")
+        inv_id = payload.get("invoice_id")
         req_text = str(payload.get("request_text") or payload.get("comment") or "")[:100]
+
+        # #13: Структурированная карточка с суммой и долгом на одной строке
         text = f"📋 <b>Задача #{tid}</b>\n"
         if inv_num:
-            text += f"📄 Счёт: {inv_num}\n"
+            text += f"📄 Счёт: <b>{inv_num}</b>\n"
+        # Загрузить данные счёта для расширенной карточки
+        if inv_id:
+            _inv = await db.get_invoice(int(inv_id))
+            if _inv:
+                mgr = _inv.get("creator_role") or ""
+                text += f"👤 Менеджер: {mgr}\n"
+                rd = (_inv.get("receipt_date") or "")[:10]
+                dd = _inv.get("deadline_days") or ""
+                if rd:
+                    text += f"📅 Сроки: {rd}"
+                    if dd:
+                        text += f" ({dd} дн.)"
+                    text += "\n"
+                amt = float(_inv.get("amount") or 0)
+                debt = float(_inv.get("outstanding_debt") or 0)
+                text += f"💰 Сумма: {amt:,.0f}₽ | Долг: {debt:,.0f}₽\n"
+                edo = _inv.get("edo_signed")
+                if edo:
+                    text += f"📝 ЭДО: подписан\n"
         text += f"💬 {req_text}\n" if req_text else ""
         text += f"📅 {(t.get('created_at') or '-')[:10]}"
 

@@ -373,6 +373,13 @@ async def handle_writing(
             "file_unique_id": ph.file_unique_id,
         }
         has_attach = True
+    elif message.video:
+        file_info = {
+            "file_type": "video",
+            "file_id": message.video.file_id,
+            "file_unique_id": message.video.file_unique_id,
+        }
+        has_attach = True
 
     if not text and not file_info:
         await message.answer("Введите текст или прикрепите файл.")
@@ -906,8 +913,15 @@ async def gd_task_create_attach(message: Message, state: FSMContext) -> None:
             "file_unique_id": ph.file_unique_id,
             "caption": message.caption,
         })
+    elif message.video:
+        attachments.append({
+            "file_type": "video",
+            "file_id": message.video.file_id,
+            "file_unique_id": message.video.file_unique_id,
+            "caption": message.caption,
+        })
     else:
-        await message.answer("Прикрепите файл/фото или нажмите кнопку.")
+        await message.answer("Прикрепите файл/фото/видео или нажмите кнопку.")
         return
 
     await state.update_data(task_attachments=attachments)
@@ -1095,6 +1109,8 @@ async def reply_to_gd_send(
     elif message.photo:
         ph = message.photo[-1]
         file_info = {"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id}
+    elif message.video:
+        file_info = {"file_type": "video", "file_id": message.video.file_id, "file_unique_id": message.video.file_unique_id}
 
     if not text and not file_info:
         await message.answer("Введите текст или прикрепите файл.")

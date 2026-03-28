@@ -227,7 +227,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
             [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
-            [GD_BTN_ZAMERY, GD_BTN_SEARCH_INVOICE],
+            [GD_BTN_SEARCH_INVOICE, GD_BTN_ZAMERY],
             [GD_BTN_CANCEL, GD_BTN_MORE],
         ]
     if role == Role.DRIVER:

@@ -19,7 +19,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.menu_context import build_main_menu_for_user
 from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import DeliveryPaymentSG, InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCompleteSG
+from ..states import DeliveryPaymentSG, InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCancelReasonSG, TaskCompleteSG
 from ..utils import answer_service, fmt_task_card, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
 
 log = logging.getLogger(__name__)
@@ -405,6 +405,17 @@ async def task_actions(
         if not (is_creator or is_assigned or is_admin):
             await cb.answer("Снять задачу может только автор, исполнитель или администратор.", show_alert=True)
             return
+        # #33/#48: Если задача уже подтверждена — запросить причину отмены
+        if task.get("accepted_at") and not is_admin:
+            from ..states import TaskCancelReasonSG
+            await state.clear()
+            await state.set_state(TaskCancelReasonSG.reason)
+            await state.update_data(cancel_task_id=task_id)
+            await cb.message.answer(  # type: ignore[union-attr]
+                f"⚠️ Задача #{task_id} уже была подтверждена получателем.\n\n"
+                "Для отмены укажите <b>причину</b>:",
+            )
+            return
         # Atomic update — prevent race condition
         task = await db.update_task_status(
             task_id, TaskStatus.REJECTED,
@@ -483,6 +494,89 @@ async def task_actions(
                 await notifier.safe_send(mgmt_id, cancel_msg_rp_gd)
                 notified_ids.add(mgmt_id)
         return
+
+# #33/#48: Обработка причины отмены задачи (после подтверждения)
+@router.message(TaskCancelReasonSG.reason)
+async def task_cancel_with_reason(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    """Принять причину отмены и отменить задачу."""
+    reason = (message.text or "").strip()
+    if len(reason) < 3:
+        await message.answer("Укажите причину отмены (минимум 3 символа):")
+        return
+
+    data = await state.get_data()
+    task_id = data.get("cancel_task_id")
+    if not task_id:
+        await state.clear()
+        await message.answer("❌ Задача не найдена.")
+        return
+
+    task = await db.get_task(task_id)
+    if not task or task.get("status") not in ("open", "in_progress"):
+        await state.clear()
+        await message.answer("❌ Задача уже закрыта.")
+        return
+
+    task = await db.update_task_status(
+        task_id, TaskStatus.REJECTED,
+        expected_statuses=("open", "in_progress"),
+    )
+    if task is None:
+        await state.clear()
+        await message.answer("❌ Задача уже была обработана.")
+        return
+
+    await state.clear()
+
+    initiator = await get_initiator_label(db, message.from_user.id)
+    task_label = task_type_label(task.get("type") or "")
+    payload = try_json_loads(task.get("payload_json"))
+    inv_num = payload.get("invoice_number", "") if payload else ""
+    cancel_detail = f"📋 {task_label}"
+    if inv_num:
+        cancel_detail += f" | Счёт: {inv_num}"
+
+    cancel_msg = (
+        f"🚫 Задача #{task_id} снята\n"
+        f"{cancel_detail}\n"
+        f"👤 {initiator}\n"
+        f"📝 Причина: {reason}"
+    )
+
+    # Уведомить все стороны
+    user_id = message.from_user.id
+    notified: set[int] = {user_id}
+    for nid_raw in [task.get("assigned_to"), task.get("created_by")]:
+        if nid_raw:
+            try:
+                nid = int(nid_raw)
+                if nid not in notified:
+                    await notifier.safe_send(nid, cancel_msg)
+                    notified.add(nid)
+            except (ValueError, TypeError):
+                pass
+
+    role_now, isolated_role = await _current_menu(db, user_id)
+    await message.answer(
+        f"🚫 Задача #{task_id} снята.\n📝 Причина: {reason}",
+        reply_markup=private_only_reply_markup(
+            message,
+            main_menu(
+                role_now,
+                is_admin=user_id in (config.admin_ids or set()),
+                unread=await db.count_unread_tasks(user_id),
+                isolated_role=isolated_role,
+            ),
+        ),
+    )
+
 
     # PAYMENT CONFIRM actions (TD)
     if action in {"pay_ok", "pay_need"} and task.get("type") == TaskType.PAYMENT_CONFIRM:

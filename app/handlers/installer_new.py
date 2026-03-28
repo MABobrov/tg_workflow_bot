@@ -380,10 +380,14 @@ async def start_invoice_ok(message: Message, state: FSMContext, db: Database) ->
         return
     await state.clear()
 
-    invoices = await db.list_installer_confirmed_invoices()
+    # #2: Передаём user_id чтобы показывать только счета этого монтажника
+    all_invoices = await db.list_installer_confirmed_invoices(user_id=message.from_user.id)
+    # Также загружаем общий список (без user_id) на случай если assigned_to не заполнен
+    if not all_invoices:
+        all_invoices = await db.list_installer_confirmed_invoices()
     # Счета без actual_completion_date (ещё не завершены), стадии in_work/razmery_ok
     invoices = [
-        i for i in invoices
+        i for i in all_invoices
         if i.get("montazh_stage") in ("in_work", "razmery_ok")
         and not i.get("actual_completion_date")
     ]
@@ -396,6 +400,8 @@ async def start_invoice_ok(message: Message, state: FSMContext, db: Database) ->
         card = _build_inst_detail_card(inv)
         kb = InlineKeyboardBuilder()
         kb.button(text="✅ Счёт ОК", callback_data=f"instok:view:{inv['id']}")
+        kb.button(text="⬅️ Назад", callback_data="inst_nav:home")
+        kb.adjust(1)
         await message.answer(card, reply_markup=kb.as_markup())
 
 
@@ -425,9 +431,13 @@ async def invoice_ok_select(
     await state.set_state(InstallerInvoiceOkSG.comment)
 
     await _ensure_reply_kb(cb, db, config)
+    # #3: Inline-кнопка «Назад» на экране комментария
+    back_kb = InlineKeyboardBuilder()
+    back_kb.button(text="⬅️ Назад", callback_data="inst_nav:home")
     await cb.message.answer(  # type: ignore[union-attr]
         f"Счёт №{inv['invoice_number']} — подтверждение выполнения.\n"
-        "Добавьте <b>комментарий</b> (или «—»):"
+        "Добавьте <b>комментарий</b> (или «—»):",
+        reply_markup=back_kb.as_markup(),
     )
 
 
