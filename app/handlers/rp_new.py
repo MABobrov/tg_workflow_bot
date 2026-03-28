@@ -3284,10 +3284,16 @@ async def kp_review_comment(
             upd2[f"inv_{_role_suf2}_num"] = invoice_number
             upd2[f"inv_{_role_suf2}_address"] = payload.get("address", "")
             upd2[f"inv_{_role_suf2}_date"] = _utcnow2().strftime("%Y-%m-%d")
-            # Телефон из lead_phone на самом инвойсе (если был лид)
+            # Телефон из LEAD-инвойса (ищем по project_id)
             _existing = await db.get_invoice(invoice_id)
             if _existing:
                 _ph2 = _existing.get(f"lead_{_role_suf2}_phone") or ""
+                if not _ph2 and _existing.get("project_id"):
+                    _lead_invs2 = await db.list_invoices(project_id=int(_existing["project_id"]))
+                    for _li2 in _lead_invs2:
+                        if str(_li2.get("invoice_number", "")).startswith("LEAD-"):
+                            _ph2 = _li2.get(f"lead_{_role_suf2}_phone") or ""
+                            break
                 if _ph2:
                     upd2[f"inv_{_role_suf2}_phone"] = _ph2
         await db.update_invoice(invoice_id, **upd2)
