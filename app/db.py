@@ -490,6 +490,11 @@ class Database:
             ("zamery_requests", "completed_at", "TEXT"),
             # --- Фактическая стоимость доставки ---
             ("invoices", "actual_logistics", "REAL"),
+            # --- Финансовые данные из ОП (S, T, U, W) ---
+            ("invoices", "profit_tax_op", "REAL"),            # S: Налог на приб.
+            ("invoices", "rp_10_pct_op", "REAL"),             # T: РП - 10%
+            ("invoices", "profit_calc_op", "REAL"),            # U: Прибыль расч
+            ("invoices", "rentability_fact_op", "REAL"),       # W: Рент-ть факт
             # --- Фактическая прибыль из ОП ---
             ("invoices", "profit_fact_credit_op", "REAL"),   # AY: Прибыль факт (кредитные)
             ("invoices", "profit_fact_op", "REAL"),           # AZ: Прибыль факт (по счёту)

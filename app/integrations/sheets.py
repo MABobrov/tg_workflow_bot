@@ -162,6 +162,11 @@ INVOICES_HEADER = [
     # — Прибыль факт из ОП (87-88) —
     "Прибыль факт кред ОП", # 87 — AY: Факт.прибыль кредитных
     "Прибыль факт ОП",      # 88 — AZ: Факт.прибыль по счёту
+    # — Доп. финансовые из ОП (89-92) —
+    "Налог на приб. ОП",    # 89 — S: Налог на прибыль из ОП
+    "РП 10% ОП",            # 90 — T: РП - 10% из ОП
+    "Прибыль расч ОП",      # 91 — U: Прибыль расчётная из ОП
+    "Рент-ть факт ОП",      # 92 — W: Рентабельность факт из ОП
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -497,6 +502,11 @@ class GoogleSheetsService:
             # — Прибыль факт из ОП —
             87: self._fmt_amount(invoice.get("profit_fact_credit_op")),  # Прибыль факт кред ОП (AY)
             88: self._fmt_amount(invoice.get("profit_fact_op")),         # Прибыль факт ОП (AZ)
+            # — Доп. финансовые из ОП —
+            89: self._fmt_amount(invoice.get("profit_tax_op")),          # Налог на приб. ОП (S)
+            90: self._fmt_amount(invoice.get("rp_10_pct_op")),           # РП 10% ОП (T)
+            91: self._fmt_amount(invoice.get("profit_calc_op")),         # Прибыль расч ОП (U)
+            92: self._fmt_amount(invoice.get("rentability_fact_op")),    # Рент-ть факт ОП (W)
         }
 
         # Кредит входящий (80-81): is_credit=1 — единственный источник правды
@@ -889,11 +899,11 @@ class GoogleSheetsService:
         15: "estimated_logistics",     # P: Логистика
         16: "profit_tax",              # Q: Прибыль кред.
         17: "nds_amount",              # R: НДС
-        # 18: Налог на приб. (не импортируем)
-        # 19: РП - 10% (не импортируем)
-        # 20: Прибыль расч (не импортируем)
+        18: "profit_tax_op",            # S: Налог на приб.
+        19: "rp_10_pct_op",             # T: РП - 10%
+        20: "profit_calc_op",           # U: Прибыль расч
         21: "rentability_calc",        # V: Рент-ть расчетная
-        # 22: Рент-ть факт (не импортируем)
+        22: "rentability_fact_op",      # W: Рент-ть факт
         23: "surcharge_amount",        # X: Сумма допл
         24: "surcharge_date",          # Y: Дата допл
         25: "final_surcharge_amount",  # Z: Финальный платеж
