@@ -1093,6 +1093,34 @@ async def rp_chat_gd(message: Message, state: FSMContext, db: Database) -> None:
     )
 
 
+@router.message(ManagerChatProxySG.menu, F.text == "✉️ Сообщение")
+async def rp_chat_gd_write(message: Message, state: FSMContext) -> None:
+    """РП → ГД: ввод сообщения."""
+    from .chat_proxy import enter_writing
+    data = await state.get_data()
+    channel = data.get("channel", "rp_to_gd")
+    await state.set_state(ManagerChatProxySG.writing)
+    await state.update_data(channel=channel, pending_attachments=[])
+    label = "ГД"
+    await message.answer(
+        f"✏️ <b>Написать → {label}</b>\n\n"
+        "Введите текст сообщения.\n"
+        "Можно прикрепить файлы/фото.\n"
+        "Для отмены: /cancel",
+    )
+
+
+@router.message(ManagerChatProxySG.menu, F.text == "📋 Задача")
+async def rp_chat_gd_task(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    """РП → ГД: создать задачу."""
+    from .chat_proxy import show_channel_tasks
+    data = await state.get_data()
+    channel = data.get("channel", "rp_to_gd")
+    u = message.from_user
+    if u:
+        await show_channel_tasks(message, db, config, channel, u.id)
+
+
 # =====================================================================
 # СЧЕТА В РАБОТЕ — дашборд (Этап 6)
 #

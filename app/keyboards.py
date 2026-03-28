@@ -915,8 +915,8 @@ def rp_chat_submenu(back_label: str = "⬅️ Назад") -> ReplyKeyboardMarku
 def rp_chat_gd_submenu(back_label: str = "⬅️ Назад") -> ReplyKeyboardMarkup:
     """Подменю чат-прокси для РП ↔ ГД."""
     rows = [
-        ["📖 Переписка", "✏️ Написать"],
-        ["📋 Задачи", back_label],
+        ["✉️ Сообщение", "📋 Задача"],
+        [back_label],
     ]
     return _build_reply_rows(rows)
 
