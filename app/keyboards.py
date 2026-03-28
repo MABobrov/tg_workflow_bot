@@ -424,8 +424,10 @@ def main_menu(
     rp_ch_mgr_kia: int = 0,
     rp_ch_montazh: int = 0,
 ) -> ReplyKeyboardMarkup:
+    raw_role = role  # preserve original DB order before parse_roles sorting
     parsed_roles = parse_roles(role)
     # Single-role mode: if legacy multi-role data, use first role
+    # BUT keep raw_role for combined rp+npn detection
     if len(parsed_roles) > 1:
         role = parsed_roles[0]
 
@@ -527,9 +529,9 @@ def main_menu(
         return _build_reply_rows(rows)
 
     # Combined RP + NPN — show active role menu with switcher row
-    if _has_rp_npn_combined(role):
+    if _has_rp_npn_combined(raw_role):
         # Use raw role order from DB (not sorted parse_roles) to determine active
-        _raw = [r.strip().lower() for r in (role or "").split(",") if r.strip()]
+        _raw = [r.strip().lower() for r in (raw_role or "").split(",") if r.strip()]
         active = _raw[0] if _raw else Role.RP
         if active == Role.MANAGER_NPN:
             rp_label = _format_role_badge(RP_BTN_ROLE_RP_INACTIVE, rp_tasks, rp_messages)
