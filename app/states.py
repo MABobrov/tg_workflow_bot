@@ -328,7 +328,9 @@ class MyInvoicesSG(StatesGroup):
 class LeadToProjectSG(StatesGroup):
     """РП: Лид в проект — назначение лида менеджеру."""
     pick_manager = State()       # выбор менеджера (КВ / КИА / НПН)
-    description = State()        # описание + источник лида
+    name = State()               # имя клиента
+    phone = State()              # телефон клиента
+    city = State()               # город клиента
     source = State()             # источник лида
     attachments = State()        # вложения
 

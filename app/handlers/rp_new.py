@@ -2514,7 +2514,7 @@ async def lead_create_start(cb: CallbackQuery, state: FSMContext, db: Database) 
     await state.set_state(LeadToProjectSG.pick_manager)
     await cb.message.answer(  # type: ignore[union-attr]
         "🎯 <b>Новый лид</b>\n\n"
-        "Шаг 1/4: Выберите менеджера-получателя:",
+        "Шаг 1/6: Выберите менеджера-получателя:",
         reply_markup=lead_pick_manager_kb(),
     )
 
@@ -2526,22 +2526,44 @@ async def lead_pick_manager(cb: CallbackQuery, state: FSMContext, db: Database) 
     await cb.answer()
     manager_role = cb.data.split(":")[-1]  # type: ignore[union-attr]
     await state.update_data(manager_role=manager_role)
-    await state.set_state(LeadToProjectSG.description)
+    await state.set_state(LeadToProjectSG.name)
     await cb.message.answer(  # type: ignore[union-attr]
-        "Шаг 2/4: Опишите лид (описание + контактная информация):"
+        "Шаг 2/6: Введите <b>имя клиента</b>:"
     )
 
 
-@router.message(LeadToProjectSG.description)
-async def lead_description(message: Message, state: FSMContext) -> None:
+@router.message(LeadToProjectSG.name)
+async def lead_enter_name(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
-    if len(text) < 3:
-        await message.answer("Опишите подробнее:")
+    if len(text) < 2:
+        await message.answer("Введите имя (минимум 2 символа):")
         return
-    await state.update_data(description=text)
+    await state.update_data(name=text)
+    await state.set_state(LeadToProjectSG.phone)
+    await message.answer("Шаг 3/6: Введите <b>телефон</b>:")
+
+
+@router.message(LeadToProjectSG.phone)
+async def lead_enter_phone(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if len(text) < 5:
+        await message.answer("Введите телефон (минимум 5 символов):")
+        return
+    await state.update_data(phone=text)
+    await state.set_state(LeadToProjectSG.city)
+    await message.answer("Шаг 4/6: Введите <b>город</b>:")
+
+
+@router.message(LeadToProjectSG.city)
+async def lead_enter_city(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if len(text) < 2:
+        await message.answer("Введите город (минимум 2 символа):")
+        return
+    await state.update_data(city=text)
     await state.set_state(LeadToProjectSG.source)
     await message.answer(
-        "Шаг 3/4: Выберите <b>источник лида</b>:",
+        "Шаг 5/6: Выберите <b>источник лида</b>:",
         reply_markup=_lead_source_kb(),
     )
 
@@ -2589,7 +2611,7 @@ async def lead_source_pick(cb: CallbackQuery, state: FSMContext, db: Database) -
     b.adjust(1)
     await cb.message.answer(  # type: ignore[union-attr]
         f"📌 Источник: <b>{source_label}</b>\n\n"
-        "Шаг 4/4: Прикрепите файлы/фото или нажмите «Отправить»:",
+        "Шаг 6/6: Прикрепите файлы/фото или нажмите «Отправить»:",
         reply_markup=b.as_markup(),
     )
 
@@ -2609,7 +2631,7 @@ async def lead_source_manual(message: Message, state: FSMContext) -> None:
     b.button(text="⏭ Без вложений", callback_data="lead:create")
     b.adjust(1)
     await message.answer(
-        "Шаг 4/4: Прикрепите файлы/фото или нажмите «Отправить»:",
+        "Шаг 6/6: Прикрепите файлы/фото или нажмите «Отправить»:",
         reply_markup=b.as_markup(),
     )
 
@@ -2657,7 +2679,9 @@ async def lead_finalize(
 
     data = await state.get_data()
     manager_role = data["manager_role"]
-    description = data["description"]
+    lead_name = data["name"]
+    lead_phone = data["phone"]
+    lead_city = data["city"]
     source = data.get("source", "")
     attachments = data.get("attachments", [])
 
@@ -2678,7 +2702,7 @@ async def lead_finalize(
 
     # Create project to link lead → invoice chain
     project = await db.create_project(
-        title=f"Лид: {source[:50] if source else 'б/и'}",
+        title=f"Лид: {lead_name}",
         address=None,
         client=None,
         amount=None,
@@ -2707,7 +2731,9 @@ async def lead_finalize(
         payload={
             "lead_id": lead_id,
             "project_id": project_id,
-            "description": description,
+            "name": lead_name,
+            "phone": lead_phone,
+            "city": lead_city,
             "source": source,
             "manager_role": manager_role,
             "assigned_role": manager_role,
@@ -2734,7 +2760,9 @@ async def lead_finalize(
     msg = (
         f"🎯 <b>Новый лид от РП</b>\n"
         f"👤 От: {initiator}\n\n"
-        f"📝 {description}\n"
+        f"👤 Имя: {lead_name}\n"
+        f"📞 Телефон: {lead_phone}\n"
+        f"🏙 Город: {lead_city}\n"
         f"📌 Источник: {source}\n"
     )
 
