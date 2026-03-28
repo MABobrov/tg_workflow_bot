@@ -3251,6 +3251,14 @@ async def kp_review_comment(
             upd[f"inv_{_role_suf}_num"] = invoice_number
             upd[f"inv_{_role_suf}_address"] = payload.get("address", "")
             upd[f"inv_{_role_suf}_date"] = _utcnow().strftime("%Y-%m-%d")
+            # Копируем телефон из LEAD-инвойса (если есть)
+            _lead_invs = await db.list_invoices(project_id=project_id)
+            for _li in _lead_invs:
+                if str(_li.get("invoice_number", "")).startswith("LEAD-"):
+                    _ph = _li.get(f"lead_{_role_suf}_phone") or ""
+                    if _ph:
+                        upd[f"inv_{_role_suf}_phone"] = _ph
+                    break
         await db.update_invoice(invoice_id, **upd)
 
         # Лид → "счет выставлен" (фиксация менеджера + даты)
@@ -3276,6 +3284,12 @@ async def kp_review_comment(
             upd2[f"inv_{_role_suf2}_num"] = invoice_number
             upd2[f"inv_{_role_suf2}_address"] = payload.get("address", "")
             upd2[f"inv_{_role_suf2}_date"] = _utcnow2().strftime("%Y-%m-%d")
+            # Телефон из lead_phone на самом инвойсе (если был лид)
+            _existing = await db.get_invoice(invoice_id)
+            if _existing:
+                _ph2 = _existing.get(f"lead_{_role_suf2}_phone") or ""
+                if _ph2:
+                    upd2[f"inv_{_role_suf2}_phone"] = _ph2
         await db.update_invoice(invoice_id, **upd2)
 
         # Привязка менеджера к счёту (если нет lead_tracking)
