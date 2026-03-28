@@ -158,15 +158,31 @@ INVOICES_HEADER = [
     "Дата расход кред",    # 83 — дата расхода кредитных средств
     "Кредит назначение",   # 84 — лог назначений расходов
     "Кредит баланс",       # 85 — формула: вход - расход
-    "",                     # 86 — очистка (legacy CI)
-    # — Прибыль факт из ОП (87-88) —
-    "Прибыль факт кред ОП", # 87 — AY: Факт.прибыль кредитных
-    "Прибыль факт ОП",      # 88 — AZ: Факт.прибыль по счёту
-    # — Доп. финансовые из ОП (89-92) —
-    "Налог на приб. ОП",    # 89 — S: Налог на прибыль из ОП
-    "РП 10% ОП",            # 90 — T: РП - 10% из ОП
-    "Прибыль расч ОП",      # 91 — U: Прибыль расчётная из ОП
-    "Рент-ть факт ОП",      # 92 — W: Рентабельность факт из ОП
+    # — Лиды и Счета по менеджерам (86-106) —
+    # КВ (86-92)
+    "Лид КВ №",             # 86
+    "Лид КВ дата",          # 87
+    "Лид КВ имя",           # 88
+    "Лид КВ адрес",         # 89
+    "Счет КВ №",            # 90
+    "Счет КВ адрес",        # 91
+    "Счет КВ дата",         # 92
+    # КИА (93-99)
+    "Лид КИА №",            # 93
+    "Лид КИА дата",         # 94
+    "Лид КИА имя",          # 95
+    "Лид КИА адрес",        # 96
+    "Счет КИА №",           # 97
+    "Счет КИА адрес",       # 98
+    "Счет КИА дата",        # 99
+    # НПН (100-106)
+    "Лид НПН №",            # 100
+    "Лид НПН дата",         # 101
+    "Лид НПН имя",          # 102
+    "Лид НПН адрес",        # 103
+    "Счет НПН №",           # 104
+    "Счет НПН адрес",       # 105
+    "Счет НПН дата",        # 106
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -478,7 +494,7 @@ class GoogleSheetsService:
             59: format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),
             60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
             # — Статусы жизненного цикла —
-            # 61-66: перенесено в колонки 93-122 (lead_*/inv_* в invoices)
+            # 61-66: не используются
             67: "Да" if invoice.get("status") == "in_progress" else "", # BP В работе
             68: "Да" if invoice.get("status") == "ended" else "",       # BQ Счет END
             69: self._fmt_amount(invoice.get("loaders_fact_op")),    # BR Грузчики факт ← ОП AP
@@ -493,16 +509,18 @@ class GoogleSheetsService:
             # 78, 79 заполняются ниже из cost_card
             # — Кредитный учёт —
             85: f"=IF(CC{row}=\"\",\"\",CC{row}-CE{row})",              # CH Кредит баланс
-            86: "",  # очистка старого CI (после удаления столбца CB)
-            # — Прибыль факт из ОП —
-            87: self._fmt_amount(invoice.get("profit_fact_credit_op")),  # Прибыль факт кред ОП (AY)
-            88: self._fmt_amount(invoice.get("profit_fact_op")),         # Прибыль факт ОП (AZ)
-            # — Доп. финансовые из ОП —
-            89: self._fmt_amount(invoice.get("profit_tax_op")),          # Налог на приб. ОП (S)
-            90: self._fmt_amount(invoice.get("rp_10_pct_op")),           # РП 10% ОП (T)
-            91: self._fmt_amount(invoice.get("profit_calc_op")),         # Прибыль расч ОП (U)
-            92: self._fmt_amount(invoice.get("rentability_fact_op")),    # Рент-ть факт ОП (W)
         }
+
+        # — Лиды и Счета по менеджерам (86-106) —
+        for _i, _suf in enumerate(("kv", "kia", "npn")):
+            _base = 86 + _i * 7
+            cells[_base]     = invoice.get(f"lead_{_suf}_num") or ""
+            cells[_base + 1] = self._fmt_sheet_date(invoice.get(f"lead_{_suf}_date"))
+            cells[_base + 2] = invoice.get(f"lead_{_suf}_name") or ""
+            cells[_base + 3] = invoice.get(f"lead_{_suf}_address") or ""
+            cells[_base + 4] = invoice.get(f"inv_{_suf}_num") or ""
+            cells[_base + 5] = invoice.get(f"inv_{_suf}_address") or ""
+            cells[_base + 6] = self._fmt_sheet_date(invoice.get(f"inv_{_suf}_date"))
 
         # Кредит входящий (80-81): is_credit=1 — единственный источник правды
         is_credit = bool(invoice.get("is_credit"))

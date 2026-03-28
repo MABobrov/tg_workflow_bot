@@ -535,6 +535,13 @@ class Database:
             ("lead_tracking", "status", "TEXT DEFAULT 'lead'"),
             ("lead_tracking", "invoice_id", "INTEGER"),
             ("lead_tracking", "invoice_issued_at", "TEXT"),
+            # --- Адрес (вместо city) для лидов/счетов по менеджерам ---
+            ("invoices", "lead_kv_address", "TEXT"),
+            ("invoices", "lead_kia_address", "TEXT"),
+            ("invoices", "lead_npn_address", "TEXT"),
+            ("invoices", "inv_kv_address", "TEXT"),
+            ("invoices", "inv_kia_address", "TEXT"),
+            ("invoices", "inv_npn_address", "TEXT"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -545,6 +552,16 @@ class Database:
             if await _column_exists(table, col):
                 continue
             await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        await self.conn.commit()
+
+        # --- Миграция city → address (однократно) ---
+        for suffix in ("kv", "kia", "npn"):
+            for prefix in ("lead", "inv"):
+                await self.conn.execute(
+                    f"UPDATE invoices SET {prefix}_{suffix}_address = {prefix}_{suffix}_city "
+                    f"WHERE {prefix}_{suffix}_city IS NOT NULL "
+                    f"AND ({prefix}_{suffix}_address IS NULL OR {prefix}_{suffix}_address = '')"
+                )
         await self.conn.commit()
 
         # --- Одноразовая миграция: все активные счета → montazh_stage='in_work' ---

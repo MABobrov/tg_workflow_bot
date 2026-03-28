@@ -2550,17 +2550,17 @@ async def lead_enter_phone(message: Message, state: FSMContext) -> None:
         await message.answer("Введите телефон (минимум 5 символов):")
         return
     await state.update_data(phone=text)
-    await state.set_state(LeadToProjectSG.city)
-    await message.answer("Шаг 4/6: Введите <b>город</b>:")
+    await state.set_state(LeadToProjectSG.address)
+    await message.answer("Шаг 4/6: Введите <b>адрес объекта</b>:")
 
 
-@router.message(LeadToProjectSG.city)
-async def lead_enter_city(message: Message, state: FSMContext) -> None:
+@router.message(LeadToProjectSG.address)
+async def lead_enter_address(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if len(text) < 2:
-        await message.answer("Введите город (минимум 2 символа):")
+        await message.answer("Введите адрес (минимум 2 символа):")
         return
-    await state.update_data(city=text)
+    await state.update_data(address=text)
     await state.set_state(LeadToProjectSG.source)
     await message.answer(
         "Шаг 5/6: Выберите <b>источник лида</b>:",
@@ -2681,7 +2681,7 @@ async def lead_finalize(
     manager_role = data["manager_role"]
     lead_name = data["name"]
     lead_phone = data["phone"]
-    lead_city = data["city"]
+    lead_address = data["address"]
     source = data.get("source", "")
     attachments = data.get("attachments", [])
 
@@ -2732,13 +2732,13 @@ async def lead_finalize(
         created_by=u.id,
         creator_role="rp",
         client_name=lead_name,
-        description=f"{lead_name}, {lead_phone}, {lead_city}",
+        description=f"{lead_name}, {lead_phone}, {lead_address}",
     )
     await db.update_invoice(invoice_id, **{
         f"lead_{role_suffix}_num": str(lead_id),
         f"lead_{role_suffix}_name": lead_name,
         f"lead_{role_suffix}_phone": lead_phone,
-        f"lead_{role_suffix}_city": lead_city,
+        f"lead_{role_suffix}_address": lead_address,
         f"lead_{role_suffix}_date": now_date,
     })
     await db.link_lead_tracking(lead_id, invoice_id=invoice_id)
@@ -2755,7 +2755,7 @@ async def lead_finalize(
             "project_id": project_id,
             "name": lead_name,
             "phone": lead_phone,
-            "city": lead_city,
+            "address": lead_address,
             "source": source,
             "manager_role": manager_role,
             "assigned_role": manager_role,
@@ -2784,7 +2784,7 @@ async def lead_finalize(
         f"👤 От: {initiator}\n\n"
         f"👤 Имя: {lead_name}\n"
         f"📞 Телефон: {lead_phone}\n"
-        f"🏙 Город: {lead_city}\n"
+        f"📍 Адрес: {lead_address}\n"
         f"📌 Источник: {source}\n"
     )
 
@@ -3244,6 +3244,13 @@ async def kp_review_comment(
         upd: dict[str, Any] = {"status": InvoiceStatus.PENDING_PAYMENT}
         if documents:
             upd["documents_json"] = json.dumps(documents, ensure_ascii=False)
+        # Фиксация inv_* полей по роли менеджера
+        _role_suf = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}.get(manager_role, "")
+        if _role_suf:
+            from ..utils import utcnow as _utcnow
+            upd[f"inv_{_role_suf}_num"] = invoice_number
+            upd[f"inv_{_role_suf}_address"] = payload.get("address", "")
+            upd[f"inv_{_role_suf}_date"] = _utcnow().strftime("%Y-%m-%d")
         await db.update_invoice(invoice_id, **upd)
 
         # Лид → "счет выставлен" (фиксация менеджера + даты)
@@ -3262,6 +3269,13 @@ async def kp_review_comment(
         upd2: dict[str, Any] = {"status": InvoiceStatus.PENDING_PAYMENT}
         if documents:
             upd2["documents_json"] = json.dumps(documents, ensure_ascii=False)
+        # Фиксация inv_* полей по роли менеджера
+        _role_suf2 = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}.get(manager_role, "")
+        if _role_suf2:
+            from ..utils import utcnow as _utcnow2
+            upd2[f"inv_{_role_suf2}_num"] = invoice_number
+            upd2[f"inv_{_role_suf2}_address"] = payload.get("address", "")
+            upd2[f"inv_{_role_suf2}_date"] = _utcnow2().strftime("%Y-%m-%d")
         await db.update_invoice(invoice_id, **upd2)
 
         # Привязка менеджера к счёту (если нет lead_tracking)

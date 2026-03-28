@@ -330,7 +330,7 @@ class LeadToProjectSG(StatesGroup):
     pick_manager = State()       # выбор менеджера (КВ / КИА / НПН)
     name = State()               # имя клиента
     phone = State()              # телефон клиента
-    city = State()               # город клиента
+    address = State()            # адрес объекта
     source = State()             # источник лида
     attachments = State()        # вложения
 
