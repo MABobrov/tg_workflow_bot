@@ -2817,7 +2817,7 @@ async def lead_finalize(
 # СМЕНА РОЛИ РП ↔ НПН (кнопки в первой строке меню)
 # =====================================================================
 
-@router.message(F.text.in_({RP_BTN_ROLE_NPN, RP_BTN_ROLE_RP_INACTIVE}))
+@router.message(lambda m: m.text and any(m.text.startswith(p) for p in (RP_BTN_ROLE_NPN, RP_BTN_ROLE_RP_INACTIVE)))
 async def role_switch_to_other(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     """Switch to the other role (RP->NPN or NPN->RP) when clicking the inactive role button."""
     if not await require_role_message(message, db, roles=[Role.RP, Role.MANAGER_NPN]):
@@ -2867,7 +2867,7 @@ async def role_switch_to_other(message: Message, state: FSMContext, db: Database
     )
 
 
-@router.message(F.text.in_({RP_BTN_ROLE_RP, RP_BTN_ROLE_NPN_ACTIVE}))
+@router.message(lambda m: m.text and any(m.text.startswith(p) for p in (RP_BTN_ROLE_RP, RP_BTN_ROLE_NPN_ACTIVE)))
 async def role_switch_already_active(message: Message, db: Database, config: Config) -> None:
     """User clicked the already-active role button — just refresh the menu."""
     if not await require_role_message(message, db, roles=[Role.RP, Role.MANAGER_NPN]):
