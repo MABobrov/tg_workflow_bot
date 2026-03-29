@@ -620,10 +620,24 @@ class GoogleSheetsService:
             cells[23] = ""
         cells[41] = self._fmt_amount(_npn_10)                                  # AP НПН 10%
 
-        # Материалы Факт: ОП (уже закупленные) + дочерние счета (новые)
+        # Группировка supplier payments по категориям
+        _sp_materials = 0.0  # profile, glass, ldsp, gkl, sandwich, other
+        _sp_services = 0.0   # service → монтаж
+        if _c:
+            _SP_CAT = {"profile": "mat", "glass": "mat", "ldsp": "mat",
+                       "gkl": "mat", "sandwich": "mat", "other": "mat",
+                       "service": "svc"}
+            for _sp in _c.get("supplier_payments_list", []):
+                _cat = _SP_CAT.get(_sp.get("material_type", "other"), "mat")
+                if _cat == "svc":
+                    _sp_services += _sp.get("amount", 0)
+                else:
+                    _sp_materials += _sp.get("amount", 0)
+
+        # Материалы Факт: ОП + дочерние счета + supplier payments (материалы)
         _mat_op = float(invoice.get("materials_fact_op") or 0)
         _mat_children = _c.get("materials_total", 0) if _c else 0
-        _mat_combined = _mat_op + _mat_children
+        _mat_combined = _mat_op + _mat_children + _sp_materials
         if _mat_combined:
             cells[71] = self._fmt_amount(_mat_combined)
 
@@ -650,10 +664,10 @@ class GoogleSheetsService:
             else:
                 cells[79] = ""
 
-        # Монтаж Факт: ОП (уже оплаченный) + ЗП монтажника (новые)
+        # Монтаж Факт: ОП + ЗП монтажника + supplier payments (услуги)
         _mont_op = float(invoice.get("montazh_fact_op") or 0)
         _mont_zp = float(invoice.get("zp_installer_amount") or 0)
-        _mont_combined = _mont_op + _mont_zp
+        _mont_combined = _mont_op + _mont_zp + _sp_services
         if _mont_combined:
             cells[70] = self._fmt_amount(_mont_combined)
 

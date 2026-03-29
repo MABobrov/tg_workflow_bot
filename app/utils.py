@@ -669,8 +669,21 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any]) -> str:
     est_pct = pf.get("estimated_profitability", 0)
 
     cost = pf.get("cost_card", {})
-    fact_mat = cost.get("materials_combined", cost.get("materials_total", 0)) + cost.get("supplier_payments_total", 0)
-    fact_inst = cost.get("montazh_combined", float(cost.get("zp_installer", 0)))
+    # Группировка supplier payments: материалы vs услуги (→ монтаж)
+    _sp_mat = 0.0
+    _sp_svc = 0.0
+    _SP_CAT = {"profile": "mat", "glass": "mat", "ldsp": "mat",
+               "gkl": "mat", "sandwich": "mat", "other": "mat",
+               "service": "svc"}
+    for _sp in cost.get("supplier_payments_list", []):
+        if _SP_CAT.get(_sp.get("material_type", "other"), "mat") == "svc":
+            _sp_svc += _sp.get("amount", 0)
+        else:
+            _sp_mat += _sp.get("amount", 0)
+    fact_mat = cost.get("materials_combined", cost.get("materials_total", 0)) + _sp_mat
+    fact_inst = cost.get("montazh_combined", float(cost.get("zp_installer", 0))) + _sp_svc
+    fact_load = cost.get("loaders_fact", 0)
+    fact_log = cost.get("logistics_fact", 0)
     fact_total = pf.get("actual_total_cost", 0)
     fact_profit = pf.get("actual_profit", 0)
     fact_pct = pf.get("actual_profitability", 0)
@@ -697,8 +710,8 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any]) -> str:
     lines += [
         f"{'Мат-лы итого':14s} {materials_total:>10,.0f} {fact_mat:>10,.0f} {_delta(materials_total, fact_mat):>12s}",
         f"{'Установка':14s} {est_inst:>10,.0f} {fact_inst:>10,.0f} {_delta(est_inst, fact_inst):>12s}",
-        f"{'Грузчики':14s} {est_load:>10,.0f} {'—':>10s} {'':>12s}",
-        f"{'Логистика':14s} {est_log:>10,.0f} {'—':>10s} {'':>12s}",
+        f"{'Грузчики':14s} {est_load:>10,.0f} {fact_load:>10,.0f} {_delta(est_load, fact_load):>12s}",
+        f"{'Логистика':14s} {est_log:>10,.0f} {fact_log:>10,.0f} {_delta(est_log, fact_log):>12s}",
         f"{'─' * 50}",
         f"{'Себест-ть':14s} {est_total:>10,.0f} {fact_total:>10,.0f} {_delta(est_total, fact_total):>12s}",
         f"{'НДС выход':14s} {output_vat:>10,.0f} {'':>10s} {'':>12s}",
