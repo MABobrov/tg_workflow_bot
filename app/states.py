@@ -237,23 +237,10 @@ class ReplyToGDSG(StatesGroup):
 # ======================================================================
 
 class CheckKpSG(StatesGroup):
-    """Менеджер: Проверить КП / Счет — проверка существующего или создание нового."""
-    invoice_number = State()     # номер счёта (вводит менеджер)
-    # --- Если счёта НЕТ в БД → полная форма ---
-    client_name = State()        # контрагент
-    address = State()            # адрес установки
-    amount = State()             # полная сумма
-    payment_type = State()       # тип оплаты (100%, рассрочка и т.д.)
-    deadline_days = State()      # срок по договору (дни)
-    # --- Общие шаги ---
+    """Менеджер: Проверить КП — выбрать лид и прикрепить КП."""
+    invoice_number = State()     # выбор лида (inline buttons)
     documents = State()          # вложения (КП)
     comment = State()            # комментарий
-
-
-class KpReviewResponseSG(StatesGroup):
-    """РП: ответ на запрос «Проверить КП» — формирует пакет документов (legacy)."""
-    documents = State()          # вложения (счёт, договор, приложение)
-    comment = State()            # комментарий к проверке
 
 
 class KpReviewSG(StatesGroup):

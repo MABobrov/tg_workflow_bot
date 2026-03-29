@@ -22,7 +22,7 @@ Legacy (still handled for backward compat):
 Other:
 - Смена роли РП ↔ НПН
 - Поиск Счета (в manager_new.py)
-- Ответ на КП от менеджера (KpReviewResponseSG)
+- Ответ на КП от менеджера (KpReviewSG)
 """
 from __future__ import annotations
 
