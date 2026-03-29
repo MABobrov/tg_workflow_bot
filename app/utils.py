@@ -567,12 +567,19 @@ def format_cost_card(inv: dict[str, Any], cost: dict[str, Any]) -> str:
     inv_amount = cost.get("invoice_amount", 0)
     inv_amount_s = f"{inv_amount:,.0f}".replace(",", " ")
 
+    debt = float(inv.get("outstanding_debt") or 0)
+    first_pay = float(inv.get("first_payment_amount") or 0)
+
     lines: list[str] = [
         f"📊 <b>Себестоимость — Счёт №{num}</b>",
         f"📍 {addr}",
         "",
         f"💰 Сумма счёта: <b>{inv_amount_s}</b> руб.",
     ]
+    if first_pay > 0:
+        lines.append(f"💵 Оплачено: {first_pay:,.0f} руб.")
+    if debt > 0:
+        lines.append(f"🔴 Долг клиента: <b>{debt:,.0f}</b> руб.")
 
     # --- Материалы ---
     materials_by_type: dict[str, float] = cost.get("materials_by_type", {})
@@ -798,7 +805,7 @@ def format_estimated_summary(inv: dict[str, Any]) -> str:
 
 def fmt_project_card(project: dict[str, Any], tz_name: str) -> str:
     """Pretty HTML card for a project dict."""
-    code = html.quote(project.get("code") or f"#{project.get('id')}")
+    # PRJ code removed from display
     title = html.quote(project.get("title") or "—")
     address = html.quote(project.get("address") or "—")
     client = html.quote(project.get("client") or "—")
@@ -811,7 +818,7 @@ def fmt_project_card(project: dict[str, Any], tz_name: str) -> str:
     updated = format_dt_iso(project.get("updated_at"), tz_name)
 
     lines = [
-        f"<b>Проект {code}</b> — {title}",
+        f"<b>Проект</b> — {title}",
         f"📍 Адрес: <b>{address}</b>",
         f"👤 Клиент: <b>{client}</b>",
         f"💰 Сумма: <b>{amount_s}</b>",

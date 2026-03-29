@@ -191,11 +191,9 @@ def _task_take_text(task: dict[str, Any], project: dict[str, Any] | None) -> str
     lines = [f"⏳ Взял в работу: #{task_id} — {task_type_label(task_type)}"]
 
     if project:
-        code = str(project.get("code") or "").strip()
         title = str(project.get("title") or "").strip()
-        project_label = " • ".join(part for part in (code, title) if part)
-        if project_label:
-            lines.append(f"📁 Проект: {project_label}")
+        if title:
+            lines.append(f"📁 Проект: {title}")
         return "\n".join(lines)
 
     invoice_number = str(payload.get("invoice_number") or "").strip()
@@ -629,7 +627,7 @@ async def task_cancel_with_reason(
             text = (
                 "✅ <b>Оплата подтверждена</b> — можно запускать закупки и монтаж.\n"
                 f"👤 От: {initiator}\n\n"
-                f"{project.get('code','')} • {project.get('title','')}"
+                f"{project.get('title','')}"
             )
             if manager_id:
                 await notifier.safe_send(
@@ -661,7 +659,7 @@ async def task_cancel_with_reason(
             text = (
                 "⚠️ <b>Оплата не подтверждена</b>: нужна доплата/уточнение.\n"
                 f"👤 От: {initiator}\n\n"
-                f"{project.get('code','')} • {project.get('title','')}"
+                f"{project.get('title','')}"
             )
             if manager_id:
                 await notifier.safe_send(
@@ -701,7 +699,7 @@ async def task_cancel_with_reason(
         await state.set_state(SupplierPaymentSG.supplier)
         await cb.message.answer(
             "💸 <b>Оплата поставщику</b>\n"
-            f"Проект: <b>{project.get('code','')} • {project.get('title','')}</b>\n\n"
+            f"Проект: <b>{project.get('title','')}</b>\n\n"
             "Укажите поставщика (название компании):"
         )  # type: ignore
         return

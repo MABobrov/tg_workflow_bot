@@ -1240,12 +1240,12 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
     if active_projects:
         lines_p = [f"🏗 <b>Проекты ({len(active_projects)})</b>\n"]
         for p in active_projects[:30]:
-            code = html.escape(p.get("code") or f"#{p['id']}")
             client = html.escape(p.get("client") or "—")
+            title = html.escape(p.get("title") or "—")
             pstatus = project_status_label(str(p.get("status") or ""))
             amount = p.get("amount")
             amount_s = f"{amount:,.0f}".replace(",", " ") if isinstance(amount, (int, float)) else "—"
-            lines_p.append(f"  • <b>{code}</b> {client} | {amount_s} | {pstatus}")
+            lines_p.append(f"  • {client} | {title} | {amount_s} | {pstatus}")
         if len(active_projects) > 30:
             lines_p.append(f"\n  ... и ещё {len(active_projects) - 30}")
         text_p = "\n".join(lines_p)
