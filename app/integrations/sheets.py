@@ -545,22 +545,26 @@ class GoogleSheetsService:
         credit_exp = invoice.get("_credit_expenses") or {}
         credit_exp_total = credit_exp.get("total") or 0
         if is_credit:
-            # ВСЕ затраты КВ (кредитные/наличные) без привязки к мат. счёту
-            _cf_op = sum(float(invoice.get(f) or 0) for f in (
-                "materials_fact_op",      # Материалы
-                "montazh_fact_op",        # Монтаж
-                "logistics_fact_op",      # Логистика
-                "loaders_fact_op",        # Грузчики
-                "agent_payout_op",        # Агентское
-                "taxes_fact_op",          # Налоги
-                "npn_payout_op",          # НПН
-                "zp_manager_payout",      # ЗП менеджера (выплата)
-            ))
-            _cf_bot = 0.0
-            if _c:
-                _cf_bot = _c.get("supplier_payments_total", 0) + _c.get("materials_total", 0)
-            cf_total = _cf_op + _cf_bot + credit_exp_total
-            cells[82] = self._fmt_amount(cf_total) if cf_total else ""
+            if invoice.get("status") == "ended":
+                # Закрытый счёт — кредит полностью израсходован, баланс = 0
+                cells[82] = cells[80]
+            else:
+                # ВСЕ затраты КВ (кредитные/наличные) без привязки к мат. счёту
+                _cf_op = sum(float(invoice.get(f) or 0) for f in (
+                    "materials_fact_op",      # Материалы
+                    "montazh_fact_op",        # Монтаж
+                    "logistics_fact_op",      # Логистика
+                    "loaders_fact_op",        # Грузчики
+                    "agent_payout_op",        # Агентское
+                    "taxes_fact_op",          # Налоги
+                    "npn_payout_op",          # НПН
+                    "zp_manager_payout",      # ЗП менеджера (выплата)
+                ))
+                _cf_bot = 0.0
+                if _c:
+                    _cf_bot = _c.get("supplier_payments_total", 0) + _c.get("materials_total", 0)
+                cf_total = _cf_op + _cf_bot + credit_exp_total
+                cells[82] = self._fmt_amount(cf_total) if cf_total else ""
         elif credit_exp_total:
             cells[82] = self._fmt_amount(credit_exp_total)
         else:
