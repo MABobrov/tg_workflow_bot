@@ -3277,12 +3277,19 @@ async def kp_review_comment(
         if _role_suf:
             from ..utils import utcnow as _utcnow
             upd[f"inv_{_role_suf}_num"] = invoice_number
+            upd[f"inv_{_role_suf}_name"] = payload.get("client_name", "")
             upd[f"inv_{_role_suf}_address"] = payload.get("address", "")
             upd[f"inv_{_role_suf}_date"] = _utcnow().strftime("%Y-%m-%d")
-            # Копируем телефон из LEAD-инвойса (если есть)
+            # Копируем lead_* и телефон из LEAD-инвойса
             _lead_invs = await db.list_invoices(project_id=project_id)
             for _li in _lead_invs:
                 if str(_li.get("invoice_number", "")).startswith("LEAD-"):
+                    # Копируем все lead_* поля в реальный счёт
+                    for _fld in ("num", "date", "name", "phone", "address"):
+                        _val = _li.get(f"lead_{_role_suf}_{_fld}") or ""
+                        if _val:
+                            upd[f"lead_{_role_suf}_{_fld}"] = _val
+                    # Телефон для inv_*
                     _ph = _li.get(f"lead_{_role_suf}_phone") or ""
                     if _ph:
                         upd[f"inv_{_role_suf}_phone"] = _ph
@@ -3310,20 +3317,25 @@ async def kp_review_comment(
         if _role_suf2:
             from ..utils import utcnow as _utcnow2
             upd2[f"inv_{_role_suf2}_num"] = invoice_number
+            upd2[f"inv_{_role_suf2}_name"] = payload.get("client_name", "")
             upd2[f"inv_{_role_suf2}_address"] = payload.get("address", "")
             upd2[f"inv_{_role_suf2}_date"] = _utcnow2().strftime("%Y-%m-%d")
-            # Телефон из LEAD-инвойса (ищем по project_id)
+            # Копируем lead_* и телефон из LEAD-инвойса (ищем по project_id)
             _existing = await db.get_invoice(invoice_id)
             if _existing:
-                _ph2 = _existing.get(f"lead_{_role_suf2}_phone") or ""
-                if not _ph2 and _existing.get("project_id"):
-                    _lead_invs2 = await db.list_invoices(project_id=int(_existing["project_id"]))
+                _pid = _existing.get("project_id")
+                if _pid:
+                    _lead_invs2 = await db.list_invoices(project_id=int(_pid))
                     for _li2 in _lead_invs2:
                         if str(_li2.get("invoice_number", "")).startswith("LEAD-"):
+                            for _fld2 in ("num", "date", "name", "phone", "address"):
+                                _val2 = _li2.get(f"lead_{_role_suf2}_{_fld2}") or ""
+                                if _val2:
+                                    upd2[f"lead_{_role_suf2}_{_fld2}"] = _val2
                             _ph2 = _li2.get(f"lead_{_role_suf2}_phone") or ""
+                            if _ph2:
+                                upd2[f"inv_{_role_suf2}_phone"] = _ph2
                             break
-                if _ph2:
-                    upd2[f"inv_{_role_suf2}_phone"] = _ph2
         await db.update_invoice(invoice_id, **upd2)
 
         # Привязка менеджера к счёту (если нет lead_tracking)
