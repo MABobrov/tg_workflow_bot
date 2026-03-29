@@ -823,6 +823,13 @@ class GoogleSheetsService:
                 count += 1
             self._flush_batch_update(ws, batch_data, chunk_size=500)
 
+            # Очистить строки LEAD- (у них свои столбцы, не нужны как строки)
+            try:
+                if self._clear_lead_rows(ws):
+                    self._row_indexes.pop(self.cfg.invoices_tab, None)
+            except Exception:
+                pass
+
             # Сортировка: старые счета вверху, новые внизу.
             # Столбец K (index=10) = receipt_date, записан как =DATE() — корректная сортировка.
             try:
@@ -831,6 +838,19 @@ class GoogleSheetsService:
                 pass  # не критично если сортировка не удалась
 
             return count
+
+    @staticmethod
+    def _clear_lead_rows(ws: gspread.Worksheet) -> bool:
+        """Remove rows where invoice_number (col I = index 9) starts with LEAD-."""
+        col_i = ws.col_values(9)  # column I = invoice_number
+        rows_to_delete: list[int] = []
+        for row_num, val in enumerate(col_i[1:], start=2):  # skip header
+            if str(val).strip().startswith("LEAD-"):
+                rows_to_delete.append(row_num)
+        # Delete from bottom to top so row indices stay valid
+        for row_num in reversed(rows_to_delete):
+            ws.delete_rows(row_num)
+        return bool(rows_to_delete)
 
     def _sort_ws_by_date(self, ws: gspread.Worksheet, sort_col_index: int = 10) -> None:
         """Sort worksheet rows 2+ by column, ASCENDING (oldest dates first)."""
