@@ -1215,65 +1215,21 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
             f"Счетов: <b>{stats['invoices']}</b>",
         )
 
-    # --- 2. Detailed task report ---
-    active_tasks = await db.list_recent_tasks(limit=5000)
-    active_tasks = [
-        t for t in active_tasks
-        if t.get("status") in (TaskStatus.OPEN, TaskStatus.IN_PROGRESS)
-    ]
-    active_tasks.sort(key=lambda t: t.get("created_at") or "", reverse=True)
-
-    # Pre-resolve user names
-    user_cache: dict[int, str] = {}
-
-    async def _user_label(uid: int | None) -> str:
-        if not uid:
-            return "—"
-        uid = int(uid)
-        if uid not in user_cache:
-            user_cache[uid] = await get_initiator_label(db, uid)
-        return user_cache[uid]
-
-    if active_tasks:
-        header = f"📋 <b>Активные задачи ({len(active_tasks)})</b>\n"
-        chunks: list[str] = [header]
-        current_chunk = header
-
-        for t in active_tasks:
-            created_by_label = await _user_label(t.get("created_by"))
-            assigned_to_label = await _user_label(t.get("assigned_to"))
-            ttype = task_type_label(t.get("type"))
-            tstatus = task_status_label(t.get("status"))
-            created_at = format_dt_iso(t.get("created_at"), tz)
-            due_at = format_dt_iso(t.get("due_at"), tz) if t.get("due_at") else "—"
-
-            line = (
-                f"\n<b>#{t['id']}</b> {html.escape(ttype)}\n"
-                f"  👤 От: {created_by_label}\n"
-                f"  👉 Кому: {assigned_to_label}\n"
-                f"  📌 Статус: <b>{html.escape(tstatus)}</b>\n"
-                f"  🕒 Создана: {created_at}\n"
-                f"  ⏰ Дедлайн: {due_at}\n"
-            )
-
-            if len(current_chunk) + len(line) > 3800:
-                chunks.append(current_chunk)
-                current_chunk = line
-            else:
-                current_chunk += line
-
-        if current_chunk and current_chunk != header:
-            chunks.append(current_chunk)
-
-        # Send first chunk as header, rest as continuations
-        for i, chunk in enumerate(chunks):
-            if i == 0:
-                continue  # header was merged into first data chunk
-            await message.answer(chunk)
+    # --- 2. Leads summary (one block) ---
+    all_leads = await db.list_leads(limit=100)
+    active_leads = [l for l in all_leads if l.get("status") == "lead"]
+    if active_leads:
+        lines_l = [f"📨 <b>Лиды ({len(active_leads)})</b>\n"]
+        for l in active_leads:
+            name = html.escape(l.get("client_name") or "—")
+            phone = html.escape(l.get("phone") or "—")
+            role = (l.get("assigned_manager_role") or "").upper()
+            lines_l.append(f"  • {name} | {phone} | {role}")
+        await message.answer("\n".join(lines_l))
     else:
-        await message.answer("📋 Активных задач нет.")
+        await message.answer("📨 Активных лидов нет.")
 
-    # --- 3. Active projects report ---
+    # --- 3. Projects summary (one block) ---
     all_projects_list = await db.list_recent_projects(limit=500)
     active_projects = [
         p for p in all_projects_list
@@ -1282,48 +1238,24 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
     active_projects.sort(key=lambda p: p.get("updated_at") or "", reverse=True)
 
     if active_projects:
-        header_p = f"\n🏗 <b>Активные проекты ({len(active_projects)})</b>\n"
-        chunks_p: list[str] = [header_p]
-        current_chunk_p = header_p
-
-        for p in active_projects:
+        lines_p = [f"🏗 <b>Проекты ({len(active_projects)})</b>\n"]
+        for p in active_projects[:30]:
             code = html.escape(p.get("code") or f"#{p['id']}")
-            title = html.escape(p.get("title") or "—")
             client = html.escape(p.get("client") or "—")
-            address = html.escape(p.get("address") or "—")
             pstatus = project_status_label(str(p.get("status") or ""))
-            manager_label = await _user_label(p.get("manager_id"))
-            rp_label = await _user_label(p.get("rp_id"))
             amount = p.get("amount")
             amount_s = f"{amount:,.0f}".replace(",", " ") if isinstance(amount, (int, float)) else "—"
-            updated = format_dt_iso(p.get("updated_at"), tz)
-
-            line = (
-                f"\n<b>{code}</b> — {title}\n"
-                f"  👤 Клиент: {client}\n"
-                f"  📍 Адрес: {address}\n"
-                f"  💰 Сумма: {amount_s}\n"
-                f"  📌 Статус: <b>{html.escape(pstatus)}</b>\n"
-                f"  👷 Менеджер: {manager_label}\n"
-                f"  👔 РП: {rp_label}\n"
-                f"  🔄 Обновлён: {updated}\n"
-            )
-
-            if len(current_chunk_p) + len(line) > 3800:
-                chunks_p.append(current_chunk_p)
-                current_chunk_p = line
-            else:
-                current_chunk_p += line
-
-        if current_chunk_p and current_chunk_p != header_p:
-            chunks_p.append(current_chunk_p)
-
-        for i, chunk in enumerate(chunks_p):
-            if i == 0:
-                continue
-            await message.answer(chunk)
+            lines_p.append(f"  • <b>{code}</b> {client} | {amount_s} | {pstatus}")
+        if len(active_projects) > 30:
+            lines_p.append(f"\n  ... и ещё {len(active_projects) - 30}")
+        text_p = "\n".join(lines_p)
+        # Split if too long
+        if len(text_p) > 4000:
+            await message.answer(text_p[:4000])
+        else:
+            await message.answer(text_p)
     else:
-        await answer_service(message, "🏗 Активных проектов нет.", delay_seconds=60)
+        await message.answer("🏗 Активных проектов нет.")
 
     await answer_service(
         message,
