@@ -317,6 +317,7 @@ async def check_kp_comment(
         await message.answer("⚠️ РП не найден. Попросите администратора назначить роль РП.")
         await state.clear()
         return
+    self_assigned = int(rp_id) == message.from_user.id
 
     role = await _current_role(db, message.from_user.id)
 
@@ -356,46 +357,58 @@ async def check_kp_comment(
             caption=a.get("caption"),
         )
 
-    # Notify RP
-    initiator = await get_initiator_label(db, message.from_user.id)
-    is_new = "🆕 Новый" if not existing_inv_id else "📄 Существующий"
-    msg_text = (
-        f"📋 <b>КП от {role_label}</b> ({is_new})\n"
-        f"👤 От: {initiator}\n\n"
-        f"📄 Счёт №: <code>{invoice_number}</code>\n"
-    )
-    if client_name:
-        msg_text += f"🏢 Контрагент: {client_name}\n"
-    if address:
-        msg_text += f"📍 Адрес: {address}\n"
-    if amount:
-        msg_text += f"💰 Сумма: {amount:,.0f}₽\n"
-    if payment_type:
-        msg_text += f"💳 Тип оплаты: {payment_type}\n"
-    if deadline_days:
-        msg_text += f"⏰ Срок: {deadline_days} дн.\n"
-    if comment:
-        msg_text += f"💬 Комментарий: {comment}\n"
+    # Notify RP (skip notification if self-assigned — dual-role user)
+    if not self_assigned:
+        initiator = await get_initiator_label(db, message.from_user.id)
+        is_new = "🆕 Новый" if not existing_inv_id else "📄 Существующий"
+        msg_text = (
+            f"📋 <b>КП от {role_label}</b> ({is_new})\n"
+            f"👤 От: {initiator}\n\n"
+            f"📄 Счёт №: <code>{invoice_number}</code>\n"
+        )
+        if client_name:
+            msg_text += f"🏢 Контрагент: {client_name}\n"
+        if address:
+            msg_text += f"📍 Адрес: {address}\n"
+        if amount:
+            msg_text += f"💰 Сумма: {amount:,.0f}₽\n"
+        if payment_type:
+            msg_text += f"💳 Тип оплаты: {payment_type}\n"
+        if deadline_days:
+            msg_text += f"⏰ Срок: {deadline_days} дн.\n"
+        if comment:
+            msg_text += f"💬 Комментарий: {comment}\n"
 
-    # Inline button for RP to respond with documents
-    b_kp = InlineKeyboardBuilder()
-    b_kp.button(text="📋 Ответить на КП", callback_data=f"kp_review:{task['id']}")
-    b_kp.adjust(1)
+        b_kp = InlineKeyboardBuilder()
+        b_kp.button(text="📋 Ответить на КП", callback_data=f"kp_review:{task['id']}")
+        b_kp.adjust(1)
 
-    await notifier.safe_send(int(rp_id), msg_text, reply_markup=b_kp.as_markup())
-    log.info("CheckKP task #%s: sending %d attachment(s) to RP %s", task["id"], len(documents), rp_id)
-    for a in documents:
-        ok = await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
-        if not ok:
-            log.warning("CheckKP task #%s: failed to send %s to RP %s", task["id"], a["file_type"], rp_id)
-    await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
+        await notifier.safe_send(int(rp_id), msg_text, reply_markup=b_kp.as_markup())
+        log.info("CheckKP task #%s: sending %d attachment(s) to RP %s", task["id"], len(documents), rp_id)
+        for a in documents:
+            ok = await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+            if not ok:
+                log.warning("CheckKP task #%s: failed to send %s to RP %s", task["id"], a["file_type"], rp_id)
+        await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
+    else:
+        log.info("CheckKP task #%s: self-assigned (dual-role), skipping RP notification", task["id"])
 
     status_msg = "создан" if not existing_inv_id else "обновлён"
     menu_role, isolated_role = await _current_menu(db, message.from_user.id)
     await state.clear()
+
+    if self_assigned:
+        confirm_text = (
+            f"✅ КП сохранено. Счёт №{invoice_number} {status_msg}.\n"
+            "Переключитесь в режим РП для выставления счёта."
+        )
+    else:
+        confirm_text = (
+            f"✅ КП отправлено РП на проверку.\n"
+            f"Счёт №{invoice_number} {status_msg}."
+        )
     await message.answer(
-        f"✅ КП отправлено РП на проверку.\n"
-        f"Счёт №{invoice_number} {status_msg}.",
+        confirm_text,
         reply_markup=private_only_reply_markup(
             message,
             main_menu(
