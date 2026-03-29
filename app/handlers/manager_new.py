@@ -375,8 +375,11 @@ async def check_kp_comment(
     b_kp.adjust(1)
 
     await notifier.safe_send(int(rp_id), msg_text, reply_markup=b_kp.as_markup())
+    log.info("CheckKP task #%s: sending %d attachment(s) to RP %s", task["id"], len(documents), rp_id)
     for a in documents:
-        await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+        ok = await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+        if not ok:
+            log.warning("CheckKP task #%s: failed to send %s to RP %s", task["id"], a["file_type"], rp_id)
     await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
     status_msg = "создан" if not existing_inv_id else "обновлён"
