@@ -3563,6 +3563,7 @@ class Database:
     async def list_leads(
         self,
         assigned_manager_id: int | None = None,
+        status: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
@@ -3570,6 +3571,9 @@ class Database:
         if assigned_manager_id is not None:
             clauses.append("assigned_manager_id = ?")
             params.append(assigned_manager_id)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(limit)
         cur = await self.conn.execute(
@@ -3578,6 +3582,13 @@ class Database:
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    async def get_lead_tracking(self, lead_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM lead_tracking WHERE id = ?", (lead_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
 
     async def get_lead_stats(self) -> dict[str, Any]:
         """Get lead conversion statistics grouped by manager and source."""

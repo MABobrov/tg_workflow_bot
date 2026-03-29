@@ -81,9 +81,8 @@ async def export_to_sheets(
     invoice_count = 0
     if sync_invoices:
         all_invoices = await db.list_invoices(limit=10000)
-        # Исключить LEAD-инвойсы из экспорта (они не настоящие счета)
         invoices = sorted(
-            [inv for inv in all_invoices if not str(inv.get("invoice_number", "")).startswith("LEAD-")],
+            all_invoices,
             key=lambda item: (item.get("receipt_date") or "9999-12-31", int(item["id"])),
         )
         invoice_items: list[tuple[dict[str, Any], str, dict[str, Any] | None]] = []

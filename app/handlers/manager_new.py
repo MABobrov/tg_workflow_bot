@@ -169,50 +169,75 @@ async def start_check_kp(message: Message, state: FSMContext, db: Database) -> N
     if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
         return
     await state.clear()
+    user_id = message.from_user.id
+
+    # Получить лиды менеджера (только активные, без invoice_issued)
+    leads = await db.list_leads(assigned_manager_id=user_id, status="lead")
+
+    if not leads:
+        await message.answer("📋 Нет активных лидов.\nОжидайте назначения от РП.")
+        return
+
+    b = InlineKeyboardBuilder()
+    for lead in leads:
+        inv_id = lead.get("invoice_id")
+        label = f"Лид #{lead['id']}"
+        if inv_id:
+            inv = await db.get_invoice(int(inv_id))
+            if inv:
+                name = inv.get("client_name") or "—"
+                label = f"#{lead['id']} {name}"
+        b.button(text=label, callback_data=f"check_kp_lead:{lead['id']}")
+    b.adjust(1)
+
     await state.set_state(CheckKpSG.invoice_number)
     await message.answer(
-        "📋 <b>Проверить КП / Счет</b>\n\n"
-        "Шаг 1/5: Введите <b>номер счёта</b>.\n"
-        "Для отмены: <code>/cancel</code>."
+        "📋 <b>Проверить КП</b>\n\n"
+        "Выберите лид для прикрепления КП:",
+        reply_markup=b.as_markup(),
     )
 
 
-@router.message(CheckKpSG.invoice_number)
-async def check_kp_invoice_number(message: Message, state: FSMContext, db: Database) -> None:
-    text = (message.text or "").strip()
-    if not text:
-        await message.answer("Введите номер счёта:")
+@router.callback_query(CheckKpSG.invoice_number, F.data.startswith("check_kp_lead:"))
+async def check_kp_pick_lead(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Менеджер выбрал лид → показать данные и перейти к КП."""
+    await cb.answer()
+    lead_id = int((cb.data or "").split(":")[1])
+
+    lead = await db.get_lead_tracking(lead_id)
+    if not lead or not lead.get("invoice_id"):
+        await cb.message.answer("❌ Лид не найден.")  # type: ignore[union-attr]
+        await state.clear()
         return
 
-    # Check if invoice already exists in DB
-    existing = await db.get_invoice_by_number(text)
-    if existing:
-        # Invoice found → skip to documents (short flow)
-        await state.update_data(
-            invoice_number=text,
-            existing_invoice_id=existing["id"],
-            client_name=existing.get("client_name", ""),
-            address=existing.get("object_address", ""),
-            amount=existing.get("amount", 0),
-            payment_type=existing.get("payment_terms", ""),
-            deadline_days=existing.get("deadline_days"),
-        )
-        await state.set_state(CheckKpSG.documents)
-        await message.answer(
-            f"📄 Счёт <b>№{text}</b> найден в базе.\n"
-            f"📍 {existing.get('object_address', '—')}\n"
-            f"💰 {existing.get('amount', 0):,.0f}₽\n\n"
-            "Прикрепите <b>КП</b> (файл или фото):"
-        )
-    else:
-        # Invoice NOT found → full form
-        await state.update_data(invoice_number=text, existing_invoice_id=None)
-        await state.set_state(CheckKpSG.client_name)
-        await message.answer(
-            f"Счёт №{text} <b>не найден</b> в базе.\n"
-            "Заполните данные для создания:\n\n"
-            "Шаг 2/7: Введите <b>контрагента</b> (название компании/ФИО):"
-        )
+    inv = await db.get_invoice(int(lead["invoice_id"]))
+    if not inv:
+        await cb.message.answer("❌ Данные лида не найдены.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+
+    client_name = inv.get("client_name") or "—"
+    desc = inv.get("description") or "—"
+    manager_role = lead.get("assigned_manager_role") or "manager"
+
+    await state.update_data(
+        lead_id=lead_id,
+        existing_invoice_id=inv["id"],
+        invoice_number=inv["invoice_number"],
+        client_name=client_name,
+        address=inv.get("object_address") or "",
+        amount=0,
+        payment_type="",
+        deadline_days=None,
+        manager_role=manager_role,
+    )
+    await state.set_state(CheckKpSG.documents)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📄 <b>Лид #{lead_id}</b>\n"
+        f"👤 {client_name}\n"
+        f"📝 {desc}\n\n"
+        "Прикрепите <b>КП</b> (файл или фото):",
+    )
 
 
 @router.message(CheckKpSG.client_name)
