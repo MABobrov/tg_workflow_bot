@@ -230,13 +230,14 @@ async def check_kp_pick_lead(cb: CallbackQuery, state: FSMContext, db: Database)
         payment_type="",
         deadline_days=None,
         manager_role=manager_role,
+        documents=[],
     )
     await state.set_state(CheckKpSG.documents)
     await cb.message.answer(  # type: ignore[union-attr]
         f"📄 <b>Лид #{lead_id}</b>\n"
         f"👤 {client_name}\n"
         f"📝 {desc}\n\n"
-        "Прикрепите <b>КП</b> (файл или фото):",
+        "Прикрепите <b>КП</b> (файл, фото или видео):",
     )
 
 
@@ -260,9 +261,16 @@ async def check_kp_documents(message: Message, state: FSMContext) -> None:
             "file_unique_id": ph.file_unique_id,
             "caption": message.caption,
         })
+    elif message.video:
+        attachments.append({
+            "file_type": "video",
+            "file_id": message.video.file_id,
+            "file_unique_id": message.video.file_unique_id,
+            "caption": message.caption,
+        })
     else:
         if not attachments:
-            await message.answer("Пришлите файл или фото КП:")
+            await message.answer("Пришлите файл, фото или видео КП:")
             return
         # Treat text as additional comment
         await state.update_data(documents=attachments)
@@ -701,8 +709,15 @@ async def invoice_start_attachments(message: Message, state: FSMContext) -> None
             "file_unique_id": ph.file_unique_id,
             "caption": message.caption,
         })
+    elif message.video:
+        attachments.append({
+            "file_type": "video",
+            "file_id": message.video.file_id,
+            "file_unique_id": message.video.file_unique_id,
+            "caption": message.caption,
+        })
     else:
-        await message.answer("Пришлите файл/фото или нажмите «✅ Отправить ГД».")
+        await message.answer("Пришлите файл/фото/видео или нажмите «✅ Отправить ГД».")
         return
 
     await state.update_data(attachments=attachments)
@@ -1650,6 +1665,13 @@ async def edo_attachments(message: Message, state: FSMContext) -> None:
             "file_type": "photo",
             "file_id": ph.file_id,
             "file_unique_id": ph.file_unique_id,
+            "caption": message.caption,
+        })
+    elif message.video:
+        attachments.append({
+            "file_type": "video",
+            "file_id": message.video.file_id,
+            "file_unique_id": message.video.file_unique_id,
             "caption": message.caption,
         })
     else:
@@ -2731,6 +2753,8 @@ async def zamery_attachments(message: Message, state: FSMContext) -> None:
     elif message.photo:
         ph = message.photo[-1]
         attachments.append({"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id, "caption": message.caption})
+    elif message.video:
+        attachments.append({"file_type": "video", "file_id": message.video.file_id, "file_unique_id": message.video.file_unique_id, "caption": message.caption})
     else:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
@@ -3114,6 +3138,8 @@ async def mgr_chat_writing(
             await notifier.safe_send_media(int(target_id), "document", message.document.file_id, caption=message.caption)
         elif message.photo:
             await notifier.safe_send_media(int(target_id), "photo", message.photo[-1].file_id, caption=message.caption)
+        elif message.video:
+            await notifier.safe_send_media(int(target_id), "video", message.video.file_id, caption=message.caption)
 
     await state.set_state(ManagerChatProxySG.menu)
     await message.answer(

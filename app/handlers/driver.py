@@ -82,6 +82,8 @@ async def delivery_done_attach(message: Message, state: FSMContext) -> None:
     elif message.photo:
         ph = message.photo[-1]
         attachments.append({"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id, "caption": message.caption})
+    elif message.video:
+        attachments.append({"file_type": "video", "file_id": message.video.file_id, "file_unique_id": message.video.file_unique_id, "caption": message.caption})
     else:
         await message.answer("Пришлите фото или нажмите «✅ Подтвердить доставку».")
         return

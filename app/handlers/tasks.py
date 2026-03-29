@@ -1058,6 +1058,15 @@ async def taskcomplete_collect(message: Message, state: FSMContext) -> None:
                 "caption": message.caption,
             }
         )
+    elif message.video:
+        attachments.append(
+            {
+                "file_type": "video",
+                "file_id": message.video.file_id,
+                "file_unique_id": message.video.file_unique_id,
+                "caption": message.caption,
+            }
+        )
     else:
         await message.answer("Пришлите файл/фото или нажмите кнопку «✅ Отправить и закрыть».")
         return
@@ -1173,6 +1182,13 @@ async def invoice_pp_collect(message: Message, state: FSMContext) -> None:
             "file_type": "photo",
             "file_id": ph.file_id,
             "file_unique_id": ph.file_unique_id,
+            "caption": message.caption,
+        })
+    elif message.video:
+        pp_files.append({
+            "file_type": "video",
+            "file_id": message.video.file_id,
+            "file_unique_id": message.video.file_unique_id,
             "caption": message.caption,
         })
     else:
@@ -1439,6 +1455,9 @@ async def delivery_payment_attachment(message: Message, state: FSMContext) -> No
     elif message.photo:
         file_id = message.photo[-1].file_id
         file_type = "photo"
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = "video"
 
     if not file_id:
         b = InlineKeyboardBuilder()

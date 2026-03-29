@@ -116,6 +116,15 @@ async def daily_collect_attachments(message: Message, state: FSMContext) -> None
                 "caption": message.caption,
             }
         )
+    elif message.video:
+        attachments.append(
+            {
+                "file_type": "video",
+                "file_id": message.video.file_id,
+                "file_unique_id": message.video.file_unique_id,
+                "caption": message.caption,
+            }
+        )
     else:
         await message.answer("Пришлите фото/файл или нажмите «✅ Отправить отчёт».")
         return
@@ -412,6 +421,15 @@ async def issue_attach(message: Message, state: FSMContext) -> None:
                 "file_type": "photo",
                 "file_id": ph.file_id,
                 "file_unique_id": ph.file_unique_id,
+                "caption": message.caption,
+            }
+        )
+    elif message.video:
+        attachments.append(
+            {
+                "file_type": "video",
+                "file_id": message.video.file_id,
+                "file_unique_id": message.video.file_unique_id,
                 "caption": message.caption,
             }
         )

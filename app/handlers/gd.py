@@ -892,6 +892,8 @@ async def gd_write_send_message(
     elif message.photo:
         ph = message.photo[-1]
         file_info = {"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id}
+    elif message.video:
+        file_info = {"file_type": "video", "file_id": message.video.file_id, "file_unique_id": message.video.file_unique_id}
 
     if not text and not file_info:
         await message.answer("Введите текст или прикрепите файл.")

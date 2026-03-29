@@ -374,6 +374,15 @@ async def docs_collect_attachments(message: Message, state: FSMContext) -> None:
                 "caption": message.caption,
             }
         )
+    elif message.video:
+        attachments.append(
+            {
+                "file_type": "video",
+                "file_id": message.video.file_id,
+                "file_unique_id": message.video.file_unique_id,
+                "caption": message.caption,
+            }
+        )
     elif message.text and message.text.strip() and message.text.strip() != "❌ Отмена":
         # treat as additional note
         note = message.text.strip()
@@ -607,6 +616,15 @@ async def quote_collect_attachments(message: Message, state: FSMContext) -> None
                 "file_type": "photo",
                 "file_id": ph.file_id,
                 "file_unique_id": ph.file_unique_id,
+                "caption": message.caption,
+            }
+        )
+    elif message.video:
+        attachments.append(
+            {
+                "file_type": "video",
+                "file_id": message.video.file_id,
+                "file_unique_id": message.video.file_unique_id,
                 "caption": message.caption,
             }
         )
@@ -876,6 +894,15 @@ async def payment_collect_attachments(message: Message, state: FSMContext) -> No
                 "caption": message.caption,
             }
         )
+    elif message.video:
+        attachments.append(
+            {
+                "file_type": "video",
+                "file_id": message.video.file_id,
+                "file_unique_id": message.video.file_unique_id,
+                "caption": message.caption,
+            }
+        )
     elif message.text and message.text.strip() and message.text.strip() != "❌ Отмена":
         note = message.text.strip()
         prev = data.get("comment", "")
@@ -1100,6 +1127,15 @@ async def closing_collect_attachments(message: Message, state: FSMContext) -> No
                 "file_type": "photo",
                 "file_id": ph.file_id,
                 "file_unique_id": ph.file_unique_id,
+                "caption": message.caption,
+            }
+        )
+    elif message.video:
+        attachments.append(
+            {
+                "file_type": "video",
+                "file_id": message.video.file_id,
+                "file_unique_id": message.video.file_unique_id,
                 "caption": message.caption,
             }
         )
@@ -1457,6 +1493,15 @@ async def issue_collect_attachments(message: Message, state: FSMContext) -> None
                 "file_type": "photo",
                 "file_id": ph.file_id,
                 "file_unique_id": ph.file_unique_id,
+                "caption": message.caption,
+            }
+        )
+    elif message.video:
+        attachments.append(
+            {
+                "file_type": "video",
+                "file_id": message.video.file_id,
+                "file_unique_id": message.video.file_unique_id,
                 "caption": message.caption,
             }
         )
