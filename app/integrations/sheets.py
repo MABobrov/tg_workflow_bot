@@ -454,6 +454,29 @@ class GoogleSheetsService:
         }
         _c = cost or {}
         _li = invoice.get("_lead_info") or {}
+        _inv_num = invoice.get("invoice_number") or ""
+
+        # LEAD-строки: только ID, менеджер, номер, клиент + лид-колонки (86-112)
+        if str(_inv_num).startswith("LEAD-"):
+            cells: dict[int, Any] = {
+                0: invoice.get("id") or "",
+                2: manager_label,
+                4: invoice.get("client_name") or "",
+                8: _inv_num,
+                9: invoice.get("object_address") or "",
+            }
+            for _i, _suf in enumerate(("kv", "kia", "npn")):
+                _base = 86 + _i * 9
+                cells[_base]     = invoice.get(f"lead_{_suf}_num") or ""
+                cells[_base + 1] = self._fmt_sheet_date(invoice.get(f"lead_{_suf}_date"))
+                cells[_base + 2] = invoice.get(f"lead_{_suf}_name") or ""
+                cells[_base + 3] = invoice.get(f"lead_{_suf}_phone") or ""
+                cells[_base + 4] = invoice.get(f"lead_{_suf}_address") or ""
+                cells[_base + 5] = invoice.get(f"inv_{_suf}_num") or ""
+                cells[_base + 6] = invoice.get(f"inv_{_suf}_phone") or ""
+                cells[_base + 7] = invoice.get(f"inv_{_suf}_address") or ""
+                cells[_base + 8] = self._fmt_sheet_date(invoice.get(f"inv_{_suf}_date"))
+            return cells
 
         cells: dict[int, Any] = {
             0: invoice.get("id") or "",
