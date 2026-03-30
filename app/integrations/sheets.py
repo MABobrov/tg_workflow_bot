@@ -848,6 +848,19 @@ class GoogleSheetsService:
             except Exception:
                 pass
 
+            # Очистить лишние строки после последней записанной
+            try:
+                last_data_row = count + 1  # +1 for header
+                total_rows = ws.row_count
+                if total_rows > last_data_row:
+                    # Очистить содержимое лишних строк
+                    col_count = ws.col_count
+                    col_letter = gspread.utils.rowcol_to_a1(1, col_count).rstrip("1")
+                    clear_range = f"A{last_data_row + 1}:{col_letter}{total_rows}"
+                    ws.batch_clear([clear_range])
+            except Exception:
+                pass
+
             # Сортировка: старые счета вверху, новые внизу.
             # Столбец K (index=10) = receipt_date, записан как =DATE() — корректная сортировка.
             try:

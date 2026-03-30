@@ -2884,6 +2884,7 @@ class Database:
         limit: int = 50,
         *,
         only_regular: bool = False,
+        project_id: int | None = None,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -2896,6 +2897,9 @@ class Database:
         if status is not None:
             clauses.append("status = ?")
             params.append(status)
+        if project_id is not None:
+            clauses.append("project_id = ?")
+            params.append(project_id)
         if marker is not None:
             clauses.append("invoice_number LIKE ?")
             params.append(f"%{marker}%")
