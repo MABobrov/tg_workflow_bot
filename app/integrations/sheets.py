@@ -841,12 +841,7 @@ class GoogleSheetsService:
                 count += 1
             self._flush_batch_update(ws, batch_data, chunk_size=500)
 
-            # Очистить строки LEAD- (у них свои столбцы, не нужны как строки)
-            try:
-                if self._clear_lead_rows(ws):
-                    self._row_indexes.pop(self.cfg.invoices_tab, None)
-            except Exception:
-                pass
+            # LEAD-строки остаются — данные лида видны в колонках Лид КВ/КИА/НПН
 
             # Очистить лишние строки после последней записанной
             try:

@@ -81,8 +81,7 @@ async def export_to_sheets(
     invoice_count = 0
     if sync_invoices:
         all_invoices = await db.list_invoices(limit=10000)
-        # LEAD-записи не экспортируются как строки — у них свои столбцы
-        all_invoices = [inv for inv in all_invoices if not (inv.get("invoice_number") or "").startswith("LEAD-")]
+        # LEAD-записи экспортируются — данные лида видны в колонках Лид КВ/КИА/НПН
         invoices = sorted(
             all_invoices,
             key=lambda item: (item.get("receipt_date") or "9999-12-31", int(item["id"])),
