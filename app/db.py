@@ -3594,6 +3594,31 @@ class Database:
         row = await cur.fetchone()
         return dict(row) if row else None
 
+    async def cancel_lead(self, lead_id: int) -> dict[str, Any] | None:
+        """Delete lead and all related entities (task, LEAD-invoice, project)."""
+        lead = await self.get_lead_tracking(lead_id)
+        if not lead:
+            return None
+        task_id = lead.get("task_id")
+        project_id = lead.get("project_id")
+        # delete task + attachments
+        if task_id:
+            await self.conn.execute("DELETE FROM attachments WHERE task_id = ?", (task_id,))
+            await self.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        # delete LEAD-invoice
+        await self.conn.execute(
+            "DELETE FROM invoices WHERE invoice_number = ?", (f"LEAD-{lead_id}",)
+        )
+        # delete project (only if status='lead')
+        if project_id:
+            await self.conn.execute(
+                "DELETE FROM projects WHERE id = ? AND status = 'lead'", (project_id,)
+            )
+        # delete lead_tracking
+        await self.conn.execute("DELETE FROM lead_tracking WHERE id = ?", (lead_id,))
+        await self.conn.commit()
+        return lead
+
     async def get_lead_stats(self) -> dict[str, Any]:
         """Get lead conversion statistics grouped by manager and source."""
         # By manager role

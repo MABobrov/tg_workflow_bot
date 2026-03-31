@@ -32,7 +32,7 @@ from typing import Any
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
@@ -2463,10 +2463,44 @@ async def lead_view(cb: CallbackQuery, db: Database) -> None:
     text += proc_time
 
     b = InlineKeyboardBuilder()
+    if not lead.get("response_at"):
+        b.button(text="❌ Отменить лид", callback_data=f"rp_lead:cancel:{lead['id']}")
     b.button(text="⬅️ Назад к списку", callback_data="rp_lead:refresh")
     b.adjust(1)
 
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.regexp(r"^rp_lead:cancel:\d+$"))
+async def lead_cancel(cb: CallbackQuery, db: Database, config: Config) -> None:
+    """РП отменяет отправленный лид."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    lead_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    lead = await db.cancel_lead(lead_id)
+    if not lead:
+        await cb.message.answer("❌ Лид не найден или уже удалён.")  # type: ignore[union-attr]
+        return
+
+    # Уведомить менеджера об отмене
+    manager_id = lead.get("assigned_manager_id")
+    if manager_id:
+        notifier = Notifier(cb.bot, config)  # type: ignore[arg-type]
+        await notifier.safe_send(
+            int(manager_id),
+            f"🚫 <b>Лид #{lead_id} отменён РП</b>\n"
+            f"Задача по лиду удалена.",
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(manager_id))
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Лид #{lead_id} удалён.",
+        reply_markup=InlineKeyboardBuilder([
+            [InlineKeyboardButton(text="⬅️ К лидам", callback_data="rp_lead:refresh")]
+        ]).as_markup(),
+    )
 
 
 @router.callback_query(F.data == "rp_lead:stats")
