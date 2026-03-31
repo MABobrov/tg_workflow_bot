@@ -237,19 +237,29 @@ class ReplyToGDSG(StatesGroup):
 # ======================================================================
 
 class CheckKpSG(StatesGroup):
-    """Менеджер: Проверить КП — выбрать лид и прикрепить КП."""
-    invoice_number = State()     # выбор лида (inline buttons)
-    documents = State()          # вложения (КП)
+    """Менеджер: Проверить КП / Счет — отправка КП на проверку РП."""
+    lead_pick = State()          # шаг 1: выбор лида или «Новый клиент»
+    # --- Только для нового клиента ---
+    client_name = State()        # контрагент
+    address = State()            # адрес установки
+    # --- Обе ветки ---
+    amount = State()             # полная сумма
+    # --- Только для нового клиента ---
+    payment_type = State()       # тип оплаты (100%, рассрочка и т.д.)
+    deadline_days = State()      # срок по договору (дни)
+    # --- Обе ветки ---
+    documents = State()          # вложения (КП файлы)
     comment = State()            # комментарий
 
 
 class KpReviewSG(StatesGroup):
-    """РП: полный flow ответа на CHECK_KP (Этап 5).
+    """РП: полный flow ответа на CHECK_KP.
 
     Flow:
-    - Да → payment_type → (б/н: documents → comment) / (Кред: comment)
+    - Да → invoice_number → payment_type → (б/н: documents → comment) / (Кред: comment)
     - Нет → reject_comment
     """
+    invoice_number = State()     # РП вводит номер счёта
     payment_type = State()       # выбор: б/н или Кред
     documents = State()          # вложения (Счёт, Договор, Приложение) — только б/н
     comment = State()            # комментарий (для «Да»)

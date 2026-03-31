@@ -50,6 +50,7 @@ from ..keyboards import (
     edo_invoice_pick_kb,
     edo_type_kb,
     invoice_list_kb,
+    lead_picker_for_kp_kb,
     main_menu,
     manager_chat_submenu,
     tasks_kb,
@@ -168,76 +169,141 @@ _CHAT_CHANNEL_LABEL: dict[str, str] = {
 async def start_check_kp(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
         return
-    await state.clear()
-    user_id = message.from_user.id
-
-    # Получить лиды менеджера (только активные, без invoice_issued)
-    leads = await db.list_leads(assigned_manager_id=user_id, status="lead")
-
-    if not leads:
-        await message.answer("📋 Нет активных лидов.\nОжидайте назначения от РП.")
+    if not message.from_user:
         return
+    await state.clear()
+    leads = await db.list_open_lead_tasks_for_manager(message.from_user.id)
+    await state.set_state(CheckKpSG.lead_pick)
+    if leads:
+        await message.answer(
+            "📋 <b>Проверить КП / Счет</b>\n\n"
+            "Выберите лид или создайте нового клиента:",
+            reply_markup=lead_picker_for_kp_kb(leads),
+        )
+    else:
+        await message.answer(
+            "📋 <b>Проверить КП / Счет</b>\n\n"
+            "У вас пока нет назначенных лидов.\n"
+            "Создайте нового клиента:",
+            reply_markup=lead_picker_for_kp_kb([]),
+        )
 
-    b = InlineKeyboardBuilder()
-    for lead in leads:
-        inv_id = lead.get("invoice_id")
-        label = f"Лид #{lead['id']}"
-        if inv_id:
-            inv = await db.get_invoice(int(inv_id))
-            if inv:
-                name = inv.get("client_name") or "—"
-                label = f"#{lead['id']} {name}"
-        b.button(text=label, callback_data=f"check_kp_lead:{lead['id']}")
-    b.adjust(1)
 
-    await state.set_state(CheckKpSG.invoice_number)
-    await message.answer(
-        "📋 <b>Проверить КП</b>\n\n"
-        "Выберите лид для прикрепления КП:",
-        reply_markup=b.as_markup(),
+@router.callback_query(CheckKpSG.lead_pick, F.data == "kp_lead:new")
+async def check_kp_new_client(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    await state.update_data(flow_type="new")
+    await state.set_state(CheckKpSG.client_name)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "Шаг 1/7: Введите <b>контрагента</b> (название компании/ФИО):"
     )
 
 
-@router.callback_query(CheckKpSG.invoice_number, F.data.startswith("check_kp_lead:"))
+@router.callback_query(CheckKpSG.lead_pick, F.data.regexp(r"^kp_lead:pick:\d+$"))
 async def check_kp_pick_lead(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Менеджер выбрал лид → показать данные и перейти к КП."""
     await cb.answer()
-    lead_id = int((cb.data or "").split(":")[1])
-
-    lead = await db.get_lead_tracking(lead_id)
-    if not lead or not lead.get("invoice_id"):
+    lead_task_id = int((cb.data or "").split(":")[-1])
+    lead_task = await db.get_task(lead_task_id)
+    if not lead_task:
         await cb.message.answer("❌ Лид не найден.")  # type: ignore[union-attr]
-        await state.clear()
         return
-
-    inv = await db.get_invoice(int(lead["invoice_id"]))
-    if not inv:
-        await cb.message.answer("❌ Данные лида не найдены.")  # type: ignore[union-attr]
-        await state.clear()
-        return
-
-    client_name = inv.get("client_name") or "—"
-    desc = inv.get("description") or "—"
-    manager_role = lead.get("assigned_manager_role") or "manager"
-
+    payload = try_json_loads(lead_task.get("payload_json"))
+    client_name = payload.get("description", "")
+    lead_source = payload.get("source", "")
     await state.update_data(
-        lead_id=lead_id,
-        existing_invoice_id=inv["id"],
-        invoice_number=inv["invoice_number"],
+        flow_type="lead",
+        lead_task_id=lead_task_id,
         client_name=client_name,
-        address=inv.get("object_address") or "",
-        amount=0,
-        payment_type="",
-        deadline_days=None,
-        manager_role=manager_role,
-        documents=[],
+        lead_source=lead_source,
+        address="",
     )
     await state.set_state(CheckKpSG.documents)
     await cb.message.answer(  # type: ignore[union-attr]
-        f"📄 <b>Лид #{lead_id}</b>\n"
-        f"👤 {client_name}\n"
-        f"📝 {desc}\n\n"
-        "Прикрепите <b>КП</b> (файл, фото или видео):",
+        f"📌 Лид: <b>{client_name[:50]}</b>\n\n"
+        "Прикрепите <b>КП</b> (файл или фото расчёта):"
+    )
+
+
+@router.message(CheckKpSG.client_name)
+async def check_kp_client_name(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Введите контрагента:")
+        return
+    await state.update_data(client_name=text)
+    await state.set_state(CheckKpSG.address)
+    await message.answer("Шаг 2/7: Введите <b>адрес установки</b>:")
+
+
+@router.message(CheckKpSG.address)
+async def check_kp_address(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Введите адрес:")
+        return
+    await state.update_data(address=text)
+    await state.set_state(CheckKpSG.amount)
+    await message.answer("Шаг 3/7: Введите <b>полную сумму</b> (число):")
+
+
+@router.message(CheckKpSG.amount)
+async def check_kp_amount(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip().replace(",", ".").replace(" ", "")
+    try:
+        amount = float(text)
+    except (ValueError, TypeError):
+        await message.answer("Введите число (сумма):")
+        return
+    await state.update_data(amount=amount)
+    data = await state.get_data()
+
+    if data.get("flow_type") == "lead":
+        # Короткий путь: после суммы → комментарий
+        await state.set_state(CheckKpSG.comment)
+        await message.answer("Добавьте <b>комментарий</b> (или отправьте «—» для пропуска):")
+    else:
+        # Полная форма: → тип оплаты
+        await state.set_state(CheckKpSG.payment_type)
+        b = InlineKeyboardBuilder()
+        b.button(text="100% предоплата", callback_data="kp_pay:100")
+        b.button(text="50/50", callback_data="kp_pay:5050")
+        b.button(text="Рассрочка", callback_data="kp_pay:installment")
+        b.button(text="Другое", callback_data="kp_pay:other")
+        b.adjust(2)
+        await message.answer(
+            "Шаг 4/7: Выберите <b>тип оплаты</b>:",
+            reply_markup=b.as_markup(),
+        )
+
+
+@router.callback_query(CheckKpSG.payment_type, F.data.startswith("kp_pay:"))
+async def check_kp_payment_type(cb: CallbackQuery, state: FSMContext) -> None:
+    pay_type = (cb.data or "").split(":", 1)[1]
+    labels = {"100": "100% предоплата", "5050": "50/50", "installment": "Рассрочка", "other": "Другое"}
+    await state.update_data(payment_type=labels.get(pay_type, pay_type))
+    await state.set_state(CheckKpSG.deadline_days)
+    await cb.message.edit_text(  # type: ignore[union-attr]
+        f"✅ Тип оплаты: <b>{labels.get(pay_type, pay_type)}</b>"
+    )
+    await cb.message.answer(  # type: ignore[union-attr]
+        "Шаг 5/7: Введите <b>срок по договору</b> (кол-во дней):"
+    )
+    await cb.answer()
+
+
+@router.message(CheckKpSG.deadline_days)
+async def check_kp_deadline(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    try:
+        days = int(text)
+    except (ValueError, TypeError):
+        await message.answer("Введите число (кол-во дней):")
+        return
+    await state.update_data(deadline_days=days)
+    await state.set_state(CheckKpSG.documents)
+    await message.answer(
+        "Шаг 6/7: Прикрепите <b>КП</b> (коммерческое предложение).\n"
+        "Отправьте файл(ы) или фото."
     )
 
 
@@ -270,19 +336,22 @@ async def check_kp_documents(message: Message, state: FSMContext) -> None:
         })
     else:
         if not attachments:
-            await message.answer("Пришлите файл, фото или видео КП:")
+            await message.answer("Пришлите файл или фото КП:")
             return
-        # Treat text as additional comment
         await state.update_data(documents=attachments)
-        await state.set_state(CheckKpSG.comment)
-        await message.answer("Шаг 5/5: Добавьте <b>комментарий</b> (или отправьте «—» для пропуска):")
+        if data.get("flow_type") == "lead":
+            await state.set_state(CheckKpSG.amount)
+            await message.answer("Введите <b>сумму</b> из расчёта (число):")
+        else:
+            await state.set_state(CheckKpSG.comment)
+            await message.answer("Шаг 7/7: Добавьте <b>комментарий</b> (или отправьте «—» для пропуска):")
         return
 
     await state.update_data(documents=attachments)
     await answer_service(
         message,
         f"📎 Принял. Файлов: <b>{len(attachments)}</b>.\n"
-        "Отправьте ещё файлы или напишите что-нибудь для перехода к комментарию.",
+        "Отправьте ещё файлы или напишите что-нибудь для перехода к следующему шагу.",
     )
 
 
@@ -302,29 +371,25 @@ async def check_kp_comment(
         comment = ""
     data = await state.get_data()
 
-    invoice_number = data["invoice_number"]
-    existing_inv_id = data.get("existing_invoice_id")
+    flow_type = data.get("flow_type", "new")
+    lead_task_id = data.get("lead_task_id")
     client_name = data.get("client_name", "")
     address = data.get("address", "")
     amount = data.get("amount", 0)
     payment_type = data.get("payment_type", "")
     deadline_days = data.get("deadline_days")
+    lead_source = data.get("lead_source", "")
     documents = data.get("documents", [])
 
-    # Create task for RP
     rp_id = await resolve_default_assignee(db, config, Role.RP)
     if not rp_id:
-        await message.answer("⚠️ РП не найден. Попросите администратора назначить роль РП.")
+        await message.answer("⚠️ РП не найден. Назначьте роль RP.")
         await state.clear()
         return
-    self_assigned = int(rp_id) == message.from_user.id
 
     role = await _current_role(db, message.from_user.id)
-
     role_label = {"manager_kv": "Менеджер КВ", "manager_kia": "Менеджер КИА", "manager_npn": "Менеджер НПН"}.get(role or "", "Менеджер")
 
-    # Менеджер НЕ создаёт invoice — только отправляет КП на проверку РП.
-    # РП создаёт invoice при одобрении.
     task = await db.create_task(
         project_id=None,
         type_=TaskType.CHECK_KP,
@@ -333,21 +398,20 @@ async def check_kp_comment(
         assigned_to=int(rp_id),
         due_at_iso=None,
         payload={
-            "invoice_id": existing_inv_id,
-            "invoice_number": invoice_number,
+            "flow_type": flow_type,
+            "lead_task_id": lead_task_id,
             "client_name": client_name,
             "address": address,
             "amount": amount,
             "payment_type": payment_type,
             "deadline_days": deadline_days,
+            "lead_source": lead_source,
             "comment": comment,
             "manager_role": role or "manager",
             "manager_id": message.from_user.id,
-            "is_new_invoice": not bool(existing_inv_id),
         },
     )
 
-    # Save attachments
     for a in documents:
         await db.add_attachment(
             task_id=int(task["id"]),
@@ -357,58 +421,40 @@ async def check_kp_comment(
             caption=a.get("caption"),
         )
 
-    # Notify RP (skip notification if self-assigned — dual-role user)
-    if not self_assigned:
-        initiator = await get_initiator_label(db, message.from_user.id)
-        is_new = "🆕 Новый" if not existing_inv_id else "📄 Существующий"
-        msg_text = (
-            f"📋 <b>КП от {role_label}</b> ({is_new})\n"
-            f"👤 От: {initiator}\n\n"
-            f"📄 Счёт №: <code>{invoice_number}</code>\n"
-        )
-        if client_name:
-            msg_text += f"🏢 Контрагент: {client_name}\n"
-        if address:
-            msg_text += f"📍 Адрес: {address}\n"
-        if amount:
-            msg_text += f"💰 Сумма: {amount:,.0f}₽\n"
-        if payment_type:
-            msg_text += f"💳 Тип оплаты: {payment_type}\n"
-        if deadline_days:
-            msg_text += f"⏰ Срок: {deadline_days} дн.\n"
-        if comment:
-            msg_text += f"💬 Комментарий: {comment}\n"
+    initiator = await get_initiator_label(db, message.from_user.id)
+    flow_label = "📌 Лид" if flow_type == "lead" else "🆕 Новый клиент"
+    msg_text = (
+        f"📋 <b>КП от {role_label}</b> ({flow_label})\n"
+        f"👤 От: {initiator}\n\n"
+    )
+    if client_name:
+        msg_text += f"🏢 Клиент: {client_name}\n"
+    if address:
+        msg_text += f"📍 Адрес: {address}\n"
+    if amount:
+        msg_text += f"💰 Сумма: {amount:,.0f}₽\n"
+    if payment_type:
+        msg_text += f"💳 Тип оплаты: {payment_type}\n"
+    if deadline_days:
+        msg_text += f"⏰ Срок: {deadline_days} дн.\n"
+    if lead_source:
+        msg_text += f"📌 Источник: {lead_source}\n"
+    if comment:
+        msg_text += f"💬 Комментарий: {comment}\n"
 
-        b_kp = InlineKeyboardBuilder()
-        b_kp.button(text="📋 Ответить на КП", callback_data=f"kp_review:{task['id']}")
-        b_kp.adjust(1)
+    b_kp = InlineKeyboardBuilder()
+    b_kp.button(text="📋 Ответить на КП", callback_data=f"kp_review:{task['id']}")
+    b_kp.adjust(1)
 
-        await notifier.safe_send(int(rp_id), msg_text, reply_markup=b_kp.as_markup())
-        log.info("CheckKP task #%s: sending %d attachment(s) to RP %s", task["id"], len(documents), rp_id)
-        for a in documents:
-            ok = await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
-            if not ok:
-                log.warning("CheckKP task #%s: failed to send %s to RP %s", task["id"], a["file_type"], rp_id)
-        await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
-    else:
-        log.info("CheckKP task #%s: self-assigned (dual-role), skipping RP notification", task["id"])
+    await notifier.safe_send(int(rp_id), msg_text, reply_markup=b_kp.as_markup())
+    for a in documents:
+        await notifier.safe_send_media(int(rp_id), a["file_type"], a["file_id"], caption=a.get("caption"))
+    await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
 
-    status_msg = "создан" if not existing_inv_id else "обновлён"
     menu_role, isolated_role = await _current_menu(db, message.from_user.id)
     await state.clear()
-
-    if self_assigned:
-        confirm_text = (
-            f"✅ КП сохранено. Счёт №{invoice_number} {status_msg}.\n"
-            "Переключитесь в режим РП для выставления счёта."
-        )
-    else:
-        confirm_text = (
-            f"✅ КП отправлено РП на проверку.\n"
-            f"Счёт №{invoice_number} {status_msg}."
-        )
     await message.answer(
-        confirm_text,
+        "✅ КП отправлено РП на проверку.",
         reply_markup=private_only_reply_markup(
             message,
             main_menu(

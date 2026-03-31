@@ -3006,13 +3006,24 @@ async def _show_kp_task_card(
     except (ValueError, TypeError):
         amount_str = f"{amount}₽"
 
-    text = (
-        f"📋 <b>Проверка КП — карточка</b>\n\n"
-        f"📄 Счёт №: <code>{invoice_number}</code>\n"
+    client_name = payload.get("client_name", "")
+    flow_type = payload.get("flow_type", "")
+    lead_source = payload.get("lead_source", "")
+    invoice_number = payload.get("invoice_number")
+    flow_label = "📌 Лид" if flow_type == "lead" else "🆕 Новый клиент"
+
+    text = f"📋 <b>Проверка КП — карточка</b> ({flow_label})\n\n"
+    if invoice_number:
+        text += f"📄 Счёт №: <code>{invoice_number}</code>\n"
+    if client_name:
+        text += f"🏢 Клиент: {client_name}\n"
+    text += (
         f"📍 Адрес: {address}\n"
         f"💰 Сумма: {amount_str}\n"
         f"👤 От: {mgr_name}\n"
     )
+    if lead_source:
+        text += f"📌 Источник: {lead_source}\n"
     if comment:
         text += f"💬 Комментарий: {comment}\n"
 
@@ -3094,11 +3105,11 @@ async def kp_back_to_list(cb: CallbackQuery, state: FSMContext, db: Database) ->
     )
 
 
-# ---------- ДА → Выбор типа оплаты ----------
+# ---------- ДА → Ввод номера счёта ----------
 
 @router.callback_query(F.data.regexp(r"^kp_resp:yes:\d+$"))
 async def kp_resp_yes(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """РП нажал Да → сбор документов (Счёт, Договор, Приложение)."""
+    """РП нажал Да → ввод номера счёта."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
@@ -3109,15 +3120,48 @@ async def kp_resp_yes(cb: CallbackQuery, state: FSMContext, db: Database) -> Non
         await cb.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
         return
 
+    payload = json.loads(task.get("payload_json") or "{}")
+    client_name = payload.get("client_name", "")
+    try:
+        amount_str = f"{float(payload.get('amount', 0)):,.0f}₽"
+    except (ValueError, TypeError):
+        amount_str = f"{payload.get('amount', 0)}₽"
+
     await state.clear()
-    await state.set_state(KpReviewSG.documents)
-    await state.update_data(task_id=task_id, documents=[])
+    await state.set_state(KpReviewSG.invoice_number)
+    await state.update_data(task_id=task_id)
 
     await cb.message.answer(  # type: ignore[union-attr]
-        "📋 <b>Одобрение КП</b>\n\n"
-        "Прикрепите готовые документы:\n"
-        "• Счёт\n• Договор\n• Приложение к договору\n\n"
-        "Отправляйте файлы по одному.",
+        f"📋 <b>Выставление счёта</b>\n"
+        f"🏢 Клиент: {client_name}\n"
+        f"💰 Сумма: {amount_str}\n\n"
+        "Введите <b>номер счёта</b>:",
+    )
+
+
+@router.message(KpReviewSG.invoice_number)
+async def kp_review_invoice_number(message: Message, state: FSMContext, db: Database) -> None:
+    """РП вводит номер счёта → проверка дублей → выбор типа оплаты."""
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Введите номер счёта:")
+        return
+
+    existing = await db.get_invoice_by_number(text)
+    if existing:
+        await message.answer(
+            f"⚠️ Счёт №{text} уже существует в базе.\n"
+            "Введите другой номер:"
+        )
+        return
+
+    data = await state.get_data()
+    task_id = data["task_id"]
+    await state.update_data(invoice_number=text)
+    await message.answer(
+        f"✅ Номер счёта: <b>№{text}</b>\n\n"
+        "Выберите <b>систему оплаты</b>:",
+        reply_markup=kp_payment_type_kb(task_id),
     )
 
 
@@ -3131,9 +3175,8 @@ async def kp_resp_bn(cb: CallbackQuery, state: FSMContext, db: Database) -> None
     await cb.answer()
 
     task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    await state.clear()
     await state.set_state(KpReviewSG.documents)
-    await state.update_data(task_id=task_id, payment_type="bn", documents=[])
+    await state.update_data(payment_type="bn", documents=[])
 
     await cb.message.answer(  # type: ignore[union-attr]
         "📋 <b>Ответ на КП (б/н)</b>\n\n"
@@ -3217,9 +3260,8 @@ async def kp_resp_cred(cb: CallbackQuery, state: FSMContext, db: Database) -> No
     await cb.answer()
 
     task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    await state.clear()
     await state.set_state(KpReviewSG.comment)
-    await state.update_data(task_id=task_id, payment_type="cred", documents=[])
+    await state.update_data(payment_type="cred", documents=[])
 
     await cb.message.answer(  # type: ignore[union-attr]
         "🏦 <b>Ответ на КП (Кред)</b>\n\n"
@@ -3238,7 +3280,7 @@ async def kp_review_comment(
     config: Config,
     notifier: Notifier,
 ) -> None:
-    """Финализация ответа «Да» → РП выставляет счёт."""
+    """Финализация ответа «Да» → РП создаёт invoice с введённым номером."""
     if not message.from_user:
         return
     comment = (message.text or "").strip()
@@ -3247,6 +3289,8 @@ async def kp_review_comment(
 
     data = await state.get_data()
     task_id = data["task_id"]
+    invoice_number = data.get("invoice_number", "")
+    payment_type = data.get("payment_type", "bn")
     documents = data.get("documents", [])
 
     task = await db.get_task(task_id)
@@ -3257,147 +3301,117 @@ async def kp_review_comment(
 
     payload = json.loads(task.get("payload_json") or "{}")
     manager_id = payload.get("manager_id")
-    invoice_number = payload.get("invoice_number", "?")
-    invoice_id = payload.get("invoice_id")  # set only for existing invoices
     manager_role = payload.get("manager_role", "manager")
+    client_name = payload.get("client_name", "")
+    address = payload.get("address", "")
+    amount = payload.get("amount", 0)
+    p_payment_type = payload.get("payment_type", "")
+    deadline_days = payload.get("deadline_days")
 
-    # Mark task as done
-    await db.update_task_status(task_id, TaskStatus.DONE)
+    is_credit = payment_type == "cred"
 
-    # РП выставляет счёт: создаёт invoice (или обновляет существующий)
-    # Статус б/н или кредит определяется из Импорт ОП, не здесь
-    is_new = payload.get("is_new_invoice", True)
+    # РП создаёт project + invoice
+    project = await db.create_project(
+        title=f"Счёт: {invoice_number}",
+        address=address or None,
+        client=client_name or None,
+        amount=float(amount) if amount else None,
+        deadline_iso=None,
+        status="active",
+        manager_id=int(manager_id) if manager_id else None,
+        rp_id=message.from_user.id,
+    )
+    project_id = int(project["id"])
 
-    if is_new and not invoice_id:
-        # Создаём project + invoice (РП выставляет счёт)
-        project = await db.create_project(
-            title=f"Счёт: {invoice_number}",
-            address=payload.get("address") or None,
-            client=payload.get("client_name") or None,
-            amount=float(payload.get("amount") or 0) or None,
-            deadline_iso=None,
-            status="active",
-            manager_id=int(manager_id) if manager_id else None,
-            rp_id=message.from_user.id,
-        )
-        project_id = int(project["id"])
-
+    inv_id: int | None = None
+    if invoice_number:
         try:
-            invoice_id = await db.create_invoice(
+            inv_id = await db.create_invoice(
                 invoice_number=invoice_number,
                 project_id=project_id,
                 created_by=int(manager_id) if manager_id else message.from_user.id,
                 creator_role=manager_role,
-                client_name=payload.get("client_name", ""),
-                object_address=payload.get("address", ""),
-                amount=payload.get("amount", 0),
-                description=payload.get("comment", ""),
-                payment_terms=payload.get("payment_type", ""),
-                deadline_days=payload.get("deadline_days"),
+                client_name=client_name,
+                object_address=address,
+                amount=float(amount) if amount else 0.0,
+                description=comment,
+                payment_terms=p_payment_type,
+                deadline_days=deadline_days,
             )
-        except ValueError:
+        except (ValueError, Exception) as exc:
+            log.warning("create_invoice failed: %s", exc)
             await message.answer(
-                f"⚠️ Счёт №{invoice_number} уже существует в базе."
+                f"⚠️ Ошибка при создании счёта №{invoice_number}: {exc}\n"
+                "Попробуйте ещё раз."
             )
             await state.clear()
             return
 
-        # Статус pending_payment, документы
-        upd: dict[str, Any] = {"status": InvoiceStatus.PENDING_PAYMENT}
-        if documents:
-            upd["documents_json"] = json.dumps(documents, ensure_ascii=False)
+    # Update invoice status
+    if inv_id:
+        upd: dict[str, Any] = {}
+        if is_credit:
+            upd["is_credit"] = 1
+            upd["status"] = InvoiceStatus.CREDIT
+        else:
+            upd["is_credit"] = 0
+            upd["status"] = InvoiceStatus.PENDING_PAYMENT
+            if documents:
+                upd["documents_json"] = json.dumps(documents, ensure_ascii=False)
+
         # Фиксация inv_* полей по роли менеджера
         _role_suf = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}.get(manager_role, "")
         if _role_suf:
             from ..utils import utcnow as _utcnow
             upd[f"inv_{_role_suf}_num"] = invoice_number
-            upd[f"inv_{_role_suf}_name"] = payload.get("client_name", "")
-            upd[f"inv_{_role_suf}_address"] = payload.get("address", "")
+            upd[f"inv_{_role_suf}_name"] = client_name
+            upd[f"inv_{_role_suf}_address"] = address
             upd[f"inv_{_role_suf}_date"] = _utcnow().strftime("%Y-%m-%d")
-            # Копируем lead_* и телефон из LEAD-инвойса
-            _lead_invs = await db.list_invoices(project_id=project_id)
-            for _li in _lead_invs:
-                if str(_li.get("invoice_number", "")).startswith("LEAD-"):
-                    # Копируем все lead_* поля в реальный счёт
-                    for _fld in ("num", "date", "name", "phone", "address"):
-                        _val = _li.get(f"lead_{_role_suf}_{_fld}") or ""
-                        if _val:
-                            upd[f"lead_{_role_suf}_{_fld}"] = _val
-                    # Телефон для inv_*
-                    _ph = _li.get(f"lead_{_role_suf}_phone") or ""
-                    if _ph:
-                        upd[f"inv_{_role_suf}_phone"] = _ph
-                    break
-        await db.update_invoice(invoice_id, **upd)
+        await db.update_invoice(inv_id, **upd)
 
-        # Лид → "счет выставлен" (фиксация менеджера + даты)
-        # Если lead_tracking записи нет — создаёт привязку менеджера к счёту
+        # Лид → "счет выставлен"
         try:
             await db.update_lead_to_invoice_issued(
-                project_id, invoice_id,
+                project_id, inv_id,
                 manager_id=int(manager_id) if manager_id else None,
                 manager_role=manager_role,
             )
         except Exception:
             log.warning("Failed to update lead status for project_id=%s", project_id)
 
-    elif invoice_id:
-        # Существующий invoice — обновляем статус + документы
-        upd2: dict[str, Any] = {"status": InvoiceStatus.PENDING_PAYMENT}
-        if documents:
-            upd2["documents_json"] = json.dumps(documents, ensure_ascii=False)
-        # Фиксация inv_* полей по роли менеджера
-        _role_suf2 = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}.get(manager_role, "")
-        if _role_suf2:
-            from ..utils import utcnow as _utcnow2
-            upd2[f"inv_{_role_suf2}_num"] = invoice_number
-            upd2[f"inv_{_role_suf2}_name"] = payload.get("client_name", "")
-            upd2[f"inv_{_role_suf2}_address"] = payload.get("address", "")
-            upd2[f"inv_{_role_suf2}_date"] = _utcnow2().strftime("%Y-%m-%d")
-            # Копируем lead_* и телефон из LEAD-инвойса (ищем по project_id)
-            _existing = await db.get_invoice(invoice_id)
-            if _existing:
-                _pid = _existing.get("project_id")
-                if _pid:
-                    _lead_invs2 = await db.list_invoices(project_id=int(_pid))
-                    for _li2 in _lead_invs2:
-                        if str(_li2.get("invoice_number", "")).startswith("LEAD-"):
-                            for _fld2 in ("num", "date", "name", "phone", "address"):
-                                _val2 = _li2.get(f"lead_{_role_suf2}_{_fld2}") or ""
-                                if _val2:
-                                    upd2[f"lead_{_role_suf2}_{_fld2}"] = _val2
-                            _ph2 = _li2.get(f"lead_{_role_suf2}_phone") or ""
-                            if _ph2:
-                                upd2[f"inv_{_role_suf2}_phone"] = _ph2
-                            break
-        await db.update_invoice(invoice_id, **upd2)
-
-        # Привязка менеджера к счёту (если нет lead_tracking)
-        inv = await db.get_invoice(invoice_id)
-        if inv and inv.get("project_id"):
-            try:
-                await db.update_lead_to_invoice_issued(
-                    int(inv["project_id"]), invoice_id,
-                    manager_id=int(manager_id) if manager_id else None,
-                    manager_role=manager_role or inv.get("creator_role"),
-                )
-            except Exception:
-                log.warning("Failed to update lead status for invoice_id=%s", invoice_id)
+    # Mark task as done, update payload with invoice info
+    await db.update_task_status(task_id, TaskStatus.DONE)
+    payload["invoice_id"] = inv_id
+    payload["invoice_number"] = invoice_number
+    await db.conn.execute(
+        "UPDATE tasks SET payload_json = ? WHERE id = ?",
+        (json.dumps(payload, ensure_ascii=False), task_id),
+    )
+    await db.conn.commit()
 
     # Notify manager
     if manager_id:
         initiator = await get_initiator_label(db, message.from_user.id)
 
-        msg = (
-            f"📋 <b>Счёт №{invoice_number} выставлен</b>\n"
-            f"👤 От: {initiator}\n\n"
-            f"РП проверил КП и подготовил документы.\n"
-        )
+        if is_credit:
+            msg = (
+                f"🏦 <b>Счёт №{invoice_number} — Кред</b>\n"
+                f"👤 От: {initiator}\n\n"
+                f"РП одобрил КП и выставил счёт.\n"
+                f"Система оплаты: <b>Кредит</b>\n"
+                f"Документы оформляет банк.\n"
+            )
+        else:
+            msg = (
+                f"📋 <b>Счёт №{invoice_number} выставлен</b>\n"
+                f"👤 От: {initiator}\n\n"
+                f"РП проверил КП и подготовил документы.\n"
+                f"Система оплаты: <b>б/н</b>\n"
+            )
 
         if comment:
             msg += f"\n💬 Комментарий РП: {comment}"
 
-        # Кнопка "Задача ок" для менеджера
         confirm_kb = InlineKeyboardBuilder()
         confirm_kb.button(
             text="✅ Задача ок",
@@ -3407,19 +3421,20 @@ async def kp_review_comment(
             int(manager_id), msg, reply_markup=confirm_kb.as_markup(),
         )
 
-        # Send attached documents
-        for doc in documents:
-            await notifier.safe_send_media(
-                int(manager_id), doc["file_type"], doc["file_id"],
-                caption=doc.get("caption"),
-            )
+        if not is_credit:
+            for doc in documents:
+                await notifier.safe_send_media(
+                    int(manager_id), doc["file_type"], doc["file_id"],
+                    caption=doc.get("caption"),
+                )
 
         await refresh_recipient_keyboard(notifier, db, config, int(manager_id))
 
+    credit_label = " (Кред)" if is_credit else ""
     menu_role, isolated_role = await _current_menu(db, message.from_user.id)
     await state.clear()
     await message.answer(
-        f"✅ Счёт №{invoice_number} выставлен. Менеджер уведомлён.",
+        f"✅ Счёт №{invoice_number} выставлен{credit_label}. Менеджер уведомлён.",
         reply_markup=private_only_reply_markup(
             message,
             main_menu(

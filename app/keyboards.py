@@ -1060,18 +1060,32 @@ def lead_pick_manager_kb() -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def lead_picker_for_kp_kb(
+    leads: list[dict[str, Any]],
+) -> InlineKeyboardMarkup:
+    """Inline-кнопки: список лидов менеджера + «Новый клиент» для CheckKP."""
+    b = InlineKeyboardBuilder()
+    for t in leads:
+        payload = try_json_loads(t.get("payload_json"))
+        desc = (payload.get("description") or "—")[:30]
+        date_str = (t.get("created_at") or "")[:10]
+        text = f"📌 {desc} ({date_str})"
+        b.button(text=text[:60], callback_data=f"kp_lead:pick:{t['id']}")
+    b.button(text="➕ Новый клиент", callback_data="kp_lead:new")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def kp_task_list_kb(
     tasks: list[dict[str, Any]],
     show_issued: bool = True,
 ) -> InlineKeyboardMarkup:
-    """Inline-кнопки со списком входящих CHECK_KP задач для РП.
-
-    Каждая задача показывает: №счёта — сумма (Менеджер).
-    """
+    """Inline-кнопки со списком входящих CHECK_KP задач для РП."""
     b = InlineKeyboardBuilder()
     for t in tasks:
         payload = try_json_loads(t.get("payload_json"))
-        inv_num = payload.get("invoice_number", "?")
+        inv_num = payload.get("invoice_number")
+        client = payload.get("client_name", "")
         amount = payload.get("amount", 0)
         manager_role = payload.get("manager_role", "")
         mgr_label = {
@@ -1081,7 +1095,11 @@ def kp_task_list_kb(
             amount_str = f"{float(amount):,.0f}₽"
         except (ValueError, TypeError):
             amount_str = f"{amount}₽"
-        text = f"📋 №{inv_num} — {amount_str} ({mgr_label})"
+        if inv_num:
+            text = f"📋 №{inv_num} — {amount_str} ({mgr_label})"
+        else:
+            label = (client or "Клиент")[:15]
+            text = f"📋 {label} — {amount_str} ({mgr_label})"
         b.button(text=text[:60], callback_data=f"kp_resp:view:{t['id']}")
     if show_issued:
         b.button(text="📑 Выставленные счета", callback_data="kp_resp:issued")
