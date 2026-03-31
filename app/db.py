@@ -1614,12 +1614,18 @@ class Database:
         agent_payout = float(inv.get("agent_payout_op") or inv.get("agent_fee") or 0)
         taxes_fact = float(inv.get("taxes_fact_op") or 0)
 
-        # Итого расходы (без НДС — налоги вычитаются отдельно в прибыли)
+        # Итого расходы
         # ЗП не входит — используем только факт из ОП
         total_cost = (mat_and_suppliers + montazh_fact_op
                       + logistics_fact + loaders_fact + agent_payout)
-        # Прибыль факт = сумма счёта - расходы - налоги
-        margin = invoice_amount - total_cost - taxes_fact
+
+        # НДС факт = (Сумма × 22/122) − (Материалы_факт × 22/122)
+        nds_fact = (invoice_amount * 22 / 122) - (mat_and_suppliers * 22 / 122) if invoice_amount else 0.0
+        # Налог на прибыль факт = (Сумма − Расходы − НДС) × 20%
+        profit_tax_fact = ((invoice_amount - total_cost - nds_fact) / 100 * 20) if invoice_amount else 0.0
+
+        # Прибыль факт = сумма − расходы − НДС − налог на прибыль
+        margin = invoice_amount - total_cost - nds_fact - profit_tax_fact
         margin_pct = (margin / invoice_amount * 100) if invoice_amount > 0 else 0.0
 
         return {
@@ -1641,6 +1647,8 @@ class Database:
             "loaders_fact": loaders_fact,
             "agent_payout": agent_payout,
             "taxes_fact": taxes_fact,
+            "nds_fact": nds_fact,
+            "profit_tax_fact": profit_tax_fact,
             "total_cost": total_cost,
             "margin": margin,
             "margin_pct": margin_pct,

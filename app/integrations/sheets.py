@@ -134,8 +134,8 @@ INVOICES_HEADER = [
     "",                     # 62
     "",                     # 63
     "",                     # 64
-    "",                     # 65
-    "",                     # 66
+    "НДС факт",            # 65
+    "Налог на приб. факт", # 66
     "В работе",            # 67
     "Счет END",            # 68
     "Грузчики факт",       # 69
@@ -664,6 +664,9 @@ class GoogleSheetsService:
             cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""
             cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
             cells[58] = self._fmt_amount(_c.get("total_cost"))
+            # НДС факт (65) и Налог на приб. факт (66)
+            cells[65] = self._fmt_amount(_c.get("nds_fact"))         # BN НДС факт
+            cells[66] = self._fmt_amount(_c.get("profit_tax_fact"))  # BO Налог на приб. факт
             # Прибыль факт (78)
             cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CA Прибыль факт
             # Перерасчет прибыли (79): разница план-факт при перерасходе
