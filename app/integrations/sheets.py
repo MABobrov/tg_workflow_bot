@@ -456,9 +456,13 @@ class GoogleSheetsService:
         _li = invoice.get("_lead_info") or {}
         _inv_num = invoice.get("invoice_number") or ""
 
-        # LEAD-строки: ТОЛЬКО лид-колонки CI-DI (индексы 86-112), больше ничего
+        # LEAD-строки: базовые колонки + лид-колонки CI-DI (индексы 86-112)
         if str(_inv_num).startswith("LEAD-"):
-            cells: dict[int, Any] = {}
+            cells: dict[int, Any] = {
+                0: invoice.get("id") or "",
+                2: manager_label,
+                8: _inv_num,
+            }
             for _i, _suf in enumerate(("kv", "kia", "npn")):
                 _base = 86 + _i * 9
                 cells[_base]     = invoice.get(f"lead_{_suf}_num") or ""

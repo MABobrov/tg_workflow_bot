@@ -93,6 +93,17 @@ async def export_to_sheets(
                 user = await db.get_user_optional(int(invoice["created_by"]))
                 if user:
                     manager_label = f"@{user.username}" if user.username else (user.full_name or str(user.telegram_id))
+            # Fallback: менеджер из проекта
+            if not manager_label and invoice.get("project_id"):
+                try:
+                    _proj = await db.get_project(int(invoice["project_id"]))
+                    _mid = _proj.get("manager_id") if _proj else None
+                    if _mid:
+                        _mu = await db.get_user_optional(int(_mid))
+                        if _mu:
+                            manager_label = f"@{_mu.username}" if _mu.username else (_mu.full_name or str(_mu.telegram_id))
+                except Exception:
+                    pass
 
             # Fallback: определить creator_role из роли пользователя
             if not invoice.get("creator_role") and invoice.get("created_by"):
