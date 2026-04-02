@@ -65,6 +65,20 @@ TASKS_HEADER = [
     "Отправитель",
 ]
 
+LEADS_HEADER = [
+    "amo_lead_id",     # 0 — key
+    "Название",        # 1
+    "Бюджет",          # 2
+    "Воронка",         # 3
+    "Статус",          # 4
+    "Ответственный",   # 5 — amo user name/id
+    "Взял менеджер",   # 6 — tg username
+    "Дата взятия",     # 7
+    "Эскалирован",     # 8
+    "Создан",          # 9
+    "Обновлён",        # 10
+]
+
 INVOICES_HEADER = [
     # — Отдел продаж structure (0-45) —
     "№",            # 0
@@ -209,6 +223,7 @@ class SheetsConfig:
     projects_tab: str
     tasks_tab: str
     invoices_tab: str = "Invoices"
+    leads_tab: str = "Leads"
     timezone_name: str = "Europe/Moscow"
     service_account_json: str | None = None
     service_account_file: str | None = None
@@ -419,6 +434,21 @@ class GoogleSheetsService:
             format_dt_iso(project.get("created_at"), self.cfg.timezone_name),
             format_dt_iso(project.get("updated_at"), self.cfg.timezone_name),
             project.get("amo_lead_id") or "",
+        ]
+
+    def _lead_row_values(self, lead: dict[str, Any], manager_label: str = "") -> list[Any]:
+        return [
+            lead.get("amo_lead_id") or "",
+            lead.get("name") or "",
+            self._fmt_amount(lead.get("price")),
+            lead.get("pipeline_id") or "",
+            lead.get("status_id") or "",
+            lead.get("responsible_user_id") or "",
+            manager_label,
+            format_dt_iso(lead.get("claimed_at"), self.cfg.timezone_name),
+            "Да" if lead.get("escalated") else "",
+            format_dt_iso(lead.get("created_at"), self.cfg.timezone_name),
+            format_dt_iso(lead.get("updated_at"), self.cfg.timezone_name),
         ]
 
     def _task_row_values(self, task: dict[str, Any], project_code: str = "") -> list[Any]:
@@ -863,6 +893,29 @@ class GoogleSheetsService:
             self._flush_batch_update(ws, batch_data, chunk_size=200)
             return count
 
+    def upsert_leads_bulk_sync(
+        self,
+        items: list[tuple[dict[str, Any], str]],
+    ) -> int:
+        with self._sync_lock:
+            ws = self._get_or_create_ws(self.cfg.leads_tab, LEADS_HEADER)
+            batch_data: list[dict[str, Any]] = []
+            count = 0
+            for lead, manager_label in items:
+                amo_id = lead.get("amo_lead_id")
+                if not amo_id:
+                    continue
+                row, _ = self._get_or_allocate_row(self.cfg.leads_tab, ws, amo_id)
+                batch_data.append(
+                    {
+                        "range": self._row_range(row, len(LEADS_HEADER)),
+                        "values": [self._lead_row_values(lead, manager_label)],
+                    }
+                )
+                count += 1
+            self._flush_batch_update(ws, batch_data, chunk_size=200)
+            return count
+
     def upsert_invoices_bulk_sync(
         self,
         items: list[tuple[dict[str, Any], str, dict[str, Any] | None]],
@@ -1007,6 +1060,11 @@ class GoogleSheetsService:
         if not self.cfg.enabled or not items:
             return 0
         return await asyncio.to_thread(self.upsert_tasks_bulk_sync, items)
+
+    async def upsert_leads_bulk(self, items: list[tuple[dict[str, Any], str]]) -> int:
+        if not self.cfg.enabled or not items:
+            return 0
+        return await asyncio.to_thread(self.upsert_leads_bulk_sync, items)
 
     async def upsert_invoices_bulk(
         self,

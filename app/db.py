@@ -2333,6 +2333,13 @@ class Database:
         )
         await self.conn.commit()
 
+    async def list_all_amo_leads(self, limit: int = 10000) -> list[dict[str, Any]]:
+        """List all amoCRM leads for Sheets export."""
+        cur = await self.conn.execute(
+            "SELECT * FROM leads ORDER BY created_at ASC LIMIT ?", (limit,)
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
     async def list_unclaimed_leads(self, older_than_iso: str | None = None) -> list[dict[str, Any]]:
         """List leads that have not been claimed yet."""
         if older_than_iso:

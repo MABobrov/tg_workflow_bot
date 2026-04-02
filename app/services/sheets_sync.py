@@ -174,8 +174,23 @@ async def export_to_sheets(
 
         invoice_count = await sheets.upsert_invoices_bulk(invoice_items)
 
+    # --- Leads (amoCRM) ---
+    amo_leads = await db.list_all_amo_leads(limit=10000)
+    lead_items: list[tuple[dict[str, Any], str]] = []
+    for lead in amo_leads:
+        manager_label = ""
+        claimed_by = lead.get("claimed_by")
+        if claimed_by:
+            user = await db.get_user_optional(int(claimed_by))
+            if user:
+                manager_label = f"@{user.username}" if user.username else (user.full_name or str(user.telegram_id))
+        lead_items.append((lead, manager_label))
+
+    lead_count = await sheets.upsert_leads_bulk(lead_items)
+
     return {
         "projects": project_count,
         "tasks": task_count,
         "invoices": invoice_count,
+        "leads": lead_count,
     }
