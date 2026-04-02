@@ -68,7 +68,7 @@ TASKS_HEADER = [
 INVOICES_HEADER = [
     # — Отдел продаж structure (0-45) —
     "№",            # 0
-    "В работу",     # 1  manual
+    "Роль",         # 1
     "Менеджер",     # 2
     "Бухг.ЭДО",    # 3
     "Контрагент",   # 4
@@ -195,7 +195,7 @@ INVOICES_HEADER = [
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
 # Removed 7 (Свой/Атм→client_source), 18,19,21,24 — now bot-managed (Plan/Fact)
-_MANUAL_COLS = frozenset([1, 5,
+_MANUAL_COLS = frozenset([5,
                           33, 34, 37])
 
 
@@ -461,10 +461,13 @@ class GoogleSheetsService:
         _li = invoice.get("_lead_info") or {}
         _inv_num = invoice.get("invoice_number") or ""
 
+        _role_label = _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or "")
+
         # LEAD-строки: базовые колонки + лид-колонки (индексы 87-113)
         if str(_inv_num).startswith("LEAD-"):
             cells: dict[int, Any] = {
                 0: row - 1,   # № п/п — сквозная нумерация
+                1: _role_label,  # Роль
                 2: manager_label,
                 8: _inv_num,
                 86: invoice.get("id") or "",  # ID бота для трекинга
@@ -484,6 +487,7 @@ class GoogleSheetsService:
 
         cells: dict[int, Any] = {
             0: row - 1,   # № п/п — сквозная нумерация
+            1: _role_label,  # Роль
             2: manager_label,
             3: "Да" if invoice.get("edo_signed") else "",
             4: invoice.get("client_name") or "",
