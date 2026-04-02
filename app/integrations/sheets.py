@@ -883,6 +883,7 @@ class GoogleSheetsService:
             self._row_indexes.pop(self.cfg.invoices_tab, None)
             self._next_rows.pop(self.cfg.invoices_tab, None)
 
+            # --- Фаза 1: Инвойсы (колонки 0-85) ---
             batch_data: list[dict[str, Any]] = []
             count = 0
             for invoice, manager_label, cost in items:
@@ -891,23 +892,38 @@ class GoogleSheetsService:
                     continue
                 row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_num)
                 cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
+                # Только инвойс-колонки (0-85)
+                inv_cells = {k: v for k, v in cells.items() if k < 86}
                 if not is_new:
-                    cells = {k: v for k, v in cells.items() if k not in _MANUAL_COLS}
-                batch_data.extend(self._invoice_batch_ranges(row, cells))
+                    inv_cells = {k: v for k, v in inv_cells.items() if k not in _MANUAL_COLS}
+                batch_data.extend(self._invoice_batch_ranges(row, inv_cells))
                 count += 1
+
+            # --- Фаза 2: Лиды (колонки 86-116) — подряд, независимо от инвойсов ---
+            lead_row = 2  # начинаем с строки 2
+            for invoice, manager_label, cost in items:
+                cells = self._invoice_cells(invoice, manager_label, cost, row=lead_row, is_new=True)
+                lead_cells = {k: v for k, v in cells.items() if k >= 86}
+                # Проверяем, есть ли реальные данные (не пустые строки)
+                has_data = any(
+                    v for k, v in lead_cells.items()
+                    if k != 86 and v  # k=86 — это № п/п, не считаем
+                )
+                if has_data:
+                    lead_cells[86] = lead_row - 1  # № п/п
+                    batch_data.extend(self._invoice_batch_ranges(lead_row, lead_cells))
+                    lead_row += 1
+
             self._flush_batch_update(ws, batch_data, chunk_size=500)
 
-            # LEAD-строки остаются — данные лида видны в колонках Лид КВ/КИА/НПН
-
             # Очистить лишние строки после последней записанной
+            max_row = max(count + 1, lead_row)  # макс из инвойсов и лидов
             try:
-                last_data_row = count + 1  # +1 for header
                 total_rows = ws.row_count
-                if total_rows > last_data_row:
-                    # Очистить содержимое лишних строк
+                if total_rows > max_row:
                     col_count = ws.col_count
                     col_letter = gspread.utils.rowcol_to_a1(1, col_count).rstrip("1")
-                    clear_range = f"A{last_data_row + 1}:{col_letter}{total_rows}"
+                    clear_range = f"A{max_row + 1}:{col_letter}{total_rows}"
                     ws.batch_clear([clear_range])
             except Exception:
                 pass
