@@ -160,37 +160,40 @@ INVOICES_HEADER = [
     "Кредит баланс",       # 85 — формула: вход - расход
     # — Сквозная нумерация (86) —
     "№ п/п",                # 86
-    # — Лиды и Счета по менеджерам (87-113) —
-    # КВ (87-95)
+    # — Лиды и Счета по менеджерам (87-116) —
+    # КВ (87-96)
     "Лид КВ №",             # 87
-    "Лид КВ дата",          # 88
-    "Лид КВ имя",           # 89
-    "Лид КВ телефон",       # 90
-    "Лид КВ адрес",         # 91
-    "Счет КВ №",            # 92
-    "Счет КВ телефон",      # 93
-    "Счет КВ адрес",        # 94
-    "Счет КВ дата",         # 95
-    # КИА (96-104)
-    "Лид КИА №",            # 96
-    "Лид КИА дата",         # 97
-    "Лид КИА имя",          # 98
-    "Лид КИА телефон",      # 99
-    "Лид КИА адрес",        # 100
-    "Счет КИА №",           # 101
-    "Счет КИА телефон",     # 102
-    "Счет КИА адрес",       # 103
-    "Счет КИА дата",        # 104
-    # НПН (105-113)
-    "Лид НПН №",            # 105
-    "Лид НПН дата",         # 106
-    "Лид НПН имя",          # 107
-    "Лид НПН телефон",      # 108
-    "Лид НПН адрес",        # 109
-    "Счет НПН №",           # 110
-    "Счет НПН телефон",     # 111
-    "Счет НПН адрес",       # 112
-    "Счет НПН дата",        # 113
+    "Лид КВ источник",      # 88
+    "Лид КВ дата",          # 89
+    "Лид КВ имя",           # 90
+    "Лид КВ телефон",       # 91
+    "Лид КВ адрес",         # 92
+    "Счет КВ №",            # 93
+    "Счет КВ телефон",      # 94
+    "Счет КВ адрес",        # 95
+    "Счет КВ дата",         # 96
+    # КИА (97-106)
+    "Лид КИА №",            # 97
+    "Лид КИА источник",     # 98
+    "Лид КИА дата",         # 99
+    "Лид КИА имя",          # 100
+    "Лид КИА телефон",      # 101
+    "Лид КИА адрес",        # 102
+    "Счет КИА №",           # 103
+    "Счет КИА телефон",     # 104
+    "Счет КИА адрес",       # 105
+    "Счет КИА дата",        # 106
+    # НПН (107-116)
+    "Лид НПН №",            # 107
+    "Лид НПН источник",     # 108
+    "Лид НПН дата",         # 109
+    "Лид НПН имя",          # 110
+    "Лид НПН телефон",      # 111
+    "Лид НПН адрес",        # 112
+    "Счет НПН №",           # 113
+    "Счет НПН телефон",     # 114
+    "Счет НПН адрес",       # 115
+    "Счет НПН дата",        # 116
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -473,16 +476,17 @@ class GoogleSheetsService:
                 86: row - 1,  # № п/п — сквозная нумерация
             }
             for _i, _suf in enumerate(("kv", "kia", "npn")):
-                _base = 87 + _i * 9
+                _base = 87 + _i * 10
                 cells[_base]     = invoice.get(f"lead_{_suf}_num") or ""
-                cells[_base + 1] = self._fmt_sheet_date(invoice.get(f"lead_{_suf}_date"))
-                cells[_base + 2] = invoice.get(f"lead_{_suf}_name") or ""
-                cells[_base + 3] = invoice.get(f"lead_{_suf}_phone") or ""
-                cells[_base + 4] = invoice.get(f"lead_{_suf}_address") or ""
-                cells[_base + 5] = invoice.get(f"inv_{_suf}_num") or ""
-                cells[_base + 6] = invoice.get(f"inv_{_suf}_phone") or ""
-                cells[_base + 7] = invoice.get(f"inv_{_suf}_address") or ""
-                cells[_base + 8] = self._fmt_sheet_date(invoice.get(f"inv_{_suf}_date"))
+                cells[_base + 1] = invoice.get(f"lead_{_suf}_source") or _li.get(f"source_{_suf}") or ""  # Источник
+                cells[_base + 2] = self._fmt_sheet_date(invoice.get(f"lead_{_suf}_date"))
+                cells[_base + 3] = invoice.get(f"lead_{_suf}_name") or ""
+                cells[_base + 4] = invoice.get(f"lead_{_suf}_phone") or ""
+                cells[_base + 5] = invoice.get(f"lead_{_suf}_address") or ""
+                cells[_base + 6] = invoice.get(f"inv_{_suf}_num") or ""
+                cells[_base + 7] = invoice.get(f"inv_{_suf}_phone") or ""
+                cells[_base + 8] = invoice.get(f"inv_{_suf}_address") or ""
+                cells[_base + 9] = self._fmt_sheet_date(invoice.get(f"inv_{_suf}_date"))
             return cells
 
         cells: dict[int, Any] = {
@@ -551,18 +555,19 @@ class GoogleSheetsService:
         # — Сквозная нумерация (86) —
         cells[86] = row - 1  # № п/п
 
-        # — Лиды и Счета по менеджерам (87-113) —
+        # — Лиды и Счета по менеджерам (87-116) —
         for _i, _suf in enumerate(("kv", "kia", "npn")):
-            _base = 87 + _i * 9
+            _base = 87 + _i * 10
             cells[_base]     = invoice.get(f"lead_{_suf}_num") or ""
-            cells[_base + 1] = self._fmt_sheet_date(invoice.get(f"lead_{_suf}_date"))
-            cells[_base + 2] = invoice.get(f"lead_{_suf}_name") or ""
-            cells[_base + 3] = invoice.get(f"lead_{_suf}_phone") or ""
-            cells[_base + 4] = invoice.get(f"lead_{_suf}_address") or ""
-            cells[_base + 5] = invoice.get(f"inv_{_suf}_num") or ""
-            cells[_base + 6] = invoice.get(f"inv_{_suf}_phone") or ""
-            cells[_base + 7] = invoice.get(f"inv_{_suf}_address") or ""
-            cells[_base + 8] = self._fmt_sheet_date(invoice.get(f"inv_{_suf}_date"))
+            cells[_base + 1] = invoice.get(f"lead_{_suf}_source") or _li.get(f"source_{_suf}") or ""  # Источник
+            cells[_base + 2] = self._fmt_sheet_date(invoice.get(f"lead_{_suf}_date"))
+            cells[_base + 3] = invoice.get(f"lead_{_suf}_name") or ""
+            cells[_base + 4] = invoice.get(f"lead_{_suf}_phone") or ""
+            cells[_base + 5] = invoice.get(f"lead_{_suf}_address") or ""
+            cells[_base + 6] = invoice.get(f"inv_{_suf}_num") or ""
+            cells[_base + 7] = invoice.get(f"inv_{_suf}_phone") or ""
+            cells[_base + 8] = invoice.get(f"inv_{_suf}_address") or ""
+            cells[_base + 9] = self._fmt_sheet_date(invoice.get(f"inv_{_suf}_date"))
 
         # Кредит входящий (80-81): is_credit=1 — единственный источник правды
         is_credit = bool(invoice.get("is_credit"))

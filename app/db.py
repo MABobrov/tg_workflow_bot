@@ -3104,7 +3104,7 @@ class Database:
         if project_id:
             cur = await self.conn.execute(
                 "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id, "
-                "lt.status, lt.invoice_issued_at "
+                "lt.status, lt.invoice_issued_at, lt.lead_source "
                 "FROM lead_tracking lt "
                 "WHERE lt.project_id = ? "
                 "ORDER BY lt.assigned_at ASC",
@@ -3119,7 +3119,7 @@ class Database:
             if created_by and creator_role:
                 cur = await self.conn.execute(
                     "SELECT lt.assigned_manager_role, lt.assigned_at, lt.task_id, "
-                    "lt.status, lt.invoice_issued_at "
+                    "lt.status, lt.invoice_issued_at, lt.lead_source "
                     "FROM lead_tracking lt "
                     "WHERE lt.assigned_manager_id = ? AND lt.assigned_manager_role = ? "
                     "ORDER BY lt.assigned_at DESC LIMIT 1",
@@ -3147,6 +3147,7 @@ class Database:
         # {role_key: {date_str: count}}
         lead_dates: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         inv_dates: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        lead_sources: dict[str, str] = {}  # {role_key: source}
         latest_status = "lead"
 
         for row in rows:
@@ -3154,6 +3155,12 @@ class Database:
             key = role_key_map.get(role_raw)
             if not key:
                 continue
+
+            # Lead source (первый непустой)
+            if key not in lead_sources:
+                src = row.get("lead_source") or ""
+                if src:
+                    lead_sources[key] = src
 
             # Lead date
             at = row.get("assigned_at") or ""
@@ -3201,6 +3208,10 @@ class Database:
                 else:
                     parts.append(dt_str)
             result[key] = "\n".join(parts)
+
+        # Lead sources
+        for key, src in lead_sources.items():
+            result[f"source_{key}"] = src
 
         # Status
         result["lead_status"] = latest_status
