@@ -39,8 +39,10 @@ def main() -> None:
 
     print(f"Loaded {len(leads)} leads from {json_path}")
 
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     now_iso = datetime.now(timezone.utc).isoformat()
 
     inserted = 0
