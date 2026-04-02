@@ -158,8 +158,8 @@ INVOICES_HEADER = [
     "Дата расход кред",    # 83 — дата расхода кредитных средств
     "Кредит назначение",   # 84 — лог назначений расходов
     "Кредит баланс",       # 85 — формула: вход - расход
-    # — ID бота для трекинга строк (86) —
-    "ID",                   # 86
+    # — Сквозная нумерация (86) —
+    "№ п/п",                # 86
     # — Лиды и Счета по менеджерам (87-113) —
     # КВ (87-95)
     "Лид КВ №",             # 87
@@ -229,8 +229,8 @@ class GoogleSheetsService:
         self._row_indexes: dict[str, dict[str, int]] = {}
         self._next_rows: dict[str, int] = {}
         self._sync_lock = RLock()
-        # Invoices: key column = "ID" at index 86 → gspread 1-indexed = 87
-        self._KEY_COL: dict[str, int] = {cfg.invoices_tab: 87}
+        # Invoices: key column = "Номер счета" at index 8 → gspread 1-indexed = 9
+        self._KEY_COL: dict[str, int] = {cfg.invoices_tab: 9}
 
     def _fmt_amount(self, amount: Any) -> str:
         if isinstance(amount, (int, float)):
@@ -466,11 +466,11 @@ class GoogleSheetsService:
         # LEAD-строки: базовые колонки + лид-колонки (индексы 87-113)
         if str(_inv_num).startswith("LEAD-"):
             cells: dict[int, Any] = {
-                0: row - 1,   # № п/п — сквозная нумерация
+                0: row - 1,   # № — сквозная нумерация
                 1: _role_label,  # Роль
                 2: manager_label,
                 8: _inv_num,
-                86: invoice.get("id") or "",  # ID бота для трекинга
+                86: row - 1,  # № п/п — сквозная нумерация
             }
             for _i, _suf in enumerate(("kv", "kia", "npn")):
                 _base = 87 + _i * 9
@@ -548,8 +548,8 @@ class GoogleSheetsService:
             85: f"=IF(CC{row}=\"\",\"\",CC{row}-CE{row})",              # CH Кредит баланс
         }
 
-        # — ID бота для трекинга строк (86) —
-        cells[86] = invoice.get("id") or ""
+        # — Сквозная нумерация (86) —
+        cells[86] = row - 1  # № п/п
 
         # — Лиды и Счета по менеджерам (87-113) —
         for _i, _suf in enumerate(("kv", "kia", "npn")):
@@ -800,12 +800,12 @@ class GoogleSheetsService:
         manager_label: str = "",
         cost: dict[str, Any] | None = None,
     ) -> None:
-        inv_id = invoice.get("id")
-        if not inv_id:
+        inv_num = invoice.get("invoice_number") or ""
+        if not inv_num:
             return
         with self._sync_lock:
             ws = self._get_or_create_ws(self.cfg.invoices_tab, INVOICES_HEADER)
-            row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_id)
+            row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_num)
             cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
             if not is_new:
                 cells = {k: v for k, v in cells.items() if k not in _MANUAL_COLS}
@@ -881,10 +881,10 @@ class GoogleSheetsService:
             batch_data: list[dict[str, Any]] = []
             count = 0
             for invoice, manager_label, cost in items:
-                inv_id = invoice.get("id")
-                if not inv_id:
+                inv_num = invoice.get("invoice_number") or ""
+                if not inv_num:
                     continue
-                row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_id)
+                row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_num)
                 cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
                 if not is_new:
                     cells = {k: v for k, v in cells.items() if k not in _MANUAL_COLS}
