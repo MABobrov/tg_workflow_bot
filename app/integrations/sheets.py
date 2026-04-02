@@ -864,6 +864,20 @@ class GoogleSheetsService:
     ) -> int:
         with self._sync_lock:
             ws = self._get_or_create_ws(self.cfg.invoices_tab, INVOICES_HEADER)
+
+            # Полная очистка данных (кроме заголовка) — гарантирует чистый лист
+            try:
+                total_rows = ws.row_count
+                if total_rows > 1:
+                    col_count = ws.col_count
+                    col_letter = gspread.utils.rowcol_to_a1(1, col_count).rstrip("1")
+                    ws.batch_clear([f"A2:{col_letter}{total_rows}"])
+            except Exception:
+                pass
+            # Сброс кеша строк — все строки будут записаны заново
+            self._row_indexes.pop(self.cfg.invoices_tab, None)
+            self._next_rows.pop(self.cfg.invoices_tab, None)
+
             batch_data: list[dict[str, Any]] = []
             count = 0
             for invoice, manager_label, cost in items:
