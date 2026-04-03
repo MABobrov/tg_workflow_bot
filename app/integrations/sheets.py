@@ -65,15 +65,19 @@ TASKS_HEADER = [
     "Отправитель",
 ]
 
-LEADS_HEADER = [
-    "Дата",           # 0
-    "Имя клиента",    # 1
-    "Имя",            # 2 — название лида
-    "Телефон",        # 3
-    "Менеджер",       # 4
-    "Источник",       # 5
-    "Статус",         # 6
+# Bot leads header — written starting from column H (col 8)
+LEADS_BOT_COL_START = 8  # column H (1-indexed)
+LEADS_BOT_HEADER = [
+    "Дата",           # H
+    "Имя клиента",    # I
+    "Имя",            # J — название лида
+    "Телефон",        # K
+    "Менеджер",       # L
+    "Источник",       # M
+    "Статус",         # N
 ]
+# RP phone column (C = col 3, 1-indexed)
+LEADS_RP_PHONE_COL = 3
 
 INVOICES_HEADER = [
     # — Отдел продаж structure (0-45) —
@@ -921,6 +925,14 @@ class GoogleSheetsService:
             self._flush_batch_update(ws, batch_data, chunk_size=200)
             return count
 
+    @staticmethod
+    def _normalize_phone(phone: str | None) -> str:
+        """Normalize phone for matching: keep last 10 digits."""
+        if not phone:
+            return ""
+        digits = re.sub(r"\D", "", str(phone))
+        return digits[-10:] if len(digits) >= 10 else digits
+
     def upsert_leads_bulk_sync(
         self,
         items: list[dict[str, Any]],
@@ -929,46 +941,105 @@ class GoogleSheetsService:
         amo_user_map: dict[int, str] | None = None,
     ) -> int:
         with self._sync_lock:
-            ws = self._get_or_create_ws(self.cfg.leads_tab, LEADS_HEADER)
-
-            # Full clear before bulk write (like invoices)
+            # Get or create sheet (use a dummy header — RP fills cols A-F manually)
+            sh = self._get_spreadsheet()
             try:
-                total_rows = ws.row_count
-                if total_rows > 1:
-                    col_count = ws.col_count
-                    col_letter = gspread.utils.rowcol_to_a1(1, col_count).rstrip("1")
-                    ws.batch_clear([f"A2:{col_letter}{total_rows}"])
-            except Exception:
-                pass
-            self._row_indexes.pop(self.cfg.leads_tab, None)
-            self._next_rows.pop(self.cfg.leads_tab, None)
+                ws = sh.worksheet(self.cfg.leads_tab)
+            except gspread.WorksheetNotFound:
+                ws = sh.add_worksheet(
+                    title=self.cfg.leads_tab, rows=2000,
+                    cols=LEADS_BOT_COL_START + len(LEADS_BOT_HEADER),
+                )
 
+            # Ensure enough columns
+            needed = LEADS_BOT_COL_START + len(LEADS_BOT_HEADER)
+            if ws.col_count < needed:
+                ws.resize(cols=needed)
+
+            # Write bot header at H1:N1
+            hdr_start = gspread.utils.rowcol_to_a1(1, LEADS_BOT_COL_START)
+            hdr_end = gspread.utils.rowcol_to_a1(1, LEADS_BOT_COL_START + len(LEADS_BOT_HEADER) - 1)
+            ws.update([LEADS_BOT_HEADER], f"{hdr_start}:{hdr_end}")
+
+            # Read RP phone column (C) — build phone→row mapping
+            rp_phones_raw = ws.col_values(LEADS_RP_PHONE_COL)
+            rp_phone_to_row: dict[str, int] = {}
+            for idx, raw_phone in enumerate(rp_phones_raw):
+                if idx == 0:
+                    continue  # skip header
+                norm = self._normalize_phone(raw_phone)
+                if norm:
+                    rp_phone_to_row[norm] = idx + 1  # 1-indexed row
+
+            # Clear bot columns (H2:N...) before writing
+            total_rows = ws.row_count
+            if total_rows > 1:
+                clr_start = gspread.utils.rowcol_to_a1(2, LEADS_BOT_COL_START)
+                clr_end = gspread.utils.rowcol_to_a1(
+                    total_rows, LEADS_BOT_COL_START + len(LEADS_BOT_HEADER) - 1
+                )
+                ws.batch_clear([f"{clr_start}:{clr_end}"])
+
+            # Place leads: match by phone → same row; unmatched → append
             batch_data: list[dict[str, Any]] = []
-            count = 0
+            used_rows: set[int] = set()
+            unmatched: list[dict[str, Any]] = []
+
             for lead in items:
-                amo_id = lead.get("amo_lead_id")
-                if not amo_id:
+                if not lead.get("amo_lead_id"):
                     continue
-                # resolve status name
+                bot_phone = self._normalize_phone(lead.get("phone"))
+                matched_row = rp_phone_to_row.get(bot_phone) if bot_phone else None
+
+                if matched_row and matched_row not in used_rows:
+                    row = matched_row
+                    used_rows.add(row)
+                else:
+                    unmatched.append(lead)
+                    continue
+
                 status_name = ""
                 sid = lead.get("status_id")
                 if sid and status_map:
                     status_name = status_map.get(int(sid), "")
 
-                row, _ = self._get_or_allocate_row(self.cfg.leads_tab, ws, amo_id)
-                batch_data.append(
-                    {
-                        "range": self._row_range(row, len(LEADS_HEADER)),
-                        "values": [self._lead_row_values(
-                            lead,
-                            status_name=status_name,
-                            amo_user_map=amo_user_map,
-                        )],
-                    }
+                cell_start = gspread.utils.rowcol_to_a1(row, LEADS_BOT_COL_START)
+                cell_end = gspread.utils.rowcol_to_a1(
+                    row, LEADS_BOT_COL_START + len(LEADS_BOT_HEADER) - 1
                 )
-                count += 1
+                batch_data.append({
+                    "range": f"{cell_start}:{cell_end}",
+                    "values": [self._lead_row_values(
+                        lead, status_name=status_name, amo_user_map=amo_user_map,
+                    )],
+                })
+
+            # Append unmatched leads after last RP row (or after last used row)
+            last_rp_row = max(rp_phone_to_row.values()) if rp_phone_to_row else 1
+            next_row = max(last_rp_row + 1, 2)
+            for lead in unmatched:
+                while next_row in used_rows:
+                    next_row += 1
+                status_name = ""
+                sid = lead.get("status_id")
+                if sid and status_map:
+                    status_name = status_map.get(int(sid), "")
+
+                cell_start = gspread.utils.rowcol_to_a1(next_row, LEADS_BOT_COL_START)
+                cell_end = gspread.utils.rowcol_to_a1(
+                    next_row, LEADS_BOT_COL_START + len(LEADS_BOT_HEADER) - 1
+                )
+                batch_data.append({
+                    "range": f"{cell_start}:{cell_end}",
+                    "values": [self._lead_row_values(
+                        lead, status_name=status_name, amo_user_map=amo_user_map,
+                    )],
+                })
+                used_rows.add(next_row)
+                next_row += 1
+
             self._flush_batch_update(ws, batch_data, chunk_size=200)
-            return count
+            return len(batch_data)
 
     def upsert_invoices_bulk_sync(
         self,
