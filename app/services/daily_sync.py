@@ -97,6 +97,8 @@ async def _run_sync(
                 integrations.sheets,
                 include_invoice_cost=False,
                 sync_invoices=True,
+                amocrm_user_map=getattr(config, "amocrm_user_map", None),
+                amocrm=integrations.amocrm,
             )
             log.info(
                 "daily_sync: exported %d projects, %d tasks, %d invoices",

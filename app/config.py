@@ -103,6 +103,8 @@ class Config:
     # initial tokens (can be stored in DB after refresh)
     amocrm_access_token: Optional[str]
     amocrm_refresh_token: Optional[str]
+    # mapping: amo user_id → role code (e.g. {11316010: "КВ", 11317938: "НПН"})
+    amocrm_user_map: dict[int, str]
 
     # Behaviour
     enable_webhook: bool
@@ -203,6 +205,16 @@ def load_config() -> Config:
     amocrm_redirect_uri = os.getenv("AMOCRM_REDIRECT_URI")
     amocrm_access_token = os.getenv("AMOCRM_ACCESS_TOKEN")
     amocrm_refresh_token = os.getenv("AMOCRM_REFRESH_TOKEN")
+    # Parse AMOCRM_USER_MAP: "11316010:КВ,11317938:НПН,9720106:ИП"
+    amocrm_user_map: dict[int, str] = {}
+    for pair in (os.getenv("AMOCRM_USER_MAP") or "").split(","):
+        pair = pair.strip()
+        if ":" in pair:
+            uid_str, role = pair.split(":", 1)
+            try:
+                amocrm_user_map[int(uid_str.strip())] = role.strip()
+            except ValueError:
+                pass
 
     enable_webhook = _parse_bool(os.getenv("WEBHOOK_ENABLED"), default=False)
     webhook_url = os.getenv("WEBHOOK_URL")
@@ -258,6 +270,7 @@ def load_config() -> Config:
         amocrm_redirect_uri=amocrm_redirect_uri,
         amocrm_access_token=amocrm_access_token,
         amocrm_refresh_token=amocrm_refresh_token,
+        amocrm_user_map=amocrm_user_map,
         sheets_webhook_secret=sheets_webhook_secret,
         sheets_webhook_port=sheets_webhook_port,
         enable_webhook=enable_webhook,

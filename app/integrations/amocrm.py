@@ -336,3 +336,42 @@ class AmoCRMService:
         if not data or not isinstance(data, dict):
             return []
         return list(data.get("_embedded", {}).get("users", []))
+
+    # ----------- contacts API -----------
+
+    async def get_contact(self, contact_id: int) -> dict[str, Any]:
+        """GET /api/v4/contacts/{id} — fetch contact with custom fields (phone, email)."""
+        data = await self._request("GET", f"/api/v4/contacts/{int(contact_id)}")
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Unexpected contact response: {data}")
+        return data
+
+    @staticmethod
+    def extract_phone(contact: dict[str, Any]) -> str | None:
+        """Extract first phone number from contact custom_fields_values."""
+        for field in contact.get("custom_fields_values") or []:
+            if field.get("field_code") == "PHONE":
+                values = field.get("values") or []
+                if values:
+                    return str(values[0].get("value", ""))
+        return None
+
+    @staticmethod
+    def extract_contact_name(contact: dict[str, Any]) -> str | None:
+        """Extract contact display name."""
+        return contact.get("name") or None
+
+    # ----------- pipelines API -----------
+
+    async def get_pipeline_statuses(self, pipeline_id: int) -> dict[int, str]:
+        """GET /api/v4/leads/pipelines/{id} — returns {status_id: status_name}."""
+        data = await self._request("GET", f"/api/v4/leads/pipelines/{int(pipeline_id)}")
+        if not isinstance(data, dict):
+            return {}
+        result: dict[int, str] = {}
+        for status in data.get("_embedded", {}).get("statuses", []):
+            sid = status.get("id")
+            sname = status.get("name")
+            if sid is not None and sname:
+                result[int(sid)] = sname
+        return result

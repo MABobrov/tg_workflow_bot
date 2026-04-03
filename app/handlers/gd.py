@@ -1205,6 +1205,8 @@ async def gd_sync_data(message: Message, db: Database, config: Config, integrati
             integrations.sheets,
             include_invoice_cost=True,
             sync_invoices=True,
+            amocrm_user_map=getattr(config, "amocrm_user_map", None),
+            amocrm=integrations.amocrm,
         )
 
         await message.answer(

@@ -40,6 +40,8 @@ async def export_to_sheets(
     *,
     include_invoice_cost: bool,
     sync_invoices: bool = True,
+    amocrm_user_map: dict[int, str] | None = None,
+    amocrm=None,
 ) -> dict[str, int]:
     projects = sorted(await db.list_recent_projects(limit=10000), key=lambda item: int(item["id"]))
     tasks = sorted(await db.list_recent_tasks(limit=50000), key=lambda item: int(item["id"]))
@@ -176,17 +178,24 @@ async def export_to_sheets(
 
     # --- Leads (amoCRM) ---
     amo_leads = await db.list_all_amo_leads(limit=10000)
-    lead_items: list[tuple[dict[str, Any], str]] = []
-    for lead in amo_leads:
-        manager_label = ""
-        claimed_by = lead.get("claimed_by")
-        if claimed_by:
-            user = await db.get_user_optional(int(claimed_by))
-            if user:
-                manager_label = f"@{user.username}" if user.username else (user.full_name or str(user.telegram_id))
-        lead_items.append((lead, manager_label))
+    # Filter out status_id=143 (закрыт не реализован)
+    filtered_leads = [l for l in amo_leads if l.get("status_id") != 143]
 
-    lead_count = await sheets.upsert_leads_bulk(lead_items)
+    # Fetch pipeline status names if amocrm service available
+    status_map: dict[int, str] = {}
+    if amocrm and filtered_leads:
+        pipeline_ids = {int(l["pipeline_id"]) for l in filtered_leads if l.get("pipeline_id")}
+        for pid in pipeline_ids:
+            try:
+                status_map.update(await amocrm.get_pipeline_statuses(pid))
+            except Exception:
+                log.warning("Failed to fetch pipeline %s statuses", pid)
+
+    lead_count = await sheets.upsert_leads_bulk(
+        filtered_leads,
+        status_map=status_map,
+        amo_user_map=amocrm_user_map,
+    )
 
     return {
         "projects": project_count,

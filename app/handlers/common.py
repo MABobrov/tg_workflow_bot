@@ -743,6 +743,8 @@ async def sync_data_non_gd(
         integrations.sheets,
         include_invoice_cost=False,
         sync_invoices=True,
+        amocrm_user_map=getattr(config, "amocrm_user_map", None),
+        amocrm=integrations.amocrm,
     )
 
     menu_context = await _menu_context(db, message.from_user.id, active_role or role)

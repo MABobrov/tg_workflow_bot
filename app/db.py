@@ -542,6 +542,10 @@ class Database:
             ("invoices", "inv_kv_address", "TEXT"),
             ("invoices", "inv_kia_address", "TEXT"),
             ("invoices", "inv_npn_address", "TEXT"),
+            # amoCRM lead enrichment: phone, contact name, tags
+            ("leads", "phone", "TEXT"),
+            ("leads", "contact_name", "TEXT"),
+            ("leads", "tags_json", "TEXT"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -2269,16 +2273,22 @@ class Database:
         pipeline_id: int | None,
         status_id: int | None,
         responsible_user_id: int | None,
+        *,
+        phone: str | None = None,
+        contact_name: str | None = None,
+        tags_json: str | None = None,
     ) -> dict[str, Any]:
         now = to_iso(utcnow())
         cur = await self.conn.execute(
             """
             INSERT INTO leads(amo_lead_id, name, price, pipeline_id, status_id,
                               responsible_user_id, claimed_by, claimed_at, escalated,
-                              workchat_message_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, ?, ?)
+                              workchat_message_id, created_at, updated_at,
+                              phone, contact_name, tags_json)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
             """,
-            (amo_lead_id, name, price, pipeline_id, status_id, responsible_user_id, now, now),
+            (amo_lead_id, name, price, pipeline_id, status_id, responsible_user_id,
+             now, now, phone, contact_name, tags_json),
         )
         await self.conn.commit()
         return await self.get_lead(cur.lastrowid)

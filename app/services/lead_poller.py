@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import timedelta
@@ -18,6 +19,7 @@ from ..utils import to_iso, utcnow
 log = logging.getLogger(__name__)
 
 ESCALATION_MINUTES = 15
+EXCLUDED_STATUS_IDS = {143}  # закрыт не реализован — не импортируем
 
 
 def _fmt_lead_card(lead_data: dict[str, Any]) -> str:
@@ -124,6 +126,38 @@ async def _escalate_lead(
     log.info("Escalated unclaimed lead %s (amo=%s)", lead_row["id"], lead_row["amo_lead_id"])
 
 
+async def _extract_contact_info(
+    amocrm: AmoCRMService,
+    lead: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    """Fetch phone and contact name from amoCRM lead's embedded contacts."""
+    contacts = lead.get("_embedded", {}).get("contacts") or []
+    if not contacts:
+        return None, None
+    # prefer main contact
+    contact_entry = next((c for c in contacts if c.get("is_main")), contacts[0])
+    contact_id = contact_entry.get("id")
+    if not contact_id:
+        return None, None
+    try:
+        contact = await amocrm.get_contact(int(contact_id))
+        phone = AmoCRMService.extract_phone(contact)
+        name = AmoCRMService.extract_contact_name(contact)
+        return phone, name
+    except Exception:
+        log.exception("Failed to fetch contact %s", contact_id)
+        return None, None
+
+
+def _extract_tags(lead: dict[str, Any]) -> str | None:
+    """Extract tags from lead as JSON array of names."""
+    tags = lead.get("_embedded", {}).get("tags") or []
+    if not tags:
+        return None
+    names = [t.get("name") for t in tags if t.get("name")]
+    return json.dumps(names, ensure_ascii=False) if names else None
+
+
 async def _poll_new_leads(
     db: Database,
     amocrm: AmoCRMService,
@@ -139,6 +173,7 @@ async def _poll_new_leads(
             limit=50,
             filter_={"created_at": {"from": last_ts}},
             order={"created_at": "asc"},
+            with_=["contacts"],
         )
     except Exception:
         log.exception("Failed to poll amoCRM leads")
@@ -150,9 +185,20 @@ async def _poll_new_leads(
         if created_at > new_ts:
             new_ts = created_at
 
+        # filter: skip excluded statuses
+        status_id = lead.get("status_id")
+        if status_id and int(status_id) in EXCLUDED_STATUS_IDS:
+            continue
+
         # skip if already known
         if await db.lead_exists(amo_id):
             continue
+
+        # extract contact info (phone, name) from amoCRM
+        phone, contact_name = await _extract_contact_info(amocrm, lead)
+
+        # extract tags (source)
+        tags_json = _extract_tags(lead)
 
         # store in DB
         lead_row = await db.create_lead(
@@ -160,12 +206,18 @@ async def _poll_new_leads(
             name=lead.get("name"),
             price=lead.get("price"),
             pipeline_id=lead.get("pipeline_id"),
-            status_id=lead.get("status_id"),
+            status_id=status_id,
             responsible_user_id=lead.get("responsible_user_id"),
+            phone=phone,
+            contact_name=contact_name,
+            tags_json=tags_json,
         )
 
         # publish to work chat
         await _publish_lead(db, notifier, lead_row)
+
+        # rate-limit: avoid hitting amoCRM API limits
+        await asyncio.sleep(0.25)
 
     return new_ts
 

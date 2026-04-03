@@ -921,6 +921,8 @@ async def cmd_resync_sheets(message: Message, db: Database, config: Config, inte
         integrations.sheets,
         include_invoice_cost=False,
         sync_invoices=False,
+        amocrm_user_map=getattr(config, "amocrm_user_map", None),
+        amocrm=integrations.amocrm,
     )
 
     await message.answer(

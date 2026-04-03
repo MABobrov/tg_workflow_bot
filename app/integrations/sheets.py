@@ -66,17 +66,12 @@ TASKS_HEADER = [
 ]
 
 LEADS_HEADER = [
-    "amo_lead_id",     # 0 — key
-    "Название",        # 1
-    "Бюджет",          # 2
-    "Воронка",         # 3
-    "Статус",          # 4
-    "Ответственный",   # 5 — amo user name/id
-    "Взял менеджер",   # 6 — tg username
-    "Дата взятия",     # 7
-    "Эскалирован",     # 8
-    "Создан",          # 9
-    "Обновлён",        # 10
+    "Дата",        # 0
+    "Имя",         # 1
+    "Телефон",     # 2
+    "Менеджер",    # 3
+    "Источник",    # 4
+    "Статус",      # 5
 ]
 
 INVOICES_HEADER = [
@@ -436,20 +431,49 @@ class GoogleSheetsService:
             project.get("amo_lead_id") or "",
         ]
 
-    def _lead_row_values(self, lead: dict[str, Any], manager_label: str = "") -> list[Any]:
-        return [
-            lead.get("amo_lead_id") or "",
-            lead.get("name") or "",
-            self._fmt_amount(lead.get("price")),
-            lead.get("pipeline_id") or "",
-            lead.get("status_id") or "",
-            lead.get("responsible_user_id") or "",
-            manager_label,
-            format_dt_iso(lead.get("claimed_at"), self.cfg.timezone_name),
-            "Да" if lead.get("escalated") else "",
-            format_dt_iso(lead.get("created_at"), self.cfg.timezone_name),
-            format_dt_iso(lead.get("updated_at"), self.cfg.timezone_name),
-        ]
+    def _lead_row_values(
+        self,
+        lead: dict[str, Any],
+        *,
+        status_name: str = "",
+        amo_user_map: dict[int, str] | None = None,
+    ) -> list[Any]:
+        # Дата: DD.MM.YYYY
+        date_str = format_dt_iso(lead.get("created_at"), self.cfg.timezone_name)
+        if date_str and date_str != "—":
+            date_str = date_str[:10]  # "DD.MM.YYYY"
+
+        # Имя: contact_name (если есть) или lead name
+        name = lead.get("contact_name") or lead.get("name") or ""
+
+        # Телефон
+        phone = lead.get("phone") or ""
+
+        # Менеджер: amo responsible_user_id → role code
+        manager = ""
+        resp_id = lead.get("responsible_user_id")
+        if resp_id and amo_user_map:
+            manager = amo_user_map.get(int(resp_id), "")
+
+        # Источник: first tag from tags_json
+        source = ""
+        tags_raw = lead.get("tags_json")
+        if tags_raw:
+            try:
+                import json
+                tags = json.loads(tags_raw)
+                if tags:
+                    source = str(tags[0])
+            except (json.JSONDecodeError, IndexError):
+                pass
+
+        # Статус: mapped name or status_id fallback
+        status = status_name or ""
+        if not status:
+            sid = lead.get("status_id")
+            status = str(sid) if sid else ""
+
+        return [date_str, name, phone, manager, source, status]
 
     def _task_row_values(self, task: dict[str, Any], project_code: str = "") -> list[Any]:
         payload = self._task_payload_fields(task)
@@ -895,21 +919,47 @@ class GoogleSheetsService:
 
     def upsert_leads_bulk_sync(
         self,
-        items: list[tuple[dict[str, Any], str]],
+        items: list[dict[str, Any]],
+        *,
+        status_map: dict[int, str] | None = None,
+        amo_user_map: dict[int, str] | None = None,
     ) -> int:
         with self._sync_lock:
             ws = self._get_or_create_ws(self.cfg.leads_tab, LEADS_HEADER)
+
+            # Full clear before bulk write (like invoices)
+            try:
+                total_rows = ws.row_count
+                if total_rows > 1:
+                    col_count = ws.col_count
+                    col_letter = gspread.utils.rowcol_to_a1(1, col_count).rstrip("1")
+                    ws.batch_clear([f"A2:{col_letter}{total_rows}"])
+            except Exception:
+                pass
+            self._row_indexes.pop(self.cfg.leads_tab, None)
+            self._next_rows.pop(self.cfg.leads_tab, None)
+
             batch_data: list[dict[str, Any]] = []
             count = 0
-            for lead, manager_label in items:
+            for lead in items:
                 amo_id = lead.get("amo_lead_id")
                 if not amo_id:
                     continue
+                # resolve status name
+                status_name = ""
+                sid = lead.get("status_id")
+                if sid and status_map:
+                    status_name = status_map.get(int(sid), "")
+
                 row, _ = self._get_or_allocate_row(self.cfg.leads_tab, ws, amo_id)
                 batch_data.append(
                     {
                         "range": self._row_range(row, len(LEADS_HEADER)),
-                        "values": [self._lead_row_values(lead, manager_label)],
+                        "values": [self._lead_row_values(
+                            lead,
+                            status_name=status_name,
+                            amo_user_map=amo_user_map,
+                        )],
                     }
                 )
                 count += 1
@@ -1061,10 +1111,19 @@ class GoogleSheetsService:
             return 0
         return await asyncio.to_thread(self.upsert_tasks_bulk_sync, items)
 
-    async def upsert_leads_bulk(self, items: list[tuple[dict[str, Any], str]]) -> int:
+    async def upsert_leads_bulk(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        status_map: dict[int, str] | None = None,
+        amo_user_map: dict[int, str] | None = None,
+    ) -> int:
         if not self.cfg.enabled or not items:
             return 0
-        return await asyncio.to_thread(self.upsert_leads_bulk_sync, items)
+        return await asyncio.to_thread(
+            self.upsert_leads_bulk_sync, items,
+            status_map=status_map, amo_user_map=amo_user_map,
+        )
 
     async def upsert_invoices_bulk(
         self,
