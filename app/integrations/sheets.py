@@ -66,12 +66,13 @@ TASKS_HEADER = [
 ]
 
 LEADS_HEADER = [
-    "Дата",        # 0
-    "Имя",         # 1
-    "Телефон",     # 2
-    "Менеджер",    # 3
-    "Источник",    # 4
-    "Статус",      # 5
+    "Дата",           # 0
+    "Имя клиента",    # 1
+    "Имя",            # 2 — название лида
+    "Телефон",        # 3
+    "Менеджер",       # 4
+    "Источник",       # 5
+    "Статус",         # 6
 ]
 
 INVOICES_HEADER = [
@@ -443,8 +444,11 @@ class GoogleSheetsService:
         if date_str and date_str != "—":
             date_str = date_str[:10]  # "DD.MM.YYYY"
 
-        # Имя: contact_name (если есть) или lead name
-        name = lead.get("contact_name") or lead.get("name") or ""
+        # Имя клиента: из контакта amoCRM
+        client_name = lead.get("contact_name") or ""
+
+        # Имя: название лида
+        name = lead.get("name") or ""
 
         # Телефон
         phone = lead.get("phone") or ""
@@ -473,7 +477,7 @@ class GoogleSheetsService:
             sid = lead.get("status_id")
             status = str(sid) if sid else ""
 
-        return [date_str, name, phone, manager, source, status]
+        return [date_str, client_name, name, phone, manager, source, status]
 
     def _task_row_values(self, task: dict[str, Any], project_code: str = "") -> list[Any]:
         payload = self._task_payload_fields(task)
