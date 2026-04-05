@@ -2343,6 +2343,15 @@ class Database:
         )
         await self.conn.commit()
 
+    async def update_lead_status(self, amo_lead_id: int, status_id: int) -> None:
+        """Update the amoCRM status_id for an existing lead."""
+        now = to_iso(utcnow())
+        await self.conn.execute(
+            "UPDATE leads SET status_id = ?, updated_at = ? WHERE amo_lead_id = ?",
+            (status_id, now, amo_lead_id),
+        )
+        await self.conn.commit()
+
     async def list_all_amo_leads(self, limit: int = 10000) -> list[dict[str, Any]]:
         """List all amoCRM leads for Sheets export."""
         cur = await self.conn.execute(

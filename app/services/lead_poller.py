@@ -20,6 +20,8 @@ log = logging.getLogger(__name__)
 
 ESCALATION_MINUTES = 15
 EXCLUDED_STATUS_IDS = {143}  # закрыт не реализован — не импортируем
+TERMINAL_STATUS_IDS = {142, 143}  # успешно / закрыт — статус не обновляем
+STATUS_SYNC_INTERVAL = 1800  # 30 minutes
 
 
 def _fmt_lead_card(lead_data: dict[str, Any]) -> str:
@@ -231,6 +233,65 @@ async def _check_escalations(db: Database, notifier: Notifier) -> None:
         await _escalate_lead(db, notifier, lead_row)
 
 
+async def _sync_lead_statuses(
+    db: Database,
+    amocrm: AmoCRMService,
+    last_status_sync_ts: int,
+) -> int:
+    """Fetch leads updated since last_status_sync_ts, update status_id in DB.
+
+    Returns the new watermark timestamp.
+    """
+    new_ts = last_status_sync_ts
+    page = 1
+
+    while True:
+        try:
+            leads = await amocrm.list_leads(
+                page=page,
+                limit=50,
+                filter_={"updated_at": {"from": last_status_sync_ts}},
+                order={"updated_at": "asc"},
+            )
+        except Exception:
+            log.exception("Failed to fetch leads for status sync (page %d)", page)
+            break
+
+        if not leads:
+            break
+
+        for lead in leads:
+            amo_id = int(lead["id"])
+            updated_at = int(lead.get("updated_at", 0))
+            if updated_at > new_ts:
+                new_ts = updated_at
+
+            remote_status = lead.get("status_id")
+            if remote_status is None:
+                continue
+
+            local_lead = await db.get_lead_by_amo_id(amo_id)
+            if local_lead is None:
+                continue
+
+            local_status = local_lead.get("status_id")
+            if local_status == remote_status:
+                continue
+
+            if local_status and int(local_status) in TERMINAL_STATUS_IDS:
+                continue
+
+            await db.update_lead_status(amo_id, int(remote_status))
+            log.info("Lead %s status updated: %s -> %s", amo_id, local_status, remote_status)
+
+        if len(leads) < 50:
+            break
+        page += 1
+        await asyncio.sleep(0.5)
+
+    return new_ts
+
+
 async def lead_poller_loop(
     db: Database,
     amocrm: AmoCRMService,
@@ -240,9 +301,10 @@ async def lead_poller_loop(
     """Background loop: polls amoCRM for new leads and handles escalations.
 
     Runs every `interval_seconds` seconds.
+    Status sync runs every STATUS_SYNC_INTERVAL seconds (~30 min).
     """
-    log.info("Lead poller started (interval=%ss, escalation=%smin)",
-             interval_seconds, ESCALATION_MINUTES)
+    log.info("Lead poller started (interval=%ss, escalation=%smin, status_sync=%ss)",
+             interval_seconds, ESCALATION_MINUTES, STATUS_SYNC_INTERVAL)
 
     # Initialize watermark: start from ~1 hour ago to avoid missing recent leads
     last_ts = int(time.time()) - 3600
@@ -255,6 +317,17 @@ async def lead_poller_loop(
         except ValueError:
             pass
 
+    # Initialize status sync watermark
+    last_status_ts = int(time.time()) - STATUS_SYNC_INTERVAL
+    saved_status = await db.get_setting("lead_status_sync_last_ts")
+    if saved_status:
+        try:
+            last_status_ts = int(saved_status)
+        except ValueError:
+            pass
+
+    last_status_check = 0.0  # monotonic time of last status sync
+
     while True:
         try:
             new_ts = await _poll_new_leads(db, amocrm, notifier, last_ts)
@@ -263,6 +336,16 @@ async def lead_poller_loop(
                 await db.set_setting("lead_poller_last_ts", str(last_ts))
 
             await _check_escalations(db, notifier)
+
+            # --- Sync lead statuses every STATUS_SYNC_INTERVAL ---
+            now_mono = time.monotonic()
+            if now_mono - last_status_check >= STATUS_SYNC_INTERVAL:
+                new_status_ts = await _sync_lead_statuses(db, amocrm, last_status_ts)
+                if new_status_ts > last_status_ts:
+                    last_status_ts = new_status_ts
+                    await db.set_setting("lead_status_sync_last_ts", str(last_status_ts))
+                last_status_check = now_mono
+                log.info("Lead status sync complete, watermark=%s", last_status_ts)
 
         except asyncio.CancelledError:
             raise
