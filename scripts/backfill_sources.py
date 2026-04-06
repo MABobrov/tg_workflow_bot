@@ -116,11 +116,17 @@ def _normalize_phone(phone: str | None) -> str:
 
 async def main():
     cfg = load_config()
+
+    # Use sync sqlite3 with busy_timeout to avoid "database is locked"
+    import sqlite3
+    sync_conn = sqlite3.connect(cfg.db_path, timeout=30)
+    sync_conn.row_factory = sqlite3.Row
+    sync_conn.execute("PRAGMA journal_mode=WAL")
+    sync_conn.execute("PRAGMA busy_timeout=30000")
+
+    # Also need async DB for amoCRM token management
     db = Database(cfg.db_path)
     await db.connect()
-    # Enable WAL mode and set busy timeout for concurrent access
-    await db.conn.execute("PRAGMA journal_mode=WAL")
-    await db.conn.execute("PRAGMA busy_timeout=10000")
 
     amo_cfg = AmoConfig(
         enabled=cfg.amocrm_enabled, base_url=cfg.amocrm_base_url,
@@ -136,22 +142,26 @@ async def main():
     for phone_suffix, source in LEAD_SOURCES:
         source_map[phone_suffix] = source
 
-    # Get all leads from DB
-    all_leads = await db.list_all_amo_leads(limit=10000)
+    # Get all leads from sync DB
+    rows = sync_conn.execute("SELECT amo_lead_id, phone, source FROM leads").fetchall()
     updated = 0
     amo_updated = 0
 
-    for lead in all_leads:
-        phone_norm = _normalize_phone(lead.get("phone"))
+    for row in rows:
+        phone_norm = _normalize_phone(row["phone"])
         if not phone_norm or phone_norm not in source_map:
             continue
 
         source = source_map[phone_norm]
-        amo_id = lead["amo_lead_id"]
+        amo_id = row["amo_lead_id"]
 
-        # Update local DB
-        if lead.get("source") != source:
-            await db.update_lead_source(amo_id, source)
+        # Update local DB via sync connection
+        if row["source"] != source:
+            sync_conn.execute(
+                "UPDATE leads SET source = ?, updated_at = datetime('now') WHERE amo_lead_id = ?",
+                (source, amo_id),
+            )
+            sync_conn.commit()
             updated += 1
             print("DB updated: amo_id=%s phone=%s source=%s" % (amo_id, phone_norm, source))
 
@@ -175,6 +185,7 @@ async def main():
 
     print("\nDone! DB updated: %d, amoCRM updated: %d" % (updated, amo_updated))
 
+    sync_conn.close()
     await amocrm.close()
     await db.close()
 
