@@ -68,13 +68,13 @@ TASKS_HEADER = [
 # Bot leads header — written starting from column H (col 8)
 LEADS_BOT_COL_START = 8  # column H (1-indexed)
 LEADS_BOT_HEADER = [
-    "Дата",           # H
-    "Имя клиента",    # I
-    "Имя",            # J — название лида
-    "Телефон",        # K
-    "Менеджер",       # L
-    "Источник",       # M
-    "Статус",         # N
+    "Дата amo",       # H
+    "Имя клиента amo",# I
+    "Название",       # J — название лида
+    "Тел amo",        # K
+    "Менеджер amo",   # L
+    "Источник amo",   # M
+    "Статус amo",     # N
 ]
 # RP phone column (C = col 3, 1-indexed)
 LEADS_RP_PHONE_COL = 3
