@@ -118,7 +118,6 @@ async def main():
     cfg = load_config()
     db = Database(cfg.db_path)
     await db.connect()
-    await db._run_migrations()
 
     amo_cfg = AmoConfig(
         enabled=cfg.amocrm_enabled, base_url=cfg.amocrm_base_url,
