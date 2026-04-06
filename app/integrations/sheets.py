@@ -68,13 +68,9 @@ TASKS_HEADER = [
 # Bot leads header — written starting from column H (col 8)
 LEADS_BOT_COL_START = 8  # column H (1-indexed)
 LEADS_BOT_HEADER = [
-    "Дата amo",       # H
-    "Имя клиента amo",# I
-    "Название",       # J — название лида
-    "Тел amo",        # K
-    "Менеджер amo",   # L
-    "Источник amo",   # M
-    "Статус amo",     # N
+    "Источник amo",   # H — first bot column
+    "Менеджер amo",   # I
+    "Статус amo",     # J
 ]
 # RP phone column (C = col 3, 1-indexed)
 LEADS_RP_PHONE_COL = 3
@@ -443,26 +439,6 @@ class GoogleSheetsService:
         status_name: str = "",
         amo_user_map: dict[int, str] | None = None,
     ) -> list[Any]:
-        # Дата: DD.MM.YYYY
-        date_str = format_dt_iso(lead.get("created_at"), self.cfg.timezone_name)
-        if date_str and date_str != "—":
-            date_str = date_str[:10]  # "DD.MM.YYYY"
-
-        # Имя клиента: из контакта amoCRM
-        client_name = lead.get("contact_name") or ""
-
-        # Имя: название лида
-        name = lead.get("name") or ""
-
-        # Телефон
-        phone = lead.get("phone") or ""
-
-        # Менеджер: amo responsible_user_id → role code
-        manager = ""
-        resp_id = lead.get("responsible_user_id")
-        if resp_id and amo_user_map:
-            manager = amo_user_map.get(int(resp_id), "")
-
         # Источник: from custom field "Источник", fallback to first tag
         source = lead.get("source") or ""
         if not source:
@@ -476,13 +452,19 @@ class GoogleSheetsService:
                 except (json.JSONDecodeError, IndexError):
                     pass
 
+        # Менеджер: amo responsible_user_id → role code
+        manager = ""
+        resp_id = lead.get("responsible_user_id")
+        if resp_id and amo_user_map:
+            manager = amo_user_map.get(int(resp_id), "")
+
         # Статус: mapped name or status_id fallback
         status = status_name or ""
         if not status:
             sid = lead.get("status_id")
             status = str(sid) if sid else ""
 
-        return [date_str, client_name, name, phone, manager, source, status]
+        return [source, manager, status]
 
     def _task_row_values(self, task: dict[str, Any], project_code: str = "") -> list[Any]:
         payload = self._task_payload_fields(task)
