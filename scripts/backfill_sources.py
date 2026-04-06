@@ -117,14 +117,14 @@ def _normalize_phone(phone: str | None) -> str:
 async def main():
     cfg = load_config()
 
-    # Use sync sqlite3 with busy_timeout to avoid "database is locked"
+    # Read-only sync sqlite3 to get lead phone→amo_id mapping
     import sqlite3
-    sync_conn = sqlite3.connect(cfg.db_path, timeout=30)
+    sync_conn = sqlite3.connect(cfg.db_path, timeout=10)
     sync_conn.row_factory = sqlite3.Row
-    sync_conn.execute("PRAGMA journal_mode=WAL")
-    sync_conn.execute("PRAGMA busy_timeout=30000")
+    rows = sync_conn.execute("SELECT amo_lead_id, phone FROM leads").fetchall()
+    sync_conn.close()
 
-    # Also need async DB for amoCRM token management
+    # Async DB only for amoCRM token management
     db = Database(cfg.db_path)
     await db.connect()
 
@@ -142,10 +142,9 @@ async def main():
     for phone_suffix, source in LEAD_SOURCES:
         source_map[phone_suffix] = source
 
-    # Get all leads from sync DB
-    rows = sync_conn.execute("SELECT amo_lead_id, phone, source FROM leads").fetchall()
-    updated = 0
+    # Only update amoCRM — the 30-min status sync will pick up source to DB
     amo_updated = 0
+    skipped = 0
 
     for row in rows:
         phone_norm = _normalize_phone(row["phone"])
@@ -155,17 +154,6 @@ async def main():
         source = source_map[phone_norm]
         amo_id = row["amo_lead_id"]
 
-        # Update local DB via sync connection
-        if row["source"] != source:
-            sync_conn.execute(
-                "UPDATE leads SET source = ?, updated_at = datetime('now') WHERE amo_lead_id = ?",
-                (source, amo_id),
-            )
-            sync_conn.commit()
-            updated += 1
-            print("DB updated: amo_id=%s phone=%s source=%s" % (amo_id, phone_norm, source))
-
-        # Update amoCRM custom field
         try:
             await amocrm.update_lead(amo_id, {
                 "custom_fields_values": [
@@ -176,16 +164,16 @@ async def main():
                 ]
             })
             amo_updated += 1
-            print("  amoCRM updated: amo_id=%s" % amo_id)
+            print("amoCRM updated: amo_id=%s phone=%s source=%s" % (amo_id, phone_norm, source))
         except Exception as e:
-            print("  amoCRM FAILED for amo_id=%s: %s" % (amo_id, e))
+            print("amoCRM FAILED for amo_id=%s: %s" % (amo_id, e))
+            skipped += 1
 
-        # Rate limit
         await asyncio.sleep(0.3)
 
-    print("\nDone! DB updated: %d, amoCRM updated: %d" % (updated, amo_updated))
+    print("\nDone! amoCRM updated: %d, failed: %d" % (amo_updated, skipped))
+    print("DB will be updated automatically by the 30-min status sync")
 
-    sync_conn.close()
     await amocrm.close()
     await db.close()
 
