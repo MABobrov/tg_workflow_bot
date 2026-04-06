@@ -2388,16 +2388,33 @@ class Database:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
-    async def list_unescalated_leads(self, older_than_iso: str) -> list[dict[str, Any]]:
-        """Unclaimed & not yet escalated leads older than given timestamp."""
-        cur = await self.conn.execute(
-            """
-            SELECT * FROM leads
-            WHERE claimed_by IS NULL AND escalated = 0 AND created_at <= ?
-            ORDER BY created_at ASC
-            """,
-            (older_than_iso,),
-        )
+    async def list_unescalated_leads(
+        self, older_than_iso: str, status_ids: set[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Unclaimed & not yet escalated leads older than given timestamp.
+
+        If status_ids is given, only return leads whose status_id is in the set.
+        """
+        if status_ids:
+            placeholders = ",".join("?" for _ in status_ids)
+            cur = await self.conn.execute(
+                f"""
+                SELECT * FROM leads
+                WHERE claimed_by IS NULL AND escalated = 0
+                  AND created_at <= ? AND status_id IN ({placeholders})
+                ORDER BY created_at ASC
+                """,
+                (older_than_iso, *status_ids),
+            )
+        else:
+            cur = await self.conn.execute(
+                """
+                SELECT * FROM leads
+                WHERE claimed_by IS NULL AND escalated = 0 AND created_at <= ?
+                ORDER BY created_at ASC
+                """,
+                (older_than_iso,),
+            )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
