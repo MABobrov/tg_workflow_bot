@@ -40,6 +40,11 @@ class LeadAssignCb(CallbackData, prefix="leadassign"):
     manager_id: int
 
 
+class LeadSourceCb(CallbackData, prefix="leadsrc"):
+    lead_id: int
+    source: str  # key from SOURCE_OPTIONS
+
+
 class AdminUsersListCb(CallbackData, prefix="admlist"):
     offset: int = 0
 

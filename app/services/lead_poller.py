@@ -9,7 +9,7 @@ from typing import Any
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from ..callbacks import LeadAssignCb, LeadCb
+from ..callbacks import LeadAssignCb, LeadCb, LeadSourceCb
 from ..db import Database
 from ..enums import Role
 from ..integrations.amocrm import AmoCRMService
@@ -41,14 +41,36 @@ def _fmt_lead_card(lead_data: dict[str, Any]) -> str:
     )
 
 
+SOURCE_OPTIONS = {
+    "avito": "Авито",
+    "avito_zv": "Авито зв",
+    "avito2": "Авито 2",
+    "site": "Сайт",
+    "ton": "тон",
+    "ap": "от АП",
+    "sab": "от САБ",
+    "kv": "от КВ",
+    "kia": "от КИА",
+    "komus": "Комус",
+    "roma": "от Ромы",
+    "petra": "от Петралюма",
+}
+
+
 def _claim_kb(lead_id: int) -> Any:
-    """Inline keyboard with a single 'Claim' button for managers."""
+    """Inline keyboard: claim button + source selection for RP."""
     b = InlineKeyboardBuilder()
     b.button(
         text="🙋 Взять лид в работу",
         callback_data=LeadCb(lead_id=lead_id, action="claim").pack(),
     )
-    b.adjust(1)
+    for key, label in SOURCE_OPTIONS.items():
+        b.button(
+            text=f"🏷 {label}",
+            callback_data=LeadSourceCb(lead_id=lead_id, source=key).pack(),
+        )
+    # First row: claim button alone, then source buttons 3 per row
+    b.adjust(1, 3, 3, 3, 3)
     return b.as_markup()
 
 

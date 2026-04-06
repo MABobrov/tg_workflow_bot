@@ -10,7 +10,7 @@ import logging
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
-from ..callbacks import LeadAssignCb, LeadCb
+from ..callbacks import LeadAssignCb, LeadCb, LeadSourceCb
 from ..config import Config
 from ..db import Database
 from ..enums import MANAGER_ROLES, Role
@@ -254,3 +254,87 @@ async def _resolve_amo_user_id(
     #    Admin can set it via: /setsetting amo_user_map:<tg_id> <amo_user_id>
     #    For now, return None.
     return None
+
+
+# ==================== RP/GD: SET LEAD SOURCE ====================
+
+AMOCRM_SOURCE_FIELD_ID = 1063391
+
+# Same mapping as in lead_poller.py SOURCE_OPTIONS
+_SOURCE_LABELS = {
+    "avito": "Авито",
+    "avito_zv": "Авито зв",
+    "avito2": "Авито 2",
+    "site": "Сайт",
+    "ton": "тон",
+    "ap": "от АП",
+    "sab": "от САБ",
+    "kv": "от КВ",
+    "kia": "от КИА",
+    "komus": "Комус",
+    "roma": "от Ромы",
+    "petra": "от Петралюма",
+}
+
+
+@router.callback_query(LeadSourceCb.filter())
+async def lead_set_source(
+    cb: CallbackQuery,
+    callback_data: LeadSourceCb,
+    db: Database,
+    integrations: IntegrationHub,
+) -> None:
+    """RP/GD clicks a source button on a lead card in work chat."""
+    u = cb.from_user
+    if not u:
+        return
+
+    lead_id = callback_data.lead_id
+    source_key = callback_data.source
+    source_label = _SOURCE_LABELS.get(source_key, source_key)
+
+    # Update DB
+    try:
+        lead_row = await db.get_lead(lead_id)
+    except KeyError:
+        await cb.answer("Лид не найден", show_alert=True)
+        return
+
+    amo_lead_id = lead_row.get("amo_lead_id")
+    await db.update_lead_source(int(amo_lead_id), source_label)
+
+    # Update amoCRM custom field
+    if integrations.amocrm and amo_lead_id:
+        try:
+            await integrations.amocrm.update_lead(int(amo_lead_id), {
+                "custom_fields_values": [
+                    {
+                        "field_id": AMOCRM_SOURCE_FIELD_ID,
+                        "values": [{"value": source_label}],
+                    }
+                ]
+            })
+        except Exception:
+            log.exception("Failed to update amoCRM source for lead %s", amo_lead_id)
+
+    # Edit message: add source info, keep only claim button
+    if cb.message:
+        old_text = cb.message.text or cb.message.html_text or ""
+        new_text = old_text.rstrip() + f"\n🏷 Источник: {source_label}"
+
+        # Rebuild keyboard with only the claim button (remove source buttons)
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+        b = InlineKeyboardBuilder()
+        b.button(
+            text="🙋 Взять лид в работу",
+            callback_data=LeadCb(lead_id=lead_id, action="claim").pack(),
+        )
+        b.adjust(1)
+
+        try:
+            await cb.message.edit_text(new_text, reply_markup=b.as_markup())
+        except Exception:
+            log.warning("Failed to edit lead source message")
+
+    await cb.answer(f"Источник: {source_label}")
+    log.info("Lead %s source set to '%s' by @%s", lead_id, source_label, u.username)

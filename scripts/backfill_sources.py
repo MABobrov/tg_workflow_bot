@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """Backfill source (Источник) for existing leads.
 
-Matches leads by normalized phone number, writes source to both:
-1. Local DB (leads.source column)
-2. amoCRM custom field Источник (field_id=1063391)
+Matches leads by normalized phone number, writes source to amoCRM custom field.
+The 30-min status sync will pick up source changes to local DB.
 """
 import asyncio
 import sys
@@ -17,8 +16,7 @@ from app.integrations.amocrm import AmoCRMService, AmoConfig
 
 SOURCE_FIELD_ID = 1063391
 
-# Data from user's list: (phone_last10, source)
-# Format: phone -> source
+# Full list: phone_last10 -> source
 LEAD_SOURCES = [
     ("9623614662", "Авито"),
     ("9647801119", "Авито"),
@@ -42,7 +40,6 @@ LEAD_SOURCES = [
     ("9128050338", "Авито"),
     ("9017344104", "Авито"),
     ("9265881984", "Сайт"),
-    # 66969619413 - international, skip or handle separately
     ("9035838313", "Авито"),
     ("9912111146", "Сайт"),
     ("9054252612", "Авито"),
@@ -103,11 +100,23 @@ LEAD_SOURCES = [
     ("9857664253", "от САБ"),
     ("9060404077", "Авито зв"),
     ("9997678787", "от Ромы"),
+    # New from extended list (25.03-03.04.2026)
+    ("9250505403", "от КВ"),
+    ("9168869733", "Сайт"),
+    ("9060790207", "Сайт"),
+    ("9377790500", "Авито"),
+    ("9262369883", "Сайт"),
+    ("9163284658", "Сайт"),
+    ("9851729933", "Авито"),
+    ("9136041479", "Сайт"),
+    ("9802097978", "Авито"),
+    ("9151579351", "Авито"),
+    ("9777471376", "Авито зв"),
+    ("9058345551", "Сайт"),
 ]
 
 
-def _normalize_phone(phone: str | None) -> str:
-    """Normalize phone to last 10 digits."""
+def _normalize_phone(phone):
     if not phone:
         return ""
     digits = re.sub(r"\D", "", phone)
@@ -117,14 +126,12 @@ def _normalize_phone(phone: str | None) -> str:
 async def main():
     cfg = load_config()
 
-    # Read-only sync sqlite3 to get lead phone→amo_id mapping
     import sqlite3
     sync_conn = sqlite3.connect(cfg.db_path, timeout=10)
     sync_conn.row_factory = sqlite3.Row
     rows = sync_conn.execute("SELECT amo_lead_id, phone FROM leads").fetchall()
     sync_conn.close()
 
-    # Async DB only for amoCRM token management
     db = Database(cfg.db_path)
     await db.connect()
 
@@ -137,12 +144,10 @@ async def main():
     amocrm = AmoCRMService(amo_cfg, db)
     await amocrm.start()
 
-    # Build phone -> source mapping
     source_map = {}
     for phone_suffix, source in LEAD_SOURCES:
         source_map[phone_suffix] = source
 
-    # Only update amoCRM — the 30-min status sync will pick up source to DB
     amo_updated = 0
     skipped = 0
 
@@ -172,7 +177,6 @@ async def main():
         await asyncio.sleep(0.3)
 
     print("\nDone! amoCRM updated: %d, failed: %d" % (amo_updated, skipped))
-    print("DB will be updated automatically by the 30-min status sync")
 
     await amocrm.close()
     await db.close()
