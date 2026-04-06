@@ -118,6 +118,9 @@ async def main():
     cfg = load_config()
     db = Database(cfg.db_path)
     await db.connect()
+    # Enable WAL mode and set busy timeout for concurrent access
+    await db.conn.execute("PRAGMA journal_mode=WAL")
+    await db.conn.execute("PRAGMA busy_timeout=10000")
 
     amo_cfg = AmoConfig(
         enabled=cfg.amocrm_enabled, base_url=cfg.amocrm_base_url,
