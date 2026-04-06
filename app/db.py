@@ -542,10 +542,11 @@ class Database:
             ("invoices", "inv_kv_address", "TEXT"),
             ("invoices", "inv_kia_address", "TEXT"),
             ("invoices", "inv_npn_address", "TEXT"),
-            # amoCRM lead enrichment: phone, contact name, tags
+            # amoCRM lead enrichment: phone, contact name, tags, source
             ("leads", "phone", "TEXT"),
             ("leads", "contact_name", "TEXT"),
             ("leads", "tags_json", "TEXT"),
+            ("leads", "source", "TEXT"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -2277,6 +2278,7 @@ class Database:
         phone: str | None = None,
         contact_name: str | None = None,
         tags_json: str | None = None,
+        source: str | None = None,
     ) -> dict[str, Any]:
         now = to_iso(utcnow())
         cur = await self.conn.execute(
@@ -2284,11 +2286,11 @@ class Database:
             INSERT INTO leads(amo_lead_id, name, price, pipeline_id, status_id,
                               responsible_user_id, claimed_by, claimed_at, escalated,
                               workchat_message_id, created_at, updated_at,
-                              phone, contact_name, tags_json)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
+                              phone, contact_name, tags_json, source)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?)
             """,
             (amo_lead_id, name, price, pipeline_id, status_id, responsible_user_id,
-             now, now, phone, contact_name, tags_json),
+             now, now, phone, contact_name, tags_json, source),
         )
         await self.conn.commit()
         return await self.get_lead(cur.lastrowid)
@@ -2349,6 +2351,15 @@ class Database:
         await self.conn.execute(
             "UPDATE leads SET status_id = ?, updated_at = ? WHERE amo_lead_id = ?",
             (status_id, now, amo_lead_id),
+        )
+        await self.conn.commit()
+
+    async def update_lead_source(self, amo_lead_id: int, source: str) -> None:
+        """Update the source (Источник) for an existing lead."""
+        now = to_iso(utcnow())
+        await self.conn.execute(
+            "UPDATE leads SET source = ?, updated_at = ? WHERE amo_lead_id = ?",
+            (source, now, amo_lead_id),
         )
         await self.conn.commit()
 

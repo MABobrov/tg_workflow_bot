@@ -463,17 +463,18 @@ class GoogleSheetsService:
         if resp_id and amo_user_map:
             manager = amo_user_map.get(int(resp_id), "")
 
-        # Источник: first tag from tags_json
-        source = ""
-        tags_raw = lead.get("tags_json")
-        if tags_raw:
-            try:
-                import json
-                tags = json.loads(tags_raw)
-                if tags:
-                    source = str(tags[0])
-            except (json.JSONDecodeError, IndexError):
-                pass
+        # Источник: from custom field "Источник", fallback to first tag
+        source = lead.get("source") or ""
+        if not source:
+            tags_raw = lead.get("tags_json")
+            if tags_raw:
+                try:
+                    import json
+                    tags = json.loads(tags_raw)
+                    if tags:
+                        source = str(tags[0])
+                except (json.JSONDecodeError, IndexError):
+                    pass
 
         # Статус: mapped name or status_id fallback
         status = status_name or ""

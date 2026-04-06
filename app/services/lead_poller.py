@@ -160,6 +160,19 @@ def _extract_tags(lead: dict[str, Any]) -> str | None:
     return json.dumps(names, ensure_ascii=False) if names else None
 
 
+AMOCRM_SOURCE_FIELD_ID = 1063391  # custom field "Источник"
+
+
+def _extract_source(lead: dict[str, Any]) -> str | None:
+    """Extract source (Источник) from amoCRM custom field."""
+    for cf in lead.get("custom_fields_values") or []:
+        if cf.get("field_id") == AMOCRM_SOURCE_FIELD_ID:
+            values = cf.get("values") or []
+            if values:
+                return str(values[0].get("value", ""))
+    return None
+
+
 async def _poll_new_leads(
     db: Database,
     amocrm: AmoCRMService,
@@ -199,8 +212,9 @@ async def _poll_new_leads(
         # extract contact info (phone, name) from amoCRM
         phone, contact_name = await _extract_contact_info(amocrm, lead)
 
-        # extract tags (source)
+        # extract tags and source
         tags_json = _extract_tags(lead)
+        source = _extract_source(lead)
 
         # store in DB
         lead_row = await db.create_lead(
@@ -213,6 +227,7 @@ async def _poll_new_leads(
             phone=phone,
             contact_name=contact_name,
             tags_json=tags_json,
+            source=source,
         )
 
         # publish to work chat
@@ -274,15 +289,19 @@ async def _sync_lead_statuses(
             if local_lead is None:
                 continue
 
+            # Update status if changed
             local_status = local_lead.get("status_id")
-            if local_status == remote_status:
-                continue
+            if local_status != remote_status:
+                if not (local_status and int(local_status) in TERMINAL_STATUS_IDS):
+                    await db.update_lead_status(amo_id, int(remote_status))
+                    log.info("Lead %s status updated: %s -> %s", amo_id, local_status, remote_status)
 
-            if local_status and int(local_status) in TERMINAL_STATUS_IDS:
-                continue
-
-            await db.update_lead_status(amo_id, int(remote_status))
-            log.info("Lead %s status updated: %s -> %s", amo_id, local_status, remote_status)
+            # Update source if changed
+            remote_source = _extract_source(lead)
+            local_source = local_lead.get("source")
+            if remote_source and remote_source != local_source:
+                await db.update_lead_source(amo_id, remote_source)
+                log.info("Lead %s source updated: %s -> %s", amo_id, local_source, remote_source)
 
         if len(leads) < 50:
             break
