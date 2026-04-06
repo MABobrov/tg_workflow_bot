@@ -263,17 +263,17 @@ AMOCRM_SOURCE_FIELD_ID = 1063391
 # Same mapping as in lead_poller.py SOURCE_OPTIONS
 _SOURCE_LABELS = {
     "avito": "Авито",
-    "avito_zv": "Авито зв",
     "avito2": "Авито 2",
+    "avito_zv": "Авито зв",
+    "avito2zv": "Авито 2 зв",
     "site": "Сайт",
     "ton": "тон",
-    "ap": "от АП",
     "sab": "от САБ",
     "kv": "от КВ",
-    "kia": "от КИА",
-    "komus": "Комус",
-    "roma": "от Ромы",
     "petra": "от Петралюма",
+    "kia": "от КИА",
+    "sarafan": "Сарафан",
+    "other": "Др.Источник",
 }
 
 
