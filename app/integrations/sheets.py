@@ -962,16 +962,6 @@ class GoogleSheetsService:
             hdr_end = gspread.utils.rowcol_to_a1(1, LEADS_BOT_COL_START + len(LEADS_BOT_HEADER) - 1)
             ws.update([LEADS_BOT_HEADER], f"{hdr_start}:{hdr_end}")
 
-            # Read RP phone column (C) — build phone→row mapping
-            rp_phones_raw = ws.col_values(LEADS_RP_PHONE_COL)
-            rp_phone_to_row: dict[str, int] = {}
-            for idx, raw_phone in enumerate(rp_phones_raw):
-                if idx == 0:
-                    continue  # skip header
-                norm = self._normalize_phone(raw_phone)
-                if norm:
-                    rp_phone_to_row[norm] = idx + 1  # 1-indexed row
-
             # Clear bot columns (H2:N...) before writing
             total_rows = ws.row_count
             if total_rows > 1:
@@ -981,46 +971,14 @@ class GoogleSheetsService:
                 )
                 ws.batch_clear([f"{clr_start}:{clr_end}"])
 
-            # Place leads: match by phone → same row; unmatched → append
+            # Write all leads sequentially starting from row 2
             batch_data: list[dict[str, Any]] = []
-            used_rows: set[int] = set()
-            unmatched: list[dict[str, Any]] = []
+            next_row = 2
 
             for lead in items:
                 if not lead.get("amo_lead_id"):
                     continue
-                bot_phone = self._normalize_phone(lead.get("phone"))
-                matched_row = rp_phone_to_row.get(bot_phone) if bot_phone else None
 
-                if matched_row and matched_row not in used_rows:
-                    row = matched_row
-                    used_rows.add(row)
-                else:
-                    unmatched.append(lead)
-                    continue
-
-                status_name = ""
-                sid = lead.get("status_id")
-                if sid and status_map:
-                    status_name = status_map.get(int(sid), "")
-
-                cell_start = gspread.utils.rowcol_to_a1(row, LEADS_BOT_COL_START)
-                cell_end = gspread.utils.rowcol_to_a1(
-                    row, LEADS_BOT_COL_START + len(LEADS_BOT_HEADER) - 1
-                )
-                batch_data.append({
-                    "range": f"{cell_start}:{cell_end}",
-                    "values": [self._lead_row_values(
-                        lead, status_name=status_name, amo_user_map=amo_user_map,
-                    )],
-                })
-
-            # Append unmatched leads after last RP row (or after last used row)
-            last_rp_row = max(rp_phone_to_row.values()) if rp_phone_to_row else 1
-            next_row = max(last_rp_row + 1, 2)
-            for lead in unmatched:
-                while next_row in used_rows:
-                    next_row += 1
                 status_name = ""
                 sid = lead.get("status_id")
                 if sid and status_map:
@@ -1036,7 +994,6 @@ class GoogleSheetsService:
                         lead, status_name=status_name, amo_user_map=amo_user_map,
                     )],
                 })
-                used_rows.add(next_row)
                 next_row += 1
 
             self._flush_batch_update(ws, batch_data, chunk_size=200)
