@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Import leads from amoCRM created since 30.01.2025 that are not yet in DB."""
+"""Import ALL leads from amoCRM created since 30.01.2025, including closed ones."""
 import asyncio
 import sys
 import os
@@ -11,8 +11,7 @@ from app.db import Database
 from app.integrations.amocrm import AmoCRMService, AmoConfig
 
 SOURCE_FIELD_ID = 1063391
-EXCLUDED_STATUS_IDS = {143}
-# 30.01.2025 00:00:00 UTC as unix timestamp
+# 30.01.2025 00:00:00 UTC
 SINCE_TS = 1738195200
 
 
@@ -46,8 +45,7 @@ async def _extract_contact_info(amocrm, lead):
         phone = AmoCRMService.extract_phone(contact)
         name = AmoCRMService.extract_contact_name(contact)
         return phone, name
-    except Exception as e:
-        print("  contact fetch failed %s: %s" % (contact_id, e))
+    except Exception:
         return None, None
 
 
@@ -65,11 +63,10 @@ async def main():
     amocrm = AmoCRMService(amo_cfg, db)
     await amocrm.start()
 
-    # Existing amo IDs
     cur = await db.conn.execute("SELECT amo_lead_id FROM leads")
     rows = await cur.fetchall()
     existing_ids = {int(r["amo_lead_id"]) for r in rows}
-    print("Existing leads in DB: %d" % len(existing_ids))
+    print("Existing in DB: %d" % len(existing_ids))
 
     page = 1
     total_fetched = 0
@@ -94,10 +91,9 @@ async def main():
             amo_id = int(lead["id"])
             if amo_id in existing_ids:
                 continue
-            status_id = lead.get("status_id")
-            if status_id and int(status_id) in EXCLUDED_STATUS_IDS:
-                continue
 
+            # NO status filter — import ALL leads including closed
+            status_id = lead.get("status_id")
             phone, contact_name = await _extract_contact_info(amocrm, lead)
             tags_json = _extract_tags(lead)
             source = _extract_source(lead)
@@ -118,13 +114,14 @@ async def main():
                 print("Failed amo_id=%s: %s" % (amo_id, e))
             await asyncio.sleep(0.25)
 
-        print("Page %d: %d leads" % (page, len(leads)))
+        print("Page %d: %d leads (imported so far: %d)" % (page, len(leads), imported))
         if len(leads) < 50:
             break
         page += 1
         await asyncio.sleep(0.5)
 
-    print("\nTotal fetched: %d, imported: %d" % (total_fetched, imported))
+    print("\nTotal fetched: %d, newly imported: %d" % (total_fetched, imported))
+    print("New DB total: %d" % (len(existing_ids) + imported))
     await amocrm.close()
     await db.close()
 
