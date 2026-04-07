@@ -66,14 +66,16 @@ TASKS_HEADER = [
 ]
 
 # Bot leads header — written starting from column H (col 8)
-LEADS_BOT_COL_START = 8  # column H (1-indexed)
-LEADS_BOT_HEADER = [
-    "Источник amo",   # H — first bot column
-    "Менеджер amo",   # I
-    "Статус amo",     # J
+LEADS_COL_START = 1  # column A (1-indexed)
+LEADS_HEADER = [
+    "Дата",           # A
+    "Имя клиента",    # B
+    "Имя",            # C — название лида
+    "Телефон",        # D
+    "Менеджер",       # E
+    "Источник",       # F
+    "Статус",         # G
 ]
-# RP phone column (C = col 3, 1-indexed)
-LEADS_RP_PHONE_COL = 3
 
 INVOICES_HEADER = [
     # — Отдел продаж structure (0-45) —
@@ -439,6 +441,26 @@ class GoogleSheetsService:
         status_name: str = "",
         amo_user_map: dict[int, str] | None = None,
     ) -> list[Any]:
+        # Дата: DD.MM.YYYY
+        date_str = format_dt_iso(lead.get("created_at"), self.cfg.timezone_name)
+        if date_str and date_str != "—":
+            date_str = date_str[:10]  # "DD.MM.YYYY"
+
+        # Имя клиента: из контакта amoCRM
+        client_name = lead.get("contact_name") or ""
+
+        # Имя: название лида
+        name = lead.get("name") or ""
+
+        # Телефон
+        phone = lead.get("phone") or ""
+
+        # Менеджер: amo responsible_user_id → role code
+        manager = ""
+        resp_id = lead.get("responsible_user_id")
+        if resp_id and amo_user_map:
+            manager = amo_user_map.get(int(resp_id), "")
+
         # Источник: from custom field "Источник", fallback to first tag
         source = lead.get("source") or ""
         if not source:
@@ -452,19 +474,13 @@ class GoogleSheetsService:
                 except (json.JSONDecodeError, IndexError):
                     pass
 
-        # Менеджер: amo responsible_user_id → role code
-        manager = ""
-        resp_id = lead.get("responsible_user_id")
-        if resp_id and amo_user_map:
-            manager = amo_user_map.get(int(resp_id), "")
-
         # Статус: mapped name or status_id fallback
         status = status_name or ""
         if not status:
             sid = lead.get("status_id")
             status = str(sid) if sid else ""
 
-        return [source, manager, status]
+        return [date_str, client_name, name, phone, manager, source, status]
 
     def _task_row_values(self, task: dict[str, Any], project_code: str = "") -> list[Any]:
         payload = self._task_payload_fields(task)
@@ -924,36 +940,29 @@ class GoogleSheetsService:
         amo_user_map: dict[int, str] | None = None,
     ) -> int:
         with self._sync_lock:
-            # Get or create sheet (use a dummy header — RP fills cols A-F manually)
             sh = self._get_spreadsheet()
             try:
                 ws = sh.worksheet(self.cfg.leads_tab)
             except gspread.WorksheetNotFound:
                 ws = sh.add_worksheet(
                     title=self.cfg.leads_tab, rows=2000,
-                    cols=LEADS_BOT_COL_START + len(LEADS_BOT_HEADER),
+                    cols=len(LEADS_HEADER),
                 )
 
             # Ensure enough columns
-            needed = LEADS_BOT_COL_START + len(LEADS_BOT_HEADER)
+            needed = len(LEADS_HEADER)
             if ws.col_count < needed:
                 ws.resize(cols=needed)
 
-            # Write bot header at H1:N1
-            hdr_start = gspread.utils.rowcol_to_a1(1, LEADS_BOT_COL_START)
-            hdr_end = gspread.utils.rowcol_to_a1(1, LEADS_BOT_COL_START + len(LEADS_BOT_HEADER) - 1)
-            ws.update([LEADS_BOT_HEADER], f"{hdr_start}:{hdr_end}")
-
-            # Clear bot columns (H2:N...) before writing
+            # Clear entire sheet and write header A1:G1
             total_rows = ws.row_count
-            if total_rows > 1:
-                clr_start = gspread.utils.rowcol_to_a1(2, LEADS_BOT_COL_START)
-                clr_end = gspread.utils.rowcol_to_a1(
-                    total_rows, LEADS_BOT_COL_START + len(LEADS_BOT_HEADER) - 1
-                )
-                ws.batch_clear([f"{clr_start}:{clr_end}"])
+            col_letter = gspread.utils.rowcol_to_a1(1, needed).rstrip("1")
+            ws.batch_clear([f"A1:{col_letter}{total_rows}"])
 
-            # Write all leads sequentially starting from row 2
+            hdr_end = gspread.utils.rowcol_to_a1(1, len(LEADS_HEADER))
+            ws.update([LEADS_HEADER], f"A1:{hdr_end}")
+
+            # Write all leads starting from row 2
             batch_data: list[dict[str, Any]] = []
             next_row = 2
 
@@ -966,12 +975,9 @@ class GoogleSheetsService:
                 if sid and status_map:
                     status_name = status_map.get(int(sid), "")
 
-                cell_start = gspread.utils.rowcol_to_a1(next_row, LEADS_BOT_COL_START)
-                cell_end = gspread.utils.rowcol_to_a1(
-                    next_row, LEADS_BOT_COL_START + len(LEADS_BOT_HEADER) - 1
-                )
+                cell_end = gspread.utils.rowcol_to_a1(next_row, len(LEADS_HEADER))
                 batch_data.append({
-                    "range": f"{cell_start}:{cell_end}",
+                    "range": f"A{next_row}:{cell_end}",
                     "values": [self._lead_row_values(
                         lead, status_name=status_name, amo_user_map=amo_user_map,
                     )],
