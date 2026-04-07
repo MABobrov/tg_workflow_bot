@@ -178,10 +178,11 @@ async def export_to_sheets(
 
     # --- Leads (amoCRM) ---
     amo_leads = await db.list_all_amo_leads(limit=10000)
-    # Filter: only leads created on or after 30.01.2025 (all statuses)
+    # Filter: only Неразобранное (58140186) and лиды от робота (62065726)
+    LEADS_SHEET_STATUS_IDS = {58140186, 62065726}
     filtered_leads = [
         l for l in amo_leads
-        if l.get("created_at", "") >= "2025-01-30"
+        if l.get("status_id") and int(l["status_id"]) in LEADS_SHEET_STATUS_IDS
     ]
 
     # Fetch pipeline status names if amocrm service available
