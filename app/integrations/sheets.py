@@ -1016,7 +1016,7 @@ class GoogleSheetsService:
             self._row_indexes.pop(self.cfg.invoices_tab, None)
             self._next_rows.pop(self.cfg.invoices_tab, None)
 
-            # --- Фаза 1: Инвойсы (колонки 0-85) ---
+            # --- Фаза 1: Инвойсы (колонки 0-85 + 86 № п/п) ---
             batch_data: list[dict[str, Any]] = []
             count = 0
             for invoice, manager_label, cost in items:
@@ -1025,8 +1025,8 @@ class GoogleSheetsService:
                     continue
                 row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_num)
                 cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
-                # Только инвойс-колонки (0-85)
-                inv_cells = {k: v for k, v in cells.items() if k < 86}
+                # Только инвойс-колонки (0-85) + 86 (№ п/п — сквозная нумерация)
+                inv_cells = {k: v for k, v in cells.items() if k <= 86}
                 if not is_new:
                     inv_cells = {k: v for k, v in inv_cells.items() if k not in _MANUAL_COLS}
                 batch_data.extend(self._invoice_batch_ranges(row, inv_cells))
