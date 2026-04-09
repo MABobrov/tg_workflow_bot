@@ -701,8 +701,12 @@ class GoogleSheetsService:
         # Python-вычисления: НДС, Нал.приб., Прибыль, Рент-ть (вместо формул)
         _amount = float(invoice.get("amount") or 0)
         _est_total = materials_total + est_inst + est_load + est_log
-        _nds = (_amount * 22 / 122) - (materials_total * 22 / 122) if _amount else 0
-        _profit_tax = ((_amount - _est_total - _nds) / 100 * 20) if _amount else 0
+        if is_credit:
+            _nds = 0
+            _profit_tax = 0
+        else:
+            _nds = (_amount * 22 / 122) - (materials_total * 22 / 122) if _amount else 0
+            _profit_tax = ((_amount - _est_total - _nds) / 100 * 20) if _amount else 0
         _profit = _amount - _est_total - _nds - _profit_tax
         _rentability = (_profit / _amount * 100) if _amount > 0 else 0
         _npn_10 = _profit * 10 / 100

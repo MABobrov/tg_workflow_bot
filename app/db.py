@@ -1625,9 +1625,14 @@ class Database:
                       + logistics_fact + loaders_fact + agent_payout)
 
         # НДС факт = (Сумма × 22/122) − (Материалы_факт × 22/122)
-        nds_fact = (invoice_amount * 22 / 122) - (mat_and_suppliers * 22 / 122) if invoice_amount else 0.0
-        # Налог на прибыль факт = (Сумма − Расходы − НДС) × 20%
-        profit_tax_fact = ((invoice_amount - total_cost - nds_fact) / 100 * 20) if invoice_amount else 0.0
+        # Кредитные счета: налоги = 0
+        if inv.get("is_credit"):
+            nds_fact = 0.0
+            profit_tax_fact = 0.0
+        else:
+            nds_fact = (invoice_amount * 22 / 122) - (mat_and_suppliers * 22 / 122) if invoice_amount else 0.0
+            # Налог на прибыль факт = (Сумма − Расходы − НДС) × 20%
+            profit_tax_fact = ((invoice_amount - total_cost - nds_fact) / 100 * 20) if invoice_amount else 0.0
 
         # Прибыль факт = сумма − расходы − НДС − налог на прибыль
         margin = invoice_amount - total_cost - nds_fact - profit_tax_fact
