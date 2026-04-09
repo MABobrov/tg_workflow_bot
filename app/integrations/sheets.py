@@ -142,10 +142,10 @@ INVOICES_HEADER = [
     "Создан",               # 59
     "Обновлён",             # 60
     # — Статусы жизненного цикла (61-73) —
-    "",                     # 61
-    "",                     # 62
-    "",                     # 63
-    "",                     # 64
+    "",                          # 61
+    "Расчетная прибыль",         # 62
+    "Фактическая прибыль",       # 63
+    "Разница расч. и факт.",     # 64
     "НДС факт",            # 65
     "Налог на приб. факт", # 66
     "В работе",            # 67
@@ -714,6 +714,7 @@ class GoogleSheetsService:
         cells[21] = self._fmt_amount(_nds)                                     # V НДС
         cells[22] = self._fmt_amount(_profit_tax)                              # W Нал.приб.
         cells[20] = self._fmt_amount(_profit)                                  # U Прибыль
+        cells[62] = self._fmt_amount(_profit)                                  # BK Расчетная прибыль
         # X Рент-ть расч: из ОП (rentability_calc) если есть, иначе Python-расчёт
         _rent_op = invoice.get("rentability_calc")
         if _rent_op is not None and _rent_op != 0:
@@ -756,6 +757,10 @@ class GoogleSheetsService:
             cells[66] = self._fmt_amount(_c.get("profit_tax_fact"))  # BO Налог на приб. факт
             # Прибыль факт (78)
             cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CA Прибыль факт
+            # BL-BM: Фактическая прибыль / Разница
+            cells[63] = self._fmt_amount(fact_margin) if fact_margin else ""       # BL Фактическая прибыль
+            _diff = _profit - fact_margin if fact_margin else 0
+            cells[64] = self._fmt_amount(_diff) if _diff else ""                   # BM Разница расч. и факт.
             # Перерасчет прибыли (79): разница план-факт при перерасходе
             pf_label = invoice.get("_plan_fact_label") or ""
             if pf_label == "Перерасчет прибыли":
