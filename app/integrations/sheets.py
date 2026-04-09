@@ -757,10 +757,14 @@ class GoogleSheetsService:
             cells[66] = self._fmt_amount(_c.get("profit_tax_fact"))  # BO Налог на приб. факт
             # Прибыль факт (78)
             cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CA Прибыль факт
-            # BL-BM: Фактическая прибыль / Разница
-            cells[63] = self._fmt_amount(fact_margin) if fact_margin else ""       # BL Фактическая прибыль
-            _diff = fact_margin - _profit if fact_margin else 0
-            cells[64] = self._fmt_amount(_diff) if _diff else ""                   # BM Разница расч. и факт.
+            # BL-BM: Фактическая прибыль / Разница — только если есть фактические затраты
+            _montazh_f = float(invoice.get("montazh_fact_op") or 0)
+            _logist_f = float(invoice.get("logistics_fact_op") or invoice.get("actual_logistics") or 0)
+            _has_fact_costs = _mat_combined or _montazh_f or _logist_f
+            if _has_fact_costs:
+                cells[63] = self._fmt_amount(fact_margin) if fact_margin else ""       # BL Фактическая прибыль
+                _diff = fact_margin - _profit if fact_margin else 0
+                cells[64] = self._fmt_amount(_diff) if _diff else ""                   # BM Разница расч. и факт.
             # Перерасчет прибыли (79): разница план-факт при перерасходе
             pf_label = invoice.get("_plan_fact_label") or ""
             if pf_label == "Перерасчет прибыли":
