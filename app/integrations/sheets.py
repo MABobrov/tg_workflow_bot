@@ -586,7 +586,7 @@ class GoogleSheetsService:
             47: _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
             48: invoice.get("supplier") or "",
             49: invoice.get("material_type") or "",
-            50: invoice.get("parent_invoice_id") or "",
+            50: invoice.get("invoice_number") or "",
             51: invoice.get("montazh_stage") or "",
             52: "Да" if invoice.get("installer_ok") else "",
             53: "Да" if invoice.get("no_debts") else "",
