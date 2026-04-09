@@ -760,7 +760,7 @@ class GoogleSheetsService:
             # BL-BM: Фактическая прибыль / Разница — только если есть фактические затраты
             _montazh_f = float(invoice.get("montazh_fact_op") or 0)
             _logist_f = float(invoice.get("logistics_fact_op") or invoice.get("actual_logistics") or 0)
-            _has_fact_costs = _mat_combined or _montazh_f or _logist_f
+            _has_fact_costs = _mat_combined and _montazh_f and _logist_f
             if _has_fact_costs:
                 cells[63] = self._fmt_amount(fact_margin) if fact_margin else ""       # BL Фактическая прибыль
                 _diff = fact_margin - _profit if fact_margin else 0
