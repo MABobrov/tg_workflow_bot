@@ -759,7 +759,7 @@ class GoogleSheetsService:
             cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CA Прибыль факт
             # BL-BM: Фактическая прибыль / Разница
             cells[63] = self._fmt_amount(fact_margin) if fact_margin else ""       # BL Фактическая прибыль
-            _diff = _profit - fact_margin if fact_margin else 0
+            _diff = fact_margin - _profit if fact_margin else 0
             cells[64] = self._fmt_amount(_diff) if _diff else ""                   # BM Разница расч. и факт.
             # Перерасчет прибыли (79): разница план-факт при перерасходе
             pf_label = invoice.get("_plan_fact_label") or ""
