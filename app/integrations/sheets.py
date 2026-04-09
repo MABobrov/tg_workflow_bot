@@ -598,7 +598,7 @@ class GoogleSheetsService:
             # — Статусы жизненного цикла —
             # 61-66: не используются
             67: "Да" if invoice.get("status") == "in_progress" else "", # BP В работе
-            68: "Да" if invoice.get("status") == "ended" else "",       # BQ Счет END
+            68: "Да" if invoice.get("status") in ("ended", "credit") else "",  # BQ Счет END
             69: self._fmt_amount(invoice.get("loaders_fact_op")),    # BR Грузчики факт ← ОП AP
             72: self._fmt_amount(invoice.get("logistics_fact_op") or invoice.get("actual_logistics")),  # BU Логистика Факт
             73: _li.get("lead_status", ""),   # BV Статус лида
