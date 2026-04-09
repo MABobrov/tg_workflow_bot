@@ -142,7 +142,7 @@ INVOICES_HEADER = [
     "Создан",               # 59
     "Обновлён",             # 60
     # — Статусы жизненного цикла (61-73) —
-    "",                          # 61
+    "ЗП Монтажник",              # 61
     "Расчетная прибыль",         # 62
     "Фактическая прибыль",       # 63
     "Разница расч. и факт.",     # 64
@@ -779,10 +779,13 @@ class GoogleSheetsService:
             else:
                 cells[79] = ""
 
-        # Монтаж Факт = согласованная ЗП монтажника
+        # ЗП Монтажник (BJ) — всегда; Монтаж Факт (BS) — только после approved
         _mont_zp = float(invoice.get("zp_installer_amount") or 0)
+        _zp_status = invoice.get("zp_installer_status") or ""
         if _mont_zp:
-            cells[70] = self._fmt_amount(_mont_zp)
+            cells[61] = self._fmt_amount(_mont_zp)              # BJ ЗП Монтажник
+            if _zp_status == "approved":
+                cells[70] = self._fmt_amount(_mont_zp)          # BS Монтаж Факт
 
         # M (12): Дата окончания = receipt_date + deadline_days
         _receipt = invoice.get("receipt_date")
