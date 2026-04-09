@@ -758,9 +758,8 @@ class GoogleSheetsService:
             # Прибыль факт (78)
             cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CA Прибыль факт
             # BL-BM: Фактическая прибыль / Разница — только если есть фактические затраты
-            _montazh_f = float(invoice.get("montazh_fact_op") or 0)
             _logist_f = float(invoice.get("logistics_fact_op") or invoice.get("actual_logistics") or 0)
-            _has_fact_costs = _mat_combined and _montazh_f and _logist_f
+            _has_fact_costs = _mat_combined and _mont_zp and _logist_f
             if _has_fact_costs:
                 cells[63] = self._fmt_amount(fact_margin) if fact_margin else ""       # BL Фактическая прибыль
                 _diff = fact_margin - _profit if fact_margin else 0
@@ -780,12 +779,10 @@ class GoogleSheetsService:
             else:
                 cells[79] = ""
 
-        # Монтаж Факт: ОП + ЗП монтажника + supplier payments (услуги)
-        _mont_op = float(invoice.get("montazh_fact_op") or 0)
+        # Монтаж Факт = согласованная ЗП монтажника
         _mont_zp = float(invoice.get("zp_installer_amount") or 0)
-        _mont_combined = _mont_op + _mont_zp + _sp_services
-        if _mont_combined:
-            cells[70] = self._fmt_amount(_mont_combined)
+        if _mont_zp:
+            cells[70] = self._fmt_amount(_mont_zp)
 
         # M (12): Дата окончания = receipt_date + deadline_days
         _receipt = invoice.get("receipt_date")
