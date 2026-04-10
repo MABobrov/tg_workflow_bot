@@ -144,8 +144,8 @@ INVOICES_HEADER = [
     # — Статусы жизненного цикла (61-73) —
     "ЗП Монтажник",              # 61
     "Расчетная прибыль",         # 62
-    "Фактическая прибыль",       # 63
-    "Разница расч. и факт.",     # 64
+    "Прибыль факт",              # 63
+    "Перерасчет прибыли",        # 64
     "НДС факт",            # 65
     "Налог на приб. факт", # 66
     "В работе",            # 67
@@ -161,8 +161,8 @@ INVOICES_HEADER = [
     "Замеры",              # 76 (перенос из 69)
     # — Аналитика (77-79) —
     "Расчет vs Факт",     # 77
-    "Прибыль факт",       # 78
-    "Перерасчет прибыли",  # 79
+    "",                    # 78 (перенесено в 63)
+    "",                    # 79 (перенесено в 64)
     # — Кредитный учёт (80-85) —
     "Кредит вход",         # 80 — сумма входящего кредита
     "Кредит вход коммент", # 81 — Менеджер, адрес
@@ -766,16 +766,10 @@ class GoogleSheetsService:
             # НДС факт (65) и Налог на приб. факт (66)
             cells[65] = self._fmt_amount(_c.get("nds_fact"))         # BN НДС факт
             cells[66] = self._fmt_amount(_c.get("profit_tax_fact"))  # BO Налог на приб. факт
-            # Прибыль факт (78)
-            cells[78] = self._fmt_amount(fact_margin) if fact_margin else ""  # CA Прибыль факт
-            # BL-BM: Фактическая прибыль / Разница — только если есть фактические затраты
-            _logist_f = float(invoice.get("logistics_fact_op") or invoice.get("actual_logistics") or 0)
-            _has_fact_costs = _mat_combined and _mont_zp and _logist_f
-            if _has_fact_costs:
-                cells[63] = self._fmt_amount(fact_margin) if fact_margin else ""       # BL Фактическая прибыль
-                _diff = fact_margin - _profit if fact_margin else 0
-                cells[64] = self._fmt_amount(_diff) if _diff else ""                   # BM Разница расч. и факт.
-            # Перерасчет прибыли (79): разница план-факт при перерасходе
+            # BL: Прибыль факт (всегда)
+            cells[63] = self._fmt_amount(fact_margin) if fact_margin else ""  # BL Прибыль факт
+            cells[78] = ""  # CA — очищено (перенесено в BL)
+            # BM: Перерасчет прибыли (при перерасходе)
             pf_label = invoice.get("_plan_fact_label") or ""
             if pf_label == "Перерасчет прибыли":
                 est_total = (float(invoice.get("estimated_glass") or 0)
@@ -786,9 +780,10 @@ class GoogleSheetsService:
                              + float(invoice.get("estimated_logistics") or 0))
                 fact_total = _c.get("total_cost", 0)
                 delta = fact_total - est_total
-                cells[79] = self._fmt_amount(delta)                          # CB Перерасчет
+                cells[64] = self._fmt_amount(delta)                          # BM Перерасчет
             else:
-                cells[79] = ""
+                cells[64] = ""
+            cells[79] = ""  # CB — очищено (перенесено в BM)
 
         if _mont_zp:
             cells[61] = self._fmt_amount(_mont_zp)              # BJ ЗП Монтажник
