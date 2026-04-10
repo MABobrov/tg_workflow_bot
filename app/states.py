@@ -465,6 +465,11 @@ class InstallerZpInitSG(StatesGroup):
     selecting = State()
 
 
+class GdZpPaymentSG(StatesGroup):
+    """ГД: отправка платёжки по ЗП монтажника."""
+    waiting_pdf = State()      # ожидание PDF/фото платёжки
+
+
 class InstallerZpAdjustSG(StatesGroup):
     """Монтажник: корректировка стоимости монтажа из 'Ожидает расчёт'."""
     comment = State()        # почему? (обязательно)

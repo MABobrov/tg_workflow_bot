@@ -413,6 +413,9 @@ class Database:
             ("invoices", "zp_installer_requested_by", "INTEGER"),
             ("invoices", "zp_installer_requested_at", "TEXT"),
             ("invoices", "zp_installer_approved_at", "TEXT"),
+            ("invoices", "zp_installer_payment_file_id", "TEXT"),
+            ("invoices", "zp_installer_payment_sent_at", "TEXT"),
+            ("invoices", "zp_installer_confirmed_at", "TEXT"),
             # --- Объединение с Отдел продаж ---
             ("invoices", "client_contact", "TEXT"),
             ("invoices", "client_name", "TEXT"),
@@ -3071,6 +3074,10 @@ class Database:
             fields["zp_installer_requested_at"] = to_iso(utcnow())
         elif status == "approved":
             fields["zp_installer_approved_at"] = to_iso(utcnow())
+        elif status == "payment_sent":
+            fields["zp_installer_payment_sent_at"] = to_iso(utcnow())
+        elif status == "confirmed":
+            fields["zp_installer_confirmed_at"] = to_iso(utcnow())
         await self.update_invoice(invoice_id, **fields)
 
     async def list_pending_zp_requests(

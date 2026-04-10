@@ -206,6 +206,9 @@ INVOICES_HEADER = [
     "Счет НПН телефон",     # 114
     "Счет НПН адрес",       # 115
     "Счет НПН дата",        # 116
+    # — ЗП Монтажник: платёжка / подтверждение (117-118) —
+    "Платёжка ЗП дата",     # 117 — дата отправки платёжки ГД
+    "ЗП подтверждено дата", # 118 — дата подтверждения монтажником
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -785,8 +788,15 @@ class GoogleSheetsService:
 
         if _mont_zp:
             cells[61] = self._fmt_amount(_mont_zp)              # BJ ЗП Монтажник
-            if _zp_status == "approved":
+            if _zp_status == "confirmed":
                 cells[70] = self._fmt_amount(_mont_zp)          # BS Монтаж Факт
+        # Платёжка ЗП даты
+        _pay_sent = invoice.get("zp_installer_payment_sent_at")
+        _confirmed = invoice.get("zp_installer_confirmed_at")
+        if _pay_sent:
+            cells[117] = format_dt_iso(_pay_sent, self.cfg.timezone_name)
+        if _confirmed:
+            cells[118] = format_dt_iso(_confirmed, self.cfg.timezone_name)
 
         # M (12): Дата окончания = receipt_date + deadline_days
         _receipt = invoice.get("receipt_date")

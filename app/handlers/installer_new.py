@@ -1202,7 +1202,7 @@ async def installer_zp_done(
     inv = await db.get_invoice(inv_id)
     if not inv:
         return
-    await db.update_invoice(inv_id, zp_installer_status="approved")
+    await db.set_invoice_zp_installer_status(inv_id, "confirmed")
     try:
         await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
     except Exception:

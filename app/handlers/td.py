@@ -18,7 +18,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import SupplierPaymentSG
+from ..states import GdZpPaymentSG, SupplierPaymentSG
 from ..utils import answer_service, fmt_project_card, format_plan_fact_card, parse_amount, private_only_reply_markup, refresh_recipient_keyboard
 from .auth import require_role_callback, require_role_message
 
@@ -243,17 +243,25 @@ async def gd_zp_installer_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
     amt = inv.get("zp_installer_amount") or 0
+    zp_st = inv.get("zp_installer_status") or ""
     b = InlineKeyboardBuilder()
-    b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
-    b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
-    b.adjust(2)
+    if zp_st == "approved":
+        # ЗП утверждена, ожидает платёжку
+        b.button(text="📎 Отправить платёжку", callback_data=f"gdzp_inst:pdf:{invoice_id}")
+        status_line = "\n✅ <i>Сумма утверждена, ожидает платёжку</i>"
+    else:
+        # Новый запрос — кнопки утвердить/отклонить
+        b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
+        b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
+        b.adjust(2)
+        status_line = ""
     is_credit = bool(inv.get("is_credit")) or str(inv.get("invoice_number") or "").upper().startswith("ЗМ")
     credit_warn = "\n🏦 <b>⚠️ КРЕДИТНЫЙ СЧЁТ</b>\n" if is_credit else ""
     await cb.message.answer(  # type: ignore[union-attr]
         f"🔧 <b>ЗП монтажника</b>{credit_warn}\n"
         f"🔢 Счёт: №{inv['invoice_number']}\n"
         f"📍 Адрес: {inv.get('object_address') or '—'}\n"
-        f"💵 Сумма: {amt:,.0f}₽",
+        f"💵 Сумма: {amt:,.0f}₽{status_line}",
         reply_markup=b.as_markup(),
     )
 
@@ -270,20 +278,24 @@ async def gd_zp_installer_approve(
         return
     await db.set_invoice_zp_installer_status(invoice_id, "approved")
     amt = inv.get("zp_installer_amount") or 0
-    # Close related task
-    await _close_zp_tasks(db, invoice_id, TaskType.ZP_INSTALLER)
+    # НЕ закрываем задачу — она закроется после отправки платёжки
+    b = InlineKeyboardBuilder()
+    b.button(text="📎 Отправить платёжку", callback_data=f"gdzp_inst:pdf:{invoice_id}")
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ ЗП монтажника утверждена.\n"
-        f"Счёт №{inv['invoice_number']}, сумма: {amt:,.0f}₽",
+        f"Счёт №{inv['invoice_number']}, сумма: {amt:,.0f}₽\n\n"
+        f"📎 Прикрепите платёжку когда будет готова.",
+        reply_markup=b.as_markup(),
     )
-    # Notify installer
+    # Notify installer — ЗП утверждена, ожидайте платёжку
     requested_by = inv.get("zp_installer_requested_by")
     if requested_by:
         await notifier.safe_send(
             int(requested_by),
             f"✅ <b>ЗП утверждена</b>\n\n"
             f"Счёт №: <code>{inv['invoice_number']}</code>\n"
-            f"Сумма: {amt:,.0f}₽",
+            f"Сумма: {amt:,.0f}₽\n"
+            f"⏳ Ожидайте платёжку.",
         )
         await refresh_recipient_keyboard(notifier, db, config, int(requested_by))
     if cb.from_user:
@@ -312,6 +324,93 @@ async def gd_zp_installer_reject(
             "Свяжитесь с ГД для уточнения.",
         )
         await refresh_recipient_keyboard(notifier, db, config, int(requested_by))
+
+
+# ---------- ЗП монтажника: отправка платёжки ---------- #
+
+
+@router.callback_query(F.data.startswith("gdzp_inst:pdf:"))
+async def gd_zp_payment_start(
+    cb: CallbackQuery, db: Database, state: FSMContext,
+) -> None:
+    """ГД нажал '📎 Отправить платёжку' — входим в FSM."""
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    amt = inv.get("zp_installer_amount") or 0
+    await state.update_data(zp_payment_invoice_id=invoice_id)
+    await state.set_state(GdZpPaymentSG.waiting_pdf)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📎 Отправьте платёжку по ЗП монтажника.\n\n"
+        f"🔢 Счёт: №{inv['invoice_number']}\n"
+        f"💵 Сумма: {amt:,.0f}₽\n\n"
+        f"<i>Прикрепите PDF, фото или скриншот платёжки.</i>",
+    )
+
+
+@router.message(GdZpPaymentSG.waiting_pdf, F.document | F.photo)
+async def gd_zp_payment_upload(
+    message: Message, state: FSMContext, db: Database,
+    config: Config, notifier: Notifier,
+) -> None:
+    """ГД отправил платёжку — пересылаем монтажнику, закрываем задачу."""
+    data = await state.get_data()
+    invoice_id = data.get("zp_payment_invoice_id")
+    if not invoice_id:
+        await message.answer("❌ Не найден счёт. Попробуйте заново.")
+        await state.clear()
+        return
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await message.answer("❌ Счёт не найден.")
+        await state.clear()
+        return
+
+    # Определяем file_id и тип
+    if message.document:
+        file_id = message.document.file_id
+        file_type = "document"
+    else:
+        file_id = message.photo[-1].file_id  # type: ignore[index]
+        file_type = "photo"
+
+    # Обновляем статус → payment_sent
+    await db.set_invoice_zp_installer_status(invoice_id, "payment_sent")
+    await db.update_invoice(invoice_id, zp_installer_payment_file_id=file_id)
+
+    # Закрываем задачу ЗП
+    await _close_zp_tasks(db, invoice_id, TaskType.ZP_INSTALLER)
+
+    # Пересылаем монтажнику с кнопкой "ЗП получено"
+    amt = inv.get("zp_installer_amount") or 0
+    requested_by = inv.get("zp_installer_requested_by")
+    if requested_by:
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ ЗП получено", callback_data=f"instzp_done:{invoice_id}")
+        await notifier.safe_send(
+            int(requested_by),
+            f"💰 <b>Платёжка по ЗП</b>\n\n"
+            f"Счёт №: <code>{inv['invoice_number']}</code>\n"
+            f"Сумма: {amt:,.0f}₽\n\n"
+            f"Подтвердите получение ЗП.",
+            reply_markup=b.as_markup(),
+        )
+        # Пересылаем сам файл
+        await notifier.safe_send_media(int(requested_by), file_type, file_id)
+        await refresh_recipient_keyboard(notifier, db, config, int(requested_by))
+
+    # Подтверждение ГД
+    await message.answer(
+        f"✅ Платёжка отправлена монтажнику.\n"
+        f"Счёт №{inv['invoice_number']}, сумма: {amt:,.0f}₽\n"
+        f"Задача закрыта.",
+    )
+    await state.clear()
+    if message.from_user:
+        await refresh_recipient_keyboard(notifier, db, config, message.from_user.id)
 
 
 @router.callback_query(F.data.startswith("gdzp_zam:view:"))
