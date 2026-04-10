@@ -213,8 +213,8 @@ INVOICES_HEADER = [
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
 # Removed 7 (Свой/Атм→client_source), 18,19,21,24 — now bot-managed (Plan/Fact)
-_MANUAL_COLS = frozenset([5,
-                          33, 34, 37])
+# Removed 5 (Ист.трафика) — now written from traffic_source DB field
+_MANUAL_COLS = frozenset([33, 34, 37])
 
 
 @dataclass
@@ -563,6 +563,7 @@ class GoogleSheetsService:
             2: manager_label,
             3: "Да" if invoice.get("edo_signed") else "",
             4: invoice.get("client_name") or "",
+            5: invoice.get("traffic_source") or "",        # F Ист.трафика
             6: "0" if invoice.get("is_credit") else "1",  # ОП convention: 0=кредит, 1=б.н.
             7: {"own": 1, "gd_lead": 2}.get(invoice.get("client_source", ""), "")
                or invoice.get("client_type") or "",
