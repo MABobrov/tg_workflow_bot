@@ -779,13 +779,13 @@ class GoogleSheetsService:
             else:
                 cells[79] = ""
 
-        # ЗП Монтажник (BJ) — сумма ЗП монтажника; BS Монтаж Факт — из ОП
+        # BJ — ЗП всегда; BS Монтаж Факт — только после approved
         _mont_zp = float(invoice.get("zp_installer_amount") or 0)
+        _zp_status = invoice.get("zp_installer_status") or ""
         if _mont_zp:
             cells[61] = self._fmt_amount(_mont_zp)              # BJ ЗП Монтажник
-        _mont_op = float(invoice.get("montazh_fact_op") or 0)
-        if _mont_op:
-            cells[70] = self._fmt_amount(_mont_op)              # BS Монтаж Факт (из ОП)
+            if _zp_status == "approved":
+                cells[70] = self._fmt_amount(_mont_zp)          # BS Монтаж Факт
 
         # M (12): Дата окончания = receipt_date + deadline_days
         _receipt = invoice.get("receipt_date")
