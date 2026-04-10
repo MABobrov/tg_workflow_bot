@@ -746,6 +746,10 @@ class GoogleSheetsService:
         if _mat_combined:
             cells[71] = self._fmt_amount(_mat_combined)
 
+        # BJ — ЗП всегда; BS Монтаж Факт — только после approved
+        _mont_zp = float(invoice.get("zp_installer_amount") or 0)
+        _zp_status = invoice.get("zp_installer_status") or ""
+
         if _c:
             fact_pct = _c.get("margin_pct", 0)
             fact_margin = _c.get("margin", 0)
@@ -779,9 +783,6 @@ class GoogleSheetsService:
             else:
                 cells[79] = ""
 
-        # BJ — ЗП всегда; BS Монтаж Факт — только после approved
-        _mont_zp = float(invoice.get("zp_installer_amount") or 0)
-        _zp_status = invoice.get("zp_installer_status") or ""
         if _mont_zp:
             cells[61] = self._fmt_amount(_mont_zp)              # BJ ЗП Монтажник
             if _zp_status == "approved":
