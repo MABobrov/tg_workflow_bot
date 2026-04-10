@@ -363,6 +363,10 @@ class GoogleSheetsService:
             self._worksheets[title] = ws
 
         if title not in self._headers_ready:
+            # Расширяем лист если столбцов меньше чем заголовков
+            needed_cols = len(header)
+            if ws.col_count < needed_cols:
+                ws.resize(cols=needed_cols + 2)
             values = ws.row_values(1)
             if values[: len(header)] != header:
                 ws.update([header], "A1")
