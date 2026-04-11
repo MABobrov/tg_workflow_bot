@@ -367,6 +367,19 @@ class Database:
             );
 
             CREATE INDEX IF NOT EXISTS idx_credit_exp_inv ON credit_expenses(invoice_id);
+
+            CREATE TABLE IF NOT EXISTS supplier_payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+                invoice_number TEXT,
+                amount REAL NOT NULL DEFAULT 0,
+                material_type TEXT NOT NULL DEFAULT 'extra_mat',
+                supplier TEXT,
+                task_id INTEGER,
+                created_by INTEGER,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sp_parent ON supplier_payments(parent_invoice_id);
             """
         )
         await self.conn.commit()
@@ -1505,22 +1518,65 @@ class Database:
 
         return summary
 
+    async def create_supplier_payment(
+        self,
+        parent_invoice_id: int,
+        amount: float,
+        material_type: str,
+        invoice_number: str = "",
+        supplier: str = "",
+        task_id: int | None = None,
+        created_by: int | None = None,
+    ) -> int:
+        """Insert a row into supplier_payments table. Returns new row id."""
+        now = datetime.now(timezone.utc).isoformat()
+        cur = await self.conn.execute(
+            "INSERT INTO supplier_payments "
+            "(parent_invoice_id, invoice_number, amount, material_type, supplier, task_id, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (parent_invoice_id, invoice_number, amount, material_type, supplier, task_id, created_by, now),
+        )
+        await self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
     async def list_supplier_payments_for_invoice(
         self, invoice_id: int,
     ) -> list[dict[str, Any]]:
-        """SUPPLIER_PAYMENT tasks, привязанные к parent_invoice_id в payload."""
+        """Оплаты поставщикам из таблицы supplier_payments + legacy SUPPLIER_PAYMENT tasks."""
+        result: list[dict[str, Any]] = []
+        seen_task_ids: set[int] = set()
+
+        # 1) Новая таблица supplier_payments
+        cur = await self.conn.execute(
+            "SELECT id, invoice_number, amount, material_type, supplier, task_id "
+            "FROM supplier_payments WHERE parent_invoice_id = ? ORDER BY id",
+            (invoice_id,),
+        )
+        for row in await cur.fetchall():
+            r = dict(row)
+            result.append({
+                "supplier": r.get("supplier", ""),
+                "amount": float(r.get("amount") or 0),
+                "material_type": r.get("material_type", ""),
+                "invoice_number": r.get("invoice_number", ""),
+                "task_id": r.get("task_id"),
+            })
+            if r.get("task_id"):
+                seen_task_ids.add(r["task_id"])
+
+        # 2) Legacy: SUPPLIER_PAYMENT tasks (для данных до миграции)
         rows = await self.search_tasks_by_payload(
             field="parent_invoice_id",
             value=str(invoice_id),
             type_filter=["supplier_payment"],
             limit=50,
         )
-        result: list[dict[str, Any]] = []
         for r in rows:
             if r.get("status") != "done":
                 continue
+            if r["id"] in seen_task_ids:
+                continue
             payload = json.loads(r.get("payload_json") or "{}")
-            # Точная проверка parent_invoice_id (LIKE может дать ложные совпадения)
             if payload.get("parent_invoice_id") != invoice_id:
                 continue
             result.append({
@@ -1535,18 +1591,26 @@ class Database:
     async def list_supplier_payments_grouped(
         self, invoice_id: int,
     ) -> dict[str, list[dict[str, Any]]]:
-        """SUPPLIER_PAYMENT tasks grouped by material category for invoice.
+        """Supplier payments grouped by material category for invoice.
 
         Categories:
-            metal   → profile
+            metal   → metal, profile (legacy)
             glass   → glass
-            additional → ldsp, gkl, sandwich, other
-            services → service
+            additional → extra_mat, ldsp, gkl, sandwich, other (legacy)
+            services → montazh, loaders, logistics, extra_svc, service (legacy)
         """
         payments = await self.list_supplier_payments_for_invoice(invoice_id)
         _CAT_MAP = {
-            "profile": "metal",
+            # New categories
+            "metal": "metal",
             "glass": "glass",
+            "montazh": "services",
+            "loaders": "services",
+            "logistics": "services",
+            "extra_mat": "additional",
+            "extra_svc": "services",
+            # Legacy backward compatibility
+            "profile": "metal",
             "ldsp": "additional", "gkl": "additional",
             "sandwich": "additional", "other": "additional",
             "service": "services",

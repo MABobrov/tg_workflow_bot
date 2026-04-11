@@ -109,23 +109,23 @@ class ZpStatus(StrEnum):
 
 class MaterialType(StrEnum):
     """Типы материалов / услуг для категоризации счетов на оплату."""
-    PROFILE = "profile"       # Профиль
-    GLASS = "glass"           # Стекло
-    LDSP = "ldsp"             # ЛДСП
-    GKL = "gkl"               # ГКЛ
-    SANDWICH = "sandwich"     # Сэндвич
-    SERVICE = "service"       # Услуга
-    OTHER = "other"           # Прочее
+    METAL = "metal"               # Металл
+    GLASS = "glass"               # Стекло
+    MONTAZH = "montazh"           # Монтаж
+    LOADERS = "loaders"           # Грузчики
+    LOGISTICS = "logistics"       # Логистика
+    EXTRA_MATERIALS = "extra_mat" # Доп материалы
+    EXTRA_SERVICES = "extra_svc"  # Доп услуги
 
 
 MATERIAL_TYPE_LABELS: dict[str, str] = {
-    MaterialType.PROFILE: "Профиль",
+    MaterialType.METAL: "Металл",
     MaterialType.GLASS: "Стекло",
-    MaterialType.LDSP: "ЛДСП",
-    MaterialType.GKL: "ГКЛ",
-    MaterialType.SANDWICH: "Сэндвич",
-    MaterialType.SERVICE: "Услуга",
-    MaterialType.OTHER: "Прочее",
+    MaterialType.MONTAZH: "Монтаж",
+    MaterialType.LOADERS: "Грузчики",
+    MaterialType.LOGISTICS: "Логистика",
+    MaterialType.EXTRA_MATERIALS: "Доп материалы",
+    MaterialType.EXTRA_SERVICES: "Доп услуги",
 }
 
 

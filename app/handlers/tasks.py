@@ -1250,8 +1250,11 @@ async def invoice_pp_finalize(
     _parent_inv_id = payload.get("parent_invoice_id") or payload.get("invoice_id")
     _sp_amount = payload.get("amount")
     if _parent_inv_id is not None and _sp_amount:
+        _sp_mat_type = payload.get("material_type") or "extra_mat"
+        _sp_supplier = payload.get("supplier") or ""
+        _sp_inv_num = payload.get("invoice_number") or ""
         try:
-            await db.create_task(
+            sp_task = await db.create_task(
                 project_id=int(task.get("project_id") or 0) or None,
                 type_=TaskType.SUPPLIER_PAYMENT,
                 status=TaskStatus.DONE,
@@ -1259,15 +1262,25 @@ async def invoice_pp_finalize(
                 assigned_to=int(sender_id) if sender_id else u.id,
                 due_at_iso=None,
                 payload={
-                    "supplier": payload.get("supplier") or "",
+                    "supplier": _sp_supplier,
                     "amount": float(_sp_amount),
-                    "invoice_number": payload.get("invoice_number") or "",
-                    "material_type": payload.get("material_type") or "other",
+                    "invoice_number": _sp_inv_num,
+                    "material_type": _sp_mat_type,
                     "parent_invoice_id": int(_parent_inv_id),
                     "td_id": u.id,
                     "td_username": u.username or "",
                     "auto_from_invoice_payment": int(task_id),
                 },
+            )
+            # Also write to supplier_payments table
+            await db.create_supplier_payment(
+                parent_invoice_id=int(_parent_inv_id),
+                amount=float(_sp_amount),
+                material_type=_sp_mat_type,
+                invoice_number=_sp_inv_num,
+                supplier=_sp_supplier,
+                task_id=sp_task["id"] if sp_task else None,
+                created_by=u.id,
             )
         except Exception:
             log.warning("Failed to auto-create SUPPLIER_PAYMENT from task %s", task_id, exc_info=True)
