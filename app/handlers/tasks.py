@@ -706,11 +706,18 @@ async def task_cancel_with_reason(
 
     # INVOICE_PAYMENT — шаг 1: Принять (OPEN → IN_PROGRESS)
     if action == "inv_received" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        log.info("inv_received: task=%s status=%s user=%s", task_id, task.get("status"), cb.from_user.id)
         if task.get("status") != TaskStatus.OPEN:
+            log.info("inv_received: already accepted, status=%s", task.get("status"))
             await cb.answer("Этот счёт уже принят.", show_alert=True)
             return
         await cb.answer()
-        task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+        try:
+            task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+            log.info("inv_received: status updated to IN_PROGRESS")
+        except Exception as e:
+            log.error("inv_received: update_task_status failed: %s", e, exc_info=True)
+            return
         payload = try_json_loads(task.get("payload_json"))
         _inv_num = payload.get("invoice_number") or ""
         _amount = payload.get("amount") or ""
@@ -731,12 +738,17 @@ async def task_cancel_with_reason(
             )
         # Показать ГД кнопку "Подтвердить оплату"
         kb = task_actions_kb(task)
-        await notifier.bot.send_message(
-            cb.from_user.id,
-            "✅ Счёт принят. Нажмите «💳 Подтвердить оплату» для завершения.",
-            reply_markup=kb,
-            parse_mode="HTML",
-        )
+        try:
+            log.info("inv_received: sending message to GD %s", cb.from_user.id)
+            await notifier.bot.send_message(
+                cb.from_user.id,
+                "✅ Счёт принят. Нажмите «💳 Подтвердить оплату» для завершения.",
+                reply_markup=kb,
+                parse_mode="HTML",
+            )
+            log.info("inv_received: message sent OK")
+        except Exception as e:
+            log.error("inv_received: send_message failed: %s", e, exc_info=True)
         try:
             await _safe_edit_task_markup(cb.message, reply_markup=None)
         except Exception:
