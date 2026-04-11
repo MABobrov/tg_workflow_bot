@@ -136,12 +136,18 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
 
     user_id = message.from_user.id  # type: ignore[union-attr]
 
-    all_tasks = await db.list_tasks_for_user(
+    all_tasks_raw = await db.list_tasks_for_user(
         assigned_to=user_id,
         statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
         limit=50,
         exclude_created_by=user_id,
     )
+
+    # Исключаем INVOICE_PAYMENT — они показываются в кнопке "Счета на оплату"
+    all_tasks = [
+        t for t in all_tasks_raw
+        if t.get("type") != TaskType.INVOICE_PAYMENT
+    ]
 
     is_admin = user_id in (config.admin_ids or set())
 
@@ -157,16 +163,13 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
     # Count by type for summary
     n_urgent = sum(1 for t in all_tasks if t.get("type") == TaskType.URGENT_GD)
     n_payment = sum(1 for t in all_tasks if t.get("type") == TaskType.PAYMENT_CONFIRM)
-    n_invoice = sum(1 for t in all_tasks if t.get("type") == TaskType.INVOICE_PAYMENT)
-    n_other = len(all_tasks) - n_urgent - n_payment - n_invoice
+    n_other = len(all_tasks) - n_urgent - n_payment
 
     parts = []
     if n_urgent:
         parts.append(f"🚨 Срочных: {n_urgent}")
     if n_payment:
         parts.append(f"💰 Подтв.оплат: {n_payment}")
-    if n_invoice:
-        parts.append(f"📄 Счетов: {n_invoice}")
     if n_other:
         parts.append(f"📋 Прочих: {n_other}")
 
