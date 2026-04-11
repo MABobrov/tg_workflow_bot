@@ -1051,12 +1051,15 @@ class GoogleSheetsService:
             self._row_indexes.pop(self.cfg.invoices_tab, None)
             self._next_rows.pop(self.cfg.invoices_tab, None)
 
+            # Убрать старые LEAD-строки из основной зоны (если попали ранее)
+            self._clear_lead_rows(ws)
+
             # --- Фаза 1: Инвойсы (колонки 0-85 + 86 № п/п) ---
             batch_data: list[dict[str, Any]] = []
             count = 0
             for invoice, manager_label, cost in items:
                 inv_num = invoice.get("invoice_number") or ""
-                if not inv_num:
+                if not inv_num or str(inv_num).startswith("LEAD-"):
                     continue
                 row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_num)
                 cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
