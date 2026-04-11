@@ -705,7 +705,7 @@ async def task_cancel_with_reason(
         return
 
     # INVOICE_PAYMENT — подтвердить оплату (GD): сразу вложение + комментарий → закрыть
-    if action == "inv_received" and task.get("type") == TaskType.INVOICE_PAYMENT:
+    if action in ("inv_received", "inv_pay") and task.get("type") == TaskType.INVOICE_PAYMENT:
         if task.get("status") not in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
             await cb.answer("Этот счёт уже обработан.", show_alert=True)
             return
@@ -718,34 +718,16 @@ async def task_cancel_with_reason(
         b.button(text="✅ Отправить", callback_data=f"inv_pp_done:{task_id}")
         b.button(text="❌ Отмена", callback_data=f"inv_pp_cancel:{task_id}")
         b.adjust(1)
-        await cb.message.answer(  # type: ignore
+        _pp_text = (
             "💳 <b>Подтверждение оплаты</b>\n\n"
             "Прикрепите документ (PDF/фото) и/или напишите комментарий.\n"
-            "Когда готовы — нажмите «✅ Отправить».",
-            reply_markup=b.as_markup(),
+            "Когда готовы — нажмите «✅ Отправить»."
         )
-        return
-
-    # INVOICE_PAYMENT — inv_pay (legacy alias, same as inv_received)
-    if action == "inv_pay" and task.get("type") == TaskType.INVOICE_PAYMENT:
-        if task.get("status") not in active_statuses:
-            await cb.answer("Этот счёт уже обработан.", show_alert=True)
-            return
-        await cb.answer()
-        await _safe_edit_task_markup(cb.message, reply_markup=None)
-        await state.clear()
-        await state.set_state(InvoicePaymentSG.attaching_pp)
-        await state.update_data(invoice_task_id=task_id)
-        b = InlineKeyboardBuilder()
-        b.button(text="✅ Отправить", callback_data=f"inv_pp_done:{task_id}")
-        b.button(text="❌ Отмена", callback_data=f"inv_pp_cancel:{task_id}")
-        b.adjust(1)
-        await cb.message.answer(  # type: ignore
-            "💳 <b>Подтверждение оплаты</b>\n\n"
-            "Прикрепите документ (PDF/фото) и/или напишите комментарий.\n"
-            "Когда готовы — нажмите «✅ Отправить».",
-            reply_markup=b.as_markup(),
-        )
+        try:
+            await cb.message.answer(_pp_text, reply_markup=b.as_markup())  # type: ignore
+        except Exception:
+            # cb.message may be InaccessibleMessage — send directly
+            await notifier.safe_send(cb.from_user.id, _pp_text, reply_markup=b.as_markup())
         return
 
     if action == "inv_hold" and task.get("type") == TaskType.INVOICE_PAYMENT:
