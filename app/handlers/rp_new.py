@@ -88,7 +88,7 @@ from ..states import (
     RpRazmerySG,
     RpSupplierInvoiceSG,
 )
-from ..utils import answer_service, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard
+from ..utils import answer_service, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
 from .auth import RoleFilter, require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -1381,20 +1381,50 @@ async def rp_work_tasks(cb: CallbackQuery, db: Database) -> None:
     if not tasks:
         lines.append("Нет привязанных задач.")
     else:
+        from ..enums import MATERIAL_TYPE_LABELS
         status_emoji = {
             "open": "🟡", "in_progress": "🔵", "done": "✅", "rejected": "❌",
         }
+        status_label = {
+            "open": "Ожидает", "in_progress": "Принят ГД",
+            "done": "Оплачен", "rejected": "Отклонён",
+        }
         for t in tasks:
             s_emoji = status_emoji.get(t.get("status", ""), "❓")
-            t_type = (t.get("task_type") or "—").replace("_", " ").title()
-            assignee_id = t.get("assignee_id")
-            assignee_label = ""
-            if assignee_id:
-                u = await db.get_user_optional(int(assignee_id))
-                if u:
-                    assignee_label = f" → @{u.username}" if u.username else f" → {u.full_name or assignee_id}"
-            dt = (t.get("created_at") or "")[:10]
-            lines.append(f"{s_emoji} {t_type}{assignee_label} ({dt})")
+            t_type_raw = t.get("type") or t.get("task_type") or "—"
+            payload = try_json_loads(t.get("payload_json"))
+
+            if t_type_raw == "invoice_payment":
+                # Детальная карточка для счетов на оплату
+                _amount = payload.get("amount", "")
+                _mat_type = payload.get("material_type", "")
+                _mat_label = MATERIAL_TYPE_LABELS.get(_mat_type, _mat_type)
+                _s_label = status_label.get(t.get("status", ""), t.get("status", ""))
+                try:
+                    _amount_s = f"{float(_amount):,.0f}₽"
+                except (ValueError, TypeError):
+                    _amount_s = str(_amount)
+                dt = (t.get("created_at") or "")[:10]
+                lines.append(
+                    f"{s_emoji} <b>Счёт ГД</b> — {_amount_s} | {_mat_label}\n"
+                    f"    Статус: {_s_label} | {dt}"
+                )
+                # Комментарий РП
+                _comment = payload.get("comment", "")
+                if _comment:
+                    _comment_short = _comment if len(_comment) <= 80 else _comment[:77] + "..."
+                    lines.append(f"    💬 РП: {_comment_short}")
+                # Комментарий ГД (после оплаты)
+                _pp_comment = payload.get("pp_comment", "")
+                if _pp_comment:
+                    _pp_short = _pp_comment if len(_pp_comment) <= 80 else _pp_comment[:77] + "..."
+                    lines.append(f"    💬 ГД: {_pp_short}")
+                lines.append("")  # пустая строка-разделитель
+            else:
+                # Общий формат для остальных задач
+                t_label = t_type_raw.replace("_", " ").title()
+                dt = (t.get("created_at") or "")[:10]
+                lines.append(f"{s_emoji} {t_label} ({dt})")
 
     text_out = "\n".join(lines)
     if len(text_out) > 3800:

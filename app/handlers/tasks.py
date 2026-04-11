@@ -1278,6 +1278,16 @@ async def invoice_pp_finalize(
     sender_id = _invoice_task_sender_id(payload)
     invoice_id, inv_num, supplier, amount = _invoice_task_details(payload)
 
+    # Save GD comment into task payload for RP visibility
+    if pp_comment:
+        payload["pp_comment"] = pp_comment
+        import json as _json
+        await db.conn.execute(
+            "UPDATE tasks SET payload_json = ? WHERE id = ?",
+            (_json.dumps(payload, ensure_ascii=False), int(task_id)),
+        )
+        await db.conn.commit()
+
     # Mark task as done (parent invoice status is NOT changed)
     task = await db.update_task_status(int(task_id), TaskStatus.DONE)
 
