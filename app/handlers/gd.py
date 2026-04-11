@@ -371,7 +371,7 @@ async def gd_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
 
 @router.callback_query(F.data.regexp(r"^gd_work:view:\d+$"))
 async def gd_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
-    """Invoice card from GD work dashboard — full cost card."""
+    """Invoice card from GD work dashboard — Plan/Fact card (shortcut)."""
     if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     await cb.answer()
@@ -382,6 +382,21 @@ async def gd_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
+    b = InlineKeyboardBuilder()
+    b.button(text="📊 Себестоимость", callback_data=f"inv_stats:{invoice_id}")
+    b.button(text="💬 Сообщения", callback_data=f"inv_msgs:{invoice_id}")
+    b.button(text="⬅️ Назад к списку", callback_data="gd_work:refresh")
+    b.adjust(2, 1)
+
+    # Try Plan/Fact card first (most informative)
+    pf = await db.get_plan_fact_card(invoice_id)
+    if pf.get("has_estimated"):
+        from ..utils import format_plan_fact_card
+        text = format_plan_fact_card(inv, pf)
+        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+        return
+
+    # Fallback: basic card + cost card for invoices without estimated data
     status_label = {
         "new": "🆕 Новый", "pending": "⏳ Ждёт подтверждения",
         "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
@@ -408,17 +423,10 @@ async def gd_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
         f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
     )
 
-    # Full cost card
     from ..utils import format_cost_card
     cost = await db.get_full_invoice_cost_card(invoice_id)
     if cost and cost.get("total_cost", 0) > 0:
         text += format_cost_card(inv, cost)
-
-    b = InlineKeyboardBuilder()
-    b.button(text="📊 Себестоимость", callback_data=f"inv_stats:{invoice_id}")
-    b.button(text="💬 Сообщения", callback_data=f"inv_msgs:{invoice_id}")
-    b.button(text="⬅️ Назад к списку", callback_data="gd_work:refresh")
-    b.adjust(2, 1)
 
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
