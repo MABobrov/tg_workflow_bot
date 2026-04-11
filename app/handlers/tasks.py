@@ -711,11 +711,29 @@ async def task_cancel_with_reason(
             return
         await cb.answer()
         task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
-        # Показать обновлённую карточку с кнопкой "Подтвердить оплату"
+        payload = try_json_loads(task.get("payload_json"))
+        _inv_num = payload.get("invoice_number") or ""
+        _amount = payload.get("amount") or ""
+        _mat_type = payload.get("material_type") or ""
+        # Уведомить РП о принятии
+        sender_id = _invoice_task_sender_id(payload)
+        if sender_id:
+            from ..enums import MATERIAL_TYPE_LABELS
+            _mat_label = MATERIAL_TYPE_LABELS.get(_mat_type, _mat_type)
+            initiator = await get_initiator_label(db, cb.from_user.id)
+            await notifier.safe_send(
+                int(sender_id),
+                f"✅ <b>Счёт принят ГД</b>\n"
+                f"👤 {initiator}\n"
+                f"🔢 № счёта: {_inv_num}\n"
+                f"💰 Сумма: {_amount}\n"
+                f"📦 Тип: {_mat_label}",
+            )
+        # Показать ГД кнопку "Подтвердить оплату"
         kb = task_actions_kb(task)
         await notifier.bot.send_message(
             cb.from_user.id,
-            "✅ Счёт принят. Теперь нажмите «💳 Подтвердить оплату» для завершения.",
+            "✅ Счёт принят. Нажмите «💳 Подтвердить оплату» для завершения.",
             reply_markup=kb,
             parse_mode="HTML",
         )
