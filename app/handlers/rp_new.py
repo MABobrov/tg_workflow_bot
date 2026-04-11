@@ -1548,19 +1548,52 @@ async def rp_work_send_inv_gd_start(
         return
 
     await state.clear()
-    await state.set_state(RpSupplierInvoiceSG.attachments)
+    await state.set_state(RpSupplierInvoiceSG.amount)
     await state.update_data(invoice_id=invoice_id, attachments=[])
 
     num = inv.get("invoice_number") or f"#{invoice_id}"
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📎 <b>Счёт от поставщика → ГД</b>\n"
+        f"Счёт: №{num}\n\n"
+        "💰 Введите сумму счёта на оплату:",
+    )
+
+
+@router.message(RpSupplierInvoiceSG.amount)
+async def rp_sinv_amount(message: Message, state: FSMContext) -> None:
+    """Получить сумму счёта."""
+    text = (message.text or "").strip().replace(" ", "").replace(",", ".")
+    try:
+        amount = float(text)
+    except (ValueError, TypeError):
+        await message.answer("⚠️ Введите число (сумму счёта):")
+        return
+    await state.update_data(sinv_amount=amount)
+    from ..keyboards import material_type_kb
+    await state.set_state(RpSupplierInvoiceSG.material_type)
+    await message.answer(
+        "📦 Выберите тип материала/услуги:",
+        reply_markup=material_type_kb(prefix="rp_sinv_mat"),
+    )
+
+
+@router.callback_query(
+    RpSupplierInvoiceSG.material_type,
+    lambda cb: cb.data and cb.data.startswith("rp_sinv_mat:"),
+)
+async def rp_sinv_material(cb: CallbackQuery, state: FSMContext) -> None:
+    """Выбор типа материала/услуги."""
+    await cb.answer()
+    mat_code = (cb.data or "").split(":", 1)[1]
+    await state.update_data(sinv_material_type=mat_code)
+
+    await state.set_state(RpSupplierInvoiceSG.attachments)
     b = InlineKeyboardBuilder()
     b.button(text="⏭ Без файлов → Комментарий", callback_data="rp_sinv:skip_attach")
     b.button(text="❌ Отмена", callback_data="rp_sinv:cancel")
     b.adjust(1)
-
     await cb.message.answer(  # type: ignore[union-attr]
-        f"📎 <b>Счёт от поставщика → ГД</b>\n"
-        f"Счёт: №{num}\n\n"
-        "Прикрепите файл(ы) счёта от поставщика (документ или фото).\n"
+        "📎 Прикрепите файл(ы) счёта (документ или фото).\n"
         "Когда все файлы прикреплены — нажмите кнопку:",
         reply_markup=b.as_markup(),
     )
@@ -1688,12 +1721,14 @@ async def _rp_sinv_finalize(
     invoice_id = data.get("invoice_id")
     attachments: list[dict[str, Any]] = data.get("attachments", [])
     comment: str = data.get("comment", "")
+    sinv_amount: float = float(data.get("sinv_amount") or 0)
+    sinv_material_type: str = data.get("sinv_material_type") or "extra_mat"
 
     inv = await db.get_invoice(invoice_id) if invoice_id else None
     num = (inv.get("invoice_number") if inv else None) or f"#{invoice_id}"
 
     from ..services.assignment import resolve_default_assignee
-    from ..enums import TaskType, TaskStatus
+    from ..enums import TaskType, TaskStatus, MATERIAL_TYPE_LABELS
     from ..utils import utcnow, to_iso
     from datetime import timedelta
 
@@ -1705,14 +1740,17 @@ async def _rp_sinv_finalize(
     due = utcnow() + timedelta(hours=7)
     task = await db.create_task(
         project_id=inv.get("project_id") if inv else None,
-        type_=TaskType.SUPPLIER_INVOICE,
+        type_=TaskType.INVOICE_PAYMENT,
         status=TaskStatus.OPEN,
         created_by=from_user.id if from_user else 0,
         assigned_to=int(gd_id),
         due_at_iso=to_iso(due),
         payload={
             "invoice_id": invoice_id,
+            "parent_invoice_id": invoice_id,
             "invoice_number": num,
+            "amount": sinv_amount,
+            "material_type": sinv_material_type,
             "comment": comment,
             "sender_id": from_user.id if from_user else 0,
             "sender_username": (from_user.username if from_user else ""),
@@ -1729,16 +1767,20 @@ async def _rp_sinv_finalize(
         )
 
     initiator = await get_initiator_label(db, from_user.id) if from_user else "?"
+    mat_label = MATERIAL_TYPE_LABELS.get(sinv_material_type, sinv_material_type)
     gd_text = (
-        f"📎 <b>Счёт от поставщика</b>\n"
+        f"💳 <b>Счёт на оплату</b>\n"
         f"👤 От: {initiator}\n"
         f"📄 Счёт: №{num}\n"
+        f"💰 Сумма: {sinv_amount:,.0f}₽\n"
+        f"📦 Тип: {mat_label}\n"
     )
     if inv and inv.get("object_address"):
         gd_text += f"📍 Объект: {inv['object_address'][:50]}\n"
     if comment:
         gd_text += f"💬 {comment}\n"
-    gd_text += f"\n📎 Вложений: {len(attachments)}"
+    if attachments:
+        gd_text += f"\n📎 Вложений: {len(attachments)}"
 
     from ..keyboards import task_actions_kb
     await notifier.safe_send(

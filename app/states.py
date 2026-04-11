@@ -493,6 +493,8 @@ class ManagerZpSG(StatesGroup):
 
 class RpSupplierInvoiceSG(StatesGroup):
     """РП: отправить счёт от поставщика ГД (из карточки «Счета в работе»)."""
+    amount = State()             # сумма счёта
+    material_type = State()      # тип материала/услуги
     attachments = State()        # прикрепить файл(ы) счёта
     comment = State()            # комментарий
 
