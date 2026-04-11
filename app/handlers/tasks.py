@@ -228,12 +228,15 @@ async def task_actions(
 ) -> None:
     task_id = int(callback_data.task_id)
     action = callback_data.action
+    log.info("task_actions: task_id=%s action=%s user=%s", task_id, action, cb.from_user.id if cb.from_user else None)
 
     try:
         task = await db.get_task(task_id)
     except KeyError:
+        log.warning("task_actions: task %s not found", task_id)
         await cb.answer("Задача не найдена или была удалена.", show_alert=True)
         return
+    log.info("task_actions: task type=%s status=%s assigned_to=%s", task.get("type"), task.get("status"), task.get("assigned_to"))
     active_statuses = {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}
 
     # DELETE — GD (admin) and RP
@@ -255,8 +258,10 @@ async def task_actions(
         return
 
     if not await _can_manage_task(cb, db, config, task):
+        log.warning("task_actions: _can_manage_task DENIED user=%s task=%s assigned=%s", cb.from_user.id, task_id, task.get("assigned_to"))
         await cb.answer("Эта задача назначена другому человеку", show_alert=True)
         return
+    log.info("task_actions: _can_manage_task OK, proceeding to action=%s", action)
 
     if action == "accept":
         if task.get("status") != TaskStatus.OPEN or task.get("accepted_at"):
