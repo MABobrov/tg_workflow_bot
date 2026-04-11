@@ -3069,9 +3069,17 @@ async def _show_kp_task_card(
     # Show attached КП documents
     attachments = await db.list_attachments(int(task["id"]))
     if attachments:
-        # Show docs inline (just list them, user sees them in notification)
-        att_text = f"📎 Вложения КП ({len(attachments)} файл(ов))"
-        await target.message.answer(att_text)  # type: ignore[union-attr]
+        chat_id = target.from_user.id  # type: ignore[union-attr]
+        bot = target.bot
+        for att in attachments:
+            fid = att["tg_file_id"]
+            cap = att.get("caption")
+            if att.get("file_type") == "photo":
+                await bot.send_photo(chat_id=chat_id, photo=fid, caption=cap)
+            elif att.get("file_type") == "video":
+                await bot.send_video(chat_id=chat_id, video=fid, caption=cap)
+            else:
+                await bot.send_document(chat_id=chat_id, document=fid, caption=cap)
 
 
 @router.callback_query(F.data.regexp(r"^kp_review:\d+$"))
