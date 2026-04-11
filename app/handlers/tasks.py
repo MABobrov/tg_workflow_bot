@@ -704,10 +704,31 @@ async def task_cancel_with_reason(
         )  # type: ignore
         return
 
-    # INVOICE_PAYMENT — подтвердить оплату (GD): сразу вложение + комментарий → закрыть
-    if action in ("inv_received", "inv_pay") and task.get("type") == TaskType.INVOICE_PAYMENT:
-        if task.get("status") not in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
-            await cb.answer("Этот счёт уже обработан.", show_alert=True)
+    # INVOICE_PAYMENT — шаг 1: Принять (OPEN → IN_PROGRESS)
+    if action == "inv_received" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        if task.get("status") != TaskStatus.OPEN:
+            await cb.answer("Этот счёт уже принят.", show_alert=True)
+            return
+        await cb.answer()
+        task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+        # Показать обновлённую карточку с кнопкой "Подтвердить оплату"
+        kb = task_actions_kb(task)
+        await notifier.bot.send_message(
+            cb.from_user.id,
+            "✅ Счёт принят. Теперь нажмите «💳 Подтвердить оплату» для завершения.",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+        try:
+            await _safe_edit_task_markup(cb.message, reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    # INVOICE_PAYMENT — шаг 2: Подтвердить оплату (вложение + комментарий → закрыть)
+    if action == "inv_pay" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        if task.get("status") != TaskStatus.IN_PROGRESS:
+            await cb.answer("Сначала примите счёт.", show_alert=True)
             return
         await cb.answer()
         try:
@@ -721,14 +742,11 @@ async def task_cancel_with_reason(
         b.button(text="✅ Отправить", callback_data=f"inv_pp_done:{task_id}")
         b.button(text="❌ Отмена", callback_data=f"inv_pp_cancel:{task_id}")
         b.adjust(1)
-        _pp_text = (
+        await notifier.bot.send_message(
+            cb.from_user.id,
             "💳 <b>Подтверждение оплаты</b>\n\n"
             "Прикрепите документ (PDF/фото) и/или напишите комментарий.\n"
-            "Когда готовы — нажмите «✅ Отправить»."
-        )
-        # Отправка напрямую через bot — самый надёжный способ
-        await notifier.bot.send_message(
-            cb.from_user.id, _pp_text,
+            "Когда готовы — нажмите «✅ Отправить».",
             reply_markup=b.as_markup(),
             parse_mode="HTML",
         )
