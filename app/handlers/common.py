@@ -610,9 +610,13 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
         if int(ct["id"]) not in seen:
             tasks_raw.append(ct)
             seen.add(int(ct["id"]))
-    # Исключаем INVOICE_PAYMENT — они только для ГД (кнопка "Счета на оплату")
+    # Исключаем INVOICE_PAYMENT (только для ГД)
+    # CHECK_KP исключаем только для менеджеров (они создают, а не принимают)
     from ..enums import TaskType
-    tasks = [t for t in tasks_raw if t.get("type") != TaskType.INVOICE_PAYMENT]
+    _excluded = {TaskType.INVOICE_PAYMENT}
+    if _u and _u.role and "manager" in (_u.role or ""):
+        _excluded.add(TaskType.CHECK_KP)
+    tasks = [t for t in tasks_raw if t.get("type") not in _excluded]
     if not tasks:
         await answer_service(message, "📥 Задач нет ✅", delay_seconds=60)
         return
