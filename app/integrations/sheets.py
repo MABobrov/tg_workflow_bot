@@ -209,6 +209,14 @@ INVOICES_HEADER = [
     # — ЗП Монтажник: платёжка / подтверждение (117-118) —
     "Платёжка ЗП дата",     # 117 — дата отправки платёжки ГД
     "ЗП подтверждено дата", # 118 — дата подтверждения монтажником
+    # --- Затраты по типам (из supplier_payments бота) ---
+    "Затр. Металл",        # 119
+    "Затр. Стекло",        # 120
+    "Затр. Монтаж",        # 121
+    "Затр. Грузчики",      # 122
+    "Затр. Логистика",     # 123
+    "Затр. Доп мат.",      # 124
+    "Затр. Доп усл.",      # 125
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -801,6 +809,15 @@ class GoogleSheetsService:
             cells[117] = format_dt_iso(_pay_sent, self.cfg.timezone_name)
         if _confirmed:
             cells[118] = format_dt_iso(_confirmed, self.cfg.timezone_name)
+
+        # --- Затраты по типам (из supplier_payments бота) ---
+        cells[119] = self._fmt_amount(invoice.get("cost_metal"))
+        cells[120] = self._fmt_amount(invoice.get("cost_glass"))
+        cells[121] = self._fmt_amount(invoice.get("cost_montazh"))
+        cells[122] = self._fmt_amount(invoice.get("cost_loaders"))
+        cells[123] = self._fmt_amount(invoice.get("cost_logistics"))
+        cells[124] = self._fmt_amount(invoice.get("cost_extra_mat"))
+        cells[125] = self._fmt_amount(invoice.get("cost_extra_svc"))
 
         # M (12): Дата окончания = receipt_date + deadline_days
         _receipt = invoice.get("receipt_date")
