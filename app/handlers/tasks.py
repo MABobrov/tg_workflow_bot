@@ -1133,6 +1133,8 @@ async def invoice_pp_collect(message: Message, state: FSMContext) -> None:
             "file_unique_id": message.document.file_unique_id,
             "caption": message.caption,
         })
+        await state.update_data(pp_files=pp_files)
+        await answer_service(message, f"📎 Принял. Файлов: <b>{len(pp_files)}</b>.")
     elif message.photo:
         ph = message.photo[-1]
         pp_files.append({
@@ -1141,6 +1143,8 @@ async def invoice_pp_collect(message: Message, state: FSMContext) -> None:
             "file_unique_id": ph.file_unique_id,
             "caption": message.caption,
         })
+        await state.update_data(pp_files=pp_files)
+        await answer_service(message, f"📎 Принял. Файлов: <b>{len(pp_files)}</b>.")
     elif message.video:
         pp_files.append({
             "file_type": "video",
@@ -1148,12 +1152,17 @@ async def invoice_pp_collect(message: Message, state: FSMContext) -> None:
             "file_unique_id": message.video.file_unique_id,
             "caption": message.caption,
         })
+        await state.update_data(pp_files=pp_files)
+        await answer_service(message, f"📎 Принял. Файлов: <b>{len(pp_files)}</b>.")
+    elif message.text:
+        # Текстовый комментарий от ГД
+        pp_comment = data.get("pp_comment", "")
+        pp_comment = (pp_comment + "\n" + message.text).strip() if pp_comment else message.text.strip()
+        await state.update_data(pp_comment=pp_comment)
+        await answer_service(message, "💬 Комментарий сохранён.")
     else:
-        await message.answer("Прикрепите файл/фото платёжного поручения.")
+        await message.answer("Прикрепите файл/фото или напишите комментарий.")
         return
-
-    await state.update_data(pp_files=pp_files)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(pp_files)}</b>.")
 
 
 @router.callback_query(F.data.startswith("inv_pp_done:"))
@@ -1174,13 +1183,14 @@ async def invoice_pp_finalize(
     data = await state.get_data()
     task_id = data.get("invoice_task_id")
     pp_files = data.get("pp_files", [])
+    pp_comment = data.get("pp_comment", "")
 
     if not task_id:
         await state.clear()
         return
-    if not pp_files:
+    if not pp_files and not pp_comment:
         await cb.message.answer(  # type: ignore[union-attr]
-            "Сначала прикрепите платёжное поручение, потом отправляйте результат."
+            "Прикрепите документ или напишите комментарий, потом нажмите «✅ Отправить»."
         )
         return
 
@@ -1269,9 +1279,12 @@ async def invoice_pp_finalize(
             f"👤 От: {initiator}\n\n"
             f"🔢 № счёта: {inv_num}\n"
             f"🏢 Поставщик: {supplier}\n"
-            f"💰 Сумма: {amount}\n\n"
-            "Платёжное поручение прикреплено ниже."
+            f"💰 Сумма: {amount}"
         )
+        if pp_comment:
+            msg += f"\n\n💬 Комментарий ГД: {pp_comment}"
+        if pp_files:
+            msg += "\n\n📎 Документ прикреплён ниже."
         await notifier.safe_send(int(sender_id), msg)
         for a in pp_files:
             await notifier.safe_send_media(
