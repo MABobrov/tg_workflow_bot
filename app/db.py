@@ -563,6 +563,14 @@ class Database:
             ("leads", "contact_name", "TEXT"),
             ("leads", "tags_json", "TEXT"),
             ("leads", "source", "TEXT"),
+            # --- Агрегированные затраты по типам (суммы из supplier_payments) ---
+            ("invoices", "cost_metal", "REAL DEFAULT 0"),
+            ("invoices", "cost_glass", "REAL DEFAULT 0"),
+            ("invoices", "cost_montazh", "REAL DEFAULT 0"),
+            ("invoices", "cost_loaders", "REAL DEFAULT 0"),
+            ("invoices", "cost_logistics", "REAL DEFAULT 0"),
+            ("invoices", "cost_extra_mat", "REAL DEFAULT 0"),
+            ("invoices", "cost_extra_svc", "REAL DEFAULT 0"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -1518,6 +1526,19 @@ class Database:
 
         return summary
 
+    # Mapping material_type → invoices column name
+    _COST_COL_MAP: dict[str, str] = {
+        "metal": "cost_metal", "glass": "cost_glass",
+        "montazh": "cost_montazh", "loaders": "cost_loaders",
+        "logistics": "cost_logistics",
+        "extra_mat": "cost_extra_mat", "extra_svc": "cost_extra_svc",
+        # Legacy types → closest column
+        "profile": "cost_metal",
+        "service": "cost_extra_svc",
+        "ldsp": "cost_extra_mat", "gkl": "cost_extra_mat",
+        "sandwich": "cost_extra_mat", "other": "cost_extra_mat",
+    }
+
     async def create_supplier_payment(
         self,
         parent_invoice_id: int,
@@ -1528,7 +1549,7 @@ class Database:
         task_id: int | None = None,
         created_by: int | None = None,
     ) -> int:
-        """Insert a row into supplier_payments table. Returns new row id."""
+        """Insert a row into supplier_payments table + update cost_* in invoices."""
         now = datetime.now(timezone.utc).isoformat()
         cur = await self.conn.execute(
             "INSERT INTO supplier_payments "
@@ -1536,6 +1557,13 @@ class Database:
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (parent_invoice_id, invoice_number, amount, material_type, supplier, task_id, created_by, now),
         )
+        # Update aggregated cost column in parent invoice
+        cost_col = self._COST_COL_MAP.get(material_type)
+        if cost_col:
+            await self.conn.execute(
+                f"UPDATE invoices SET {cost_col} = COALESCE({cost_col}, 0) + ? WHERE id = ?",
+                (amount, parent_invoice_id),
+            )
         await self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
 
