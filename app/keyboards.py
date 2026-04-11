@@ -52,7 +52,7 @@ GD_BTN_DAILY_SUMMARY = "📊 Сводка дня"
 
 # --- Manager-specific buttons (КВ / КИА / НПН) ---
 MGR_BTN_INBOX = "Задачи / Лид в проект"
-MGR_BTN_CHECK_KP = "Лид на расчет"
+MGR_BTN_CHECK_KP = "Проверить КП / Счет"
 MGR_BTN_INVOICE_START = "Счет в Работу"
 MGR_BTN_INVOICE_END = "Счет End"
 MGR_BTN_ZAMERY = "Замеры"
