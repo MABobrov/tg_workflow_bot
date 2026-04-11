@@ -1231,14 +1231,29 @@ async def rp_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    status_label = _invoice_status_label(inv.get("status"))
+    b = InlineKeyboardBuilder()
+    b.button(text="💬 Переписка", callback_data=f"rp_work:msgs:{invoice_id}")
+    b.button(text="📋 Задачи", callback_data=f"rp_work:tasks:{invoice_id}")
+    b.button(text="📦 Расходы", callback_data=f"rp_work:expenses:{invoice_id}")
+    b.button(text="📎 Счёт ГД", callback_data=f"rp_work:send_inv_gd:{invoice_id}")
+    b.button(text="⬅️ Назад к списку", callback_data="rp_work:refresh")
+    b.adjust(2, 2, 1)
 
+    # Plan/Fact card (same format as GD)
+    pf = await db.get_plan_fact_card(invoice_id)
+    if pf.get("has_estimated"):
+        from ..utils import format_plan_fact_card
+        text = format_plan_fact_card(inv, pf)
+        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+        return
+
+    # Fallback for invoices without estimated data
+    status_label = _invoice_status_label(inv.get("status"))
     try:
         amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
     except (ValueError, TypeError):
         amount_str = f"{inv.get('amount', 0)}₽"
 
-    # Creator info
     creator_label = "—"
     if inv.get("created_by"):
         creator_label = await get_initiator_label(db, int(inv["created_by"]))
@@ -1254,64 +1269,6 @@ async def rp_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
         f"👤 Создал: {creator_label} ({creator_role_label})\n"
         f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
     )
-
-    # Close conditions
-    conditions = await db.check_close_conditions(invoice_id)
-    c1 = "✅" if conditions["installer_ok"] else "⏳"
-    c2 = "✅" if conditions["edo_signed"] else "⏳"
-    c3 = "✅" if conditions["no_debts"] else "⏳"
-    c4 = "✅" if conditions["zp_approved"] else "⏳"
-    text += (
-        f"\n<b>Условия закрытия:</b>\n"
-        f"{c1} 1. Монтажник — Счет ОК\n"
-        f"{c2} 2. ЭДО — подписано\n"
-        f"{c3} 3. Долгов нет\n"
-        f"{c4} 4. ЗП — расчёт подтверждён\n"
-    )
-
-    # ── Supplier payments grouped by material category ──
-    grouped = await db.list_supplier_payments_grouped(invoice_id)
-    _CAT_LABELS = {
-        "metal": ("🔩", "Металл"),
-        "glass": ("🪟", "Стекло"),
-        "additional": ("📦", "Доп. Материалы"),
-        "services": ("🚚", "Оплата услуг"),
-    }
-    has_any_material = any(grouped[cat] for cat in grouped)
-    text += "\n<b>📦 Заказанные материалы:</b>\n"
-    if not has_any_material:
-        text += "  Нет записей\n"
-    else:
-        for cat_key, (icon, label) in _CAT_LABELS.items():
-            items = grouped.get(cat_key, [])
-            if items:
-                total = sum(p["amount"] for p in items)
-                total_s = f"{total:,.0f}".replace(",", " ")
-                details = ", ".join(
-                    p.get("supplier") or "—" for p in items
-                )
-                text += f"✅ {icon} {label} — {total_s}₽ ({details})\n"
-            else:
-                text += f"⏳ {icon} {label}\n"
-
-    # ── UPD supplier signing via EDO ──
-    upd_signed = await db.get_edo_upd_status_for_invoice(invoice_id)
-    upd_icon = "✅" if upd_signed else "⏳"
-    text += f"\n<b>📄 УПД поставщика:</b>\n{upd_icon} Подписание по ЭДО\n"
-
-    # Payment file info
-    if inv.get("payment_file_id"):
-        text += "\n💸 Платёжка: прикреплена ✅\n"
-    if inv.get("payment_comment"):
-        text += f"💬 Коммент. к оплате: {inv['payment_comment']}\n"
-
-    b = InlineKeyboardBuilder()
-    b.button(text="💬 Переписка", callback_data=f"rp_work:msgs:{invoice_id}")
-    b.button(text="📋 Задачи", callback_data=f"rp_work:tasks:{invoice_id}")
-    b.button(text="📦 Расходы", callback_data=f"rp_work:expenses:{invoice_id}")
-    b.button(text="📎 Счёт ГД", callback_data=f"rp_work:send_inv_gd:{invoice_id}")
-    b.button(text="⬅️ Назад к списку", callback_data="rp_work:refresh")
-    b.adjust(2, 2, 1)
 
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
