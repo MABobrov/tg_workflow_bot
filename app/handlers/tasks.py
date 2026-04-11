@@ -704,85 +704,44 @@ async def task_cancel_with_reason(
         )  # type: ignore
         return
 
-    # INVOICE_PAYMENT — подтверждение получения (GD)
+    # INVOICE_PAYMENT — подтвердить оплату (GD): сразу вложение + комментарий → закрыть
     if action == "inv_received" and task.get("type") == TaskType.INVOICE_PAYMENT:
-        if task.get("status") != TaskStatus.OPEN:
-            await cb.answer("Этот счёт уже подтверждён.", show_alert=True)
-            return
-        # OPEN -> IN_PROGRESS
-        task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
-        payload = try_json_loads(task.get("payload_json"))
-        invoice_id, invoice_number, supplier, amount = _invoice_task_details(payload)
-        if invoice_id is not None:
-            await db.update_invoice_status(invoice_id, InvoiceStatus.IN_PROGRESS)
-            if invoice_number:
-                await integrations.sync_invoice_status(invoice_number, InvoiceStatus.IN_PROGRESS)
-        # Уведомить отправителя (РП)
-        sender_id = _invoice_task_sender_id(payload)
-        if sender_id:
-            initiator = await get_initiator_label(db, cb.from_user.id)
-            await notifier.safe_send(
-                int(sender_id),
-                "✅ <b>Счёт получен ГД</b>\n"
-                f"👤 От: {initiator}\n\n"
-                f"🔢 № счёта: {invoice_number or '—'}\n"
-                f"🏢 Поставщик: {supplier or '—'}\n"
-                f"💰 Сумма: {amount or '—'}",
-            )
-        # Уведомить РП: ГД принял счёт в работу
-        rp_id = await resolve_default_assignee(db, config, Role.RP)
-        if rp_id:
-            rp_text = (
-                f"✅ <b>Счёт принят ГД в работу</b>\n\n"
-                f"🔢 № счёта: {invoice_number or '—'}\n"
-                f"🏢 Поставщик: {supplier or '—'}\n"
-                f"💰 Сумма: {amount or '—'}\n\n"
-                f"📊 Статус: <b>В работе</b>"
-            )
-            await notifier.safe_send(int(rp_id), rp_text)
-            await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
-        await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
-        await _safe_edit_task_markup(cb.message, reply_markup=None)
-        await state.clear()
-        # Показать обновлённую карточку с новыми кнопками (Оплатить/Отложить/Отклонить)
-        card_text = fmt_task_card(task, project, config.timezone)
-        kb = task_actions_kb(task)
-        await cb.message.answer(  # type: ignore
-            f"✅ Получение подтверждено.\n\n{card_text}",
-            reply_markup=kb,
-        )
-        # Обновить main_menu (badge counters)
-        if cb.from_user:
-            role_now, isolated_role = await _current_menu(db, cb.from_user.id)
-            await _answer_with_menu(
-                cb.message,
-                db,
-                config,
-                cb.from_user.id,
-                "📋 Счёт принят в работу.",
-                role=role_now,
-                isolated_role=isolated_role,
-            )
-        return
-
-    # INVOICE_PAYMENT actions (GD)
-    if action == "inv_pay" and task.get("type") == TaskType.INVOICE_PAYMENT:
-        if task.get("status") not in active_statuses:
+        if task.get("status") not in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
             await cb.answer("Этот счёт уже обработан.", show_alert=True)
             return
-        # GD wants to pay — ask for payment order attachment
         await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
         await state.set_state(InvoicePaymentSG.attaching_pp)
         await state.update_data(invoice_task_id=task_id)
         b = InlineKeyboardBuilder()
-        b.button(text="✅ Отправить ПП", callback_data=f"inv_pp_done:{task_id}")
+        b.button(text="✅ Отправить", callback_data=f"inv_pp_done:{task_id}")
         b.button(text="❌ Отмена", callback_data=f"inv_pp_cancel:{task_id}")
         b.adjust(1)
         await cb.message.answer(  # type: ignore
-            "💳 <b>Оплата счёта</b>\n\n"
-            "Прикрепите платёжное поручение (файл/фото).\n"
-            "Когда готовы — нажмите «✅ Отправить ПП».",
+            "💳 <b>Подтверждение оплаты</b>\n\n"
+            "Прикрепите документ (PDF/фото) и/или напишите комментарий.\n"
+            "Когда готовы — нажмите «✅ Отправить».",
+            reply_markup=b.as_markup(),
+        )
+        return
+
+    # INVOICE_PAYMENT — inv_pay (legacy alias, same as inv_received)
+    if action == "inv_pay" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        if task.get("status") not in active_statuses:
+            await cb.answer("Этот счёт уже обработан.", show_alert=True)
+            return
+        await _safe_edit_task_markup(cb.message, reply_markup=None)
+        await state.clear()
+        await state.set_state(InvoicePaymentSG.attaching_pp)
+        await state.update_data(invoice_task_id=task_id)
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ Отправить", callback_data=f"inv_pp_done:{task_id}")
+        b.button(text="❌ Отмена", callback_data=f"inv_pp_cancel:{task_id}")
+        b.adjust(1)
+        await cb.message.answer(  # type: ignore
+            "💳 <b>Подтверждение оплаты</b>\n\n"
+            "Прикрепите документ (PDF/фото) и/или напишите комментарий.\n"
+            "Когда готовы — нажмите «✅ Отправить».",
             reply_markup=b.as_markup(),
         )
         return

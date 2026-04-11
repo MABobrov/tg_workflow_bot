@@ -715,18 +715,11 @@ def task_actions_kb(task: dict[str, Any]) -> InlineKeyboardMarkup:
         b.button(text="✅ Завершить", callback_data=TaskCb(task_id=tid, action="done").pack())
         b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
 
-    # Счёт на оплату — кнопки для ГД
+    # Счёт на оплату — кнопки для ГД (1 шаг: подтвердить → вложение → закрыть)
     if ttype == TaskType.INVOICE_PAYMENT:
-        if status == TaskStatus.OPEN:
-            # Первый шаг — подтвердить получение
+        if status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
             b = InlineKeyboardBuilder()
             b.button(text="✅ Подтвердить оплату", callback_data=TaskCb(task_id=tid, action="inv_received").pack())
-            b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="inv_reject").pack())
-        elif status == TaskStatus.IN_PROGRESS:
-            # После подтверждения — действия по оплате
-            b = InlineKeyboardBuilder()
-            b.button(text="✅ Оплатить", callback_data=TaskCb(task_id=tid, action="inv_pay").pack())
-            b.button(text="⏸ Отложить", callback_data=TaskCb(task_id=tid, action="inv_hold").pack())
             b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="inv_reject").pack())
 
     # Оплата доставки — кнопки для ГД
