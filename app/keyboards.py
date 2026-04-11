@@ -1064,9 +1064,10 @@ def lead_picker_for_kp_kb(
     b = InlineKeyboardBuilder()
     for t in leads:
         payload = try_json_loads(t.get("payload_json"))
-        desc = (payload.get("description") or "—")[:30]
+        name = (payload.get("name") or payload.get("description") or "—")[:20]
+        source = (payload.get("source") or "")[:15]
         date_str = (t.get("created_at") or "")[:10]
-        text = f"📌 {desc} ({date_str})"
+        text = f"📌 {name} | {source} ({date_str})" if source else f"📌 {name} ({date_str})"
         b.button(text=text[:60], callback_data=f"kp_lead:pick:{t['id']}")
     b.button(text="➕ Новый клиент", callback_data="kp_lead:new")
     b.adjust(1)
