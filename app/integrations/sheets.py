@@ -587,9 +587,9 @@ class GoogleSheetsService:
             38: self._fmt_amount(invoice.get("agent_payout_op")),   # AM ← ОП AE
             39: self._fmt_amount(invoice.get("zp_manager_payout")), # AN ← ОП AI
             40: self._fmt_sheet_date(invoice.get("zp_manager_payout_date")),  # AO ← ОП AJ
-            42: self._fmt_amount(invoice.get("npn_amount")),        # AQ ← ОП AT
-            43: self._fmt_amount(invoice.get("npn_payout_op")),     # AR ← ОП AU
-            44: self._fmt_sheet_date(invoice.get("npn_payout_date_op")),  # AS ← ОП AV
+            42: self._fmt_amount(invoice.get("npn_request_op")),     # AQ Запрос НПН ← ОП AU
+            43: self._fmt_amount(invoice.get("npn_payout_op")),     # AR Выдано НПН ← ОП AV
+            44: self._fmt_sheet_date(invoice.get("npn_payout_date_op")),  # AS Дата НПН ← ОП AW
             46: invoice.get("status") or "",
             47: _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
             48: invoice.get("supplier") or "",
@@ -717,7 +717,6 @@ class GoogleSheetsService:
             _profit_tax = ((_amount - _est_total - _nds) / 100 * 20) if _amount else 0
         _profit = _amount - _est_total - _nds - _profit_tax
         _rentability = (_profit / _amount * 100) if _amount > 0 else 0
-        _npn_10 = _profit * 10 / 100
 
         cells[21] = self._fmt_amount(_nds)                                     # V НДС
         cells[22] = self._fmt_amount(_profit_tax)                              # W Нал.приб.
@@ -731,7 +730,7 @@ class GoogleSheetsService:
             cells[23] = f"{_rentability:.1f}%"
         else:
             cells[23] = ""
-        cells[41] = self._fmt_amount(_npn_10)                                  # AP НПН 10%
+        cells[41] = self._fmt_amount(invoice.get("npn_amount"))                  # AP НПН 10% ← ОП AT
 
         # Группировка supplier payments по категориям
         _sp_materials = 0.0  # profile, glass, ldsp, gkl, sandwich, other
@@ -1226,11 +1225,12 @@ class GoogleSheetsService:
         41: "loaders_fact_op",           # AP: Грузчики факт
         42: "loaders_fact_date",         # AQ: Дата груз.
         # 43: AR — Команда боту (human-writable)
-        44: "npn_request_op",            # AS: Запрос НПН
-        45: "npn_amount",               # AT: Выдано НПН
-        46: "npn_payout_op",            # AU: Выдано НПН (сумма)
-        47: "npn_payout_date_op",        # AV: Дата НПН
-        # 48: AW (Месяц — не импортируем)
+        # 44: AS — Команда боту (human-writable)
+        45: "npn_amount",               # AT: НПН с 10% налог
+        46: "npn_request_op",           # AU: Запрос НПН
+        47: "npn_payout_op",            # AV: Выдано НПН
+        48: "npn_payout_date_op",       # AW: Дата НПН
+        # 49: AX (Месяц — не импортируем)
         49: "taxes_fact_op",             # AX: Налоги факт
         50: "profit_fact_credit_op",     # AY: Фактическая прибыль по кредитным счетам
         51: "profit_fact_op",            # AZ: Фактическая прибыль по каждому счёту
@@ -1317,6 +1317,7 @@ class GoogleSheetsService:
             "loaders_fact_op",
             "agent_payout_op",
             "men_zp_payout_op",
+            "npn_request_op",
             "npn_payout_op",
             "taxes_fact_op",
         }
