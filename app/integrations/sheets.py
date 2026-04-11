@@ -787,8 +787,13 @@ class GoogleSheetsService:
 
         if _mont_zp:
             cells[61] = self._fmt_amount(_mont_zp)              # BJ ЗП Монтажник
-            if _zp_status == "confirmed":
-                cells[70] = self._fmt_amount(_mont_zp)          # BS Монтаж Факт
+
+        # BS Монтаж Факт: из ОП (montazh_fact_op), fallback на confirmed ЗП
+        _montazh_fact_op = float(invoice.get("montazh_fact_op") or 0)
+        if _montazh_fact_op:
+            cells[70] = self._fmt_amount(_montazh_fact_op)      # BS из ОП AM
+        elif _mont_zp and _zp_status == "confirmed":
+            cells[70] = self._fmt_amount(_mont_zp)              # BS из ЗП
         # Платёжка ЗП даты
         _pay_sent = invoice.get("zp_installer_payment_sent_at")
         _confirmed = invoice.get("zp_installer_confirmed_at")
