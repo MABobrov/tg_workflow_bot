@@ -710,7 +710,10 @@ async def task_cancel_with_reason(
             await cb.answer("Этот счёт уже обработан.", show_alert=True)
             return
         await cb.answer()
-        await _safe_edit_task_markup(cb.message, reply_markup=None)
+        try:
+            await _safe_edit_task_markup(cb.message, reply_markup=None)
+        except Exception:
+            pass
         await state.clear()
         await state.set_state(InvoicePaymentSG.attaching_pp)
         await state.update_data(invoice_task_id=task_id)
@@ -723,11 +726,12 @@ async def task_cancel_with_reason(
             "Прикрепите документ (PDF/фото) и/или напишите комментарий.\n"
             "Когда готовы — нажмите «✅ Отправить»."
         )
-        try:
-            await cb.message.answer(_pp_text, reply_markup=b.as_markup())  # type: ignore
-        except Exception:
-            # cb.message may be InaccessibleMessage — send directly
-            await notifier.safe_send(cb.from_user.id, _pp_text, reply_markup=b.as_markup())
+        # Отправка напрямую через bot — самый надёжный способ
+        await notifier.bot.send_message(
+            cb.from_user.id, _pp_text,
+            reply_markup=b.as_markup(),
+            parse_mode="HTML",
+        )
         return
 
     if action == "inv_hold" and task.get("type") == TaskType.INVOICE_PAYMENT:
