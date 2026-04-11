@@ -774,8 +774,8 @@ class GoogleSheetsService:
             _is_closed = invoice.get("status") in ("ended", "credit")
             if _is_closed and fact_margin:
                 cells[63] = self._fmt_amount(fact_margin)              # BL Прибыль факт
-                # BM: Перерасчет прибыли = факт − план (из ОП)
-                if _profit_op:
+                # BM: Перерасчет прибыли — только если план > факт
+                if _profit_op and _profit_op > fact_margin:
                     cells[64] = self._fmt_amount(fact_margin - _profit_op)  # BM Перерасчет
                 else:
                     cells[64] = ""
