@@ -766,24 +766,29 @@ class GoogleSheetsService:
             # НДС факт (65) и Налог на приб. факт (66)
             cells[65] = self._fmt_amount(_c.get("nds_fact"))         # BN НДС факт
             cells[66] = self._fmt_amount(_c.get("profit_tax_fact"))  # BO Налог на приб. факт
-            # BL: Прибыль факт (всегда)
-            cells[63] = self._fmt_amount(fact_margin) if fact_margin else ""  # BL Прибыль факт
-            cells[78] = ""  # CA — очищено (перенесено в BL)
-            # BM: Перерасчет прибыли (при перерасходе)
-            pf_label = invoice.get("_plan_fact_label") or ""
-            if pf_label == "Перерасчет прибыли":
-                est_total = (float(invoice.get("estimated_glass") or 0)
-                             + float(invoice.get("estimated_profile") or 0)
-                             + float(invoice.get("estimated_materials") or 0)
-                             + float(invoice.get("estimated_installation") or 0)
-                             + float(invoice.get("estimated_loaders") or 0)
-                             + float(invoice.get("estimated_logistics") or 0))
-                fact_total = _c.get("total_cost", 0)
-                delta = fact_total - est_total
-                cells[64] = self._fmt_amount(delta)                          # BM Перерасчет
+            # BL/BM: только для закрытых счетов (BQ "Счет END" = Да)
+            _is_closed = invoice.get("status") in ("ended", "credit")
+            if _is_closed and fact_margin:
+                cells[63] = self._fmt_amount(fact_margin)              # BL Прибыль факт
+                # BM: Перерасчет прибыли (при перерасходе)
+                pf_label = invoice.get("_plan_fact_label") or ""
+                if pf_label == "Перерасчет прибыли":
+                    est_total = (float(invoice.get("estimated_glass") or 0)
+                                 + float(invoice.get("estimated_profile") or 0)
+                                 + float(invoice.get("estimated_materials") or 0)
+                                 + float(invoice.get("estimated_installation") or 0)
+                                 + float(invoice.get("estimated_loaders") or 0)
+                                 + float(invoice.get("estimated_logistics") or 0))
+                    fact_total = _c.get("total_cost", 0)
+                    delta = fact_total - est_total
+                    cells[64] = self._fmt_amount(delta)                # BM Перерасчет
+                else:
+                    cells[64] = ""
             else:
+                cells[63] = ""
                 cells[64] = ""
-            cells[79] = ""  # CB — очищено (перенесено в BM)
+            cells[78] = ""  # CA — очищено
+            cells[79] = ""  # CB — очищено
 
         if _mont_zp:
             cells[61] = self._fmt_amount(_mont_zp)              # BJ ЗП Монтажник
