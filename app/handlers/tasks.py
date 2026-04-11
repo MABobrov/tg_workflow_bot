@@ -709,6 +709,7 @@ async def task_cancel_with_reason(
         if task.get("status") not in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
             await cb.answer("Этот счёт уже обработан.", show_alert=True)
             return
+        await cb.answer()
         await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
         await state.set_state(InvoicePaymentSG.attaching_pp)
@@ -730,6 +731,7 @@ async def task_cancel_with_reason(
         if task.get("status") not in active_statuses:
             await cb.answer("Этот счёт уже обработан.", show_alert=True)
             return
+        await cb.answer()
         await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
         await state.set_state(InvoicePaymentSG.attaching_pp)
