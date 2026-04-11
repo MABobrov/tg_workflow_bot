@@ -723,7 +723,8 @@ class GoogleSheetsService:
         _profit_op = float(invoice.get("profit_calc_op") or 0)
         if is_credit and not _profit_op:
             _profit_op = float(invoice.get("profit_tax") or 0)                 # Q Прибыль кред. (из ОП)
-        cells[20] = self._fmt_amount(_profit_op)                               # U Прибыль (из ОП)
+        _has_fact_date = bool(invoice.get("actual_completion_date"))
+        cells[20] = self._fmt_amount(_profit_op) if _has_fact_date else ""     # U Прибыль (только с Дата Факт)
         cells[62] = self._fmt_amount(_profit_op)                               # BK Расчетная прибыль (из ОП)
         # X Рент-ть расч: из ОП (rentability_calc) если есть, иначе Python-расчёт
         _rent_op = invoice.get("rentability_calc")
