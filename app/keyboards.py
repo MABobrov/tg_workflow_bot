@@ -178,12 +178,12 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
     # --- 3 менеджера (КВ / КИА / НПН) — единое меню ---
     if role in MANAGER_ROLES or role == Role.MANAGER:
         return [
-            [MGR_BTN_INBOX, MGR_BTN_INVOICE_START],
-            [MGR_BTN_INVOICE_END, MGR_BTN_ZAMERY],
-            [MGR_BTN_EDO, MGR_BTN_MONTAZH],
-            [MGR_BTN_CHAT_RP, MGR_BTN_MY_INVOICES],
-            [MGR_BTN_MORE, MGR_BTN_SYNC],
-            [MGR_BTN_CANCEL],
+            [MGR_BTN_INBOX, MGR_BTN_CHECK_KP],
+            [MGR_BTN_INVOICE_START, MGR_BTN_INVOICE_END],
+            [MGR_BTN_ZAMERY, MGR_BTN_EDO],
+            [MGR_BTN_MONTAZH, MGR_BTN_CHAT_RP],
+            [MGR_BTN_MY_INVOICES, MGR_BTN_MORE],
+            [MGR_BTN_SYNC, MGR_BTN_CANCEL],
         ]
     if role == Role.RP:
         return [
