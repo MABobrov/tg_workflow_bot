@@ -990,47 +990,49 @@ async def _build_summary(db: Database) -> tuple[str, "InlineKeyboardBuilder"]:
     today_dl = s["today_deadline"]
     soon_dl = s["soon_deadline"]
 
+    def _f(n: float) -> str:
+        """Format number with spaces as thousands separator."""
+        return f"{n:,.0f}".replace(",", " ")
+
     lines = [
-        "<b>📊 Сводка дня</b>",
-        "",
-        "<b>📄 Счета в работе:</b> " + str(s["in_work"]),
-        f"  ⏳ Ожидают оплаты: {pending}",
-        f"  🔧 В работе: {in_progress}",
-        f"  💰 Оплачены: {paid}",
-        f"  🏁 На закрытии: {closing}",
-        f"  ✅ Закрыто за месяц: {s['ended_month']}",
-        "",
-        "<b>💵 Финансы (активные счета):</b>",
-        f"  Сумма: <b>{total_amt:,.0f}₽</b>".replace(",", " "),
-        f"  Долг: <b>{total_debt:,.0f}₽</b>".replace(",", " "),
+        "<b>📊 Сводка дня</b>\n",
+        "<pre>",
+        f"{'📄 Счета в работе':─<28s} {s['in_work']:>5}",
+        f"{'  Ожидают оплаты':28s} {pending:>5}",
+        f"{'  В работе':28s} {in_progress:>5}",
+        f"{'  Оплачены':28s} {paid:>5}",
+        f"{'  На закрытии':28s} {closing:>5}",
+        f"{'  Закрыто за месяц':28s} {s['ended_month']:>5}",
+        f"{'─' * 34}",
+        f"{'💵 Финансы':28s}",
+        f"{'  Сумма':28s} {_f(total_amt):>10}₽",
+        f"{'  Долг':28s} {_f(total_debt):>10}₽",
     ]
 
-    # Секция «Открытые задачи» — только если есть хоть одна
     total_tasks = urgent + inv_pay + suppl_pay + s["zp_pending"]
     if total_tasks:
-        lines.append("")
-        lines.append("<b>📋 Открытые задачи:</b>")
+        lines.append(f"{'─' * 34}")
+        lines.append(f"{'📋 Открытые задачи':28s} {total_tasks:>5}")
         if urgent:
-            lines.append(f"  🚨 Срочные/Не срочные ГД: {urgent}")
+            lines.append(f"{'  Срочные ГД':28s} {urgent:>5}")
         if inv_pay:
-            lines.append(f"  💳 Счета на оплату: {inv_pay}")
+            lines.append(f"{'  Счета на оплату':28s} {inv_pay:>5}")
         if suppl_pay:
-            lines.append(f"  💸 Оплата поставщику: {suppl_pay}")
+            lines.append(f"{'  Оплата поставщику':28s} {suppl_pay:>5}")
         if s["zp_pending"]:
-            lines.append(f"  💰 ЗП-запросы: {s['zp_pending']}")
+            lines.append(f"{'  ЗП-запросы':28s} {s['zp_pending']:>5}")
 
     if overdue or today_dl or soon_dl:
-        lines.append("")
-        lines.append("<b>⏰ Дедлайны:</b>")
+        lines.append(f"{'─' * 34}")
+        lines.append(f"{'⏰ Дедлайны':28s}")
         if overdue:
-            lines.append(f"  🔴 Просрочено: {overdue}")
+            lines.append(f"{'  🔴 Просрочено':28s} {overdue:>5}")
         if today_dl:
-            lines.append(f"  🔴 Срок сегодня: {today_dl}")
+            lines.append(f"{'  🔴 Срок сегодня':28s} {today_dl:>5}")
         if soon_dl:
-            lines.append(f"  ⚠️ До 3 дней: {soon_dl}")
+            lines.append(f"{'  ⚠️ До 3 дней':28s} {soon_dl:>5}")
 
-    lines.append("")
-    lines.append("<i>Нажмите на строку для просмотра деталей:</i>")
+    lines.append("</pre>")
 
     # Build inline keyboard with drill-down buttons for non-zero counts
     b = InlineKeyboardBuilder()
