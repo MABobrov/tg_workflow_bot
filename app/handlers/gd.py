@@ -383,10 +383,9 @@ async def gd_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
         return
 
     b = InlineKeyboardBuilder()
-    b.button(text="📊 Себестоимость", callback_data=f"inv_stats:{invoice_id}")
     b.button(text="💬 Сообщения", callback_data=f"inv_msgs:{invoice_id}")
     b.button(text="⬅️ Назад к списку", callback_data="gd_work:refresh")
-    b.adjust(2, 1)
+    b.adjust(1)
 
     # Try Plan/Fact card first (most informative)
     pf = await db.get_plan_fact_card(invoice_id)
