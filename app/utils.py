@@ -736,8 +736,6 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
         f"{'Стекло':14s} {est_glass:>10,.0f} {'':>10s} {'':>12s}",
         f"{'Ал.профиль':14s} {est_profile:>10,.0f} {'':>10s} {'':>12s}",
     ]
-    if est_mat_legacy > 0:
-        lines.append(f"{'Мат.(стар.)':14s} {est_mat_legacy:>10,.0f} {'':>10s} {'':>12s}")
     lines += [
         f"{'Мат-лы итого':14s} {materials_total:>10,.0f} {fact_mat:>10,.0f} {_delta(materials_total, fact_mat):>12s}",
         f"{'Установка':14s} {est_inst:>10,.0f} {fact_inst:>10,.0f} {_delta(est_inst, fact_inst):>12s}",
