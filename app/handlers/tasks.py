@@ -216,7 +216,19 @@ def _task_take_text(task: dict[str, Any], project: dict[str, Any] | None) -> str
     return "\n".join(lines)
 
 
-@router.callback_query(TaskCb.filter())
+_ACTIONS_BASIC = {"delete", "accept", "open", "take", "reject", "cancel"}
+
+_ACTIONS_EXTENDED = {
+    "pay_ok", "pay_need",
+    "pay_supplier",
+    "inv_received", "inv_pay", "inv_hold", "inv_reject",
+    "del_accept", "del_pay",
+    "montazh_yes", "montazh_no", "montazh_comment",
+    "done",
+}
+
+
+@router.callback_query(TaskCb.filter(F.action.in_(_ACTIONS_BASIC)))
 async def task_actions(
     cb: CallbackQuery,
     callback_data: TaskCb,
@@ -228,15 +240,12 @@ async def task_actions(
 ) -> None:
     task_id = int(callback_data.task_id)
     action = callback_data.action
-    log.info("task_actions: task_id=%s action=%s user=%s", task_id, action, cb.from_user.id if cb.from_user else None)
 
     try:
         task = await db.get_task(task_id)
     except KeyError:
-        log.warning("task_actions: task %s not found", task_id)
         await cb.answer("Задача не найдена или была удалена.", show_alert=True)
         return
-    log.info("task_actions: task type=%s status=%s assigned_to=%s", task.get("type"), task.get("status"), task.get("assigned_to"))
     active_statuses = {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}
 
     # DELETE — GD (admin) and RP
@@ -258,10 +267,8 @@ async def task_actions(
         return
 
     if not await _can_manage_task(cb, db, config, task):
-        log.warning("task_actions: _can_manage_task DENIED user=%s task=%s assigned=%s", cb.from_user.id, task_id, task.get("assigned_to"))
         await cb.answer("Эта задача назначена другому человеку", show_alert=True)
         return
-    log.info("task_actions: _can_manage_task OK, proceeding to action=%s", action)
 
     if action == "accept":
         if task.get("status") != TaskStatus.OPEN or task.get("accepted_at"):
@@ -599,7 +606,7 @@ async def task_cancel_with_reason(
     )
 
 
-@router.callback_query(TaskCb.filter())
+@router.callback_query(TaskCb.filter(F.action.in_(_ACTIONS_EXTENDED)))
 async def task_actions_part2(
     cb: CallbackQuery,
     callback_data: TaskCb,
@@ -743,15 +750,12 @@ async def task_actions_part2(
 
     # INVOICE_PAYMENT — шаг 1: Принять (OPEN → IN_PROGRESS)
     if action == "inv_received" and task.get("type") == TaskType.INVOICE_PAYMENT:
-        log.info("inv_received: task=%s status=%s user=%s", task_id, task.get("status"), cb.from_user.id)
         if task.get("status") != TaskStatus.OPEN:
-            log.info("inv_received: already accepted, status=%s", task.get("status"))
             await cb.answer("Этот счёт уже принят.", show_alert=True)
             return
         await cb.answer()
         try:
             task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
-            log.info("inv_received: status updated to IN_PROGRESS")
         except Exception as e:
             log.error("inv_received: update_task_status failed: %s", e, exc_info=True)
             return
@@ -776,14 +780,12 @@ async def task_actions_part2(
         # Показать ГД кнопку "Подтвердить оплату"
         kb = task_actions_kb(task)
         try:
-            log.info("inv_received: sending message to GD %s", cb.from_user.id)
             await notifier.bot.send_message(
                 cb.from_user.id,
                 "✅ Счёт принят. Нажмите «💳 Подтвердить оплату» для завершения.",
                 reply_markup=kb,
                 parse_mode="HTML",
             )
-            log.info("inv_received: message sent OK")
         except Exception as e:
             log.error("inv_received: send_message failed: %s", e, exc_info=True)
         try:
