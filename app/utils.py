@@ -656,8 +656,8 @@ def format_cost_card(inv: dict[str, Any], cost: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any]) -> str:
-    """HTML-карточка «План / Факт» для ГД — сравнение расчётных и фактических данных."""
+def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "gd") -> str:
+    """HTML-карточка «План / Факт». role='rp' — упрощённая (без прибыли/себестоимости)."""
     inv_number = inv.get("invoice_number") or "—"
     amount = float(inv.get("amount") or 0)
 
@@ -695,6 +695,30 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any]) -> str:
     fact_profit = pf.get("actual_profit", 0)
     fact_pct = pf.get("actual_profitability", 0)
 
+    # --- РП: упрощённая карточка (только План + Факт, без Δ) ---
+    if role == "rp":
+        fact_glass = pf.get("fact_glass", 0)
+        fact_metal = pf.get("fact_metal", 0)
+
+        def _fv(v: float) -> str:
+            return f"{v:>10,.0f}" if v else f"{'—':>10s}"
+
+        lines = [
+            f"📊 <b>План / Факт</b> — Счёт №{inv_number}",
+            f"💰 Сумма: {amount:,.0f}₽\n",
+            "<pre>",
+            f"{'':14s} {'План':>10s} {'Факт':>10s}",
+            f"{'Стекло':14s} {est_glass:>10,.0f} {_fv(fact_glass)}",
+            f"{'Ал.профиль':14s} {est_profile:>10,.0f} {_fv(fact_metal)}",
+            f"{'Мат-лы итого':14s} {materials_total:>10,.0f} {_fv(fact_mat)}",
+            f"{'Установка':14s} {est_inst:>10,.0f} {_fv(fact_inst)}",
+            f"{'Грузчики':14s} {est_load:>10,.0f} {_fv(fact_load)}",
+            f"{'Логистика':14s} {est_log:>10,.0f} {_fv(fact_log)}",
+            "</pre>",
+        ]
+        return "\n".join(lines)
+
+    # --- ГД: полная карточка (План + Факт + Δ + прибыль) ---
     def _delta(plan: float, fact: float, invert: bool = False) -> str:
         d = fact - plan
         if abs(d) < 0.5:

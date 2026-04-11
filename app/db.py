@@ -1857,6 +1857,9 @@ class Database:
             "cost_delta": fact_total - est_total,
             "zp_allowed": fact_total <= est_total,
             "cost_card": cost,
+            # Факт по отдельным категориям (для РП карточки)
+            "fact_glass": float(inv.get("cost_glass") or 0),
+            "fact_metal": float(inv.get("cost_metal") or 0),
             # Распределение прибыли
             "client_source": client_source,
             "rp_zp": rp_zp,

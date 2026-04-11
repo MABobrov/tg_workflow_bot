@@ -1243,7 +1243,7 @@ async def rp_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
     pf = await db.get_plan_fact_card(invoice_id)
     if pf.get("has_estimated"):
         from ..utils import format_plan_fact_card
-        text = format_plan_fact_card(inv, pf)
+        text = format_plan_fact_card(inv, pf, role="rp")
         await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
         return
 
