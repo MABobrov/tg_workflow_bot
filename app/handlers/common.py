@@ -601,15 +601,18 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
             await acc_inbox_tasks(message, db)
             return
     uid = message.from_user.id
-    tasks = await db.list_tasks_for_user(uid, limit=30)
+    tasks_raw = await db.list_tasks_for_user(uid, limit=30)
     # #35: Для менеджеров — показываем и исходящие (созданные) задачи
     created = await db.list_tasks_created_by(uid, statuses=("open", "in_progress"), limit=15)
     # Дедупликация
-    seen: set[int] = {int(t["id"]) for t in tasks}
+    seen: set[int] = {int(t["id"]) for t in tasks_raw}
     for ct in created:
         if int(ct["id"]) not in seen:
-            tasks.append(ct)
+            tasks_raw.append(ct)
             seen.add(int(ct["id"]))
+    # Исключаем INVOICE_PAYMENT — они только для ГД (кнопка "Счета на оплату")
+    from ..enums import TaskType
+    tasks = [t for t in tasks_raw if t.get("type") != TaskType.INVOICE_PAYMENT]
     if not tasks:
         await answer_service(message, "📥 Задач нет ✅", delay_seconds=60)
         return
