@@ -256,12 +256,12 @@ class KpReviewSG(StatesGroup):
     """РП: полный flow ответа на CHECK_KP.
 
     Flow:
-    - Да → invoice_number → payment_type → (б/н: documents → comment) / (Кред: comment)
+    - Да → payment_type → (б/н: documents → invoice_number → comment) / (Кред: invoice_number → comment)
     - Нет → reject_comment
     """
-    invoice_number = State()     # РП вводит номер счёта
     payment_type = State()       # выбор: б/н или Кред
     documents = State()          # вложения (Счёт, Договор, Приложение) — только б/н
+    invoice_number = State()     # РП вводит номер счёта (после документов)
     comment = State()            # комментарий (для «Да»)
     reject_comment = State()     # комментарий (для «Нет»)
 

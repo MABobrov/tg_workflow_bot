@@ -3146,7 +3146,7 @@ async def kp_back_to_list(cb: CallbackQuery, state: FSMContext, db: Database) ->
 
 @router.callback_query(F.data.regexp(r"^kp_resp:yes:\d+$"))
 async def kp_resp_yes(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """РП нажал Да → ввод номера счёта."""
+    """РП нажал Да → сразу выбор типа оплаты."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
@@ -3157,46 +3157,10 @@ async def kp_resp_yes(cb: CallbackQuery, state: FSMContext, db: Database) -> Non
         await cb.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
         return
 
-    payload = json.loads(task.get("payload_json") or "{}")
-    client_name = payload.get("client_name", "")
-    try:
-        amount_str = f"{float(payload.get('amount', 0)):,.0f}₽"
-    except (ValueError, TypeError):
-        amount_str = f"{payload.get('amount', 0)}₽"
-
     await state.clear()
-    await state.set_state(KpReviewSG.invoice_number)
     await state.update_data(task_id=task_id)
 
     await cb.message.answer(  # type: ignore[union-attr]
-        f"📋 <b>Выставление счёта</b>\n"
-        f"🏢 Клиент: {client_name}\n"
-        f"💰 Сумма: {amount_str}\n\n"
-        "Введите <b>номер счёта</b>:",
-    )
-
-
-@router.message(KpReviewSG.invoice_number)
-async def kp_review_invoice_number(message: Message, state: FSMContext, db: Database) -> None:
-    """РП вводит номер счёта → проверка дублей → выбор типа оплаты."""
-    text = (message.text or "").strip()
-    if not text:
-        await message.answer("Введите номер счёта:")
-        return
-
-    existing = await db.get_invoice_by_number(text)
-    if existing:
-        await message.answer(
-            f"⚠️ Счёт №{text} уже существует в базе.\n"
-            "Введите другой номер:"
-        )
-        return
-
-    data = await state.get_data()
-    task_id = data["task_id"]
-    await state.update_data(invoice_number=text)
-    await message.answer(
-        f"✅ Номер счёта: <b>№{text}</b>\n\n"
         "Выберите <b>систему оплаты</b>:",
         reply_markup=kp_payment_type_kb(task_id),
     )
@@ -3255,10 +3219,10 @@ async def kp_review_documents(message: Message, state: FSMContext) -> None:
         })
     else:
         if documents:
-            # Текстовое сообщение = переход к комментарию
+            # Текстовое сообщение = переход к номеру счёта
             await state.update_data(documents=documents)
-            await state.set_state(KpReviewSG.comment)
-            await message.answer("Добавьте <b>комментарий</b> (или «—» для пропуска):")
+            await state.set_state(KpReviewSG.invoice_number)
+            await message.answer("Введите <b>номер счёта</b>:")
             return
         await message.answer("Пришлите файл или фото:")
         return
@@ -3277,12 +3241,38 @@ async def kp_review_documents(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "kp_review:next")
 async def kp_review_next(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Кнопка 'Далее' → переход к комментарию."""
+    """Кнопка 'Далее' → переход к номеру счёта."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
-    await state.set_state(KpReviewSG.comment)
+    await state.set_state(KpReviewSG.invoice_number)
     await cb.message.answer(  # type: ignore[union-attr]
+        "Введите <b>номер счёта</b>:"
+    )
+
+
+# ---------- Ввод номера счёта (после документов б/н или сразу для Кред) ----------
+
+@router.message(KpReviewSG.invoice_number)
+async def kp_review_invoice_number(message: Message, state: FSMContext, db: Database) -> None:
+    """РП вводит номер счёта → проверка дублей → комментарий."""
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Введите номер счёта:")
+        return
+
+    existing = await db.get_invoice_by_number(text)
+    if existing:
+        await message.answer(
+            f"⚠️ Счёт №{text} уже существует в базе.\n"
+            "Введите другой номер:"
+        )
+        return
+
+    await state.update_data(invoice_number=text)
+    await state.set_state(KpReviewSG.comment)
+    await message.answer(
+        f"✅ Номер счёта: <b>№{text}</b>\n\n"
         "Добавьте <b>комментарий</b> (или «—» для пропуска):"
     )
 
@@ -3291,19 +3281,19 @@ async def kp_review_next(cb: CallbackQuery, state: FSMContext, db: Database) -> 
 
 @router.callback_query(F.data.regexp(r"^kp_resp:cred:\d+$"))
 async def kp_resp_cred(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Кред выбран → FSM: комментарий (документы не требуются)."""
+    """Кред выбран → FSM: номер счёта (документы не требуются)."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
 
     task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    await state.set_state(KpReviewSG.comment)
+    await state.set_state(KpReviewSG.invoice_number)
     await state.update_data(payment_type="cred", documents=[])
 
     await cb.message.answer(  # type: ignore[union-attr]
         "🏦 <b>Ответ на КП (Кред)</b>\n\n"
         "Документы не требуются (банк оформляет самостоятельно).\n\n"
-        "Добавьте <b>комментарий</b> (или «—» для пропуска):",
+        "Введите <b>номер счёта</b>:",
     )
 
 
