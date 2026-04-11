@@ -176,13 +176,13 @@ async def start_check_kp(message: Message, state: FSMContext, db: Database) -> N
     await state.set_state(CheckKpSG.lead_pick)
     if leads:
         await message.answer(
-            "📋 <b>Проверить КП / Счет</b>\n\n"
+            "🎯 <b>Лид на расчет</b>\n\n"
             "Выберите лид или создайте нового клиента:",
             reply_markup=lead_picker_for_kp_kb(leads),
         )
     else:
         await message.answer(
-            "📋 <b>Проверить КП / Счет</b>\n\n"
+            "🎯 <b>Лид на расчет</b>\n\n"
             "У вас пока нет назначенных лидов.\n"
             "Создайте нового клиента:",
             reply_markup=lead_picker_for_kp_kb([]),
