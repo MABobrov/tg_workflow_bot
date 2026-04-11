@@ -599,6 +599,38 @@ async def task_cancel_with_reason(
     )
 
 
+@router.callback_query(TaskCb.filter())
+async def task_actions_part2(
+    cb: CallbackQuery,
+    callback_data: TaskCb,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+    state: FSMContext,
+) -> None:
+    """Continuation of task_actions — PAYMENT_CONFIRM, ORDER, INVOICE_PAYMENT actions."""
+    task_id = int(callback_data.task_id)
+    action = callback_data.action
+
+    try:
+        task = await db.get_task(task_id)
+    except KeyError:
+        await cb.answer("Задача не найдена.", show_alert=True)
+        return
+    active_statuses = {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}
+
+    if not await _can_manage_task(cb, db, config, task):
+        await cb.answer("Эта задача назначена другому человеку", show_alert=True)
+        return
+
+    project = None
+    if task.get("project_id"):
+        try:
+            project = await db.get_project(int(task["project_id"]))
+        except Exception:
+            project = None
+
     # PAYMENT CONFIRM actions (TD)
     if action in {"pay_ok", "pay_need"} and task.get("type") == TaskType.PAYMENT_CONFIRM:
         if task.get("status") not in active_statuses:
