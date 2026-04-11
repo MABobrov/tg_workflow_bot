@@ -1278,16 +1278,7 @@ async def invoice_pp_finalize(
     sender_id = _invoice_task_sender_id(payload)
     invoice_id, inv_num, supplier, amount = _invoice_task_details(payload)
 
-    if invoice_id is not None:
-        invoice_row = await db.get_invoice(invoice_id)
-        if not invoice_row:
-            await cb.message.answer("Не удалось найти счёт для обновления статуса.")  # type: ignore[union-attr]
-            return
-        await db.update_invoice_status(invoice_id, InvoiceStatus.PAID)
-        if inv_num:
-            await integrations.sync_invoice_status(inv_num, InvoiceStatus.PAID)
-
-    # Mark task as done
+    # Mark task as done (parent invoice status is NOT changed)
     task = await db.update_task_status(int(task_id), TaskStatus.DONE)
 
     # Auto-create SUPPLIER_PAYMENT for cost tracking
