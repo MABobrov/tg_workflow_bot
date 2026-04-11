@@ -2865,6 +2865,7 @@ class Database:
             "npn_payout_op",
             "npn_payout_date_op",
             "taxes_fact_op",
+            "profit_calc_op",
         }
 
         created_by, creator_role = await self._resolve_invoice_import_owner(inv_num, payload, existing)

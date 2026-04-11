@@ -1326,6 +1326,7 @@ class GoogleSheetsService:
             "npn_request_op",
             "npn_payout_op",
             "taxes_fact_op",
+            "profit_calc_op",
         }
     )
     _OP_DATE_FIELDS = frozenset(
