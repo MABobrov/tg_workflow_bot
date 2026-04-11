@@ -720,8 +720,9 @@ class GoogleSheetsService:
 
         cells[21] = self._fmt_amount(_nds)                                     # V НДС
         cells[22] = self._fmt_amount(_profit_tax)                              # W Нал.приб.
-        cells[20] = self._fmt_amount(_profit)                                  # U Прибыль
-        cells[62] = self._fmt_amount(_profit)                                  # BK Расчетная прибыль
+        _profit_op = float(invoice.get("profit_calc_op") or 0)
+        cells[20] = self._fmt_amount(_profit_op)                               # U Прибыль (из ОП)
+        cells[62] = self._fmt_amount(_profit_op)                               # BK Расчетная прибыль (из ОП)
         # X Рент-ть расч: из ОП (rentability_calc) если есть, иначе Python-расчёт
         _rent_op = invoice.get("rentability_calc")
         if _rent_op is not None and _rent_op != 0:
