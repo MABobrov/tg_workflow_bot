@@ -811,13 +811,12 @@ class GoogleSheetsService:
             cells[118] = format_dt_iso(_confirmed, self.cfg.timezone_name)
 
         # --- Затраты по типам (из supplier_payments бота) ---
-        cells[119] = self._fmt_amount(invoice.get("cost_metal"))
-        cells[120] = self._fmt_amount(invoice.get("cost_glass"))
-        cells[121] = self._fmt_amount(invoice.get("cost_montazh"))
-        cells[122] = self._fmt_amount(invoice.get("cost_loaders"))
-        cells[123] = self._fmt_amount(invoice.get("cost_logistics"))
-        cells[124] = self._fmt_amount(invoice.get("cost_extra_mat"))
-        cells[125] = self._fmt_amount(invoice.get("cost_extra_svc"))
+        for _ci, _cf in ((119, "cost_metal"), (120, "cost_glass"),
+                         (121, "cost_montazh"), (122, "cost_loaders"),
+                         (123, "cost_logistics"), (124, "cost_extra_mat"),
+                         (125, "cost_extra_svc")):
+            _cv = float(invoice.get(_cf) or 0)
+            cells[_ci] = self._fmt_amount(_cv) if _cv else ""
 
         # M (12): Дата окончания = receipt_date + deadline_days
         _receipt = invoice.get("receipt_date")
@@ -1061,8 +1060,8 @@ class GoogleSheetsService:
                     continue
                 row, is_new = self._get_or_allocate_row(self.cfg.invoices_tab, ws, inv_num)
                 cells = self._invoice_cells(invoice, manager_label, cost, row=row, is_new=is_new)
-                # Только инвойс-колонки (0-85) + 86 (№ п/п — сквозная нумерация)
-                inv_cells = {k: v for k, v in cells.items() if k <= 86}
+                # Инвойс-колонки (0-86) + cost_* (119-125)
+                inv_cells = {k: v for k, v in cells.items() if k <= 86 or k >= 119}
                 if not is_new:
                     inv_cells = {k: v for k, v in inv_cells.items() if k not in _MANUAL_COLS}
                 batch_data.extend(self._invoice_batch_ranges(row, inv_cells))
@@ -1072,7 +1071,7 @@ class GoogleSheetsService:
             lead_row = 2  # начинаем с строки 2
             for invoice, manager_label, cost in items:
                 cells = self._invoice_cells(invoice, manager_label, cost, row=lead_row, is_new=True)
-                lead_cells = {k: v for k, v in cells.items() if k >= 86}
+                lead_cells = {k: v for k, v in cells.items() if 86 <= k <= 118}
                 # Проверяем, есть ли реальные данные (не пустые строки)
                 has_data = any(
                     v for k, v in lead_cells.items()
