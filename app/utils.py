@@ -708,9 +708,7 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
             f"💰 Сумма: {amount:,.0f}₽\n",
             "<pre>",
             f"{'':14s} {'План':>10s} {'Факт':>10s}",
-            f"{'Стекло':14s} {est_glass:>10,.0f} {_fv(fact_glass)}",
-            f"{'Ал.профиль':14s} {est_profile:>10,.0f} {_fv(fact_metal)}",
-            f"{'Мат-лы итого':14s} {materials_total:>10,.0f} {_fv(fact_mat)}",
+            f"{'Материалы':14s} {materials_total:>10,.0f} {_fv(fact_mat)}",
             f"{'Установка':14s} {est_inst:>10,.0f} {_fv(fact_inst)}",
             f"{'Грузчики':14s} {est_load:>10,.0f} {_fv(fact_load)}",
             f"{'Логистика':14s} {est_log:>10,.0f} {_fv(fact_log)}",
@@ -733,11 +731,9 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
         f"💰 Сумма: {amount:,.0f}₽\n",
         "<pre>",
         f"{'':14s} {'План':>10s} {'Факт':>10s} {'Δ':>12s}",
-        f"{'Стекло':14s} {est_glass:>10,.0f} {'':>10s} {'':>12s}",
-        f"{'Ал.профиль':14s} {est_profile:>10,.0f} {'':>10s} {'':>12s}",
     ]
     lines += [
-        f"{'Мат-лы итого':14s} {materials_total:>10,.0f} {fact_mat:>10,.0f} {_delta(materials_total, fact_mat):>12s}",
+        f"{'Материалы':14s} {materials_total:>10,.0f} {fact_mat:>10,.0f} {_delta(materials_total, fact_mat):>12s}",
         f"{'Установка':14s} {est_inst:>10,.0f} {fact_inst:>10,.0f} {_delta(est_inst, fact_inst):>12s}",
         f"{'Грузчики':14s} {est_load:>10,.0f} {fact_load:>10,.0f} {_delta(est_load, fact_load):>12s}",
         f"{'Логистика':14s} {est_log:>10,.0f} {fact_log:>10,.0f} {_delta(est_log, fact_log):>12s}",
@@ -779,6 +775,73 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
         lines.append("\n⚠️ Расчётные данные не заполнены")
 
     return "\n".join(lines)
+
+
+def format_ended_invoice_compact(inv: dict[str, Any], pf: dict[str, Any]) -> str:
+    """Компактная карточка ended-счёта для списка ГД."""
+    num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
+    addr = (inv.get("object_address") or "—")[:25]
+    role_label = {
+        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+    }.get(inv.get("creator_role", ""), "Менеджер")
+
+    def _k(v: float) -> str:
+        """Format as compact thousands: 179000 → 179к, 1200000 → 1.2м."""
+        if abs(v) >= 1_000_000:
+            return f"{v / 1_000_000:.1f}м"
+        if abs(v) >= 1_000:
+            return f"{v / 1_000:.0f}к"
+        return f"{v:.0f}"
+
+    mat_p = pf.get("materials_total", 0)
+    inst_p = pf.get("estimated_installation", 0)
+    log_p = pf.get("estimated_logistics", 0)
+    load_p = pf.get("estimated_loaders", 0)
+    cost_p = pf.get("estimated_total_cost", 0)
+    profit_p = pf.get("estimated_profit", 0)
+    mgr_zp_p = pf.get("manager_zp", 0)
+    gd_profit_p = pf.get("gd_profit", 0)
+
+    cost_card = pf.get("cost_card", {})
+    # Факт материалы (как в format_plan_fact_card)
+    _sp_mat = 0.0
+    _sp_svc = 0.0
+    _SP_CAT = {"profile": "mat", "glass": "mat", "ldsp": "mat",
+               "gkl": "mat", "sandwich": "mat", "other": "mat",
+               "service": "svc"}
+    for _sp in cost_card.get("supplier_payments_list", []):
+        if _SP_CAT.get(_sp.get("material_type", "other"), "mat") == "svc":
+            _sp_svc += _sp.get("amount", 0)
+        else:
+            _sp_mat += _sp.get("amount", 0)
+    mat_f = cost_card.get("materials_combined", 0) + _sp_mat
+    inst_f = cost_card.get("montazh_combined", float(cost_card.get("zp_installer", 0))) + _sp_svc
+    log_f = cost_card.get("logistics_fact", 0)
+    load_f = cost_card.get("loaders_fact", 0)
+    nds_p = pf.get("net_vat", 0)
+    nds_f = cost_card.get("nds_fact", 0) + cost_card.get("profit_tax_fact", 0)
+    cost_f = pf.get("actual_total_cost", 0)
+    profit_f = pf.get("actual_profit", 0)
+    mgr_zp_f = cost_card.get("zp_manager", 0)
+
+    # Сроки
+    dl = (inv.get("deadline_end_date") or "")[:10]
+    compl = (inv.get("completion_date") or inv.get("updated_at") or "")[:10]
+    srok = f"{dl}→{compl}" if dl else (compl or "—")
+
+    # Прибыль компании: profit - RP ZP - manager ZP
+    rp_zp_p = pf.get("rp_zp", 0)
+    company_p = profit_p - rp_zp_p - mgr_zp_p if profit_p > 0 else profit_p
+    company_f = profit_f - cost_card.get("zp_zamery", 0) - mgr_zp_f - float(cost_card.get("zp_installer", 0))
+
+    return (
+        f"<b>№{num}</b> | {role_label} | {addr}\n"
+        f"  Мат: {_k(mat_p)}/{_k(mat_f)}  Уст: {_k(inst_p)}/{_k(inst_f)}\n"
+        f"  Лог: {_k(log_p)}/{_k(log_f)}  Груз: {_k(load_p)}/{_k(load_f)}\n"
+        f"  Налог: {_k(nds_p)}/{_k(nds_f)}  Срок: {srok}\n"
+        f"  Итого: {_k(cost_p)}/{_k(cost_f)}  Приб: {_k(profit_p)}/{_k(profit_f)}\n"
+        f"  ЗП мен: {_k(mgr_zp_p)}/{_k(mgr_zp_f)}  Комп: {_k(company_p)}/{_k(company_f)}"
+    )
 
 
 def format_estimated_summary(inv: dict[str, Any]) -> str:

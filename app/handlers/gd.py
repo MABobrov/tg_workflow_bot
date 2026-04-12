@@ -1045,6 +1045,7 @@ async def _build_summary(db: Database) -> tuple[str, "InlineKeyboardBuilder"]:
         ("💳 Счета на оплату", "task_invpay", inv_pay),
         ("💸 Оплата поставщику", "task_supplpay", suppl_pay),
         ("💰 ЗП-запросы", "zp_pending", s["zp_pending"]),
+        ("✅ Счета end", "inv_ended", s["ended_month"]),
         ("🔴 Просрочено", "dl_overdue", overdue),
         ("🔴 Срок сегодня", "dl_today", today_dl),
         ("⚠️ До 3 дней", "dl_soon", soon_dl),
@@ -1072,6 +1073,38 @@ async def gd_summary_drilldown(
 
     section = callback_data.section
     b = InlineKeyboardBuilder()
+
+    # ---- Ended invoices (compact plan/fact cards) ----
+    if section == "inv_ended":
+        invoices = await db.list_invoices(status="ended", limit=100)
+        if not invoices:
+            await cb.answer("Закрытых счетов нет", show_alert=True)
+            return
+        await cb.answer()
+        # Compact cards + buttons — send as new messages (may exceed 4096)
+        from ..utils import format_ended_invoice_compact
+        cards: list[str] = []
+        btn_list: list[tuple[str, int]] = []  # (label, invoice_id)
+        for inv in invoices:
+            pf = await db.get_plan_fact_card(int(inv["id"]))
+            cards.append(format_ended_invoice_compact(inv, pf))
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            btn_list.append((num[:30], int(inv["id"])))
+        # Split into chunks of ~5 cards per message
+        CHUNK = 5
+        for i in range(0, len(cards), CHUNK):
+            chunk = cards[i:i + CHUNK]
+            is_last = (i + CHUNK >= len(cards))
+            msg_text = f"<b>✅ Счета end</b> ({len(invoices)})\n\n" if i == 0 else ""
+            msg_text += "\n\n".join(chunk)
+            kb = InlineKeyboardBuilder()
+            for label, inv_id in btn_list[i:i + CHUNK]:
+                kb.button(text=f"📄 {label}", callback_data=f"gd_work:view:{inv_id}")
+            if is_last:
+                kb.button(text="⬅️ Назад к сводке", callback_data=SummaryCb(section="", action="back").pack())
+            kb.adjust(1)
+            await cb.message.answer(msg_text, reply_markup=kb.as_markup())  # type: ignore[union-attr]
+        return
 
     # ---- Invoice sections ----
     if section.startswith("inv_"):
