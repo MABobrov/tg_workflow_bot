@@ -44,6 +44,7 @@ from ..states import (
     InstallerMatInitSG,
     InstallerOrderMaterialsSG,
     InstallerRazmerySG,
+    InstallerWorkAcceptSG,
     InstallerZpAdjustSG,
     InstallerZpInitSG,
     InstallerZpSG,
@@ -1442,21 +1443,18 @@ def _build_archive_card(inv: dict) -> str:
         sign = "+" if delta >= 0 else ""
         delta_str = f"{sign}{delta:,.0f}₽"
 
-    # Сроки: план → факт
+    # Сроки: фактическое кол-во дней
     srok_str = ""
-    deadline = inv.get("deadline_end_date")
+    created = inv.get("created_at") or inv.get("receipt_date")
     completion = inv.get("actual_completion_date") or inv.get("zp_installer_approved_at")
-    if deadline and completion:
+    if created and completion:
         try:
-            d_dl = _date.fromisoformat(str(deadline)[:10])
-            d_co = _date.fromisoformat(str(completion)[:10])
-            diff = (d_dl - d_co).days
-            icon = "✅" if diff >= 0 else "🔴"
-            srok_str = f"{str(deadline)[:10]}→{str(completion)[:10]} {icon}"
+            d_start = _date.fromisoformat(str(created)[:10])
+            d_end = _date.fromisoformat(str(completion)[:10])
+            fact_days = (d_end - d_start).days
+            srok_str = f"{fact_days} дн (факт)"
         except (ValueError, TypeError):
-            srok_str = f"{str(deadline)[:10]}"
-    elif deadline:
-        srok_str = str(deadline)[:10]
+            pass
 
     lines = ["<pre>"]
     if est_val:
@@ -2019,36 +2017,140 @@ async def installer_work_view_card(
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
+    # Монтаж расч. (×0.77)
+    est_val = 0
+    est_inst = inv.get("estimated_installation")
+    if est_inst:
+        try:
+            est_val = int(float(est_inst) * 0.77) // 1000 * 1000
+        except (ValueError, TypeError):
+            pass
+
     text = (
         f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
         f"📍 Адрес: {inv.get('object_address', '—')}\n"
     )
-    # Площадь (м²)
     area = inv.get("area_m2")
     if area:
         try:
             text += f"📐 Площадь: {float(area):,.1f} м²\n"
         except (ValueError, TypeError):
             pass
+    if est_val:
+        text += f"🔧 Монтаж расч.: <b>{est_val:,}₽</b>\n"
     text += f"📅 Создан: {(inv.get('created_at') or '—')[:10]}\n"
+    text += "\n<b>Согласовать стоимость монтажа:</b>"
 
     b = InlineKeyboardBuilder()
-    b.button(text="✅ Ок (получил)", callback_data=f"inst_work:ack:{invoice_id}")
-    b.button(text="🔨 В работу", callback_data=f"inst_work:confirm:{invoice_id}")
-    b.adjust(2)
+    b.button(text=f"✅ Ок ({est_val:,}₽)", callback_data=f"inst_work:price_ok:{invoice_id}")
+    b.button(text="✏️ Изменить сумму", callback_data=f"inst_work:price_edit:{invoice_id}")
+    b.adjust(1)
 
     await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
-@router.callback_query(F.data.startswith("inst_work:ack:"))
-async def installer_work_acknowledge(cb: CallbackQuery, db: Database, config: Config) -> None:
-    """Подтверждение получения (мягкое, без смены статуса)."""
+@router.callback_query(F.data.startswith("inst_work:price_ok:"))
+async def installer_price_ok(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    """Монтажник согласен с расчётной ценой → фиксация + В работу."""
     if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
         return
-    await cb.answer("✅ Принято")
+    await cb.answer()
+    u = cb.from_user
+    if not u:
+        return
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    # Рассчитать и зафиксировать сумму
+    est_inst = inv.get("estimated_installation")
+    agreed = 0
+    if est_inst:
+        try:
+            agreed = int(float(est_inst) * 0.77) // 1000 * 1000
+        except (ValueError, TypeError):
+            pass
+    await db.conn.execute(
+        "UPDATE invoices SET montazh_agreed_amount = ?, assigned_to = ?, updated_at = ? WHERE id = ?",
+        (agreed, u.id, datetime.now().isoformat(), invoice_id),
+    )
+    await db.conn.commit()
+    await db.update_montazh_stage(invoice_id, MontazhStage.IN_WORK)
+
     await _ensure_reply_kb(cb, db, config)
-    await cb.message.answer("✅ Получение счёта подтверждено.")  # type: ignore[union-attr]
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Стоимость монтажа согласована: <b>{agreed:,}₽</b>\n"
+        f"🔨 Счёт №{inv['invoice_number']} принят в работу."
+    )
+
+
+@router.callback_query(F.data.startswith("inst_work:price_edit:"))
+async def installer_price_edit(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
+) -> None:
+    """Монтажник хочет изменить сумму → FSM ввод новой суммы."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await state.clear()
+    await state.set_state(InstallerWorkAcceptSG.price_input)
+    await state.update_data(invoice_id=invoice_id)
+
+    await _ensure_reply_kb(cb, db, config)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "💰 Введите вашу сумму за монтаж (в рублях):"
+    )
+
+
+@router.message(InstallerWorkAcceptSG.price_input)
+async def installer_price_input(
+    message: Message, state: FSMContext, db: Database, config: Config,
+    notifier: Notifier, integrations: IntegrationHub,
+) -> None:
+    """Монтажник вводит свою сумму → фиксация + В работу."""
+    if not message.from_user:
+        return
+    text = (message.text or "").strip().replace(" ", "").replace(",", "")
+    try:
+        amount = int(float(text))
+    except (ValueError, TypeError):
+        await message.answer("❌ Введите число (сумма в рублях):")
+        return
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть больше 0:")
+        return
+
+    data = await state.get_data()
+    invoice_id = data["invoice_id"]
+    await state.clear()
+
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await message.answer("❌ Счёт не найден.")
+        return
+
+    u = message.from_user
+    await db.conn.execute(
+        "UPDATE invoices SET montazh_agreed_amount = ?, assigned_to = ?, updated_at = ? WHERE id = ?",
+        (amount, u.id, datetime.now().isoformat(), invoice_id),
+    )
+    await db.conn.commit()
+    await db.update_montazh_stage(invoice_id, MontazhStage.IN_WORK)
+
+    await _ensure_reply_kb(message, db, config)
+    await message.answer(
+        f"✅ Стоимость монтажа согласована: <b>{amount:,}₽</b>\n"
+        f"🔨 Счёт №{inv['invoice_number']} принят в работу."
+    )
 
 
 @router.callback_query(F.data.startswith("inst_work:confirm:"))

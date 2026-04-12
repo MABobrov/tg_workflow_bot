@@ -793,8 +793,12 @@ class GoogleSheetsService:
             cells[78] = ""  # CA — очищено
             cells[79] = ""  # CB — очищено
 
-        if _mont_zp:
-            cells[61] = self._fmt_amount(_mont_zp)              # BJ ЗП Монтажник
+        # BJ ЗП Монтажник: приоритет согласованная сумма → zp_installer_amount
+        _agreed = float(invoice.get("montazh_agreed_amount") or 0)
+        if _agreed:
+            cells[61] = self._fmt_amount(_agreed)
+        elif _mont_zp:
+            cells[61] = self._fmt_amount(_mont_zp)
 
         # BS Монтаж Факт: из ОП (montazh_fact_op), fallback на confirmed ЗП
         _montazh_fact_op = float(invoice.get("montazh_fact_op") or 0)

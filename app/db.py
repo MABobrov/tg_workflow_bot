@@ -571,6 +571,8 @@ class Database:
             ("invoices", "cost_logistics", "REAL DEFAULT 0"),
             ("invoices", "cost_extra_mat", "REAL DEFAULT 0"),
             ("invoices", "cost_extra_svc", "REAL DEFAULT 0"),
+            # Согласованная сумма монтажа (монтажник подтвердил/изменил при приёмке)
+            ("invoices", "montazh_agreed_amount", "REAL"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")

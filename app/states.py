@@ -344,8 +344,9 @@ class InstallerInvoiceOkSG(StatesGroup):
 
 
 class InstallerWorkAcceptSG(StatesGroup):
-    """Монтажник: В Работу — принятие задачи."""
+    """Монтажник: В Работу — принятие задачи + согласование цены."""
     viewing = State()
+    price_input = State()   # ввод новой суммы (если монтажник не согласен)
 
 
 class InstallerRazmerySG(StatesGroup):
