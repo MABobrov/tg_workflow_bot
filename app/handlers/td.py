@@ -29,21 +29,85 @@ router.callback_query.filter(F.message.chat.type == "private")
 
 GD_ACCESS_ROLES = [Role.GD, Role.TD]
 
-# ==================== СЧЁТ END (объединяет подтверждение оплат + Счет End) ====================
+# ==================== СЧЁТ END (двойной функционал: статистика + задачи) ====================
 
 @router.message(F.text.startswith(GD_BTN_INVOICE_END_GD))
 async def gd_invoice_end_combined(message: Message, db: Database) -> None:
-    """Show both PAYMENT_CONFIRM and INVOICE_END_REQUEST tasks for GD."""
+    """Show two sub-options: ended stats and active tasks."""
     if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     user_id = message.from_user.id  # type: ignore[union-attr]
+
+    # Counts for badges
+    n_ended = await db.count_ended_invoices()
+    tasks_pc = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.PAYMENT_CONFIRM)
+    tasks_ie = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.INVOICE_END_REQUEST)
+    n_tasks = len(tasks_pc) + len(tasks_ie)
+
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([InlineKeyboardButton(
+        text=f"📊 Счета end: {n_ended}",
+        callback_data="gd_end:stats",
+    )])
+    rows.append([InlineKeyboardButton(
+        text=f"📋 Задачи Счёт End: {n_tasks}",
+        callback_data="gd_end:tasks",
+    )])
+    rows.append([InlineKeyboardButton(text="📊 Статистика по лидам", callback_data="gd_lead_stats")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    await message.answer(
+        f"🏁 <b>Счёт END</b>\n\n"
+        f"📊 Закрытых счетов: <b>{n_ended}</b>\n"
+        f"📋 Задач в работе: <b>{n_tasks}</b>",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data == "gd_end:stats")
+async def gd_end_stats(cb: CallbackQuery, db: Database) -> None:
+    """Show monthly ended summary + list of ended invoices."""
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    invoices = await db.list_invoices(status="ended", limit=100)
+    if not invoices:
+        await cb.answer("Закрытых счетов нет", show_alert=True)
+        return
+    await cb.answer()
+    # Monthly summary card
+    from ..utils import format_monthly_ended_summary
+    months = await db.get_ended_monthly_summary()
+    summary_text = format_monthly_ended_summary(months)
+    await cb.message.answer(summary_text)  # type: ignore[union-attr]
+    # Invoice list buttons
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = inv.get("object_address") or ""
+        label = f"{num} — {addr}"[:60]
+        b.button(text=label, callback_data=f"gd_work:view:{inv['id']}")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"<b>✅ Счета end</b> ({len(invoices)})\n\nВыберите счёт:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "gd_end:tasks")
+async def gd_end_tasks(cb: CallbackQuery, db: Database) -> None:
+    """Show PAYMENT_CONFIRM + INVOICE_END_REQUEST tasks."""
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    user_id = cb.from_user.id
     tasks_pc = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.PAYMENT_CONFIRM)
     tasks_ie = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.INVOICE_END_REQUEST)
     tasks = tasks_pc + tasks_ie
     tasks.sort(key=lambda t: t.get("created_at") or "", reverse=True)
     if not tasks:
-        await answer_service(message, "✅ Нет задач «Счёт END» и подтверждений оплат.", delay_seconds=60)
+        await cb.answer("Нет задач «Счёт END» и подтверждений оплат.", show_alert=True)
         return
+    await cb.answer()
     n_pc = len(tasks_pc)
     n_ie = len(tasks_ie)
     parts = []
@@ -53,7 +117,6 @@ async def gd_invoice_end_combined(message: Message, db: Database) -> None:
         parts.append(f"🏁 Счёт End: {n_ie}")
     summary = " | ".join(parts)
 
-    # Build keyboard: tasks + lead stats button
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     rows: list[list[InlineKeyboardButton]] = []
     for t in tasks:
@@ -63,11 +126,10 @@ async def gd_invoice_end_combined(message: Message, db: Database) -> None:
         payload = t.get("payload") or {}
         label = payload.get("invoice_number") or payload.get("supplier") or f"#{tid}"
         rows.append([InlineKeyboardButton(text=f"{prefix} {label}", callback_data=f"task:{tid}")])
-    rows.append([InlineKeyboardButton(text="📊 Статистика по лидам", callback_data="gd_lead_stats")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
-    await message.answer(
-        f"🏁 <b>Счёт END</b> ({len(tasks)})\n{summary}\n\n"
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"🏁 <b>Задачи Счёт END</b> ({len(tasks)})\n{summary}\n\n"
         "Выберите задачу:",
         reply_markup=kb,
     )
