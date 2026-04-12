@@ -2095,7 +2095,7 @@ class Database:
         cur = await self.conn.execute(
             """
             SELECT
-                strftime('%Y-%m', COALESCE(updated_at, created_at)) AS month,
+                strftime('%Y-%m', COALESCE(receipt_date, created_at)) AS month,
                 COUNT(*) AS cnt,
                 SUM(COALESCE(amount, 0)) AS total_amount,
                 SUM(COALESCE(estimated_glass, 0) + COALESCE(estimated_profile, 0)

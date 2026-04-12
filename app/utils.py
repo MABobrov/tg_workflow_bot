@@ -757,9 +757,7 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
         recalc = fact_profit - est_profit
         if abs(recalc) > 2000:
             lines.append(f"{'Перерасчёт':14s} {recalc:>+10,.0f}")
-    lines.append("</pre>")
-
-    # Profit split
+    # Profit split (inside <pre>)
     client_source = pf.get("client_source", "own")
     rp_zp = pf.get("rp_zp", 0)
     mgr_zp = pf.get("manager_zp", 0)
@@ -767,13 +765,14 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
     src_label = "📋 Лид ГД (75/25)" if client_source == "gd_lead" else "👤 Клиент менеджера (50/50)"
 
     if pf.get("has_estimated") and est_profit > 0:
-        lines.append(f"\n🔗 {src_label}")
-        lines.append(
-            f"💰 <b>Распределение прибыли:</b>\n"
-            f"  ЗП РП (10%): {rp_zp:,.0f}₽\n"
-            f"  ЗП менеджер: {mgr_zp:,.0f}₽\n"
-            f"  Доля ГД: {gd_pr:,.0f}₽"
-        )
+        lines.append(f"{'─' * 50}")
+        lines.append(src_label)
+        lines.append(f"{'Распределение прибыли:'}")
+        lines.append(f"{'  ЗП РП (10%)':14s} {rp_zp:>10,.0f}₽")
+        lines.append(f"{'  ЗП менеджер':14s} {mgr_zp:>10,.0f}₽")
+        lines.append(f"{'  Доля ГД':14s} {gd_pr:>10,.0f}₽")
+
+    lines.append("</pre>")
 
     # ZP status
     inv_status = inv.get("status", "")
