@@ -794,6 +794,53 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
     return "\n".join(lines)
 
 
+def format_inwork_summary(invoices: list[dict[str, Any]]) -> str:
+    """Сводная карточка счетов в работе — агрегация план/факт."""
+    cnt = len(invoices)
+    total_amount = sum(float(inv.get("amount") or 0) for inv in invoices)
+    total_debt = sum(float(inv.get("outstanding_debt") or 0) for inv in invoices)
+
+    est_mat = sum(float(inv.get("estimated_glass") or 0)
+                  + float(inv.get("estimated_profile") or 0)
+                  + float(inv.get("estimated_materials") or 0) for inv in invoices)
+    est_inst = sum(float(inv.get("estimated_installation") or 0) for inv in invoices)
+    est_load = sum(float(inv.get("estimated_loaders") or 0) for inv in invoices)
+    est_log = sum(float(inv.get("estimated_logistics") or 0) for inv in invoices)
+    est_total = est_mat + est_inst + est_load + est_log
+
+    fact_mat = sum(float(inv.get("materials_fact_op") or 0) for inv in invoices)
+    fact_inst = sum(float(inv.get("montazh_fact_op") or 0) for inv in invoices)
+    fact_load = sum(float(inv.get("loaders_fact_op") or 0) for inv in invoices)
+    fact_log = sum(float(inv.get("logistics_fact_op") or 0) for inv in invoices)
+    fact_total = fact_mat + fact_inst + fact_load + fact_log
+
+    def _f(v: float) -> str:
+        if abs(v) >= 1_000_000:
+            return f"{v / 1_000_000:.1f}м"
+        if abs(v) >= 1_000:
+            return f"{v / 1_000:.0f}к"
+        return f"{v:.0f}"
+
+    def _fv(v: float) -> str:
+        return _f(v) if v else "—"
+
+    lines = [
+        f"📊 <b>В работе — сводка</b> ({cnt} счетов)",
+        f"💰 Сумма: {total_amount:,.0f}₽",
+        f"🔴 Долг: {total_debt:,.0f}₽\n",
+        "<pre>",
+        f"{'':14s} {'План':>8s} {'Факт':>8s}",
+        f"{'Материалы':14s} {_f(est_mat):>8s} {_fv(fact_mat):>8s}",
+        f"{'Установка':14s} {_f(est_inst):>8s} {_fv(fact_inst):>8s}",
+        f"{'Грузчики':14s} {_f(est_load):>8s} {_fv(fact_load):>8s}",
+        f"{'Логистика':14s} {_f(est_log):>8s} {_fv(fact_log):>8s}",
+        f"{'─' * 24}",
+        f"{'Итого затрат':14s} {_f(est_total):>8s} {_fv(fact_total):>8s}",
+        "</pre>",
+    ]
+    return "\n".join(lines)
+
+
 _MONTH_NAMES = {
     "01": "Январь", "02": "Февраль", "03": "Март", "04": "Апрель",
     "05": "Май", "06": "Июнь", "07": "Июль", "08": "Август",

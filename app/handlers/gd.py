@@ -1100,11 +1100,33 @@ async def gd_summary_drilldown(
         )
         return
 
+    # ---- In-work invoices: summary card + list ----
+    if section == "inv_inprog":
+        invoices = await db.list_invoices(status="in_progress", limit=100)
+        if not invoices:
+            await cb.answer("Список пуст", show_alert=True)
+            return
+        await cb.answer()
+        from ..utils import format_inwork_summary
+        summary = format_inwork_summary(invoices)
+        await cb.message.answer(summary)  # type: ignore[union-attr]
+        for inv in invoices:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = inv.get("object_address") or ""
+            label = f"{num} — {addr}"[:60]
+            b.button(text=label, callback_data=f"gd_work:view:{inv['id']}")
+        b.button(text="⬅️ Назад к сводке", callback_data=SummaryCb(section="", action="back").pack())
+        b.adjust(1)
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"<b>🔧 В работе</b> ({len(invoices)})\n\nВыберите счёт:",
+            reply_markup=b.as_markup(),
+        )
+        return
+
     # ---- Invoice sections ----
     if section.startswith("inv_"):
         status_map = {
             "inv_pending": ("pending", "⏳ Ожидают оплаты"),
-            "inv_inprog": ("in_progress", "🔧 В работе"),
             "inv_paid": ("paid", "💰 Оплачены"),
             "inv_closing": ("closing", "🏁 На закрытии"),
         }
