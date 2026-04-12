@@ -888,12 +888,13 @@ def format_monthly_ended_summary(months: list[dict[str, Any]]) -> str:
         agent = m.get("agent_payout") or 0
 
         # Налоги: НДС = (сумма − материалы) × 22/122, налог на прибыль = (сумма − расходы − НДС) × 20%
+        # Прибыль = сумма − расходы − НДС − налог (как BL в таблице, до ЗП)
         amt = m["total_amount"]
         total_expenses = fact_cost + agent
         nds = (amt * 22 / 122) - (m["fact_materials"] * 22 / 122) if amt else 0
         profit_tax = max(0, (amt - total_expenses - nds) * 0.20) if amt else 0
         taxes_total = nds + profit_tax
-        profit = amt - total_expenses - taxes_total - m["zp_manager"] - m["zp_installer"]
+        profit = amt - total_expenses - taxes_total
 
         lines.append(f"<b>{month_name} {month_str[:4]}</b> — {m['cnt']} счетов")
         lines.append("<pre>")
