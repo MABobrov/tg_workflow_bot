@@ -65,31 +65,77 @@ async def gd_invoice_end_combined(message: Message, db: Database) -> None:
     )
 
 
+_MONTH_NAMES = {
+    "01": "Январь", "02": "Февраль", "03": "Март", "04": "Апрель",
+    "05": "Май", "06": "Июнь", "07": "Июль", "08": "Август",
+    "09": "Сентябрь", "10": "Октябрь", "11": "Ноябрь", "12": "Декабрь",
+}
+
+
 @router.callback_query(F.data == "gd_end:stats")
 async def gd_end_stats(cb: CallbackQuery, db: Database) -> None:
-    """Show monthly ended summary + list of ended invoices."""
+    """Show monthly ended summary + month buttons."""
     if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
-    invoices = await db.list_invoices(status="ended", limit=100)
+    invoices = await db.list_invoices(status="ended", limit=200)
     if not invoices:
         await cb.answer("Закрытых счетов нет", show_alert=True)
         return
     await cb.answer()
     # Monthly summary card
     from ..utils import format_monthly_ended_summary
-    months = await db.get_ended_monthly_summary()
-    summary_text = format_monthly_ended_summary(months)
+    months_data = await db.get_ended_monthly_summary()
+    summary_text = format_monthly_ended_summary(months_data)
     await cb.message.answer(summary_text)  # type: ignore[union-attr]
-    # Invoice list buttons
-    b = InlineKeyboardBuilder()
+    # Group invoices by month
+    from collections import OrderedDict
+    by_month: OrderedDict[str, int] = OrderedDict()
     for inv in invoices:
+        rd = inv.get("receipt_date") or inv.get("created_at") or ""
+        ym = str(rd)[:7]  # "2026-03"
+        by_month[ym] = by_month.get(ym, 0) + 1
+    # Month buttons
+    b = InlineKeyboardBuilder()
+    for ym, cnt in by_month.items():
+        mm = ym[5:7] if len(ym) >= 7 else "?"
+        name = _MONTH_NAMES.get(mm, ym)
+        year = ym[:4] if len(ym) >= 4 else ""
+        b.button(text=f"{name} {year}: {cnt}", callback_data=f"gd_end:month:{ym}")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"<b>✅ Счета end</b> ({len(invoices)})\n\nВыберите месяц:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("gd_end:month:"))
+async def gd_end_month(cb: CallbackQuery, db: Database) -> None:
+    """Show ended invoices for a specific month."""
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    ym = cb.data.split(":", 2)[2]  # "2026-03"  # type: ignore[union-attr]
+    invoices = await db.list_invoices(status="ended", limit=200)
+    filtered = [
+        inv for inv in invoices
+        if (inv.get("receipt_date") or inv.get("created_at") or "")[:7] == ym
+    ]
+    if not filtered:
+        await cb.answer("Нет счетов за этот месяц", show_alert=True)
+        return
+    await cb.answer()
+    mm = ym[5:7] if len(ym) >= 7 else "?"
+    name = _MONTH_NAMES.get(mm, ym)
+    year = ym[:4] if len(ym) >= 4 else ""
+    b = InlineKeyboardBuilder()
+    for inv in filtered:
         num = inv.get("invoice_number") or f"#{inv['id']}"
         addr = inv.get("object_address") or ""
         label = f"{num} — {addr}"[:60]
         b.button(text=label, callback_data=f"gd_work:view:{inv['id']}")
+    b.button(text="⬅️ Назад к месяцам", callback_data="gd_end:stats")
     b.adjust(1)
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"<b>✅ Счета end</b> ({len(invoices)})\n\nВыберите счёт:",
+    await cb.message.edit_text(  # type: ignore[union-attr]
+        f"<b>✅ {name} {year}</b> ({len(filtered)})\n\nВыберите счёт:",
         reply_markup=b.as_markup(),
     )
 
