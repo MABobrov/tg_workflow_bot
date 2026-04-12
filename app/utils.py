@@ -750,7 +750,7 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
         _row("Себест-ть", est_total, fact_total if _has_key_facts else 0),
         f"{'─' * 50}",
         _row("Прибыль", est_profit, fact_profit if _has_key_facts else 0, invert=True),
-        f"{'Рент-ть':14s} {est_pct:>9.1f}% {(f'{fact_pct:>9.1f}%' if _has_key_facts else f'{'—':>10s}')}",
+        f"{'Рент-ть':14s} {est_pct:>9.1f}% " + (f"{fact_pct:>9.1f}%" if _has_key_facts else ""),
     ]
     # BM — Перерасчёт прибыли (показать если есть полные факт-данные и |разница| > 2000)
     if _has_key_facts:
