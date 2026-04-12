@@ -1708,9 +1708,14 @@ class Database:
             )
         materials_combined = materials_fact_op + materials_total
 
-        # Монтаж из ОП (уже оплаченный) или ЗП монтажника
+        # Монтаж: приоритет ЗП монтажника (если согласовано), иначе из ОП
         montazh_fact_op = float(inv.get("montazh_fact_op") or 0)
-        montazh_combined = montazh_fact_op if montazh_fact_op > 0 else zp_installer
+        if zp_installer > 0:
+            montazh_combined = zp_installer
+        elif montazh_fact_op > 0:
+            montazh_combined = montazh_fact_op
+        else:
+            montazh_combined = 0
 
         # Дедупликация: берём MAX(materials_combined, supplier_payments)
         # чтобы не считать одни и те же расходы дважды
@@ -1724,7 +1729,7 @@ class Database:
 
         # Итого расходы
         # ЗП не входит — используем только факт из ОП
-        total_cost = (mat_and_suppliers + montazh_fact_op
+        total_cost = (mat_and_suppliers + montazh_combined
                       + logistics_fact + loaders_fact + agent_payout)
 
         # НДС факт = (Сумма × 22/122) − (Материалы_факт × 22/122)
@@ -2112,10 +2117,10 @@ class Database:
                 SUM(CASE WHEN COALESCE(materials_fact_op, 0) > 0 THEN materials_fact_op
                     ELSE COALESCE(cost_metal, 0) + COALESCE(cost_glass, 0) + COALESCE(cost_extra_mat, 0)
                     END) AS fact_materials,
-                SUM(CASE WHEN COALESCE(montazh_fact_op, 0) > 0 THEN montazh_fact_op
-                    WHEN zp_installer_status IN ('approved', 'confirmed')
-                        THEN COALESCE(montazh_agreed_amount, zp_installer_amount, 0)
-                    ELSE 0 END) AS fact_montazh,
+                SUM(CASE WHEN zp_installer_status IN ('approved', 'confirmed')
+                        AND COALESCE(zp_installer_amount, 0) > 0
+                    THEN COALESCE(zp_installer_amount, 0)
+                    ELSE COALESCE(montazh_fact_op, 0) END) AS fact_montazh,
                 SUM(COALESCE(loaders_fact_op, 0)) AS fact_loaders,
                 SUM(COALESCE(logistics_fact_op, 0)) AS fact_logistics,
                 SUM(CASE WHEN zp_manager_status = 'approved'
