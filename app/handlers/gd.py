@@ -1074,6 +1074,32 @@ async def gd_summary_drilldown(
     section = callback_data.section
     b = InlineKeyboardBuilder()
 
+    # ---- Ended invoices: сводка по месяцам + список ----
+    if section == "inv_ended":
+        invoices = await db.list_invoices(status="ended", limit=100)
+        if not invoices:
+            await cb.answer("Закрытых счетов нет", show_alert=True)
+            return
+        await cb.answer()
+        # Сводка по месяцам
+        from ..utils import format_monthly_ended_summary
+        months = await db.get_ended_monthly_summary()
+        summary_text = format_monthly_ended_summary(months)
+        await cb.message.answer(summary_text)  # type: ignore[union-attr]
+        # Список кнопок
+        for inv in invoices:
+            num = inv.get("invoice_number") or f"#{inv['id']}"
+            addr = inv.get("object_address") or ""
+            label = f"{num} — {addr}"[:60]
+            b.button(text=label, callback_data=f"gd_work:view:{inv['id']}")
+        b.button(text="⬅️ Назад к сводке", callback_data=SummaryCb(section="", action="back").pack())
+        b.adjust(1)
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"<b>✅ Счета end</b> ({len(invoices)})\n\nВыберите счёт:",
+            reply_markup=b.as_markup(),
+        )
+        return
+
     # ---- Invoice sections ----
     if section.startswith("inv_"):
         status_map = {
@@ -1081,7 +1107,6 @@ async def gd_summary_drilldown(
             "inv_inprog": ("in_progress", "🔧 В работе"),
             "inv_paid": ("paid", "💰 Оплачены"),
             "inv_closing": ("closing", "🏁 На закрытии"),
-            "inv_ended": ("ended", "✅ Счета end"),
         }
         status, title = status_map.get(section, ("pending", section))
         invoices = await db.list_invoices(status=status, limit=50)

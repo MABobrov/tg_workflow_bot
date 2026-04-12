@@ -2088,6 +2088,35 @@ class Database:
         row = await cur.fetchone()
         return row[0] if row else 0
 
+    async def get_ended_monthly_summary(self) -> list[dict[str, Any]]:
+        """Агрегация ended-счетов по месяцам: количество, суммы, план/факт."""
+        cur = await self.conn.execute(
+            """
+            SELECT
+                strftime('%Y-%m', COALESCE(updated_at, created_at)) AS month,
+                COUNT(*) AS cnt,
+                SUM(COALESCE(amount, 0)) AS total_amount,
+                SUM(COALESCE(estimated_glass, 0) + COALESCE(estimated_profile, 0)
+                    + COALESCE(estimated_materials, 0)) AS est_materials,
+                SUM(COALESCE(estimated_installation, 0)) AS est_installation,
+                SUM(COALESCE(estimated_loaders, 0)) AS est_loaders,
+                SUM(COALESCE(estimated_logistics, 0)) AS est_logistics,
+                SUM(COALESCE(materials_fact_op, 0)) AS fact_materials,
+                SUM(COALESCE(montazh_fact_op, 0)) AS fact_montazh,
+                SUM(COALESCE(loaders_fact_op, 0)) AS fact_loaders,
+                SUM(COALESCE(logistics_fact_op, 0)) AS fact_logistics,
+                SUM(CASE WHEN zp_manager_status = 'approved'
+                    THEN COALESCE(zp_manager_amount, 0) ELSE 0 END) AS zp_manager,
+                SUM(CASE WHEN zp_installer_status IN ('approved', 'confirmed')
+                    THEN COALESCE(zp_installer_amount, 0) ELSE 0 END) AS zp_installer
+            FROM invoices
+            WHERE status = 'ended' AND parent_invoice_id IS NULL
+            GROUP BY month
+            ORDER BY month DESC
+            """
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
     async def get_daily_summary(self) -> dict[str, Any]:
         """Агрегированная сводка дня для ГД."""
         month_start = date.today().replace(day=1).isoformat()

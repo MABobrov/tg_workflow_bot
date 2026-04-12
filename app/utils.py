@@ -788,6 +788,58 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
     return "\n".join(lines)
 
 
+_MONTH_NAMES = {
+    "01": "Январь", "02": "Февраль", "03": "Март", "04": "Апрель",
+    "05": "Май", "06": "Июнь", "07": "Июль", "08": "Август",
+    "09": "Сентябрь", "10": "Октябрь", "11": "Ноябрь", "12": "Декабрь",
+}
+
+
+def format_monthly_ended_summary(months: list[dict[str, Any]]) -> str:
+    """Сводная карточка ended-счетов с разбивкой по месяцам (табличный формат)."""
+    if not months:
+        return "✅ Закрытых счетов нет."
+
+    def _f(v: float) -> str:
+        if abs(v) >= 1_000_000:
+            return f"{v / 1_000_000:.1f}м"
+        if abs(v) >= 1_000:
+            return f"{v / 1_000:.0f}к"
+        return f"{v:.0f}"
+
+    total_cnt = sum(m["cnt"] for m in months)
+    total_amount = sum(m["total_amount"] for m in months)
+
+    lines = [
+        f"📊 <b>Счета end — сводка</b> (всего: {total_cnt})",
+        f"💰 Общая сумма: {total_amount:,.0f}₽\n",
+    ]
+
+    for m in months:
+        month_str = m["month"]  # "2026-03"
+        mm = month_str[5:7] if len(month_str) >= 7 else "?"
+        month_name = _MONTH_NAMES.get(mm, month_str)
+
+        est_cost = m["est_materials"] + m["est_installation"] + m["est_loaders"] + m["est_logistics"]
+        fact_cost = m["fact_materials"] + m["fact_montazh"] + m["fact_loaders"] + m["fact_logistics"]
+
+        lines.append(f"<b>{month_name} {month_str[:4]}</b> — {m['cnt']} счетов")
+        lines.append("<pre>")
+        lines.append(f"{'':14s} {'План':>8s} {'Факт':>8s}")
+        lines.append(f"{'Материалы':14s} {_f(m['est_materials']):>8s} {_f(m['fact_materials']):>8s}")
+        lines.append(f"{'Установка':14s} {_f(m['est_installation']):>8s} {_f(m['fact_montazh']):>8s}")
+        lines.append(f"{'Грузчики':14s} {_f(m['est_loaders']):>8s} {_f(m['fact_loaders']):>8s}")
+        lines.append(f"{'Логистика':14s} {_f(m['est_logistics']):>8s} {_f(m['fact_logistics']):>8s}")
+        lines.append(f"{'─' * 32}")
+        lines.append(f"{'Затраты':14s} {_f(est_cost):>8s} {_f(fact_cost):>8s}")
+        lines.append(f"{'ЗП менеджер':14s} {'':>8s} {_f(m['zp_manager']):>8s}")
+        lines.append(f"{'ЗП монтажник':14s} {'':>8s} {_f(m['zp_installer']):>8s}")
+        lines.append(f"{'Сумма счетов':14s} {_f(m['total_amount']):>8s}")
+        lines.append("</pre>")
+
+    return "\n".join(lines)
+
+
 def format_ended_invoice_compact(inv: dict[str, Any], pf: dict[str, Any]) -> str:
     """Компактная карточка ended-счёта для списка ГД."""
     num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
