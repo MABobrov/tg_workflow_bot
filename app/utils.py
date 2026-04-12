@@ -726,6 +726,12 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
         icon = "✅" if ok else "⚠️"
         return f"{sign}{d:,.0f} {icon}"
 
+    def _row(label: str, plan: float, fact: float, invert: bool = False) -> str:
+        """Строка план/факт: если факт=0 (нет данных) — дельту не считать."""
+        if not fact:
+            return f"{label:14s} {plan:>10,.0f} {'—':>10s} {'':>12s}"
+        return f"{label:14s} {plan:>10,.0f} {fact:>10,.0f} {_delta(plan, fact, invert):>12s}"
+
     lines = [
         f"📊 <b>План / Факт</b> — Счёт №{inv_number}",
         f"💰 Сумма: {amount:,.0f}₽\n",
@@ -733,20 +739,21 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
         f"{'':14s} {'План':>10s} {'Факт':>10s} {'Δ':>12s}",
     ]
     lines += [
-        f"{'Материалы':14s} {materials_total:>10,.0f} {fact_mat:>10,.0f} {_delta(materials_total, fact_mat):>12s}",
-        f"{'Установка':14s} {est_inst:>10,.0f} {fact_inst:>10,.0f} {_delta(est_inst, fact_inst):>12s}",
-        f"{'Грузчики':14s} {est_load:>10,.0f} {fact_load:>10,.0f} {_delta(est_load, fact_load):>12s}",
-        f"{'Логистика':14s} {est_log:>10,.0f} {fact_log:>10,.0f} {_delta(est_log, fact_log):>12s}",
+        _row("Материалы", materials_total, fact_mat),
+        _row("Установка", est_inst, fact_inst),
+        _row("Грузчики", est_load, fact_load),
+        _row("Логистика", est_log, fact_log),
         f"{'─' * 50}",
-        f"{'Себест-ть':14s} {est_total:>10,.0f} {fact_total:>10,.0f} {_delta(est_total, fact_total):>12s}",
+        _row("Себест-ть", est_total, fact_total),
         f"{'─' * 50}",
-        f"{'Прибыль':14s} {est_profit:>10,.0f} {fact_profit:>10,.0f} {_delta(est_profit, fact_profit, invert=True):>12s}",
+        _row("Прибыль", est_profit, fact_profit, invert=True),
         f"{'Рент-ть':14s} {est_pct:>9.1f}% {fact_pct:>9.1f}%",
     ]
-    # BM — Перерасчёт прибыли (показать если |разница| > 2000)
-    recalc = fact_profit - est_profit
-    if abs(recalc) > 2000:
-        lines.append(f"{'Перерасчёт':14s} {recalc:>+10,.0f}")
+    # BM — Перерасчёт прибыли (показать если факт есть и |разница| > 2000)
+    if fact_total:
+        recalc = fact_profit - est_profit
+        if abs(recalc) > 2000:
+            lines.append(f"{'Перерасчёт':14s} {recalc:>+10,.0f}")
     lines.append("</pre>")
 
     # Profit split
