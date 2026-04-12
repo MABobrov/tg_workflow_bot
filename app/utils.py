@@ -776,8 +776,11 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
         )
 
     # ZP status
+    inv_status = inv.get("status", "")
     if pf.get("has_estimated"):
-        if pf.get("zp_allowed"):
+        if inv_status in ("pending", "in_progress", "paid"):
+            lines.append("\n🔒 ЗП менеджера: <b>Заблокирована</b> (счёт в работе)")
+        elif pf.get("zp_allowed"):
             lines.append("\n✅ ЗП менеджера: <b>Разрешена</b> (факт ≤ план)")
         else:
             delta = pf.get("cost_delta", 0)
