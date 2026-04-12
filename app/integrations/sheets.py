@@ -604,7 +604,11 @@ class GoogleSheetsService:
             49: invoice.get("material_type") or "",
             50: invoice.get("invoice_number") or "",
             51: invoice.get("montazh_stage") or "",
-            52: "Да" if invoice.get("installer_ok") else "",
+            52: "Да" if (invoice.get("installer_ok")
+                        or float(invoice.get("montazh_agreed_amount") or 0) > 0
+                        or (invoice.get("zp_installer_status") in ("approved", "confirmed")
+                            and float(invoice.get("zp_installer_amount") or 0) > 0)
+                        ) else "",
             53: "Да" if invoice.get("no_debts") else "",
             54: "",  # очистка (перенесено в 74)
             55: "",  # очистка (перенесено в 75)
