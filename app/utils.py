@@ -742,8 +742,12 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
         f"{'─' * 50}",
         f"{'Прибыль':14s} {est_profit:>10,.0f} {fact_profit:>10,.0f} {_delta(est_profit, fact_profit, invert=True):>12s}",
         f"{'Рент-ть':14s} {est_pct:>9.1f}% {fact_pct:>9.1f}%",
-        "</pre>",
     ]
+    # BM — Перерасчёт прибыли (показать если |разница| > 2000)
+    recalc = fact_profit - est_profit
+    if abs(recalc) > 2000:
+        lines.append(f"{'Перерасчёт':14s} {recalc:>+10,.0f}")
+    lines.append("</pre>")
 
     # Profit split
     client_source = pf.get("client_source", "own")
