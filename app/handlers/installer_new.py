@@ -427,6 +427,7 @@ async def invoice_ok_select(
     config: Config,
     notifier: Notifier,
 ) -> None:
+    """Счёт ОК → показать согласованную сумму + возможность изменить."""
     if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
         return
     await cb.answer()
@@ -441,17 +442,119 @@ async def invoice_ok_select(
         await state.clear()
         return
 
+    # Текущая согласованная сумма (или расчётная)
+    agreed = float(inv.get("montazh_agreed_amount") or 0)
+    if not agreed:
+        est_inst = inv.get("estimated_installation")
+        if est_inst:
+            try:
+                agreed = int(float(est_inst) * 0.77) // 1000 * 1000
+            except (ValueError, TypeError):
+                pass
+
     await state.update_data(invoice_id=invoice_id)
-    await state.set_state(InstallerInvoiceOkSG.comment)
+
+    b = InlineKeyboardBuilder()
+    if agreed:
+        b.button(text=f"✅ Ок ({agreed:,.0f}₽)", callback_data=f"instok:price_ok:{invoice_id}")
+    b.button(text="✏️ Изменить сумму", callback_data=f"instok:price_edit:{invoice_id}")
+    b.adjust(1)
 
     await _ensure_reply_kb(cb, db, config)
-    # #3: Inline-кнопка «Назад» на экране комментария
-    back_kb = InlineKeyboardBuilder()
-    back_kb.button(text="⬅️ Назад", callback_data="inst_nav:home")
+    amount_str = f"<b>{agreed:,.0f}₽</b>" if agreed else "не указана"
     await cb.message.answer(  # type: ignore[union-attr]
-        f"Счёт №{inv['invoice_number']} — подтверждение выполнения.\n"
+        f"📄 Счёт №{inv['invoice_number']} — <b>Счёт ОК</b>\n\n"
+        f"🔧 Стоимость монтажа: {amount_str}\n\n"
+        "<b>Согласовать стоимость:</b>",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("instok:price_ok:"))
+async def invoice_ok_price_ok(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
+) -> None:
+    """Монтажник согласен с текущей суммой → переход к комментарию."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+
+    # Зафиксировать сумму если ещё не зафиксирована
+    agreed = float(inv.get("montazh_agreed_amount") or 0)
+    if not agreed:
+        est_inst = inv.get("estimated_installation")
+        if est_inst:
+            try:
+                agreed = int(float(est_inst) * 0.77) // 1000 * 1000
+            except (ValueError, TypeError):
+                pass
+        if agreed:
+            await db.conn.execute(
+                "UPDATE invoices SET montazh_agreed_amount = ? WHERE id = ?",
+                (agreed, invoice_id),
+            )
+            await db.conn.commit()
+
+    await state.update_data(invoice_id=invoice_id)
+    await state.set_state(InstallerInvoiceOkSG.comment)
+    await _ensure_reply_kb(cb, db, config)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Стоимость: <b>{agreed:,.0f}₽</b>\n\n"
         "Добавьте <b>комментарий</b> (или «—»):",
-        reply_markup=back_kb.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("instok:price_edit:"))
+async def invoice_ok_price_edit(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
+) -> None:
+    """Монтажник хочет изменить сумму → ввод новой."""
+    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
+        return
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await state.update_data(invoice_id=invoice_id)
+    await state.set_state(InstallerInvoiceOkSG.price_input)
+    await _ensure_reply_kb(cb, db, config)
+    await cb.message.answer("💰 Введите вашу сумму за монтаж (в рублях):")  # type: ignore[union-attr]
+
+
+@router.message(InstallerInvoiceOkSG.price_input)
+async def invoice_ok_price_input(
+    message: Message, state: FSMContext, db: Database, config: Config,
+) -> None:
+    """Монтажник ввёл сумму → фиксация → переход к комментарию."""
+    if not message.from_user:
+        return
+    text = (message.text or "").strip().replace(" ", "").replace(",", "")
+    try:
+        amount = int(float(text))
+    except (ValueError, TypeError):
+        await message.answer("❌ Введите число:")
+        return
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть больше 0:")
+        return
+
+    data = await state.get_data()
+    invoice_id = data["invoice_id"]
+    await db.conn.execute(
+        "UPDATE invoices SET montazh_agreed_amount = ? WHERE id = ?",
+        (amount, invoice_id),
+    )
+    await db.conn.commit()
+
+    await state.set_state(InstallerInvoiceOkSG.comment)
+    await _ensure_reply_kb(message, db, config)
+    await message.answer(
+        f"✅ Стоимость: <b>{amount:,}₽</b>\n\n"
+        "Добавьте <b>комментарий</b> (или «—»):",
     )
 
 

@@ -338,8 +338,9 @@ class RoleSwitchSG(StatesGroup):
 
 
 class InstallerInvoiceOkSG(StatesGroup):
-    """Монтажник: Счет ОК — подтверждение выполнения работ."""
+    """Монтажник: Счет ОК — подтверждение выполнения работ + согласование цены."""
     select_invoice = State()     # выбор счёта из списка
+    price_input = State()        # ввод новой суммы (если изменить)
     comment = State()            # комментарий
 
 
