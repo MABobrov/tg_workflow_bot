@@ -885,6 +885,15 @@ def format_monthly_ended_summary(months: list[dict[str, Any]]) -> str:
 
         est_cost = m["est_materials"] + m["est_installation"] + m["est_loaders"] + m["est_logistics"]
         fact_cost = m["fact_materials"] + m["fact_montazh"] + m["fact_loaders"] + m["fact_logistics"]
+        agent = m.get("agent_payout") or 0
+
+        # Налоги: НДС = (сумма − материалы) × 22/122, налог на прибыль = (сумма − расходы − НДС) × 20%
+        amt = m["total_amount"]
+        total_expenses = fact_cost + agent
+        nds = (amt * 22 / 122) - (m["fact_materials"] * 22 / 122) if amt else 0
+        profit_tax = max(0, (amt - total_expenses - nds) * 0.20) if amt else 0
+        taxes_total = nds + profit_tax
+        profit = amt - total_expenses - taxes_total - m["zp_manager"] - m["zp_installer"]
 
         lines.append(f"<b>{month_name} {month_str[:4]}</b> — {m['cnt']} счетов")
         lines.append("<pre>")
@@ -897,7 +906,10 @@ def format_monthly_ended_summary(months: list[dict[str, Any]]) -> str:
         lines.append(f"{'Затраты':14s} {_f(est_cost):>8s} {_f(fact_cost):>8s}")
         lines.append(f"{'ЗП менеджер':14s} {'':>8s} {_f(m['zp_manager']):>8s}")
         lines.append(f"{'ЗП монтажник':14s} {'':>8s} {_f(m['zp_installer']):>8s}")
+        lines.append(f"{'Налоги':14s} {'':>8s} {_f(taxes_total):>8s}")
+        lines.append(f"{'─' * 32}")
         lines.append(f"{'Сумма счетов':14s} {_f(m['total_amount']):>8s}")
+        lines.append(f"{'Прибыль':14s} {'':>8s} {_f(profit):>8s}")
         lines.append("</pre>")
 
     return "\n".join(lines)

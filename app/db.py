@@ -2103,7 +2103,7 @@ class Database:
         return row[0] if row else 0
 
     async def get_ended_monthly_summary(self) -> list[dict[str, Any]]:
-        """Агрегация ended-счетов по месяцам: количество, суммы, план/факт."""
+        """Агрегация ended-счетов по месяцам: количество, суммы, план/факт, налоги, прибыль."""
         cur = await self.conn.execute(
             """
             SELECT
@@ -2127,7 +2127,8 @@ class Database:
                 SUM(CASE WHEN zp_manager_status = 'approved'
                     THEN COALESCE(zp_manager_amount, 0) ELSE 0 END) AS zp_manager,
                 SUM(CASE WHEN zp_installer_status IN ('approved', 'confirmed')
-                    THEN COALESCE(zp_installer_amount, 0) ELSE 0 END) AS zp_installer
+                    THEN COALESCE(zp_installer_amount, 0) ELSE 0 END) AS zp_installer,
+                SUM(COALESCE(agent_payout_op, agent_fee, 0)) AS agent_payout
             FROM invoices
             WHERE status = 'ended' AND parent_invoice_id IS NULL
             GROUP BY month
