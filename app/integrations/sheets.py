@@ -592,6 +592,7 @@ class GoogleSheetsService:
             32: self._fmt_docs_closing(invoice),                        # AG Закр.док
             35: self._fmt_amount(invoice.get("manager_zp_blank")),   # AJ ← ОП AG
             36: invoice.get("zp_manager_status") or "",
+            37: invoice.get("zp_manager_request_text") or "",   # AK: от кого запрос
             38: self._fmt_amount(invoice.get("agent_payout_op")),   # AM ← ОП AE
             39: self._fmt_amount(invoice.get("zp_manager_payout")), # AN ← ОП AI
             40: self._fmt_sheet_date(invoice.get("zp_manager_payout_date")),  # AO ← ОП AJ
