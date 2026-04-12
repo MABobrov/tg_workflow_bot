@@ -807,7 +807,11 @@ def format_inwork_summary(invoices: list[dict[str, Any]]) -> str:
     est_log = sum(float(inv.get("estimated_logistics") or 0) for inv in invoices)
     est_total = est_mat + est_inst + est_load + est_log
 
-    fact_mat = sum(float(inv.get("materials_fact_op") or 0) for inv in invoices)
+    fact_mat = sum(
+        float(inv.get("materials_fact_op") or 0)
+        or sum(float(inv.get(f) or 0) for f in ("cost_metal", "cost_glass", "cost_extra_mat"))
+        for inv in invoices
+    )
     fact_inst = sum(float(inv.get("montazh_fact_op") or 0) for inv in invoices)
     fact_load = sum(float(inv.get("loaders_fact_op") or 0) for inv in invoices)
     fact_log = sum(float(inv.get("logistics_fact_op") or 0) for inv in invoices)
