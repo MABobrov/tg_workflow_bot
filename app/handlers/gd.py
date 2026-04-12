@@ -1091,7 +1091,7 @@ async def gd_summary_drilldown(
         text = f"<b>📊 {title}</b> ({len(invoices)})\n\nВыберите счёт:"
         for inv in invoices:
             num = inv.get("invoice_number") or f"#{inv['id']}"
-            addr = inv.get("address") or ""
+            addr = inv.get("object_address") or ""
             label = f"{num} — {addr}"[:60]
             b.button(text=label, callback_data=f"gd_work:view:{inv['id']}")
         b.adjust(1)
@@ -1128,7 +1128,7 @@ async def gd_summary_drilldown(
         text = f"<b>📊 💰 ЗП-запросы</b> ({len(invoices)})\n\nВыберите счёт:"
         for inv in invoices:
             num = inv.get("invoice_number") or f"#{inv['id']}"
-            addr = inv.get("address") or ""
+            addr = inv.get("object_address") or ""
             label = f"{num} — {addr}"[:60]
             b.button(text=label, callback_data=f"gd_work:view:{inv['id']}")
         b.adjust(1)
@@ -1160,7 +1160,7 @@ async def gd_summary_drilldown(
         text = f"<b>📊 {title}</b> ({len(filtered)})\n\nВыберите счёт:"
         for inv in filtered:
             num = inv.get("invoice_number") or f"#{inv['id']}"
-            addr = inv.get("address") or ""
+            addr = inv.get("object_address") or ""
             label = f"{num} — {addr}"[:60]
             b.button(text=label, callback_data=f"gd_work:view:{inv['id']}")
         b.adjust(1)
