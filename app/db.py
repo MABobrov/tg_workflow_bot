@@ -1700,6 +1700,12 @@ class Database:
 
         # Материалы из ОП (уже закупленные) + дочерние счета (новые)
         materials_fact_op = float(inv.get("materials_fact_op") or 0)
+        # Fallback: если materials_fact_op не заполнен — берём сумму cost_* полей
+        if not materials_fact_op:
+            materials_fact_op = sum(
+                float(inv.get(f) or 0)
+                for f in ("cost_metal", "cost_glass", "cost_extra_mat")
+            )
         materials_combined = materials_fact_op + materials_total
 
         # Монтаж из ОП (уже оплаченный) или ЗП монтажника
