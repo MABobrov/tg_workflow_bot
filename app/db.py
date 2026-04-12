@@ -2109,8 +2109,13 @@ class Database:
                 SUM(COALESCE(estimated_installation, 0)) AS est_installation,
                 SUM(COALESCE(estimated_loaders, 0)) AS est_loaders,
                 SUM(COALESCE(estimated_logistics, 0)) AS est_logistics,
-                SUM(COALESCE(materials_fact_op, 0)) AS fact_materials,
-                SUM(COALESCE(montazh_fact_op, 0)) AS fact_montazh,
+                SUM(CASE WHEN COALESCE(materials_fact_op, 0) > 0 THEN materials_fact_op
+                    ELSE COALESCE(cost_metal, 0) + COALESCE(cost_glass, 0) + COALESCE(cost_extra_mat, 0)
+                    END) AS fact_materials,
+                SUM(CASE WHEN COALESCE(montazh_fact_op, 0) > 0 THEN montazh_fact_op
+                    WHEN zp_installer_status IN ('approved', 'confirmed')
+                        THEN COALESCE(montazh_agreed_amount, zp_installer_amount, 0)
+                    ELSE 0 END) AS fact_montazh,
                 SUM(COALESCE(loaders_fact_op, 0)) AS fact_loaders,
                 SUM(COALESCE(logistics_fact_op, 0)) AS fact_logistics,
                 SUM(CASE WHEN zp_manager_status = 'approved'

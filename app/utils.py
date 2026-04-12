@@ -812,7 +812,12 @@ def format_inwork_summary(invoices: list[dict[str, Any]]) -> str:
         or sum(float(inv.get(f) or 0) for f in ("cost_metal", "cost_glass", "cost_extra_mat"))
         for inv in invoices
     )
-    fact_inst = sum(float(inv.get("montazh_fact_op") or 0) for inv in invoices)
+    fact_inst = sum(
+        float(inv.get("montazh_fact_op") or 0)
+        or (float(inv.get("montazh_agreed_amount") or 0) or float(inv.get("zp_installer_amount") or 0)
+            if inv.get("zp_installer_status") in ("approved", "confirmed") else 0)
+        for inv in invoices
+    )
     fact_load = sum(float(inv.get("loaders_fact_op") or 0) for inv in invoices)
     fact_log = sum(float(inv.get("logistics_fact_op") or 0) for inv in invoices)
     fact_total = fact_mat + fact_inst + fact_load + fact_log
