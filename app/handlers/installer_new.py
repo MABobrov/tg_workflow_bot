@@ -448,7 +448,7 @@ async def invoice_ok_select(
         est_inst = inv.get("estimated_installation")
         if est_inst:
             try:
-                agreed = int(float(est_inst) * 0.77) // 1000 * 1000
+                agreed = int(float(est_inst) * 0.71) // 1000 * 1000
             except (ValueError, TypeError):
                 pass
 
@@ -491,7 +491,7 @@ async def invoice_ok_price_ok(
         est_inst = inv.get("estimated_installation")
         if est_inst:
             try:
-                agreed = int(float(est_inst) * 0.77) // 1000 * 1000
+                agreed = int(float(est_inst) * 0.71) // 1000 * 1000
             except (ValueError, TypeError):
                 pass
         if agreed:
@@ -1413,7 +1413,7 @@ def _build_inst_detail_card(inv: dict) -> str:
     est_inst = inv.get("estimated_installation")
     if est_inst:
         try:
-            est_val = int(float(est_inst) * 0.77) // 1000 * 1000
+            est_val = int(float(est_inst) * 0.71) // 1000 * 1000
         except (ValueError, TypeError):
             pass
 
@@ -1503,7 +1503,7 @@ def _build_archive_stats(invoices: list[dict]) -> str:
         cnt = len(invs)
         zp = sum(float(i.get("zp_installer_amount") or 0) for i in invs)
         est_total = sum(
-            int(float(i.get("estimated_installation") or 0) * 0.77) // 1000 * 1000
+            int(float(i.get("estimated_installation") or 0) * 0.71) // 1000 * 1000
             for i in invs
         )
         pct = (zp / est_total * 100) if est_total > 0 else 0
@@ -1530,7 +1530,7 @@ def _build_archive_card(inv: dict) -> str:
     est_inst = inv.get("estimated_installation")
     if est_inst:
         try:
-            est_val = int(float(est_inst) * 0.77) // 1000 * 1000
+            est_val = int(float(est_inst) * 0.71) // 1000 * 1000
         except (ValueError, TypeError):
             pass
 
@@ -1636,12 +1636,12 @@ def _credit_tag(inv: dict) -> str:
 
 
 def _calc_est_montazh(inv: dict) -> int:
-    """Расчётная стоимость монтажа: ×0.77 ⌊1000."""
+    """Расчётная стоимость монтажа: ×0.71 ⌊1000."""
     est = inv.get("estimated_installation")
     if not est:
         return 0
     try:
-        return int(float(est) * 0.77) // 1000 * 1000
+        return int(float(est) * 0.71) // 1000 * 1000
     except (ValueError, TypeError):
         return 0
 
@@ -2120,12 +2120,12 @@ async def installer_work_view_card(
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    # Монтаж расч. (×0.77)
+    # Монтаж расч. (×0.71)
     est_val = 0
     est_inst = inv.get("estimated_installation")
     if est_inst:
         try:
-            est_val = int(float(est_inst) * 0.77) // 1000 * 1000
+            est_val = int(float(est_inst) * 0.71) // 1000 * 1000
         except (ValueError, TypeError):
             pass
 
@@ -2177,7 +2177,7 @@ async def installer_price_ok(
     agreed = 0
     if est_inst:
         try:
-            agreed = int(float(est_inst) * 0.77) // 1000 * 1000
+            agreed = int(float(est_inst) * 0.71) // 1000 * 1000
         except (ValueError, TypeError):
             pass
     await db.conn.execute(
