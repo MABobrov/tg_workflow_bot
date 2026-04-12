@@ -1295,69 +1295,67 @@ async def installer_objects_back(cb: CallbackQuery, db: Database) -> None:
 
 
 def _build_inst_detail_card(inv: dict) -> str:
-    """Формирует карточку счёта для монтажника."""
+    """Формирует карточку счёта для монтажника (табличный формат)."""
+    from datetime import date as _date
+
     stage = inv.get("montazh_stage") or "none"
     stage_lbl = _STAGE_LABEL.get(stage, stage)
     num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
 
     text = f"📄 <b>№{num}</b> · {stage_lbl}{_credit_tag(inv)}\n"
-    text += f"📍 {inv.get('object_address', '—')}\n"
+    text += f"📍 {inv.get('object_address', '—')}\n\n"
 
-    # Расчётная стоимость монтажа × 0.77, округление вниз кратно 1000
+    est_val = 0
     est_inst = inv.get("estimated_installation")
     if est_inst:
         try:
-            val = int(float(est_inst) * 0.77) // 1000 * 1000
-            text += f"🔧 Расч. монтаж: <b>{val:,}₽</b>\n"
+            est_val = int(float(est_inst) * 0.77) // 1000 * 1000
         except (ValueError, TypeError):
             pass
 
-    parts: list[str] = []
-    area = inv.get("area_m2")
-    if area:
+    zp_st = inv.get("zp_installer_status") or "not_requested"
+    zp_lbl = {"approved": "✅ Одобрено", "requested": "⏳ Запрошено",
+              "confirmed": "✅ Подтверждено", "payment_sent": "💳 Отправлено"}.get(zp_st, "—")
+    zp_val = float(inv.get("zp_installer_amount") or 0)
+
+    area = ""
+    if inv.get("area_m2"):
         try:
-            parts.append(f"📐 {float(area):,.1f} м²")
-        except (ValueError, TypeError):
-            pass
-    if inv.get("materials_ordered"):
-        parts.append("📦 Материал заказан")
-
-    zp = inv.get("zp_installer_status") or "not_requested"
-    zp_lbl = "✅" if zp == "approved" else ("⏳" if zp == "requested" else "—")
-    parts.append(f"💸 ЗП: {zp_lbl}")
-    if parts:
-        text += " · ".join(parts) + "\n"
-
-    zp_amount = inv.get("zp_installer_amount")
-    if zp_amount and zp in ("requested", "approved"):
-        try:
-            text += f"💵 ЗП выплачено: <b>{float(zp_amount):,.0f}₽</b>\n"
+            area = f"{float(inv['area_m2']):,.1f} м²"
         except (ValueError, TypeError):
             pass
 
-    # Дата окончания сроков
+    dl_str = ""
     deadline = inv.get("deadline_end_date")
     if deadline:
-        from datetime import date as _date
         try:
             d = _date.fromisoformat(str(deadline)[:10])
             delta = (d - _date.today()).days
             if delta < 0:
-                ind = f"🔴 просрочен {abs(delta)}дн"
+                dl_str = f"{str(deadline)[:10]} 🔴 -{abs(delta)}дн"
             elif delta <= 7:
-                ind = f"⚠️ {delta}дн"
+                dl_str = f"{str(deadline)[:10]} ⚠️ {delta}дн"
             else:
-                ind = f"✅ {delta}дн"
-            text += f"⏰ Срок: {str(deadline)[:10]} ({ind})\n"
+                dl_str = f"{str(deadline)[:10]} ✅ {delta}дн"
         except (ValueError, TypeError):
-            text += f"⏰ Срок: {str(deadline)[:10]}\n"
+            dl_str = str(deadline)[:10]
 
-    created = (inv.get("created_at") or "—")[:10]
-    text += f"📅 {created}"
-    if inv.get("description"):
-        text += f" · 💬 {inv['description'][:50]}"
-    text += "\n"
-    return text
+    mat_status = "✅ Да" if inv.get("materials_ordered") else "—"
+
+    lines = ["<pre>"]
+    if est_val:
+        lines.append(f"{'Монтаж расч.':16s} {est_val:>10,}₽")
+    if zp_val:
+        lines.append(f"{'ЗП сумма':16s} {zp_val:>10,.0f}₽")
+    lines.append(f"{'ЗП статус':16s} {zp_lbl:>11s}")
+    if area:
+        lines.append(f"{'Площадь':16s} {area:>11s}")
+    lines.append(f"{'Материал':16s} {mat_status:>11s}")
+    if dl_str:
+        lines.append(f"{'Срок':16s} {dl_str}")
+    lines.append("</pre>")
+
+    return text + "\n".join(lines)
 
 
 def _build_archive_stats(invoices: list[dict]) -> str:
@@ -1417,53 +1415,35 @@ def _build_archive_stats(invoices: list[dict]) -> str:
 
 
 def _build_archive_card(inv: dict) -> str:
-    """Карточка архивного счёта (финансовый фокус)."""
+    """Карточка архивного счёта для монтажника (табличный формат)."""
     from datetime import date as _date
 
     num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
     text = f"📄 <b>№{num}</b> · 📦 Архив{_credit_tag(inv)}\n"
-    text += f"📍 {inv.get('object_address', '—')}\n"
+    text += f"📍 {inv.get('object_address', '—')}\n\n"
 
-    est_inst = inv.get("estimated_installation")
     est_val = 0
+    est_inst = inv.get("estimated_installation")
     if est_inst:
         try:
             est_val = int(float(est_inst) * 0.77) // 1000 * 1000
-            text += f"🔧 Расч. монтаж: {est_val:,}₽\n"
         except (ValueError, TypeError):
             pass
 
-    # Площадь + Материал заказан + ЗП статус (как в detail card)
-    parts: list[str] = []
-    area = inv.get("area_m2")
-    if area:
-        try:
-            parts.append(f"📐 {float(area):,.1f} м²")
-        except (ValueError, TypeError):
-            pass
-    if inv.get("materials_ordered"):
-        parts.append("📦 Материал заказан")
     zp_st = inv.get("zp_installer_status") or "not_requested"
-    zp_lbl = "✅" if zp_st == "approved" else ("⏳" if zp_st == "requested" else "—")
-    parts.append(f"💸 ЗП: {zp_lbl}")
-    if parts:
-        text += " · ".join(parts) + "\n"
+    zp_lbl = {"approved": "✅ Одобрено", "confirmed": "✅ Подтверждено",
+              "requested": "⏳ Запрошено", "payment_sent": "💳 Отправлено"}.get(zp_st, "—")
+    zp_val = float(inv.get("zp_installer_amount") or 0)
 
-    zp_amount = inv.get("zp_installer_amount")
-    zp_val = 0.0
-    if zp_amount:
-        try:
-            zp_val = float(zp_amount)
-            text += f"💵 ЗП выплачено: <b>{zp_val:,.0f}₽</b>\n"
-        except (ValueError, TypeError):
-            pass
-
+    # Дельта: ЗП факт - монтаж расч.
+    delta_str = ""
     if est_val and zp_val:
         delta = zp_val - est_val
         sign = "+" if delta >= 0 else ""
-        pct = (delta / est_val * 100) if est_val else 0
-        text += f"📊 Дельта: {sign}{delta:,.0f}₽ ({sign}{pct:.0f}%)\n"
+        delta_str = f"{sign}{delta:,.0f}₽"
 
+    # Сроки: план → факт
+    srok_str = ""
     deadline = inv.get("deadline_end_date")
     completion = inv.get("actual_completion_date") or inv.get("zp_installer_approved_at")
     if deadline and completion:
@@ -1471,16 +1451,26 @@ def _build_archive_card(inv: dict) -> str:
             d_dl = _date.fromisoformat(str(deadline)[:10])
             d_co = _date.fromisoformat(str(completion)[:10])
             diff = (d_dl - d_co).days
-            if diff >= 0:
-                text += f"⏰ ✅ в срок ({diff}дн запас)\n"
-            else:
-                text += f"⏰ 🔴 просрочен на {abs(diff)}дн\n"
+            icon = "✅" if diff >= 0 else "🔴"
+            srok_str = f"{str(deadline)[:10]}→{str(completion)[:10]} {icon}"
         except (ValueError, TypeError):
-            pass
+            srok_str = f"{str(deadline)[:10]}"
+    elif deadline:
+        srok_str = str(deadline)[:10]
 
-    # Дата создания
-    created = (inv.get("created_at") or "—")[:10]
-    text += f"📅 Создан: {created}"
+    lines = ["<pre>"]
+    if est_val:
+        lines.append(f"{'Монтаж расч.':16s} {est_val:>10,}₽")
+    if zp_val:
+        lines.append(f"{'ЗП сумма':16s} {zp_val:>10,.0f}₽")
+    lines.append(f"{'ЗП статус':16s} {zp_lbl:>11s}")
+    if delta_str:
+        lines.append(f"{'Дельта':16s} {delta_str:>11s}")
+    if srok_str:
+        lines.append(f"{'Сроки':16s} {srok_str}")
+    lines.append("</pre>")
+
+    return text + "\n".join(lines)
     # Дата закрытия/выдачи
     approved = inv.get("zp_installer_approved_at")
     if approved:
