@@ -2193,6 +2193,18 @@ async def installer_price_ok(
         f"🔨 Счёт №{inv['invoice_number']} принят в работу."
     )
 
+    # Уведомление ГД
+    if config.default_gd_id:
+        try:
+            await cb.bot.send_message(
+                config.default_gd_id,
+                f"📋 Монтажник <b>@{u.username or u.full_name}</b> согласовал стоимость монтажа:\n"
+                f"№{inv['invoice_number']} — <b>{agreed:,}₽</b>\n"
+                f"📍 {inv.get('object_address', '')}",
+            )
+        except Exception:
+            pass
+
 
 @router.callback_query(F.data.startswith("inst_work:price_edit:"))
 async def installer_price_edit(
@@ -2254,6 +2266,18 @@ async def installer_price_input(
         f"✅ Стоимость монтажа согласована: <b>{amount:,}₽</b>\n"
         f"🔨 Счёт №{inv['invoice_number']} принят в работу."
     )
+
+    # Уведомление ГД
+    if config.default_gd_id:
+        try:
+            await message.bot.send_message(
+                config.default_gd_id,
+                f"📋 Монтажник <b>@{u.username or u.full_name}</b> согласовал стоимость монтажа:\n"
+                f"№{inv['invoice_number']} — <b>{amount:,}₽</b>\n"
+                f"📍 {inv.get('object_address', '')}",
+            )
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data.startswith("inst_work:confirm:"))
