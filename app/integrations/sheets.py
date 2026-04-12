@@ -1242,26 +1242,27 @@ class GoogleSheetsService:
         30: "agent_payout_op",           # AE: Выпл. Агент.
         31: "men_zp_payout_op",          # AF: Выпл.МенЗП
         32: "manager_zp_blank",        # AG: Мен. ЗП (по бланку)
-        33: "zp_manager_request_text",   # AH: Запрос суммы на выплату
-        34: "zp_manager_payout",         # AI: Выплата. Мен. ЗП
-        35: "zp_manager_payout_date",    # AJ: Дата выпл. мен.
-        # 36: AK (пустая колонка)
-        37: "materials_fact_op",         # AL: Материалы Факт
-        38: "montazh_fact_op",           # AM: Монтаж Факт
-        39: "logistics_fact_op",         # AN: Логистика факт
-        40: "logistics_fact_date",       # AO: Дата лог.
-        41: "loaders_fact_op",           # AP: Грузчики факт
-        42: "loaders_fact_date",         # AQ: Дата груз.
-        # 43: AR — Команда боту (human-writable)
+        33: "zp_manager_request_text",   # AH: Запрос суммы на выплату тех
+        34: "zp_manager_request_amount", # AI: Запрос суммы на выплату (НОВЫЙ)
+        35: "zp_manager_payout",         # AJ: Выплата. Мен. ЗП
+        36: "zp_manager_payout_date",    # AK: Дата выпл. мен.
+        # 37: AL (пустая колонка)
+        38: "materials_fact_op",         # AM: Материалы Факт
+        39: "montazh_fact_op",           # AN: Монтаж Факт
+        40: "logistics_fact_op",         # AO: Логистика факт
+        41: "logistics_fact_date",       # AP: Дата лог.
+        42: "loaders_fact_op",           # AQ: Грузчики факт
+        43: "loaders_fact_date",         # AR: Дата груз.
         # 44: AS — Команда боту (human-writable)
-        45: "npn_amount",               # AT: НПН с 10% налог
-        46: "npn_request_op",           # AU: Запрос НПН
-        47: "npn_payout_op",            # AV: Выдано НПН
-        48: "npn_payout_date_op",       # AW: Дата НПН
-        # 49: AX (Месяц — не импортируем)
-        49: "taxes_fact_op",             # AX: Налоги факт
-        50: "profit_fact_credit_op",     # AY: Фактическая прибыль по кредитным счетам
-        51: "profit_fact_op",            # AZ: Фактическая прибыль по каждому счёту
+        # 45: AT — Команда боту (human-writable)
+        46: "npn_amount",               # AU: НПН с 10% налог
+        47: "npn_request_op",           # AV: Запрос НПН
+        48: "npn_payout_op",            # AW: Выдано НПН
+        49: "npn_payout_date_op",       # AX: Дата НПН
+        # 50: AY (Месяц — не импортируем)
+        50: "taxes_fact_op",             # AY: Налоги факт
+        51: "profit_fact_credit_op",     # AZ: Фактическая прибыль по кредитным счетам
+        52: "profit_fact_op",            # BA: Фактическая прибыль по каждому счёту
     }
 
     def _parse_num(self, val: str) -> float | None:
@@ -1530,8 +1531,8 @@ class GoogleSheetsService:
     _OP_FIELD_TO_COL: dict[str, int] = {
         "estimated_logistics": 16,  # col P (1-based) = index 15 → logistics
         "margin_pct": 21,           # col U (1-based) = "Рент-ть факт"
-        "bot_status": 46,           # col AT (1-based) = Статус бота
-        "montazh_stage": 47,        # col AU (1-based) = Стадия монтажа
+        "bot_status": 47,           # col AU (1-based) = Статус бота (+1 после вставки AI)
+        "montazh_stage": 48,        # col AV (1-based) = Стадия монтажа (+1)
     }
 
     def write_field_to_op_sync(self, invoice_number: str, field: str, value: Any) -> bool:

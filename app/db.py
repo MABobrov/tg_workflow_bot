@@ -470,8 +470,9 @@ class Database:
             ("invoices", "materials_fact_op", "REAL"),            # Материалы Факт из ОП (колонка AL)
             ("invoices", "montazh_fact_op", "REAL"),             # Монтаж Факт из ОП (колонка AM)
             # --- ЗП менеджера: выплаты из ОП ---
-            ("invoices", "zp_manager_request_text", "TEXT"),    # AH: Запрос суммы на выплату
-            ("invoices", "zp_manager_payout", "REAL"),          # AI: Выплата. Мен. ЗП
+            ("invoices", "zp_manager_request_text", "TEXT"),    # AH: Запрос суммы на выплату тех
+            ("invoices", "zp_manager_request_amount", "REAL"),  # AI: Запрос суммы на выплату (НОВЫЙ)
+            ("invoices", "zp_manager_payout", "REAL"),          # AJ: Выплата. Мен. ЗП
             ("invoices", "zp_manager_payout_date", "TEXT"),     # AJ: Дата выпл. мен.
             # --- Факт данные из ОП ---
             ("invoices", "logistics_fact_op", "REAL"),          # AN: Логистика факт
