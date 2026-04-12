@@ -738,19 +738,22 @@ def format_plan_fact_card(inv: dict[str, Any], pf: dict[str, Any], role: str = "
         "<pre>",
         f"{'':14s} {'План':>10s} {'Факт':>10s} {'Δ':>12s}",
     ]
+    # Прибыль факт считаем только если есть факт материалов И установки
+    _has_key_facts = bool(fact_mat) and bool(fact_inst)
+
     lines += [
         _row("Материалы", materials_total, fact_mat),
         _row("Установка", est_inst, fact_inst),
         _row("Грузчики", est_load, fact_load),
         _row("Логистика", est_log, fact_log),
         f"{'─' * 50}",
-        _row("Себест-ть", est_total, fact_total),
+        _row("Себест-ть", est_total, fact_total if _has_key_facts else 0),
         f"{'─' * 50}",
-        _row("Прибыль", est_profit, fact_profit, invert=True),
-        f"{'Рент-ть':14s} {est_pct:>9.1f}% {fact_pct:>9.1f}%",
+        _row("Прибыль", est_profit, fact_profit if _has_key_facts else 0, invert=True),
+        f"{'Рент-ть':14s} {est_pct:>9.1f}% {(f'{fact_pct:>9.1f}%' if _has_key_facts else f'{'—':>10s}')}",
     ]
-    # BM — Перерасчёт прибыли (показать если факт есть и |разница| > 2000)
-    if fact_total:
+    # BM — Перерасчёт прибыли (показать если есть полные факт-данные и |разница| > 2000)
+    if _has_key_facts:
         recalc = fact_profit - est_profit
         if abs(recalc) > 2000:
             lines.append(f"{'Перерасчёт':14s} {recalc:>+10,.0f}")
