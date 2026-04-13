@@ -132,6 +132,7 @@ MATERIAL_TYPE_LABELS: dict[str, str] = {
 class MontazhStage(StrEnum):
     """Этапы монтажа по счёту."""
     NONE = "none"              # Нет
+    ASSIGNED = "assigned"      # Назначен монтажнику
     IN_WORK = "in_work"        # В Работе
     RAZMERY_OK = "razmery_ok"  # Размеры ОК
     INVOICE_OK = "invoice_ok"  # Счет ОК
@@ -140,6 +141,7 @@ class MontazhStage(StrEnum):
 
 MONTAZH_STAGE_LABELS: dict[str, str] = {
     MontazhStage.NONE: "—",
+    MontazhStage.ASSIGNED: "Назначен",
     MontazhStage.IN_WORK: "В Работе",
     MontazhStage.RAZMERY_OK: "Размеры ОК",
     MontazhStage.INVOICE_OK: "Счет ОК",

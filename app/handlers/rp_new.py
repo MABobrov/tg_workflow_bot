@@ -37,7 +37,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
 from ..db import Database
-from ..enums import InvoiceStatus, Role, TaskStatus, TaskType
+from ..enums import InvoiceStatus, MontazhStage, Role, TaskStatus, TaskType
 from ..keyboards import (
     RP_BTN_CHECK_KP,
     RP_BTN_CHAT_GD,
@@ -607,65 +607,55 @@ async def rp_montazh_chat(message: Message, state: FSMContext, db: Database, con
 
 @router.message(ManagerChatProxySG.menu, F.text == "🔧 В работу")
 async def rp_montazh_in_work(message: Message, state: FSMContext, db: Database) -> None:
-    """Монтажная гр. → В работу: список активных счетов монтажной группы."""
+    """Монтажная гр. → В работу: два действия — список в работе / отправить в работу."""
     data = await state.get_data()
     channel = data.get("channel", "montazh")
     if channel != "montazh":
         return  # Only handle montazh context
 
-    # Get invoices in active statuses (not ended/credit)
-    invoices = await db.list_invoices_in_work(limit=50)
-    if not invoices:
-        await message.answer(
-            "🔧 <b>Монтажная гр. — В работу</b>\n\n"
-            "Нет активных счетов ✅"
-        )
-        return
+    # Считаем счета в работе (montazh_stage in_work+)
+    in_work = await db.list_invoices_in_work(limit=50)
+    in_work_montazh = [
+        i for i in in_work
+        if i.get("montazh_stage") in ("in_work", "razmery_ok", "invoice_ok")
+    ]
+    n_in_work = len(in_work_montazh)
 
     b = InlineKeyboardBuilder()
-    for inv in invoices:
-        ok_emoji = "✅" if inv.get("installer_ok") else "⏳"
-        try:
-            amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
-        except (ValueError, TypeError):
-            amount_str = f"{inv.get('amount', 0)}₽"
-        text = f"{ok_emoji} №{inv.get('invoice_number', '?')} — {amount_str}"
-        b.button(text=text[:60], callback_data=f"rp_montazh:work_view:{inv['id']}")
-    b.button(text="🔄 Обновить", callback_data="rp_montazh:work_refresh")
+    b.button(
+        text=f"📋 Счета в работе ({n_in_work})",
+        callback_data="rp_montazh:list_inwork",
+    )
+    b.button(text="➕ Счёт в работу", callback_data="rp_montazh:send_to_work")
     b.adjust(1)
 
-    n_ok = sum(1 for inv in invoices if inv.get("installer_ok"))
-    n_pending = len(invoices) - n_ok
-    stats = []
-    if n_ok:
-        stats.append(f"✅ Счет ОК: {n_ok}")
-    if n_pending:
-        stats.append(f"⏳ Ожидают: {n_pending}")
-
     await message.answer(
-        f"🔧 <b>Монтажная гр. — В работу</b> ({len(invoices)})\n"
-        f"{' | '.join(stats)}\n\n"
-        "Нажмите для просмотра:",
+        "🔧 <b>Монтажная гр. — В работу</b>\n\n"
+        "Выберите действие:",
         reply_markup=b.as_markup(),
     )
 
 
-@router.callback_query(F.data == "rp_montazh:work_refresh")
-async def rp_montazh_work_refresh(cb: CallbackQuery, db: Database) -> None:
-    """Обновить список «В работу» монтажной группы."""
+@router.callback_query(F.data == "rp_montazh:list_inwork")
+async def rp_montazh_list_inwork(cb: CallbackQuery, db: Database) -> None:
+    """Список счетов, уже принятых монтажником в работу."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
-    await cb.answer("🔄 Обновлено")
+    await cb.answer()
 
     invoices = await db.list_invoices_in_work(limit=50)
-    if not invoices:
+    in_work = [
+        i for i in invoices
+        if i.get("montazh_stage") in ("in_work", "razmery_ok", "invoice_ok")
+    ]
+    if not in_work:
         await cb.message.answer(  # type: ignore[union-attr]
-            "🔧 Нет активных счетов ✅"
+            "📋 <b>Счета в работе</b>\n\nНет счетов в работе у монтажника ✅"
         )
         return
 
     b = InlineKeyboardBuilder()
-    for inv in invoices:
+    for inv in in_work:
         ok_emoji = "✅" if inv.get("installer_ok") else "⏳"
         try:
             amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
@@ -673,11 +663,11 @@ async def rp_montazh_work_refresh(cb: CallbackQuery, db: Database) -> None:
             amount_str = f"{inv.get('amount', 0)}₽"
         text = f"{ok_emoji} №{inv.get('invoice_number', '?')} — {amount_str}"
         b.button(text=text[:60], callback_data=f"rp_montazh:work_view:{inv['id']}")
-    b.button(text="🔄 Обновить", callback_data="rp_montazh:work_refresh")
+    b.button(text="🔄 Обновить", callback_data="rp_montazh:list_inwork")
     b.adjust(1)
 
-    n_ok = sum(1 for inv in invoices if inv.get("installer_ok"))
-    n_pending = len(invoices) - n_ok
+    n_ok = sum(1 for inv in in_work if inv.get("installer_ok"))
+    n_pending = len(in_work) - n_ok
     stats = []
     if n_ok:
         stats.append(f"✅ Счет ОК: {n_ok}")
@@ -685,11 +675,135 @@ async def rp_montazh_work_refresh(cb: CallbackQuery, db: Database) -> None:
         stats.append(f"⏳ Ожидают: {n_pending}")
 
     await cb.message.answer(  # type: ignore[union-attr]
-        f"🔧 <b>В работу</b> ({len(invoices)})\n"
+        f"📋 <b>Счета в работе</b> ({len(in_work)})\n"
         f"{' | '.join(stats)}\n\n"
         "Нажмите для просмотра:",
         reply_markup=b.as_markup(),
     )
+
+
+@router.callback_query(F.data == "rp_montazh:send_to_work")
+async def rp_montazh_send_to_work(cb: CallbackQuery, db: Database) -> None:
+    """Список счетов, доступных для отправки монтажнику."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    cur = await db.conn.execute(
+        "SELECT * FROM invoices WHERE "
+        "(montazh_stage IS NULL OR montazh_stage = 'none') "
+        "AND status IN ('in_progress', 'paid') "
+        "AND parent_invoice_id IS NULL "
+        "ORDER BY created_at DESC LIMIT 20",
+    )
+    invoices = [dict(r) for r in await cur.fetchall()]
+
+    if not invoices:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "➕ <b>Счёт в работу</b>\n\nНет доступных счетов для отправки ✅"
+        )
+        return
+
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        addr = (inv.get("object_address") or "")[:20]
+        text = f"📄 №{num} — {addr}"
+        b.button(text=text[:55], callback_data=f"rp_montazh:assign:{inv['id']}")
+    b.button(text="⬅️ Назад", callback_data="rp_montazh:back_menu")
+    b.adjust(1)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"➕ <b>Счёт в работу</b> ({len(invoices)})\n\n"
+        "Выберите счёт для отправки монтажнику:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("rp_montazh:assign:"))
+async def rp_montazh_assign(cb: CallbackQuery, db: Database) -> None:
+    """Назначить счёт монтажнику @Bykanov."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    # Найти монтажника (первый активный с ролью installer)
+    installers = await db.find_users_by_role("installer")
+    if not installers:
+        await cb.message.answer("❌ Нет активных монтажников в системе.")  # type: ignore[union-attr]
+        return
+    installer = installers[0]
+    installer_uid = installer["user_id"]
+
+    from datetime import datetime
+    await db.conn.execute(
+        "UPDATE invoices SET assigned_to = ?, montazh_stage = ?, updated_at = ? WHERE id = ?",
+        (installer_uid, MontazhStage.ASSIGNED, datetime.now().isoformat(), invoice_id),
+    )
+    await db.conn.commit()
+
+    num = inv.get("invoice_number", "?")
+    addr = inv.get("object_address") or "—"
+
+    # Уведомление монтажнику
+    try:
+        await cb.bot.send_message(  # type: ignore[union-attr]
+            installer_uid,
+            f"🔨 <b>Новый счёт назначен вам</b>\n\n"
+            f"📄 №{num}\n"
+            f"📍 {addr}\n\n"
+            "Нажмите «🔨 В Работу» для просмотра и подтверждения.",
+        )
+    except Exception:
+        pass
+
+    installer_name = installer.get("username") or installer.get("full_name") or str(installer_uid)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Счёт №{num} отправлен монтажнику @{installer_name}",
+    )
+
+
+@router.callback_query(F.data == "rp_montazh:back_menu")
+async def rp_montazh_back_menu(cb: CallbackQuery, db: Database) -> None:
+    """Вернуться к меню В работу."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+
+    in_work_all = await db.list_invoices_in_work(limit=50)
+    in_work_montazh = [
+        i for i in in_work_all
+        if i.get("montazh_stage") in ("in_work", "razmery_ok", "invoice_ok")
+    ]
+    n_in_work = len(in_work_montazh)
+
+    b = InlineKeyboardBuilder()
+    b.button(
+        text=f"📋 Счета в работе ({n_in_work})",
+        callback_data="rp_montazh:list_inwork",
+    )
+    b.button(text="➕ Счёт в работу", callback_data="rp_montazh:send_to_work")
+    b.adjust(1)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        "🔧 <b>Монтажная гр. — В работу</b>\n\nВыберите действие:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "rp_montazh:work_refresh")
+async def rp_montazh_work_refresh(cb: CallbackQuery, db: Database) -> None:
+    """Обновить список — перенаправляем на list_inwork."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer("🔄 Обновлено")
+    await rp_montazh_list_inwork(cb, db)
 
 
 @router.callback_query(F.data.regexp(r"^rp_montazh:work_view:\d+$"))

@@ -1928,7 +1928,7 @@ class Database:
         if user_id is not None:
             cur = await self.conn.execute(
                 "SELECT * FROM invoices WHERE assigned_to = ? "
-                "AND (montazh_stage IS NULL OR montazh_stage = 'none') "
+                "AND (montazh_stage IS NULL OR montazh_stage IN ('none','assigned')) "
                 "AND status IN ('in_progress', 'paid') "
                 "AND parent_invoice_id IS NULL "
                 "ORDER BY created_at DESC LIMIT 15",
@@ -1937,7 +1937,7 @@ class Database:
         else:
             cur = await self.conn.execute(
                 "SELECT * FROM invoices WHERE "
-                "(montazh_stage IS NULL OR montazh_stage = 'none') "
+                "(montazh_stage IS NULL OR montazh_stage IN ('none','assigned')) "
                 "AND status IN ('in_progress', 'paid') "
                 "AND parent_invoice_id IS NULL "
                 "ORDER BY created_at DESC LIMIT 15",
