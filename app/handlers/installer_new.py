@@ -2156,14 +2156,12 @@ async def installer_work_view_card(
     if dl_str:
         lines.append(f"{'Срок':16s} {dl_str:>16s}")
     lines.append("</pre>")
-    lines.append("\n✅ Подтвердите стоимость или предложите свою:")
-
     text = "\n".join(lines)
 
     b = InlineKeyboardBuilder()
-    b.button(text=f"✅ Ок ({est_val:,}₽)", callback_data=f"inst_work:price_ok:{invoice_id}")
+    b.button(text=f"🔨 В работу ({est_val:,}₽)", callback_data=f"inst_work:price_ok:{invoice_id}")
     b.button(text="✏️ Изменить сумму", callback_data=f"inst_work:price_edit:{invoice_id}")
-    b.adjust(2)
+    b.adjust(1)
 
     await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
