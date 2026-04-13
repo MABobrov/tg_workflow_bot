@@ -2549,7 +2549,7 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
     for inv in invoices:
         zp_st = inv.get("zp_installer_status") or "not_requested"
         zp_icon = {"not_requested": "❌", "requested": "⏳", "approved": "✅"}.get(zp_st, "❌")
-        zp_label = {"not_requested": "Не запрошена", "requested": "На проверке", "approved": "Оплачена"}.get(zp_st, "—")
+        zp_label = {"not_requested": "Не запрошена", "requested": "На проверке", "approved": "Одобрена", "payment_sent": "Отправлена", "confirmed": "Оплачена"}.get(zp_st, "—")
 
         mgr, lead_name, lead_phone, num = _inst_card_header(inv)
         est_val = _calc_est_montazh(inv)
@@ -2582,9 +2582,12 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
             lines.append(f"{'Клиент':16s} {lead_name}")
         lines.append(f"{'':16s} {'─' * 16}")
         if est_val:
-            lines.append(f"{'Монтаж':16s} {est_val:>10,}₽")
+            lines.append(f"{'Монтаж расч.':16s} {est_val:>10,}₽")
             lines.append(f"{'Монтаж +10%':16s} {int(est_val * 1.10):>10,}₽")
-        if zp_amount and zp_st in ("requested", "approved"):
+        agreed = float(inv.get("montazh_agreed_amount") or 0)
+        if agreed:
+            lines.append(f"{'Монтаж факт':16s} {agreed:>10,.0f}₽")
+        if zp_amount and zp_st in ("requested", "approved", "payment_sent", "confirmed"):
             try:
                 lines.append(f"{'ЗП':16s} {float(zp_amount):>10,.0f}₽")
             except (ValueError, TypeError):
