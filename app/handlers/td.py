@@ -237,11 +237,7 @@ async def gd_lead_stats_handler(cb: CallbackQuery, db: Database) -> None:
 
 @router.message(F.text.startswith(GD_BTN_SUPPLIER_PAY))
 async def gd_supplier_pay_dashboard(message: Message, state: FSMContext, db: Database) -> None:
-    """Dashboard: incoming ZP requests (priority) + outgoing supplier payment.
-
-    When ZP requests exist → show only ZP buttons (roles already specify invoices).
-    When NO ZP requests → show full invoices-in-work list with payment marks.
-    """
+    """Dashboard: папки ЗП + оплата поставщику."""
     if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     await state.clear()
@@ -249,94 +245,199 @@ async def gd_supplier_pay_dashboard(message: Message, state: FSMContext, db: Dat
     zp_installer = await db.list_pending_zp_requests("installer")
     zp_zamery = await db.list_pending_zp_requests("zamery")
     zp_manager = await db.list_pending_zp_requests("manager")
-
     total_zp = len(zp_installer) + len(zp_zamery) + len(zp_manager)
+
+    # Считаем задачи оплаты поставщику
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    invoice_tasks = await db.list_tasks_for_user(
+        assigned_to=user_id,
+        statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
+        type_filter=TaskType.INVOICE_PAYMENT,
+        limit=100,
+    )
+    supplier_tasks = await db.list_tasks_open_by_types(["supplier_payment"])
+    n_pay = len(invoice_tasks) + len(supplier_tasks)
 
     lines = ["💸 <b>Оплата поставщику</b>\n"]
     b = InlineKeyboardBuilder()
 
-    if total_zp:
-        # --- ZP mode: show ZP requests directly (no full list) ---
-        lines.append(f"📋 <b>Входящие ЗП: {total_zp}</b>")
-        if zp_installer:
-            lines.append(f"  🔧 Монтажник: {len(zp_installer)}")
-        if zp_zamery:
-            lines.append(f"  📐 Замерщик: {len(zp_zamery)}")
-        if zp_manager:
-            lines.append(f"  💼 Отд.Продаж: {len(zp_manager)}")
-
-        # Priority: installer → zamery → manager
-        for inv in zp_installer:
-            amt = inv.get("zp_installer_amount") or 0
-            b.button(
-                text=f"🔧 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
-                callback_data=f"gdzp_inst:view:{inv['id']}",
-            )
-        for inv in zp_zamery:
-            amt = inv.get("zp_zamery_total") or 0
-            b.button(
-                text=f"📐 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
-                callback_data=f"gdzp_zam:view:{inv['id']}",
-            )
-        for inv in zp_manager:
-            amt = inv.get("zp_manager_amount") or 0
-            b.button(
-                text=f"💼 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
-                callback_data=f"gdzp_mgr:view:{inv['id']}",
-            )
-    else:
-        # --- No ZP: show full invoices-in-work list ---
-        invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
-
-        user_id = message.from_user.id  # type: ignore[union-attr]
-        invoice_tasks = await db.list_tasks_for_user(
-            assigned_to=user_id,
-            statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
-            type_filter=TaskType.INVOICE_PAYMENT,
-            limit=100,
+    # Папка: Монтаж ЗП
+    b.button(
+        text=f"🔧 Монтаж ЗП ({len(zp_installer)})",
+        callback_data="gd_pay:folder:montazh_zp",
+    )
+    # Папка: Прочие ЗП (замерщик + менеджер)
+    n_other_zp = len(zp_zamery) + len(zp_manager)
+    if n_other_zp:
+        b.button(
+            text=f"💼 Прочие ЗП ({n_other_zp})",
+            callback_data="gd_pay:folder:other_zp",
         )
-        inv_task_map: dict[int, dict] = {}
-        for t in invoice_tasks:
-            try:
-                payload = json.loads(t.get("payload_json") or "{}") if t.get("payload_json") else {}
-            except (json.JSONDecodeError, TypeError):
-                payload = {}
-            linked_inv = payload.get("invoice_id") or payload.get("parent_invoice_id")
-            if linked_inv:
-                try:
-                    inv_task_map[int(linked_inv)] = t
-                except (ValueError, TypeError):
-                    pass
-
-        n_payment = len(inv_task_map)
-        if n_payment:
-            lines.append(f"💰 Запросы на оплату: {n_payment}")
-        if not n_payment:
-            lines.append("✅ Нет входящих запросов")
-
-        for inv in invoices[:20]:
-            num = inv.get("invoice_number") or f"#{inv['id']}"
-            addr = (inv.get("object_address") or "")[:25]
-            task = inv_task_map.get(inv["id"])
-            if task:
-                label = f"💰 №{num}"
-                if addr:
-                    label += f" — {addr}"
-                b.button(text=label[:60], callback_data=TaskCb(task_id=int(task["id"]), action="open").pack())
-            else:
-                status_icon = {"pending": "⏳", "in_progress": "🔄", "paid": "✅"}.get(inv["status"], "")
-                label = f"{status_icon} №{num}"
-                if addr:
-                    label += f" — {addr}"
-                b.button(text=label[:60], callback_data=f"gd_work:view:{inv['id']}")
-
-        if invoices:
-            lines.append(f"\nВсего счетов: {len(invoices)}")
-
+    # Папка: Оплата поставщику
+    b.button(
+        text=f"💸 Оплата поставщику ({n_pay})",
+        callback_data="gd_pay:folder:supplier",
+    )
     b.button(text="💸 Новая оплата поставщику", callback_data="supplier_pay_start")
     b.adjust(1)
 
+    if total_zp:
+        lines.append(f"🔧 Монтаж ЗП: {len(zp_installer)}")
+    if n_other_zp:
+        lines.append(f"💼 Прочие ЗП: {n_other_zp}")
+    if n_pay:
+        lines.append(f"💸 Оплата: {n_pay}")
+    if not total_zp and not n_pay:
+        lines.append("✅ Нет входящих запросов")
+
     await message.answer("\n".join(lines), reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data == "gd_pay:folder:montazh_zp")
+async def gd_pay_montazh_zp(cb: CallbackQuery, db: Database) -> None:
+    """Папка: Монтаж ЗП — список запросов от монтажника."""
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    await cb.answer()
+
+    zp_installer = await db.list_pending_zp_requests("installer")
+    if not zp_installer:
+        await cb.message.answer("🔧 <b>Монтаж ЗП</b>\n\nНет запросов ✅")  # type: ignore[union-attr]
+        return
+
+    b = InlineKeyboardBuilder()
+    for inv in zp_installer:
+        amt = inv.get("zp_installer_amount") or 0
+        num = inv.get("invoice_number") or "—"
+        b.button(
+            text=f"🔧 №{num} — {amt:,.0f}₽",
+            callback_data=f"gdzp_inst:view:{inv['id']}",
+        )
+    b.button(text="⬅️ Назад", callback_data="gd_pay:back")
+    b.adjust(1)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"🔧 <b>Монтаж ЗП</b> ({len(zp_installer)})\n\nВыберите для просмотра:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "gd_pay:folder:other_zp")
+async def gd_pay_other_zp(cb: CallbackQuery, db: Database) -> None:
+    """Папка: Прочие ЗП — замерщик + менеджер."""
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    await cb.answer()
+
+    zp_zamery = await db.list_pending_zp_requests("zamery")
+    zp_manager = await db.list_pending_zp_requests("manager")
+
+    if not zp_zamery and not zp_manager:
+        await cb.message.answer("💼 <b>Прочие ЗП</b>\n\nНет запросов ✅")  # type: ignore[union-attr]
+        return
+
+    b = InlineKeyboardBuilder()
+    for inv in zp_zamery:
+        amt = inv.get("zp_zamery_total") or 0
+        b.button(
+            text=f"📐 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
+            callback_data=f"gdzp_zam:view:{inv['id']}",
+        )
+    for inv in zp_manager:
+        amt = inv.get("zp_manager_amount") or 0
+        b.button(
+            text=f"💼 №{inv['invoice_number'] or '—'} — {amt:,.0f}₽",
+            callback_data=f"gdzp_mgr:view:{inv['id']}",
+        )
+    b.button(text="⬅️ Назад", callback_data="gd_pay:back")
+    b.adjust(1)
+
+    total = len(zp_zamery) + len(zp_manager)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💼 <b>Прочие ЗП</b> ({total})\n\nВыберите для просмотра:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "gd_pay:folder:supplier")
+async def gd_pay_supplier(cb: CallbackQuery, db: Database) -> None:
+    """Папка: Оплата поставщику — invoice_payment + supplier_payment задачи."""
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    await cb.answer()
+
+    user_id = cb.from_user.id if cb.from_user else 0
+    invoice_tasks = await db.list_tasks_for_user(
+        assigned_to=user_id,
+        statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
+        type_filter=TaskType.INVOICE_PAYMENT,
+        limit=100,
+    )
+    supplier_tasks = await db.list_tasks_open_by_types(["supplier_payment"])
+    all_tasks = list(invoice_tasks) + list(supplier_tasks)
+
+    if not all_tasks:
+        await cb.message.answer("💸 <b>Оплата поставщику</b>\n\nНет запросов ✅")  # type: ignore[union-attr]
+        return
+
+    b = InlineKeyboardBuilder()
+    for t in all_tasks[:20]:
+        try:
+            payload = json.loads(t.get("payload_json") or "{}") if t.get("payload_json") else {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        inv_num = payload.get("invoice_number") or ""
+        amt = payload.get("amount") or ""
+        label = f"💰 №{inv_num}" if inv_num else f"💰 #{t['id']}"
+        if amt:
+            try:
+                label += f" — {float(amt):,.0f}₽"
+            except (ValueError, TypeError):
+                pass
+        b.button(text=label[:60], callback_data=TaskCb(task_id=int(t["id"]), action="open").pack())
+    b.button(text="⬅️ Назад", callback_data="gd_pay:back")
+    b.adjust(1)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💸 <b>Оплата поставщику</b> ({len(all_tasks)})\n\nВыберите для просмотра:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "gd_pay:back")
+async def gd_pay_back(cb: CallbackQuery, db: Database) -> None:
+    """Назад к папкам оплат."""
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    await cb.answer()
+
+    zp_installer = await db.list_pending_zp_requests("installer")
+    zp_zamery = await db.list_pending_zp_requests("zamery")
+    zp_manager = await db.list_pending_zp_requests("manager")
+    n_other_zp = len(zp_zamery) + len(zp_manager)
+
+    user_id = cb.from_user.id if cb.from_user else 0
+    invoice_tasks = await db.list_tasks_for_user(
+        assigned_to=user_id,
+        statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
+        type_filter=TaskType.INVOICE_PAYMENT,
+        limit=100,
+    )
+    supplier_tasks = await db.list_tasks_open_by_types(["supplier_payment"])
+    n_pay = len(invoice_tasks) + len(supplier_tasks)
+
+    b = InlineKeyboardBuilder()
+    b.button(text=f"🔧 Монтаж ЗП ({len(zp_installer)})", callback_data="gd_pay:folder:montazh_zp")
+    if n_other_zp:
+        b.button(text=f"💼 Прочие ЗП ({n_other_zp})", callback_data="gd_pay:folder:other_zp")
+    b.button(text=f"💸 Оплата поставщику ({n_pay})", callback_data="gd_pay:folder:supplier")
+    b.button(text="💸 Новая оплата поставщику", callback_data="supplier_pay_start")
+    b.adjust(1)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        "💸 <b>Оплата поставщику</b>\n\nВыберите раздел:",
+        reply_markup=b.as_markup(),
+    )
 
 
 # --- GD ZP view + approve/reject handlers ---
