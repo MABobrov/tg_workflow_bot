@@ -2129,25 +2129,41 @@ async def installer_work_view_card(
         except (ValueError, TypeError):
             pass
 
-    text = (
-        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
-        f"📍 Адрес: {inv.get('object_address', '—')}\n"
-    )
+    addr = inv.get("object_address") or "—"
+    # Дедлайн
+    dl_str = ""
+    dl_raw = inv.get("deadline_end_date")
+    if dl_raw:
+        try:
+            from datetime import date as _date, datetime as _dt
+            dl_date = _dt.fromisoformat(str(dl_raw)).date()
+            days_left = (dl_date - _date.today()).days
+            dl_str = f"{dl_date.strftime('%d.%m.%Y')} ({days_left} дн.)"
+        except (ValueError, TypeError):
+            pass
+
+    lines = [f"📄 <b>Счёт №{inv['invoice_number']}</b>"]
+    lines.append(f"📍 {addr}\n")
+    lines.append("<pre>")
+    if est_val:
+        lines.append(f"{'Монтаж расч.':16s} {est_val:>10,}₽")
     area = inv.get("area_m2")
     if area:
         try:
-            text += f"📐 Площадь: {float(area):,.1f} м²\n"
+            lines.append(f"{'Площадь':16s} {float(area):>10,.1f} м²")
         except (ValueError, TypeError):
             pass
-    if est_val:
-        text += f"🔧 Монтаж расч.: <b>{est_val:,}₽</b>\n"
-    text += f"📅 Создан: {(inv.get('created_at') or '—')[:10]}\n"
-    text += "\n<b>Согласовать стоимость монтажа:</b>"
+    if dl_str:
+        lines.append(f"{'Срок':16s} {dl_str:>16s}")
+    lines.append("</pre>")
+    lines.append("\n✅ Подтвердите стоимость или предложите свою:")
+
+    text = "\n".join(lines)
 
     b = InlineKeyboardBuilder()
     b.button(text=f"✅ Ок ({est_val:,}₽)", callback_data=f"inst_work:price_ok:{invoice_id}")
     b.button(text="✏️ Изменить сумму", callback_data=f"inst_work:price_edit:{invoice_id}")
-    b.adjust(1)
+    b.adjust(2)
 
     await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
