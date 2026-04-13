@@ -557,24 +557,6 @@ async def rp_chat_montazh(message: Message, state: FSMContext, db: Database) -> 
     await state.clear()
     await state.set_state(ManagerChatProxySG.menu)
     await state.update_data(channel="montazh")
-    # #39: Invoice picker перед чатом с монтажником
-    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
-    montazh_inv = [i for i in invoices if i.get("montazh_stage") and i["montazh_stage"] != "none"]
-    if montazh_inv:
-        b = InlineKeyboardBuilder()
-        for inv in montazh_inv[:10]:
-            num = inv.get("invoice_number") or f"#{inv['id']}"
-            addr = (inv.get("object_address") or "—")[:20]
-            b.button(text=f"📄 №{num} — {addr}"[:45], callback_data=f"rp_chat_inv:montazh:{inv['id']}")
-        b.button(text="📝 Без привязки к счёту", callback_data="rp_chat_inv:montazh:0")
-        b.button(text="⬅️ Назад", callback_data="nav:home")
-        b.adjust(1)
-        await message.answer(
-            "🔧 <b>Монтажная гр.</b>\n\n"
-            "Выберите счёт для привязки к переписке:",
-            reply_markup=b.as_markup(),
-        )
-        return
     await message.answer(
         "🔧 <b>Монтажная гр.</b>\n\nВыберите действие:",
         reply_markup=rp_montazh_submenu("⬅️ Назад"),
