@@ -655,38 +655,64 @@ async def all_tasks_list(message: Message, db: Database, config: Config) -> None
     # Recent closed (done + rejected, last 10)
     closed = await db.list_tasks_for_user(uid, statuses=("done", "rejected"), limit=10)
 
-    all_tasks = []
+    active_tasks = []
     seen_ids: set[int] = set()
     for t in active:
         if int(t["id"]) not in seen_ids:
-            all_tasks.append(t)
+            active_tasks.append(t)
             seen_ids.add(int(t["id"]))
     for t in created:
         if int(t["id"]) not in seen_ids:
-            all_tasks.append(t)
-            seen_ids.add(int(t["id"]))
-    for t in closed:
-        if int(t["id"]) not in seen_ids:
-            all_tasks.append(t)
+            active_tasks.append(t)
             seen_ids.add(int(t["id"]))
 
-    if not all_tasks:
+    closed_count = len(closed)
+
+    if not active_tasks and not closed_count:
         await answer_service(message, "📋 Задач нет.", delay_seconds=60)
         return
-
-    active_count = sum(1 for t in all_tasks if t.get("status") in ("open", "in_progress"))
-    closed_count = len(all_tasks) - active_count
 
     # GD and RP get delete buttons
     is_admin = uid in (config.admin_ids or set())
     user_role = (await db.get_user_optional(uid) or type("U", (), {"role": None})).role
     can_delete = _can_delete_task_entries(user_role, is_admin=is_admin)
 
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    kb = tasks_kb(active_tasks, back_callback="nav:home", show_delete=can_delete)
+    # Добавляем кнопку "Завершённые" если есть
+    if closed_count:
+        b = InlineKeyboardBuilder(markup=kb.inline_keyboard)
+        b.button(text=f"📦 Завершённые ({closed_count})", callback_data="all_tasks:closed")
+        b.adjust(1)
+        kb = b.as_markup()
+
     await message.answer(
         f"📋 <b>Все задачи</b>\n"
-        f"Активных: {active_count} | Закрытых: {closed_count}\n\n"
+        f"Активных: {len(active_tasks)} | Закрытых: {closed_count}\n\n"
         "Нажмите на задачу для просмотра:",
-        reply_markup=tasks_kb(all_tasks, back_callback="nav:home", show_delete=can_delete),
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data == "all_tasks:closed")
+async def all_tasks_closed(cb: CallbackQuery, db: Database, config: Config) -> None:
+    """Подпапка: завершённые задачи."""
+    if not cb.from_user:
+        return
+    await cb.answer()
+    uid = cb.from_user.id
+    closed = await db.list_tasks_for_user(uid, statuses=("done", "rejected"), limit=20)
+    if not closed:
+        await cb.message.answer("📦 Нет завершённых задач.")  # type: ignore[union-attr]
+        return
+
+    is_admin = uid in (config.admin_ids or set())
+    user_role = (await db.get_user_optional(uid) or type("U", (), {"role": None})).role
+    can_delete = _can_delete_task_entries(user_role, is_admin=is_admin)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📦 <b>Завершённые задачи</b> ({len(closed)})",
+        reply_markup=tasks_kb(closed, back_callback="nav:home", show_delete=can_delete),
     )
 
 

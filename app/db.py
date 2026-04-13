@@ -3241,7 +3241,7 @@ class Database:
         conditions = {
             "zamery": "zp_status = 'requested'",
             "manager": "zp_manager_status = 'requested'",
-            "installer": "zp_installer_status = 'requested'",
+            "installer": "zp_installer_status IN ('requested', 'approved', 'payment_sent')",
         }
         if zp_type and zp_type in conditions:
             where = conditions[zp_type]
