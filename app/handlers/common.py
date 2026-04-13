@@ -616,6 +616,9 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
     _excluded = {TaskType.INVOICE_PAYMENT}
     if _u and _u.role and "manager" in (_u.role or ""):
         _excluded.add(TaskType.CHECK_KP)
+        _excluded.add(TaskType.ORDER_MATERIALS)
+        _excluded.add(TaskType.ORDER_PROFILE)
+        _excluded.add(TaskType.ORDER_GLASS)
     tasks = [t for t in tasks_raw if t.get("type") not in _excluded]
     if not tasks:
         await answer_service(message, "📥 Задач нет ✅", delay_seconds=60)
