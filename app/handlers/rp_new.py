@@ -554,13 +554,18 @@ async def rp_chat_invoice_picked(cb: CallbackQuery, state: FSMContext, db: Datab
     RoleFilter([Role.RP]),
 )
 async def rp_chat_montazh(message: Message, state: FSMContext, db: Database) -> None:
+    log.info("rp_chat_montazh: entered for user %s", message.from_user.id if message.from_user else "?")
     await state.clear()
     await state.set_state(ManagerChatProxySG.menu)
     await state.update_data(channel="montazh")
-    await message.answer(
-        "🔧 <b>Монтажная гр.</b>\n\nВыберите действие:",
-        reply_markup=rp_montazh_submenu("⬅️ Назад"),
-    )
+    try:
+        result = await message.answer(
+            "🔧 <b>Монтажная гр.</b>\n\nВыберите действие:",
+            reply_markup=rp_montazh_submenu("⬅️ Назад"),
+        )
+        log.info("rp_chat_montazh: answer sent, message_id=%s", result.message_id)
+    except Exception as exc:
+        log.error("rp_chat_montazh: answer FAILED: %s", exc)
 
 
 @router.message(ManagerChatProxySG.menu, F.text == "💬 Чат")
