@@ -2553,24 +2553,31 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
         zp_icon = {"not_requested": "❌", "requested": "⏳", "approved": "✅"}.get(zp_st, "❌")
         zp_label = {"not_requested": "Не запрошена", "requested": "На проверке", "approved": "Оплачена"}.get(zp_st, "—")
 
-        num = inv.get("invoice_number") or f"#{inv['id']}"
-        addr = inv.get("object_address") or "—"
+        mgr, lead_name, lead_phone, num = _inst_card_header(inv)
         est_val = _calc_est_montazh(inv)
-
-        card = f"{zp_icon} <b>№{num}</b> · {zp_label}{_credit_tag(inv)}\n"
-        card += f"📍 {addr}\n"
-        if est_val:
-            card += f"🔧 Расч. монтаж: {est_val:,}₽\n"
-        # Сумма счёта — скрыта для монтажника
         zp_amount = inv.get("zp_installer_amount")
+
+        lines = [f"{zp_icon} <b>№{num}</b> · {zp_label}{_credit_tag(inv)}\n"]
+        lines.append("<pre>")
+        lines.append(f"{'Менеджер':16s} {mgr}")
+        lines.append(f"{'Адрес':16s} {inv.get('object_address', '—')}")
+        if lead_name:
+            lines.append(f"{'Клиент':16s} {lead_name}")
+        lines.append(f"{'':16s} {'─' * 16}")
+        if est_val:
+            lines.append(f"{'Монтаж':16s} {est_val:>10,}₽")
         if zp_amount and zp_st in ("requested", "approved"):
             try:
-                card += f"💵 ЗП: <b>{float(zp_amount):,.0f}₽</b>\n"
+                lines.append(f"{'ЗП':16s} {float(zp_amount):>10,.0f}₽")
             except (ValueError, TypeError):
                 pass
+        lines.append(f"{'ЗП статус':16s} {zp_label}")
+        lines.append("</pre>")
+        card = "\n".join(lines)
 
         b = InlineKeyboardBuilder()
         if zp_st == "not_requested":
+            b.button(text="✏️ Изменить стоимость", callback_data=f"instzpadj:start:{inv['id']}")
             b.button(text="💰 Запросить ЗП", callback_data=f"instzpadj:start:{inv['id']}")
         b.button(text="⬅️ Назад", callback_data="inst_nav:home")
         b.adjust(1)
