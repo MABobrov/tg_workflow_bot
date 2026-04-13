@@ -1575,15 +1575,19 @@ def _build_archive_card(inv: dict) -> str:
         sign = "+" if delta >= 0 else ""
         delta_str = f"{sign}{delta:,.0f}₽"
 
-    # Сроки: фактическое кол-во дней
+    # Сроки: (дата факт конец - дата начало - 3 дня комплектация)
     srok_str = ""
-    created = inv.get("created_at") or inv.get("receipt_date")
+    start_str = ""
+    end_str = ""
+    created = inv.get("receipt_date") or inv.get("created_at")
     completion = inv.get("actual_completion_date") or inv.get("zp_installer_approved_at")
     if created and completion:
         try:
             d_start = _date.fromisoformat(str(created)[:10])
             d_end = _date.fromisoformat(str(completion)[:10])
-            fact_days = (d_end - d_start).days
+            fact_days = max((d_end - d_start).days - 3, 0)
+            start_str = d_start.strftime("%d.%m.%Y")
+            end_str = d_end.strftime("%d.%m.%Y")
             srok_str = f"{fact_days} дн."
         except (ValueError, TypeError):
             pass
@@ -1604,10 +1608,12 @@ def _build_archive_card(inv: dict) -> str:
     lines.append(f"{'ЗП статус':16s} {zp_lbl}")
     if delta_str:
         lines.append(f"{'Дельта':16s} {delta_str:>11s}")
+    if start_str:
+        lines.append(f"{'Начало':16s} {start_str}")
+    if end_str:
+        lines.append(f"{'Факт конец':16s} {end_str}")
     if srok_str:
-        lines.append(f"{'Сроки':16s} {srok_str}")
-    if closed_str:
-        lines.append(f"{'Закрыт':16s} {closed_str}")
+        lines.append(f"{'Выполнение':16s} {srok_str}")
     lines.append("</pre>")
 
     return text + "\n".join(lines)
