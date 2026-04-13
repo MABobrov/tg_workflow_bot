@@ -637,6 +637,17 @@ async def task_actions_part2(
             project = await db.get_project(int(task["project_id"]))
         except Exception:
             project = None
+    # Fallback: resolve project from invoice_id in payload
+    if not project:
+        _payload = try_json_loads(task.get("payload_json"))
+        _inv_id = _payload.get("invoice_id") if _payload else None
+        if _inv_id:
+            try:
+                _inv = await db.get_invoice(int(_inv_id))
+                if _inv and _inv.get("project_id"):
+                    project = await db.get_project(int(_inv["project_id"]))
+            except Exception:
+                pass
 
     # PAYMENT CONFIRM actions (TD)
     if action in {"pay_ok", "pay_need"} and task.get("type") == TaskType.PAYMENT_CONFIRM:

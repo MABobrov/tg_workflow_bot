@@ -292,8 +292,18 @@ async def order_mat_finalize(
         await state.clear()
         return
 
+    # Resolve project_id from linked invoice
+    invoice_id = data.get("invoice_id")
+    project_id = None
+    if invoice_id:
+        try:
+            inv = await db.get_invoice(int(invoice_id))
+            project_id = inv.get("project_id") if inv else None
+        except Exception:
+            pass
+
     task = await db.create_task(
-        project_id=None,
+        project_id=project_id,
         type_=TaskType.ORDER_MATERIALS,
         status=TaskStatus.OPEN,
         created_by=u.id,
