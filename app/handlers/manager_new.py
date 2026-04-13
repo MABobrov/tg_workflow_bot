@@ -3029,7 +3029,7 @@ async def _chat_proxy_invoice_pick(
 ) -> None:
     """Show invoice picker before entering chat-proxy."""
     uid = message.from_user.id  # type: ignore[union-attr]
-    invoices = await db.list_invoices_for_user(uid, limit=50)
+    invoices = await db.list_invoices(created_by=uid, limit=50)
     active = [i for i in invoices if i.get("status") not in ("ended", "cancelled")]
 
     b = InlineKeyboardBuilder()
