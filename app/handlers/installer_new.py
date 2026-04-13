@@ -2557,21 +2557,47 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
         est_val = _calc_est_montazh(inv)
         zp_amount = inv.get("zp_installer_amount")
 
+        # Дедлайн
+        from datetime import date as _date, datetime as _dt
+        dl_str = ""
+        days_left_str = ""
+        dl_raw = inv.get("deadline_end_date")
+        if dl_raw:
+            try:
+                dl_date = _dt.fromisoformat(str(dl_raw)).date()
+                days_left = (dl_date - _date.today()).days
+                dl_str = dl_date.strftime("%d.%m.%Y")
+                if days_left < 0:
+                    days_left_str = f"просрочен {-days_left} дн."
+                elif days_left == 0:
+                    days_left_str = "сегодня"
+                else:
+                    days_left_str = f"{days_left} дн."
+            except (ValueError, TypeError):
+                pass
+
         lines = [f"{zp_icon} <b>№{num}</b> · {zp_label}{_credit_tag(inv)}\n"]
         lines.append("<pre>")
         lines.append(f"{'Менеджер':16s} {mgr}")
         lines.append(f"{'Адрес':16s} {inv.get('object_address', '—')}")
         if lead_name:
             lines.append(f"{'Клиент':16s} {lead_name}")
+        if lead_phone:
+            lines.append(f"{'Телефон':16s} {lead_phone}")
         lines.append(f"{'':16s} {'─' * 16}")
         if est_val:
             lines.append(f"{'Монтаж':16s} {est_val:>10,}₽")
+            lines.append(f"{'Монтаж +10%':16s} {int(est_val * 1.10):>10,}₽")
         if zp_amount and zp_st in ("requested", "approved"):
             try:
                 lines.append(f"{'ЗП':16s} {float(zp_amount):>10,.0f}₽")
             except (ValueError, TypeError):
                 pass
         lines.append(f"{'ЗП статус':16s} {zp_label}")
+        if dl_str:
+            lines.append(f"{'Срок':16s} {dl_str}")
+        if days_left_str:
+            lines.append(f"{'Осталось':16s} {days_left_str}")
         lines.append("</pre>")
         card = "\n".join(lines)
 
