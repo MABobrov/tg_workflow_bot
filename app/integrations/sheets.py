@@ -217,6 +217,9 @@ INVOICES_HEADER = [
     "Затр. Логистика",     # 123
     "Затр. Доп мат.",      # 124
     "Затр. Доп усл.",      # 125
+    # --- Доп. поля процессов ---
+    "Коммент. монтажник ОК",  # 126
+    "Способ оплаты",          # 127
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -826,6 +829,10 @@ class GoogleSheetsService:
                          (125, "cost_extra_svc")):
             _cv = float(invoice.get(_cf) or 0)
             cells[_ci] = self._fmt_amount(_cv) if _cv else ""
+
+        # --- Доп. поля процессов ---
+        cells[126] = invoice.get("installer_ok_comment") or ""
+        cells[127] = invoice.get("payment_method") or ""
 
         # M (12): Дата окончания = receipt_date + deadline_days
         _receipt = invoice.get("receipt_date")
