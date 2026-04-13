@@ -734,6 +734,16 @@ async def rp_montazh_assign(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
+    # Защита от повторного назначения
+    stage = inv.get("montazh_stage") or ""
+    if stage in ("assigned", "in_work", "razmery_ok", "invoice_ok", "invoice_end"):
+        from ..enums import MONTAZH_STAGE_LABELS
+        label = MONTAZH_STAGE_LABELS.get(stage, stage)
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"⚠️ Счёт №{inv.get('invoice_number', '?')} уже назначен (стадия: {label})",
+        )
+        return
+
     # Найти монтажника (первый активный с ролью installer)
     installers = await db.find_users_by_role("installer")
     if not installers:
