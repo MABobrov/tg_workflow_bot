@@ -1188,20 +1188,22 @@ async def installer_my_objects(message: Message, db: Database) -> None:
         return
 
     work_stages = ("in_work", "razmery_ok")
+    _ZP_DONE = ("confirmed",)  # ЗП получена монтажником
     in_work = [i for i in all_inv if i.get("montazh_stage") in work_stages]
-    waiting = [
-        i for i in all_inv
-        if i.get("montazh_stage") == "invoice_ok"
-        and (i.get("zp_installer_status") or "not_requested") != "approved"
-    ]
     archive = [
         i for i in all_inv
-        if (i.get("zp_installer_status") or "not_requested") == "approved"
-        or i["status"] == InvoiceStatus.ENDED
+        if (i.get("zp_installer_status") or "") in _ZP_DONE
+        or (i["status"] == InvoiceStatus.ENDED
+            and (i.get("zp_installer_status") or "") in _ZP_DONE)
     ]
-    # Убираем дубли: если в archive, не показывать в waiting
     archive_ids = {i["id"] for i in archive}
-    waiting = [i for i in waiting if i["id"] not in archive_ids]
+    work_ids = {i["id"] for i in in_work}
+    waiting = [
+        i for i in all_inv
+        if i["id"] not in archive_ids
+        and i["id"] not in work_ids
+        and i.get("montazh_stage") in ("invoice_ok", "invoice_end")
+    ]
 
     total = len(in_work) + len(waiting) + len(archive)
     text = f"📌 <b>Мои объекты</b> · {total} шт.\n"
@@ -1235,6 +1237,7 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
     ]
 
     work_stages = ("in_work", "razmery_ok")
+    _ZP_DONE = ("confirmed",)
     if cat == "work":
         filtered = [i for i in all_inv if i.get("montazh_stage") in work_stages]
         filtered.sort(key=lambda i: _STAGE_ORDER.get(i.get("montazh_stage") or "none", 99))
@@ -1242,21 +1245,23 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
     elif cat == "archive":
         filtered = [
             i for i in all_inv
-            if (i.get("zp_installer_status") or "not_requested") == "approved"
-            or i["status"] == InvoiceStatus.ENDED
+            if (i.get("zp_installer_status") or "") in _ZP_DONE
+            or (i["status"] == InvoiceStatus.ENDED
+                and (i.get("zp_installer_status") or "") in _ZP_DONE)
         ]
         filtered.sort(key=lambda i: i.get("zp_installer_approved_at") or "", reverse=True)
         title = "📦 Архив"
     else:
         archive_ids = {
             i["id"] for i in all_inv
-            if (i.get("zp_installer_status") or "not_requested") == "approved"
-            or i["status"] == InvoiceStatus.ENDED
+            if (i.get("zp_installer_status") or "") in _ZP_DONE
         }
+        work_ids = {i["id"] for i in all_inv if i.get("montazh_stage") in work_stages}
         filtered = [
             i for i in all_inv
-            if i.get("montazh_stage") == "invoice_ok"
+            if i.get("montazh_stage") in ("invoice_ok", "invoice_end")
             and i["id"] not in archive_ids
+            and i["id"] not in work_ids
         ]
         filtered.sort(key=lambda i: i.get("created_at") or "", reverse=True)
         title = "✅ Ожидает расчёт"
@@ -1369,17 +1374,21 @@ async def installer_objects_back(cb: CallbackQuery, db: Database) -> None:
     ]
 
     work_stages = ("in_work", "razmery_ok")
+    _ZP_DONE = ("confirmed",)
     in_work = [i for i in all_inv if i.get("montazh_stage") in work_stages]
     archive = [
         i for i in all_inv
-        if (i.get("zp_installer_status") or "not_requested") == "approved"
-        or i["status"] == InvoiceStatus.ENDED
+        if (i.get("zp_installer_status") or "") in _ZP_DONE
+        or (i["status"] == InvoiceStatus.ENDED
+            and (i.get("zp_installer_status") or "") in _ZP_DONE)
     ]
     archive_ids = {i["id"] for i in archive}
+    work_ids = {i["id"] for i in in_work}
     waiting = [
         i for i in all_inv
-        if i.get("montazh_stage") == "invoice_ok"
+        if i.get("montazh_stage") in ("invoice_ok", "invoice_end")
         and i["id"] not in archive_ids
+        and i["id"] not in work_ids
     ]
 
     total = len(in_work) + len(waiting) + len(archive)
