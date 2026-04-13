@@ -586,6 +586,7 @@ async def invoice_ok_comment(
         await integrations.sync_invoice_status(
             inv_row["invoice_number"], inv_row.get("status", ""), MontazhStage.INVOICE_OK,
         )
+        await integrations.sync_invoice_row(invoice_id)
 
     # Set actual completion date (Дата Факт)
     today_iso = datetime.now().strftime("%Y-%m-%d")
@@ -1302,6 +1303,7 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data.startswith("instzp_done:"))
 async def installer_zp_done(
     cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+    integrations: IntegrationHub,
 ) -> None:
     """#18: Монтажник подтвердил получение ЗП."""
     if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
@@ -1312,6 +1314,7 @@ async def installer_zp_done(
     if not inv:
         return
     await db.set_invoice_zp_installer_status(inv_id, "confirmed")
+    await integrations.sync_invoice_row(inv_id)
     try:
         await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
     except Exception:
@@ -1867,6 +1870,7 @@ async def zpadj_amount(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "instzpadj:confirm")
 async def zpadj_finalize(
     cb: CallbackQuery, state: FSMContext, db: Database, config: Config, notifier: Notifier,
+    integrations: IntegrationHub,
 ) -> None:
     """Подтверждение: обновить DB + задача ГД."""
     if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
@@ -1890,6 +1894,7 @@ async def zpadj_finalize(
 
     # Обновить invoice
     await db.set_invoice_zp_installer_status(invoice_id, "requested", amount=total, requested_by=u.id)
+    await integrations.sync_invoice_row(invoice_id)
 
     inv = await db.get_invoice(invoice_id)
     inv_number = inv["invoice_number"] if inv else "—"
@@ -2300,6 +2305,7 @@ async def installer_price_ok(
     )
     await db.conn.commit()
     await db.update_montazh_stage(invoice_id, MontazhStage.IN_WORK)
+    await integrations.sync_invoice_row(invoice_id)
 
     await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(  # type: ignore[union-attr]

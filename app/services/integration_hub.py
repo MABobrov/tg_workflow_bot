@@ -74,6 +74,10 @@ class IntegrationHub:
             "montazh_stage": montazh_stage,
         })
 
+    async def sync_invoice_row(self, invoice_id: int) -> None:
+        """Re-export one invoice row to the Invoices sheet."""
+        await self.push("invoice_row_upsert", {"invoice_id": invoice_id})
+
     async def maybe_create_lead(self, project_id: int) -> None:
         if not self.amocrm:
             return
@@ -119,6 +123,18 @@ class IntegrationHub:
                         await self.sheets.write_field_to_op(inv_num, "bot_status", status)
                     if stage:
                         await self.sheets.write_field_to_op(inv_num, "montazh_stage", stage)
+                elif ev.kind == "invoice_row_upsert" and self.sheets:
+                    inv_id = int(ev.payload["invoice_id"])
+                    inv = await self.db.get_invoice(inv_id)
+                    if inv:
+                        manager_label = ""
+                        creator = inv.get("created_by")
+                        if creator:
+                            mu = await self.db.get_user_optional(int(creator))
+                            if mu:
+                                manager_label = f"@{mu.username}" if mu.username else str(mu.telegram_id)
+                        await self.sheets.upsert_invoice(inv, manager_label=manager_label)
+                        log.info("Synced invoice row #%s (%s) to Invoices sheet", inv_id, inv.get("invoice_number"))
                 elif ev.kind == "amocrm_create_lead" and self.amocrm:
                     pid = int(ev.payload["project_id"])
                     project = await self.db.get_project(pid)

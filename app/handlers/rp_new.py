@@ -833,7 +833,7 @@ async def rp_montazh_attach_text(message: Message, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data == "rp_montazh:finish_attach")
-async def rp_montazh_finish_attach(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+async def rp_montazh_finish_attach(cb: CallbackQuery, state: FSMContext, db: Database, integrations: IntegrationHub) -> None:
     """Отправить счёт монтажнику с вложениями."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
@@ -846,21 +846,22 @@ async def rp_montazh_finish_attach(cb: CallbackQuery, state: FSMContext, db: Dat
     if not invoice_id:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
-    await _do_montazh_assign(cb, db, int(invoice_id), attachments)
+    await _do_montazh_assign(cb, db, int(invoice_id), attachments, integrations)
 
 
 @router.callback_query(F.data.startswith("rp_montazh:send_now:"))
-async def rp_montazh_send_now(cb: CallbackQuery, db: Database) -> None:
+async def rp_montazh_send_now(cb: CallbackQuery, db: Database, integrations: IntegrationHub) -> None:
     """Отправить счёт монтажнику без вложений."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    await _do_montazh_assign(cb, db, invoice_id, [])
+    await _do_montazh_assign(cb, db, invoice_id, [], integrations)
 
 
 async def _do_montazh_assign(
     cb: CallbackQuery, db: Database, invoice_id: int, attachments: list[dict],
+    integrations: IntegrationHub | None = None,
 ) -> None:
     """Общая логика назначения счёта монтажнику."""
     inv = await db.get_invoice(invoice_id)
@@ -884,6 +885,8 @@ async def _do_montazh_assign(
         (installer_uid, MontazhStage.ASSIGNED, att_json, datetime.now().isoformat(), invoice_id),
     )
     await db.conn.commit()
+    if integrations:
+        await integrations.sync_invoice_row(invoice_id)
 
     num = inv.get("invoice_number", "?")
     addr = inv.get("object_address") or "—"
