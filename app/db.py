@@ -1194,7 +1194,7 @@ class Database:
         cur = await self.conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE assigned_to = ? "
             "AND status IN ('open', 'in_progress') "
-            "AND type NOT IN ('invoice_payment', 'payment_confirm', 'invoice_end') "
+            "AND type NOT IN ('invoice_payment', 'payment_confirm', 'invoice_end', 'zp_installer') "
             "AND (created_by IS NULL OR created_by != ?)",
             (user_id, user_id),
         )

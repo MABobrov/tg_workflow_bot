@@ -143,10 +143,11 @@ async def gd_inbox_all(message: Message, db: Database, config: Config) -> None:
         exclude_created_by=user_id,
     )
 
-    # Исключаем INVOICE_PAYMENT — они показываются в кнопке "Счета на оплату"
+    # Исключаем задачи, которые показываются в отдельных кнопках
+    _INBOX_EXCLUDE = {TaskType.INVOICE_PAYMENT, TaskType.ZP_INSTALLER}
     all_tasks = [
         t for t in all_tasks_raw
-        if t.get("type") != TaskType.INVOICE_PAYMENT
+        if t.get("type") not in _INBOX_EXCLUDE
     ]
 
     is_admin = user_id in (config.admin_ids or set())
