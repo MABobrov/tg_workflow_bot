@@ -1319,6 +1319,7 @@ async def installer_zp_done(
         await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
     except Exception:
         pass
+    await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ ЗП по счёту №{inv.get('invoice_number', '?')} подтверждено.",
     )
@@ -1342,6 +1343,7 @@ async def installer_zp_price_ok(
         await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
     except Exception:
         pass
+    await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(  # type: ignore[union-attr]
         f"💲 Цена по счёту №{inv.get('invoice_number', '?')} подтверждена.",
     )
