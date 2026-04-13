@@ -690,7 +690,7 @@ async def rp_montazh_send_to_work(cb: CallbackQuery, db: Database) -> None:
 
     cur = await db.conn.execute(
         "SELECT * FROM invoices WHERE "
-        "(montazh_stage IS NULL OR montazh_stage = 'none') "
+        "(montazh_stage IS NULL OR montazh_stage IN ('none','assigned')) "
         "AND status IN ('in_progress', 'paid') "
         "AND parent_invoice_id IS NULL "
         "ORDER BY created_at DESC LIMIT 20",
@@ -699,7 +699,7 @@ async def rp_montazh_send_to_work(cb: CallbackQuery, db: Database) -> None:
 
     if not invoices:
         await cb.message.answer(  # type: ignore[union-attr]
-            "➕ <b>Счёт в работу</b>\n\nНет доступных счетов для отправки ✅"
+            "➕ <b>Счёт в работу</b>\n\nНет счетов без подтверждения монтажника ✅"
         )
         return
 
@@ -707,7 +707,9 @@ async def rp_montazh_send_to_work(cb: CallbackQuery, db: Database) -> None:
     for inv in invoices:
         num = inv.get("invoice_number") or f"#{inv['id']}"
         addr = (inv.get("object_address") or "")[:20]
-        text = f"📄 №{num} — {addr}"
+        stage = inv.get("montazh_stage") or ""
+        prefix = "📩" if stage == "assigned" else "📄"
+        text = f"{prefix} №{num} — {addr}"
         b.button(text=text[:55], callback_data=f"rp_montazh:assign:{inv['id']}")
     b.button(text="⬅️ Назад", callback_data="rp_montazh:back_menu")
     b.adjust(1)
