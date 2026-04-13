@@ -501,6 +501,11 @@ class RpSupplierInvoiceSG(StatesGroup):
     comment = State()            # комментарий
 
 
+class RpMontazhAssignSG(StatesGroup):
+    """РП: назначить счёт монтажнику с вложениями."""
+    attachments = State()        # сбор файлов (photo/document/video/text)
+
+
 class AccRequestToManagerSG(StatesGroup):
     """Бухгалтерия: запрос/задача менеджеру счёта."""
     text = State()               # текст запроса

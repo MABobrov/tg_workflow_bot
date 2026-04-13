@@ -85,6 +85,7 @@ from ..states import (
     KpReviewSG,
     LeadToProjectSG,
     ManagerChatProxySG,
+    RpMontazhAssignSG,
     RpRazmerySG,
     RpSupplierInvoiceSG,
 )
@@ -722,8 +723,8 @@ async def rp_montazh_send_to_work(cb: CallbackQuery, db: Database) -> None:
 
 
 @router.callback_query(F.data.startswith("rp_montazh:assign:"))
-async def rp_montazh_assign(cb: CallbackQuery, db: Database) -> None:
-    """Назначить счёт монтажнику @Bykanov."""
+async def rp_montazh_assign(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Выбор: прикрепить файлы или отправить сразу."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
@@ -744,18 +745,143 @@ async def rp_montazh_assign(cb: CallbackQuery, db: Database) -> None:
         )
         return
 
-    # Найти монтажника (первый активный с ролью installer)
+    num = inv.get("invoice_number", "?")
+    b = InlineKeyboardBuilder()
+    b.button(text="📎 Прикрепить файлы", callback_data=f"rp_montazh:attach:{invoice_id}")
+    b.button(text="➡️ Отправить без вложений", callback_data=f"rp_montazh:send_now:{invoice_id}")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📄 <b>Счёт №{num}</b>\n\nПрикрепить вложения для монтажника?",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("rp_montazh:attach:"))
+async def rp_montazh_start_attach(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Начать сбор файлов для монтажника."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await state.set_state(RpMontazhAssignSG.attachments)
+    await state.update_data(assign_invoice_id=invoice_id, attachments=[])
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📎 Отправьте файлы (PDF, фото, видео) или текстовый комментарий.\n"
+        "Можно несколько — я соберу всё.",
+    )
+
+
+@router.message(RpMontazhAssignSG.attachments, F.content_type.in_({"photo", "document", "video"}))
+async def rp_montazh_attach_file(message: Message, state: FSMContext) -> None:
+    """Принять файл от РП."""
+    data = await state.get_data()
+    attachments: list[dict] = data.get("attachments", [])
+
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = "video"
+    elif message.document:
+        file_id = message.document.file_id
+        file_type = "document"
+    else:
+        return
+
+    attachments.append({
+        "file_type": file_type,
+        "file_id": file_id,
+        "caption": message.caption or "",
+    })
+    await state.update_data(attachments=attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(
+        text=f"✅ Отправить монтажнику ({len(attachments)} вл.)",
+        callback_data="rp_montazh:finish_attach",
+    )
+    await message.answer(
+        f"📎 Принял. Файлов: {len(attachments)}. Отправьте ещё или нажмите кнопку.",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(RpMontazhAssignSG.attachments, F.text)
+async def rp_montazh_attach_text(message: Message, state: FSMContext) -> None:
+    """Принять текстовый комментарий от РП."""
+    if not message.text:
+        return
+    data = await state.get_data()
+    attachments: list[dict] = data.get("attachments", [])
+    attachments.append({
+        "file_type": "text",
+        "file_id": "",
+        "caption": message.text,
+    })
+    await state.update_data(attachments=attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(
+        text=f"✅ Отправить монтажнику ({len(attachments)} вл.)",
+        callback_data="rp_montazh:finish_attach",
+    )
+    await message.answer(
+        f"📎 Комментарий сохранён. Вложений: {len(attachments)}.",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "rp_montazh:finish_attach")
+async def rp_montazh_finish_attach(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Отправить счёт монтажнику с вложениями."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    data = await state.get_data()
+    invoice_id = data.get("assign_invoice_id")
+    attachments = data.get("attachments", [])
+    await state.clear()
+
+    if not invoice_id:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    await _do_montazh_assign(cb, db, int(invoice_id), attachments)
+
+
+@router.callback_query(F.data.startswith("rp_montazh:send_now:"))
+async def rp_montazh_send_now(cb: CallbackQuery, db: Database) -> None:
+    """Отправить счёт монтажнику без вложений."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await _do_montazh_assign(cb, db, invoice_id, [])
+
+
+async def _do_montazh_assign(
+    cb: CallbackQuery, db: Database, invoice_id: int, attachments: list[dict],
+) -> None:
+    """Общая логика назначения счёта монтажнику."""
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
     installers = await db.find_users_by_role("installer")
     if not installers:
-        await cb.message.answer("❌ Нет активных монтажников в системе.")  # type: ignore[union-attr]
+        await cb.message.answer("❌ Нет активных монтажников.")  # type: ignore[union-attr]
         return
     installer = installers[0]
     installer_uid = installer.telegram_id
 
+    import json
     from datetime import datetime
+    att_json = json.dumps(attachments, ensure_ascii=False) if attachments else None
     await db.conn.execute(
-        "UPDATE invoices SET assigned_to = ?, montazh_stage = ?, updated_at = ? WHERE id = ?",
-        (installer_uid, MontazhStage.ASSIGNED, datetime.now().isoformat(), invoice_id),
+        "UPDATE invoices SET assigned_to = ?, montazh_stage = ?, "
+        "montazh_assign_attachments_json = ?, updated_at = ? WHERE id = ?",
+        (installer_uid, MontazhStage.ASSIGNED, att_json, datetime.now().isoformat(), invoice_id),
     )
     await db.conn.commit()
 
@@ -771,12 +897,29 @@ async def rp_montazh_assign(cb: CallbackQuery, db: Database) -> None:
             f"📍 {addr}\n\n"
             "Нажмите «🔨 В Работу» для просмотра и подтверждения.",
         )
+        # Отправить вложения
+        for a in attachments:
+            try:
+                ft = a.get("file_type", "")
+                fid = a.get("file_id", "")
+                cap = a.get("caption", "")
+                if ft == "photo":
+                    await cb.bot.send_photo(installer_uid, fid, caption=cap or None)  # type: ignore[union-attr]
+                elif ft == "video":
+                    await cb.bot.send_video(installer_uid, fid, caption=cap or None)  # type: ignore[union-attr]
+                elif ft == "document":
+                    await cb.bot.send_document(installer_uid, fid, caption=cap or None)  # type: ignore[union-attr]
+                elif ft == "text" and cap:
+                    await cb.bot.send_message(installer_uid, f"💬 {cap}")  # type: ignore[union-attr]
+            except Exception:
+                pass
     except Exception:
         pass
 
     installer_name = installer.username or installer.full_name or str(installer_uid)
+    att_note = f" с {len(attachments)} вложениями" if attachments else ""
     await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ Счёт №{num} отправлен монтажнику @{installer_name}",
+        f"✅ Счёт №{num} отправлен монтажнику @{installer_name}{att_note}",
     )
 
 

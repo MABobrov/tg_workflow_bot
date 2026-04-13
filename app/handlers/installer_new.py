@@ -2131,14 +2131,16 @@ async def installer_work_view_card(
 
     addr = inv.get("object_address") or "—"
 
-    # Менеджер
-    mgr_label = "—"
-    created_by = inv.get("created_by")
-    if created_by:
-        mgr_label = await get_initiator_label(db, int(created_by))
+    # Менеджер — тип из номера счёта
+    inv_num = inv.get("invoice_number") or ""
+    if "КИА" in inv_num:
+        mgr_label = "КИА"
+    elif "НПН" in inv_num:
+        mgr_label = "НПН"
+    else:
+        mgr_label = "КВ"
 
     # Имя и телефон лида (по типу счёта: КВ/КИА/НПН)
-    inv_num = inv.get("invoice_number") or ""
     lead_name = ""
     lead_phone = ""
     if "КИА" in inv_num:
@@ -2183,6 +2185,8 @@ async def installer_work_view_card(
     lines.append(f"{'':16s} {'─' * 16}")
     if est_val:
         lines.append(f"{'Монтаж':16s} {est_val:>10,}₽")
+        est_plus10 = int(est_val * 1.10)
+        lines.append(f"{'Монтаж +10%':16s} {est_plus10:>10,}₽")
     if dl_str:
         lines.append(f"{'Срок':16s} {dl_str}")
     if days_left_str:
@@ -2197,6 +2201,30 @@ async def installer_work_view_card(
 
     await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+    # Показать вложения от РП (если есть)
+    att_json = inv.get("montazh_assign_attachments_json")
+    if att_json:
+        import json
+        try:
+            attachments = json.loads(att_json)
+        except (json.JSONDecodeError, TypeError):
+            attachments = []
+        for a in attachments:
+            try:
+                ft = a.get("file_type", "")
+                fid = a.get("file_id", "")
+                cap = a.get("caption", "")
+                if ft == "photo":
+                    await cb.message.answer_photo(fid, caption=cap or None)  # type: ignore[union-attr]
+                elif ft == "video":
+                    await cb.message.answer_video(fid, caption=cap or None)  # type: ignore[union-attr]
+                elif ft == "document":
+                    await cb.message.answer_document(fid, caption=cap or None)  # type: ignore[union-attr]
+                elif ft == "text" and cap:
+                    await cb.message.answer(f"💬 {cap}")  # type: ignore[union-attr]
+            except Exception:
+                pass
 
 
 @router.callback_query(F.data.startswith("inst_work:price_ok:"))

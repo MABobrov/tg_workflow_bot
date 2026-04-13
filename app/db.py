@@ -578,6 +578,8 @@ class Database:
             ("invoices", "installer_ok_comment", "TEXT"),
             # Способ оплаты (нал/безнал)
             ("invoices", "payment_method", "TEXT"),
+            # Вложения от РП при назначении монтажнику (JSON)
+            ("invoices", "montazh_assign_attachments_json", "TEXT"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
