@@ -888,15 +888,74 @@ async def _do_montazh_assign(
     num = inv.get("invoice_number", "?")
     addr = inv.get("object_address") or "—"
 
+    # Тип менеджера из номера
+    if "КИА" in num:
+        mgr_label = "КИА"
+        lead_name = inv.get("lead_kia_name") or ""
+        lead_phone = inv.get("lead_kia_phone") or ""
+    elif "НПН" in num:
+        mgr_label = "НПН"
+        lead_name = inv.get("lead_npn_name") or ""
+        lead_phone = inv.get("lead_npn_phone") or ""
+    else:
+        mgr_label = "КВ"
+        lead_name = inv.get("lead_kv_name") or ""
+        lead_phone = inv.get("lead_kv_phone") or ""
+    if not lead_name:
+        lead_name = inv.get("client_name") or ""
+
+    # Монтаж расч. (×0.71)
+    est_val = 0
+    est_inst = inv.get("estimated_installation")
+    if est_inst:
+        try:
+            est_val = int(float(est_inst) * 0.71) // 1000 * 1000
+        except (ValueError, TypeError):
+            pass
+
+    # Дедлайн
+    from datetime import date as _date, datetime as _dt
+    dl_str = ""
+    days_left_str = ""
+    dl_raw = inv.get("deadline_end_date")
+    if dl_raw:
+        try:
+            dl_date = _dt.fromisoformat(str(dl_raw)).date()
+            days_left = (dl_date - _date.today()).days
+            dl_str = dl_date.strftime("%d.%m.%Y")
+            if days_left < 0:
+                days_left_str = f"просрочен {-days_left} дн."
+            elif days_left == 0:
+                days_left_str = "сегодня"
+            else:
+                days_left_str = f"{days_left} дн."
+        except (ValueError, TypeError):
+            pass
+
+    # Карточка
+    lines = [f"🔨 <b>Новый счёт — №{num}</b>\n"]
+    lines.append("<pre>")
+    lines.append(f"{'Менеджер':16s} {mgr_label}")
+    lines.append(f"{'Адрес':16s} {addr}")
+    if lead_name:
+        lines.append(f"{'Клиент':16s} {lead_name}")
+    if lead_phone:
+        lines.append(f"{'Телефон':16s} {lead_phone}")
+    lines.append(f"{'':16s} {'─' * 16}")
+    if est_val:
+        lines.append(f"{'Монтаж':16s} {est_val:>10,}₽")
+        lines.append(f"{'Монтаж +10%':16s} {int(est_val * 1.10):>10,}₽")
+    if dl_str:
+        lines.append(f"{'Срок':16s} {dl_str}")
+    if days_left_str:
+        lines.append(f"{'Осталось':16s} {days_left_str}")
+    lines.append("</pre>")
+    lines.append("\nНажмите «🔨 В Работу» для подтверждения.")
+    card_text = "\n".join(lines)
+
     # Уведомление монтажнику
     try:
-        await cb.bot.send_message(  # type: ignore[union-attr]
-            installer_uid,
-            f"🔨 <b>Новый счёт назначен вам</b>\n\n"
-            f"📄 №{num}\n"
-            f"📍 {addr}\n\n"
-            "Нажмите «🔨 В Работу» для просмотра и подтверждения.",
-        )
+        await cb.bot.send_message(installer_uid, card_text)  # type: ignore[union-attr]
         # Отправить вложения
         for a in attachments:
             try:
