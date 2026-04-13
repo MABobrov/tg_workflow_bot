@@ -1233,7 +1233,7 @@ class Database:
             "SELECT COUNT(*) FROM invoices "
             "WHERE zp_status = 'requested' "
             "   OR zp_manager_status = 'requested' "
-            "   OR zp_installer_status = 'requested'",
+            "   OR zp_installer_status IN ('requested', 'approved', 'payment_sent')",
         )
         row = await cur.fetchone()
         return row[0] if row else 0
