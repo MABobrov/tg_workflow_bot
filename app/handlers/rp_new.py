@@ -554,18 +554,30 @@ async def rp_chat_invoice_picked(cb: CallbackQuery, state: FSMContext, db: Datab
     RoleFilter([Role.RP]),
 )
 async def rp_chat_montazh(message: Message, state: FSMContext, db: Database) -> None:
-    log.info("rp_chat_montazh: entered for user %s", message.from_user.id if message.from_user else "?")
     await state.clear()
     await state.set_state(ManagerChatProxySG.menu)
     await state.update_data(channel="montazh")
-    try:
-        result = await message.answer(
-            "🔧 <b>Монтажная гр.</b>\n\nВыберите действие:",
-            reply_markup=rp_montazh_submenu("⬅️ Назад"),
-        )
-        log.info("rp_chat_montazh: answer sent, message_id=%s", result.message_id)
-    except Exception as exc:
-        log.error("rp_chat_montazh: answer FAILED: %s", exc)
+
+    # Считаем счета в работе
+    in_work_all = await db.list_invoices_in_work(limit=50)
+    in_work_montazh = [
+        i for i in in_work_all
+        if i.get("montazh_stage") in ("in_work", "razmery_ok", "invoice_ok")
+    ]
+    n_in_work = len(in_work_montazh)
+
+    b = InlineKeyboardBuilder()
+    b.button(text=f"📋 Счета в работе ({n_in_work})", callback_data="rp_montazh:list_inwork")
+    b.button(text="➕ Счёт в работу", callback_data="rp_montazh:send_to_work")
+    b.button(text="💬 Чат", callback_data="rp_montazh:chat")
+    b.button(text="📐 Размеры", callback_data="rp_montazh:razmery")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
+    b.adjust(2, 2, 1)
+
+    await message.answer(
+        "🔧 <b>Монтажная гр.</b>\n\nВыберите действие:",
+        reply_markup=b.as_markup(),
+    )
 
 
 @router.message(ManagerChatProxySG.menu, F.text == "💬 Чат")
@@ -758,7 +770,7 @@ async def rp_montazh_assign(cb: CallbackQuery, db: Database) -> None:
 
 @router.callback_query(F.data == "rp_montazh:back_menu")
 async def rp_montazh_back_menu(cb: CallbackQuery, db: Database) -> None:
-    """Вернуться к меню В работу."""
+    """Вернуться к главному меню Монтажной гр."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
@@ -771,15 +783,67 @@ async def rp_montazh_back_menu(cb: CallbackQuery, db: Database) -> None:
     n_in_work = len(in_work_montazh)
 
     b = InlineKeyboardBuilder()
-    b.button(
-        text=f"📋 Счета в работе ({n_in_work})",
-        callback_data="rp_montazh:list_inwork",
-    )
+    b.button(text=f"📋 Счета в работе ({n_in_work})", callback_data="rp_montazh:list_inwork")
     b.button(text="➕ Счёт в работу", callback_data="rp_montazh:send_to_work")
-    b.adjust(1)
+    b.button(text="💬 Чат", callback_data="rp_montazh:chat")
+    b.button(text="📐 Размеры", callback_data="rp_montazh:razmery")
+    b.adjust(2, 2)
 
     await cb.message.answer(  # type: ignore[union-attr]
-        "🔧 <b>Монтажная гр. — В работу</b>\n\nВыберите действие:",
+        "🔧 <b>Монтажная гр.</b>\n\nВыберите действие:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "rp_montazh:chat")
+async def rp_montazh_chat_cb(cb: CallbackQuery, db: Database, config: "Config") -> None:
+    """Монтажная гр. → Чат (inline)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    limit = getattr(config, "chat_history_limit", 20)
+    messages_list = await db.list_chat_messages("montazh", limit=limit)
+    if not messages_list:
+        await cb.message.answer("💬 Пока нет сообщений в чате с монтажной группой.")  # type: ignore[union-attr]
+        return
+    lines: list[str] = [f"💬 <b>Чат — Монтажная гр.</b> (последние {len(messages_list)}):\n"]
+    for m in messages_list:
+        sender_id = m.get("sender_id", 0)
+        sender_label = await get_initiator_label(db, int(sender_id)) if sender_id else "?"
+        text_msg = m.get("text", "")
+        ts = m.get("created_at", "")[:16]
+        direction = m.get("direction", "")
+        arrow = "→" if direction == "outgoing" else "←"
+        lines.append(f"<b>{sender_label}</b> {arrow} ({ts}):\n{text_msg}")
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Назад", callback_data="rp_montazh:back_menu")
+    await cb.message.answer("\n\n".join(lines[-12:]), reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "rp_montazh:razmery")
+async def rp_montazh_razmery_cb(cb: CallbackQuery, db: Database) -> None:
+    """Монтажная гр. → Размеры (inline) — показываем список запросов."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    cur = await db.conn.execute(
+        "SELECT * FROM razmery_requests ORDER BY created_at DESC LIMIT 15",
+    )
+    rows = [dict(r) for r in await cur.fetchall()]
+    if not rows:
+        await cb.message.answer("📐 Нет запросов на размеры.")  # type: ignore[union-attr]
+        return
+    b = InlineKeyboardBuilder()
+    for req in rows:
+        inv = await db.get_invoice(req["invoice_id"]) if req.get("invoice_id") else None
+        num = inv.get("invoice_number", "?") if inv else "?"
+        status_map = {"new": "🆕", "pending_form": "📝", "error": "❌", "sent": "📤", "ok": "✅"}
+        s = status_map.get(req.get("status", ""), "❓")
+        b.button(text=f"{s} №{num}"[:50], callback_data=f"razmok_rp:view:{req['id']}")
+    b.button(text="⬅️ Назад", callback_data="rp_montazh:back_menu")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📐 <b>Размеры</b> ({len(rows)})\n\nНажмите для просмотра:",
         reply_markup=b.as_markup(),
     )
 
