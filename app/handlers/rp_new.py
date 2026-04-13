@@ -740,7 +740,7 @@ async def rp_montazh_assign(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Нет активных монтажников в системе.")  # type: ignore[union-attr]
         return
     installer = installers[0]
-    installer_uid = installer["user_id"]
+    installer_uid = installer.telegram_id
 
     from datetime import datetime
     await db.conn.execute(
@@ -764,7 +764,7 @@ async def rp_montazh_assign(cb: CallbackQuery, db: Database) -> None:
     except Exception:
         pass
 
-    installer_name = installer.get("username") or installer.get("full_name") or str(installer_uid)
+    installer_name = installer.username or installer.full_name or str(installer_uid)
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ Счёт №{num} отправлен монтажнику @{installer_name}",
     )
