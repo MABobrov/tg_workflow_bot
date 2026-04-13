@@ -942,8 +942,7 @@ async def _do_montazh_assign(
     lines.append(f"{'Адрес':16s} {addr}")
     if lead_name:
         lines.append(f"{'Клиент':16s} {lead_name}")
-    if lead_phone:
-        lines.append(f"{'Телефон':16s} {lead_phone}")
+    # телефон скрыт для монтажника
     lines.append(f"{'':16s} {'─' * 16}")
     if est_val:
         lines.append(f"{'Монтаж':16s} {est_val:>10,}₽")
