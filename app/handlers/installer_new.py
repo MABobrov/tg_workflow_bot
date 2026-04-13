@@ -2130,31 +2130,63 @@ async def installer_work_view_card(
             pass
 
     addr = inv.get("object_address") or "—"
+
+    # Менеджер
+    mgr_label = "—"
+    created_by = inv.get("created_by")
+    if created_by:
+        mgr_label = await get_initiator_label(db, int(created_by))
+
+    # Имя и телефон лида (по типу счёта: КВ/КИА/НПН)
+    inv_num = inv.get("invoice_number") or ""
+    lead_name = ""
+    lead_phone = ""
+    if "КИА" in inv_num:
+        lead_name = inv.get("lead_kia_name") or ""
+        lead_phone = inv.get("lead_kia_phone") or ""
+    elif "НПН" in inv_num:
+        lead_name = inv.get("lead_npn_name") or ""
+        lead_phone = inv.get("lead_npn_phone") or ""
+    else:
+        lead_name = inv.get("lead_kv_name") or ""
+        lead_phone = inv.get("lead_kv_phone") or ""
+    if not lead_name:
+        lead_name = inv.get("client_name") or ""
+
     # Дедлайн
+    from datetime import date as _date, datetime as _dt
     dl_str = ""
+    days_left_str = ""
     dl_raw = inv.get("deadline_end_date")
     if dl_raw:
         try:
-            from datetime import date as _date, datetime as _dt
             dl_date = _dt.fromisoformat(str(dl_raw)).date()
             days_left = (dl_date - _date.today()).days
-            dl_str = f"{dl_date.strftime('%d.%m.%Y')} ({days_left} дн.)"
+            dl_str = dl_date.strftime("%d.%m.%Y")
+            if days_left < 0:
+                days_left_str = f"⚠️ просрочен на {-days_left} дн."
+            elif days_left == 0:
+                days_left_str = "⚠️ сегодня"
+            else:
+                days_left_str = f"{days_left} дн."
         except (ValueError, TypeError):
             pass
 
-    lines = [f"📄 <b>Счёт №{inv['invoice_number']}</b>"]
-    lines.append(f"📍 {addr}\n")
+    lines = [f"📄 <b>Счёт №{inv_num}</b>\n"]
     lines.append("<pre>")
+    lines.append(f"{'Менеджер':16s} {mgr_label}")
+    lines.append(f"{'Адрес':16s} {addr}")
+    if lead_name:
+        lines.append(f"{'Клиент':16s} {lead_name}")
+    if lead_phone:
+        lines.append(f"{'Телефон':16s} {lead_phone}")
+    lines.append(f"{'':16s} {'─' * 16}")
     if est_val:
-        lines.append(f"{'Монтаж расч.':16s} {est_val:>10,}₽")
-    area = inv.get("area_m2")
-    if area:
-        try:
-            lines.append(f"{'Площадь':16s} {float(area):>10,.1f} м²")
-        except (ValueError, TypeError):
-            pass
+        lines.append(f"{'Монтаж':16s} {est_val:>10,}₽")
     if dl_str:
-        lines.append(f"{'Срок':16s} {dl_str:>16s}")
+        lines.append(f"{'Срок':16s} {dl_str}")
+    if days_left_str:
+        lines.append(f"{'Осталось':16s} {days_left_str}")
     lines.append("</pre>")
     text = "\n".join(lines)
 
