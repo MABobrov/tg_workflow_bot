@@ -2561,13 +2561,7 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
         card += f"📍 {addr}\n"
         if est_val:
             card += f"🔧 Расч. монтаж: {est_val:,}₽\n"
-        # Сумма счёта
-        inv_amount = inv.get("amount")
-        if inv_amount:
-            try:
-                card += f"💰 Сумма: {float(inv_amount):,.0f}₽\n"
-            except (ValueError, TypeError):
-                pass
+        # Сумма счёта — скрыта для монтажника
         zp_amount = inv.get("zp_installer_amount")
         if zp_amount and zp_st in ("requested", "approved"):
             try:
@@ -2677,7 +2671,7 @@ async def installer_zp_amount(message: Message, state: FSMContext, db: Database)
     await message.answer(
         f"💰 <b>Подтверждение запроса ЗП</b>\n\n"
         f"🔢 Счёт: №{inv['invoice_number'] if inv else '—'}\n"
-        f"💵 Сумма: {amount:,.0f}₽\n\n"
+        f"💵 ЗП: {amount:,.0f}₽\n\n"
         "Отправить запрос ГД?",
         reply_markup=b.as_markup(),
     )
@@ -2751,5 +2745,5 @@ async def installer_zp_confirm(
     await state.clear()
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ Запрос ЗП отправлен ГД.\n"
-        f"Счёт: №{inv_number}, сумма: {amount:,.0f}₽",
+        f"Счёт: №{inv_number}, ЗП: {amount:,.0f}₽",
     )
