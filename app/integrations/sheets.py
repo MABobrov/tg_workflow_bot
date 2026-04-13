@@ -220,6 +220,7 @@ INVOICES_HEADER = [
     # --- Доп. поля процессов ---
     "Коммент. монтажник ОК",  # 126
     "Способ оплаты",          # 127
+    "Статус заказа стекла",   # 128
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -833,6 +834,7 @@ class GoogleSheetsService:
         # --- Доп. поля процессов ---
         cells[126] = invoice.get("installer_ok_comment") or ""
         cells[127] = invoice.get("payment_method") or ""
+        cells[128] = invoice.get("glass_order_status") or ""
 
         # M (12): Дата окончания = receipt_date + deadline_days
         _receipt = invoice.get("receipt_date")

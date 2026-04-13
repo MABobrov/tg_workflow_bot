@@ -743,11 +743,42 @@ async def task_actions_part2(
             )
         return
 
-    # ORDER actions (TD) -> open supplier payment flow with project preselected
+    # ORDER actions (TD) -> accept order or open supplier payment flow
     if action == "pay_supplier" and task.get("type") in {TaskType.ORDER_PROFILE, TaskType.ORDER_GLASS, TaskType.ORDER_MATERIALS}:
+        _order_payload = try_json_loads(task.get("payload_json"))
+        _order_inv_id = _order_payload.get("invoice_id") if _order_payload else None
+
+        # Installer order without project — just accept task + update invoice status
         if not project:
-            await cb.message.answer("Проект не найден для этой задачи.")  # type: ignore
+            await cb.answer()
+            try:
+                task = await db.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+            except Exception as e:
+                log.error("pay_supplier: update_task_status failed: %s", e, exc_info=True)
+                return
+            # Update glass_order_status on linked invoice
+            if _order_inv_id:
+                await db.conn.execute(
+                    "UPDATE invoices SET glass_order_status = 'заказано' WHERE id = ?",
+                    (int(_order_inv_id),),
+                )
+                await db.conn.commit()
+            # Notify installer
+            _sender_id = _order_payload.get("sender_id") if _order_payload else None
+            if _sender_id:
+                initiator = await get_initiator_label(db, cb.from_user.id)
+                _desc = (_order_payload.get("description") or "")[:100] if _order_payload else ""
+                await notifier.safe_send(
+                    int(_sender_id),
+                    f"✅ <b>Заявка на материалы принята</b>\n"
+                    f"👤 {initiator}\n"
+                    f"📦 {_desc}",
+                )
+            kb = task_actions_kb(task)
+            await _safe_edit_task_markup(cb.message, reply_markup=kb)
             return
+
+        # With project — open full supplier payment flow
         await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
         await state.update_data(project_id=int(project["id"]), source_order_task_id=int(task_id))
