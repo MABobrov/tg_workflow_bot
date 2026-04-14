@@ -339,8 +339,20 @@ async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
     if inv.get("no_debts"):
         doc_lines.append(f"{'Долгов нет':{W}s}✅")
 
+    # % заполненности документов
+    _doc_total = 7  # ЭДО перв, бумага, ориг перв, ЭДО втор, ориг втор, закр.док, долги
+    _doc_done = sum(bool(v) for v in [
+        inv.get("docs_edo_signed"), inv.get("docs_paper_signed"),
+        inv.get("docs_originals_holder"), inv.get("edo_signed"),
+        inv.get("closing_originals_holder"), inv.get("closing_docs_status"),
+        inv.get("no_debts"),
+    ])
+    pct = _doc_done * 100 // _doc_total
+    bar_fill = pct // 10
+    bar = "▓" * bar_fill + "░" * (10 - bar_fill)
+    lines.append(f"{'─' * 32}")
+    lines.append(f"{'Документы':{W}s}{bar} {pct}%")
     if doc_lines:
-        lines.append(f"{'─' * 32}")
         lines.extend(doc_lines)
 
     lines.append("</pre>")
