@@ -1060,10 +1060,11 @@ async def acc_question_send(cb: CallbackQuery, state: FSMContext, db: Database, 
     due = datetime.now() + timedelta(hours=24)
     new_task = await db.create_task(
         project_id=orig_task.get("project_id") if orig_task else None,
-        task_type=TaskType.ACC_QUESTION,
+        type_=TaskType.ACC_QUESTION,
+        status="pending",
         created_by=acc_user.id,
         assigned_to=creator_id,
-        due_at=due.isoformat(),
+        due_at_iso=due.isoformat(),
         payload=new_payload,
     )
     new_tid = new_task["id"]
