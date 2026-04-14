@@ -253,13 +253,13 @@ def _doc_status_line(edo_signed: bool, originals_holder: str | None) -> str:
 
 
 async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
-    """Build a compact card text for one invoice."""
+    """Build a <pre> card for one invoice (accounting view)."""
     num = inv.get("invoice_number") or f"#{inv['id']}"
-    date = (inv.get("created_at") or "-")[:10]
-    status_icon = {
-        "pending": "⏳", "in_progress": "🔄", "paid": "✅",
-        "on_hold": "⏸", "closing": "📌",
-    }.get(inv.get("status", ""), "❓")
+    status_label = {
+        "pending": "⏳ Ожидание", "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
+        "on_hold": "⏸ На паузе", "closing": "📌 Закрытие", "ended": "🏁 Закрыт",
+        "credit": "💳 Кредит",
+    }.get(inv.get("status", ""), inv.get("status") or "—")
 
     try:
         amt = f"{float(inv.get('amount', 0)):,.0f}₽"
@@ -279,27 +279,54 @@ async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
         "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
     }.get(inv.get("creator_role", ""), inv.get("creator_role") or "")
 
-    supplier = inv.get("supplier") or "—"
+    address = inv.get("object_address") or "—"
+    client = inv.get("client_name") or "—"
 
-    primary = _doc_status_line(
-        bool(inv.get("docs_edo_signed")),
-        inv.get("docs_originals_holder"),
-    )
-    secondary = _doc_status_line(
-        bool(inv.get("edo_signed")),
-        inv.get("closing_originals_holder"),
-    )
+    # Deadline
+    dl_text = "—"
+    dl_end = inv.get("deadline_end_date")
+    if dl_end:
+        try:
+            end = datetime.fromisoformat(dl_end).date()
+            delta = (end - date.today()).days
+            icon = "🔴" if delta < 0 else ("⚠️" if delta <= 7 else "✅")
+            dl_text = f"{end.strftime('%d.%m.%Y')} {icon}"
+        except (ValueError, TypeError):
+            pass
 
-    dl = _deadline_indicator(inv.get("deadline_end_date"))
+    # Docs
+    p_edo = "✅" if inv.get("docs_edo_signed") else "⏳"
+    p_paper = "✅" if inv.get("docs_paper_signed") else "⏳"
+    p_h = inv.get("docs_originals_holder")
+    p_orig = f"✅{_HOLDER_LABELS.get(p_h, '')}" if p_h else "⏳"
+    c_edo = "✅" if inv.get("edo_signed") else "⏳"
+    c_h = inv.get("closing_originals_holder")
+    c_orig = f"✅{_HOLDER_LABELS.get(c_h, '')}" if c_h else "⏳"
+    c_status = inv.get("closing_docs_status") or "—"
+    no_debts = "✅" if inv.get("no_debts") else "❌"
 
-    return (
-        f"{status_icon} <b>№{num}</b>\n"
-        f"📅 {date}{dl}\n"
-        f"👤 {creator_label} ({role_label})\n"
-        f"🏢 {supplier}\n"
-        f"💰 {amt} · 💳 Долг: {debt}\n"
-        f"📋 П: {primary} | З: {secondary}"
-    )
+    W = 18  # label width
+    lines = [
+        f"📋 <b>Счёт №{num}</b>",
+        "<pre>",
+        f"{'Статус':{W}s}{status_label}",
+        f"{'Менеджер':{W}s}{creator_label} ({role_label})",
+        f"{'Адрес':{W}s}{address[:30]}",
+        f"{'Клиент':{W}s}{client[:25]}",
+        f"{'Сумма':{W}s}{amt}",
+        f"{'Долг':{W}s}{debt}",
+        f"{'Срок':{W}s}{dl_text}",
+        f"{'─' * 32}",
+        f"{'Первичка ЭДО':{W}s}{p_edo}",
+        f"{'Первичка бумага':{W}s}{p_paper}",
+        f"{'Первичка ориг.':{W}s}{p_orig}",
+        f"{'Вторичка ЭДО':{W}s}{c_edo}",
+        f"{'Вторичка ориг.':{W}s}{c_orig}",
+        f"{'Статус закр.док':{W}s}{c_status}",
+        f"{'Долгов нет':{W}s}{no_debts}",
+        "</pre>",
+    ]
+    return "\n".join(lines)
 
 
 def _is_fully_documented(inv: dict[str, Any]) -> bool:
