@@ -32,7 +32,7 @@ from ..keyboards import (
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import AccRequestToManagerSG, EdoResponseSG
+from ..states import AccDocCommentSG, AccRequestToManagerSG, EdoResponseSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup
 from .auth import require_role_callback, require_role_message
 
@@ -501,33 +501,58 @@ def _build_doc_menu_text(inv: dict[str, Any]) -> str:
     """Text for the document editing menu."""
     num = inv.get("invoice_number") or f"#{inv['id']}"
     prim_edo = "✅" if inv.get("docs_edo_signed") else "⏳"
+    prim_paper = "✅" if inv.get("docs_paper_signed") else "⏳"
     prim_h = inv.get("docs_originals_holder")
     prim_orig = f"✅({_HOLDER_LABELS.get(prim_h, '?')})" if prim_h else "⏳"
+    prim_comment = inv.get("docs_originals_comment") or ""
     clos_edo = "✅" if inv.get("edo_signed") else "⏳"
     clos_h = inv.get("closing_originals_holder")
     clos_orig = f"✅({_HOLDER_LABELS.get(clos_h, '?')})" if clos_h else "⏳"
-    return (
-        f"📋 <b>Статус документов №{num}</b>\n\n"
-        f"📋 Первичка: {prim_edo}ЭДО  {prim_orig}Ориг\n"
-        f"📋 Вторичка: {clos_edo}ЭДО  {clos_orig}Ориг\n\n"
-        "Нажмите для изменения:"
-    )
+    clos_comment = inv.get("closing_originals_comment") or ""
+    clos_status = inv.get("closing_docs_status") or "—"
+    no_debts = "✅" if inv.get("no_debts") else "❌"
+    lines = [
+        f"📋 <b>Статус документов №{num}</b>\n",
+        f"<b>Первичка:</b>",
+        f"  ЭДО: {prim_edo}  Бумага: {prim_paper}  Ориг: {prim_orig}",
+    ]
+    if prim_comment:
+        lines.append(f"  💬 {prim_comment}")
+    lines += [
+        f"\n<b>Вторичка:</b>",
+        f"  ЭДО: {clos_edo}  Ориг: {clos_orig}",
+        f"  Статус: {clos_status}",
+    ]
+    if clos_comment:
+        lines.append(f"  💬 {clos_comment}")
+    lines += [
+        f"\n<b>Долги:</b> {no_debts}",
+        "\nНажмите для изменения:",
+    ]
+    return "\n".join(lines)
 
 
 def _build_doc_menu_kb(inv: dict[str, Any]) -> InlineKeyboardMarkup:
     """Inline keyboard for the document editing menu."""
     inv_id = inv["id"]
     prim_edo = "✅" if inv.get("docs_edo_signed") else "⏳"
+    prim_paper = "✅" if inv.get("docs_paper_signed") else "⏳"
     prim_h = inv.get("docs_originals_holder")
     prim_orig = f"✅{_HOLDER_LABELS.get(prim_h, '')}" if prim_h else "⏳"
     clos_edo = "✅" if inv.get("edo_signed") else "⏳"
     clos_h = inv.get("closing_originals_holder")
     clos_orig = f"✅{_HOLDER_LABELS.get(clos_h, '')}" if clos_h else "⏳"
+    no_debts = "✅" if inv.get("no_debts") else "❌"
     b = InlineKeyboardBuilder()
     b.button(text=f"📋 Первичка ЭДО: {prim_edo}", callback_data=f"acc_doc:prim_edo:{inv_id}")
+    b.button(text=f"📄 Первичка бумага: {prim_paper}", callback_data=f"acc_doc:prim_paper:{inv_id}")
     b.button(text=f"📁 Первичка Ориг: {prim_orig}", callback_data=f"acc_doc:prim_orig:{inv_id}")
+    b.button(text="💬 Коммент. первичка", callback_data=f"acc_doc:prim_comment:{inv_id}")
     b.button(text=f"📋 Вторичка ЭДО: {clos_edo}", callback_data=f"acc_doc:clos_edo:{inv_id}")
     b.button(text=f"📁 Вторичка Ориг: {clos_orig}", callback_data=f"acc_doc:clos_orig:{inv_id}")
+    b.button(text="💬 Коммент. вторичка", callback_data=f"acc_doc:clos_comment:{inv_id}")
+    b.button(text="📊 Статус закр.док", callback_data=f"acc_doc:clos_status:{inv_id}")
+    b.button(text=f"💰 Долгов нет: {no_debts}", callback_data=f"acc_doc:no_debts:{inv_id}")
     b.button(text="⬅️ Назад", callback_data="acc_work:refresh")
     b.adjust(1)
     return b.as_markup()
@@ -715,6 +740,143 @@ async def acc_doc_clos_orig_set(cb: CallbackQuery, db: Database, notifier: Notif
         )
     except Exception:
         pass
+
+
+# =====================================================================
+# TOGGLE: ПЕРВИЧКА БУМАГА
+# =====================================================================
+
+@router.callback_query(F.data.regexp(r"^acc_doc:prim_paper:\d+$"))
+async def acc_doc_toggle_prim_paper(cb: CallbackQuery, db: Database, notifier: Notifier) -> None:
+    """Toggle primary docs paper signature status."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        return
+    new_val = 0 if inv.get("docs_paper_signed") else 1
+    await db.update_invoice(inv_id, docs_paper_signed=new_val)
+    inv = await db.get_invoice(inv_id)
+    label = "✅ подписано" if new_val else "⏳ не подписано"
+    await _notify_manager_doc_change(db, notifier, inv, "Первичка бумага", label)
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            _build_doc_menu_text(inv), reply_markup=_build_doc_menu_kb(inv),
+        )
+    except Exception:
+        pass
+
+
+# =====================================================================
+# TOGGLE: ДОЛГОВ НЕТ
+# =====================================================================
+
+@router.callback_query(F.data.regexp(r"^acc_doc:no_debts:\d+$"))
+async def acc_doc_toggle_no_debts(cb: CallbackQuery, db: Database, notifier: Notifier) -> None:
+    """Toggle no_debts flag."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if not inv:
+        return
+    new_val = 0 if inv.get("no_debts") else 1
+    upd: dict[str, Any] = {"no_debts": new_val}
+    if new_val:
+        upd["no_debts_at"] = datetime.now().isoformat()
+    else:
+        upd["no_debts_at"] = None
+    await db.update_invoice(inv_id, **upd)
+    inv = await db.get_invoice(inv_id)
+    label = "✅ долгов нет" if new_val else "❌ есть долги"
+    await _notify_manager_doc_change(db, notifier, inv, "Долги", label)
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            _build_doc_menu_text(inv), reply_markup=_build_doc_menu_kb(inv),
+        )
+    except Exception:
+        pass
+
+
+# =====================================================================
+# КОММЕНТАРИИ + СТАТУС ЗАКР.ДОК (FSM: AccDocCommentSG)
+# =====================================================================
+
+@router.callback_query(F.data.regexp(r"^acc_doc:prim_comment:\d+$"))
+async def acc_doc_prim_comment_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Start entering comment for primary docs."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await state.clear()
+    await state.set_state(AccDocCommentSG.waiting_text)
+    await state.update_data(inv_id=inv_id, field="docs_originals_comment")
+    current = (await db.get_invoice(inv_id) or {}).get("docs_originals_comment") or "—"
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💬 <b>Комментарий к первичке</b>\n\nТекущий: {current}\n\n"
+        "Введите новый комментарий (или «—» для очистки):",
+    )
+
+
+@router.callback_query(F.data.regexp(r"^acc_doc:clos_comment:\d+$"))
+async def acc_doc_clos_comment_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Start entering comment for closing docs."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await state.clear()
+    await state.set_state(AccDocCommentSG.waiting_text)
+    await state.update_data(inv_id=inv_id, field="closing_originals_comment")
+    current = (await db.get_invoice(inv_id) or {}).get("closing_originals_comment") or "—"
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💬 <b>Комментарий к вторичке</b>\n\nТекущий: {current}\n\n"
+        "Введите новый комментарий (или «—» для очистки):",
+    )
+
+
+@router.callback_query(F.data.regexp(r"^acc_doc:clos_status:\d+$"))
+async def acc_doc_clos_status_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Start entering closing docs status."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    await state.clear()
+    await state.set_state(AccDocCommentSG.waiting_text)
+    await state.update_data(inv_id=inv_id, field="closing_docs_status")
+    current = (await db.get_invoice(inv_id) or {}).get("closing_docs_status") or "—"
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📊 <b>Статус закрывающих документов</b>\n\nТекущий: {current}\n\n"
+        "Введите новый статус (или «—» для очистки):",
+    )
+
+
+@router.message(AccDocCommentSG.waiting_text, F.text)
+async def acc_doc_comment_save(message: Message, state: FSMContext, db: Database) -> None:
+    """Save comment/status text from FSM."""
+    data = await state.get_data()
+    inv_id = data.get("inv_id")
+    field = data.get("field")
+    await state.clear()
+    if not inv_id or not field:
+        await message.answer("❌ Ошибка: данные потеряны.")
+        return
+    text = message.text.strip()  # type: ignore[union-attr]
+    value = None if text == "—" else text
+    await db.update_invoice(int(inv_id), **{field: value})
+    inv = await db.get_invoice(int(inv_id))
+    if inv:
+        await message.answer(
+            _build_doc_menu_text(inv),
+            reply_markup=_build_doc_menu_kb(inv),
+        )
+    else:
+        await message.answer("✅ Сохранено.")
 
 
 # =====================================================================

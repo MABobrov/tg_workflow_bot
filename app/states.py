@@ -512,6 +512,11 @@ class AccRequestToManagerSG(StatesGroup):
     attachments = State()        # вложения
 
 
+class AccDocCommentSG(StatesGroup):
+    """Бухгалтерия: ввод комментария/статуса для документов."""
+    waiting_text = State()       # ожидание текста
+
+
 class TaskCancelReasonSG(StatesGroup):
     """#33: Отмена задачи с причиной (после подтверждения получателем)."""
     reason = State()             # текст причины
