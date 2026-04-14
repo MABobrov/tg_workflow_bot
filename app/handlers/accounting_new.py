@@ -1014,7 +1014,7 @@ async def acc_question_cancel(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "acc_q:send")
 async def acc_question_send(cb: CallbackQuery, state: FSMContext, db: Database, notifier: Notifier) -> None:
-    """Отправить вопрос с вложениями инициатору задачи."""
+    """Создать задачу ACC_QUESTION для инициатора + отправить уведомление."""
     data = await state.get_data()
     await state.clear()
     await cb.answer()
@@ -1028,33 +1028,63 @@ async def acc_question_send(cb: CallbackQuery, state: FSMContext, db: Database, 
         await cb.message.answer("❌ Ошибка: данные потеряны.")  # type: ignore[union-attr]
         return
 
-    task = await db.get_task(int(task_id))
+    # Контекст исходной задачи
+    orig_task = await db.get_task(int(task_id))
     payload = {}
-    if task and task.get("payload_json"):
+    if orig_task and orig_task.get("payload_json"):
         try:
-            payload = json.loads(task["payload_json"]) if isinstance(task["payload_json"], str) else task["payload_json"]
+            payload = json.loads(orig_task["payload_json"]) if isinstance(orig_task["payload_json"], str) else orig_task["payload_json"]
         except (json.JSONDecodeError, TypeError):
             pass
     inv_num = payload.get("invoice_number", "")
+    inv_id = payload.get("invoice_id")
 
     acc_user = cb.from_user
     acc_label = f"@{acc_user.username}" if acc_user.username else "Бухгалтерия"
 
-    text = f"❓ <b>Вопрос от бухгалтерии</b>\nЗадача #{task_id}"
+    # Создаём задачу для инициатора
+    from ..enums import TaskType
+    from datetime import timedelta
+    new_payload = {
+        "question_text": question_text,
+        "source_task_id": task_id,
+        "from_label": acc_label,
+    }
+    if inv_num:
+        new_payload["invoice_number"] = inv_num
+    if inv_id:
+        new_payload["invoice_id"] = inv_id
+    if attachments:
+        new_payload["attachments"] = attachments
+
+    due = datetime.now() + timedelta(hours=24)
+    new_task = await db.create_task(
+        project_id=orig_task.get("project_id") if orig_task else None,
+        task_type=TaskType.ACC_QUESTION,
+        created_by=acc_user.id,
+        assigned_to=creator_id,
+        due_at=due.isoformat(),
+        payload=new_payload,
+    )
+    new_tid = new_task["id"]
+
+    # Уведомление инициатору
+    from ..keyboards import task_actions_kb
+    text = f"❓ <b>Вопрос от бухгалтерии</b>\nЗадача #{new_tid}"
     if inv_num:
         text += f" · Счёт {inv_num}"
     text += f"\nОт: {acc_label}\n\n💬 {question_text}"
 
     try:
-        await notifier.safe_send(creator_id, text)
+        await notifier.safe_send(creator_id, text, reply_markup=task_actions_kb(new_task))
         for att in attachments:
             await notifier.safe_send_media(
                 creator_id, att["file_type"], att["file_id"], caption=att.get("caption"),
             )
         n_files = f" + {len(attachments)} файл." if attachments else ""
-        await cb.message.answer(f"✅ Вопрос отправлен инициатору задачи #{task_id}.{n_files}")  # type: ignore[union-attr]
+        await cb.message.answer(f"✅ Задача #{new_tid} создана для инициатора.{n_files}")  # type: ignore[union-attr]
     except Exception:
-        log.exception("Failed to send question to user %s", creator_id)
+        log.exception("Failed to send question task to user %s", creator_id)
         await cb.message.answer("❌ Не удалось отправить вопрос.")  # type: ignore[union-attr]
 
 

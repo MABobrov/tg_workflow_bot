@@ -99,6 +99,8 @@ async def acceptance_reminders_loop(
                 return _role_cache[uid]
 
             # 1. Непринятые задачи — напоминание каждые 15 мин
+            #    Для бухгалтерии: только однократно (первое напоминание),
+            #    дальше только бейдж 🔴N на кнопке (без повторных push).
             cutoff_15m = (now_dt - timedelta(minutes=15)).isoformat()
             tasks_15m = await db.list_tasks_needing_15m_reminder(cutoff_15m)
             for task in tasks_15m:
@@ -107,6 +109,12 @@ async def acceptance_reminders_loop(
                     continue
                 tid = int(task["id"])
                 role = await _assigned_role(int(assigned))
+
+                # Бухгалтерия: пропускаем повторные напоминания
+                if role == "accounting" and task.get("reminded_soon"):
+                    await db.mark_task_reminded_15(tid)
+                    continue
+
                 await notifier.safe_send(
                     int(assigned),
                     f"🔔 <b>Напоминание</b>\n\n"

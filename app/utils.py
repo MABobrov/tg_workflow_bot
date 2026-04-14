@@ -99,6 +99,7 @@ TASK_TYPE_LABELS: dict[str, str] = {
     "lead_to_project": "Лид в проект",
     "invoice_end": "Счет End",
     "check_kp": "Проверить КП / Счет",
+    "acc_question": "Вопрос от бухгалтерии",
 }
 
 

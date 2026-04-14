@@ -78,6 +78,7 @@ class TaskType(StrEnum):
     ZP_ZAMERY_BATCH = "zp_zamery_batch"  # пакетный запрос ЗП замерщика → ГД
     RAZMERY_VERIFICATION = "razmery_verification"  # проверка размеров стекла
     SUPPLIER_INVOICE = "supplier_invoice"  # счёт от поставщика (РП → ГД)
+    ACC_QUESTION = "acc_question"          # вопрос от бухгалтерии → инициатору
 
 
 class TaskStatus(StrEnum):
