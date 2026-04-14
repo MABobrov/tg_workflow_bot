@@ -1535,7 +1535,10 @@ class GoogleSheetsService:
         return await asyncio.to_thread(self.read_op_sheet_sync)
 
     def write_date_fact_to_op_sync(self, invoice_number: str, date_iso: str) -> bool:
-        """Write Дата Факт (col J/9) back to source ОП sheet by invoice_number."""
+        """Write Дата Факт (col J/9) back to source ОП sheet by invoice_number.
+        DISABLED: запись в Импорт ОП запрещена."""
+        log.debug("write_date_fact_to_op BLOCKED for %s (Импорт ОП write disabled)", invoice_number)
+        return False
         if not self.cfg.source_spreadsheet_id:
             return False
         gc = self._get_client()
@@ -1585,7 +1588,10 @@ class GoogleSheetsService:
     }
 
     def write_field_to_op_sync(self, invoice_number: str, field: str, value: Any) -> bool:
-        """Write a single field back to ОП sheet by invoice_number."""
+        """Write a single field back to ОП sheet by invoice_number.
+        DISABLED: запись в Импорт ОП запрещена."""
+        log.debug("write_field_to_op BLOCKED for %s field=%s (Импорт ОП write disabled)", invoice_number, field)
+        return False
         col_1based = self._OP_FIELD_TO_COL.get(field)
         if col_1based is None:
             log.warning("write_field_to_op: unknown field %s", field)
