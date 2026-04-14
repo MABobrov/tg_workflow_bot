@@ -1816,22 +1816,31 @@ async def edo_finalize(
     }.get(request_type, request_type)
 
     initiator = await get_initiator_label(db, u.id)
-    msg = (
-        f"📄 <b>Запрос ЭДО</b>\n"
-        f"👤 От: {initiator}\n\n"
-        f"Тип: {type_label}\n"
-    )
+    W = 18
+    lines = [
+        "📄 <b>Запрос ЭДО</b>",
+        "",
+        "<pre>",
+        f"{'Тип':{W}s}{type_label}",
+    ]
     if invoice_number:
-        msg += f"Счёт №: <code>{invoice_number}</code>\n"
+        lines.append(f"{'Счёт №':{W}s}{invoice_number}")
+    lines.append(f"{'От':{W}s}{initiator}")
     if description:
-        msg += f"Описание: {description}\n"
+        lines.append(f"{'Описание':{W}s}{description[:40]}")
+    lines += ["</pre>"]
     if comment:
-        msg += f"Комментарий: {comment}\n"
+        lines.append(f"\n💬 {comment}")
+    msg = "\n".join(lines)
 
-    # Inline button for accountant to respond to EDO request
+    # Inline buttons: Принято + Вопрос + Ответить на ЭДО
+    from ..callbacks import TaskCb
     b_edo_resp = InlineKeyboardBuilder()
-    b_edo_resp.button(text="📄 Ответить на ЭДО", callback_data=f"edo_respond:{task['id']}")
-    b_edo_resp.adjust(1)
+    tid = int(task["id"])
+    b_edo_resp.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+    b_edo_resp.button(text="❓ Вопрос", callback_data=f"acc_q:{tid}")
+    b_edo_resp.button(text="📄 Ответить на ЭДО", callback_data=f"edo_respond:{tid}")
+    b_edo_resp.adjust(2, 1)
 
     await notifier.safe_send(int(acc_id), msg, reply_markup=b_edo_resp.as_markup())
     for a in attachments:
