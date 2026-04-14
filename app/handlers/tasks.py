@@ -672,9 +672,12 @@ async def task_actions_part2(
                 return
             project = await db.update_project_status(int(project["id"]), ProjectStatus.IN_WORK)
             # Обновить статус подтверждения оплаты на счетах проекта
+            from ..utils import utcnow, to_iso
+            _now = to_iso(utcnow())
             await db.conn.execute(
-                "UPDATE invoices SET payment_confirm_status = 'Подтверждена' WHERE project_id = ?",
-                (int(project["id"]),),
+                "UPDATE invoices SET payment_confirm_status = 'Подтверждена', "
+                "payment_confirmed_by = ?, payment_confirmed_at = ? WHERE project_id = ?",
+                (cb.from_user.id, _now, int(project["id"])),
             )
             await db.conn.commit()
 

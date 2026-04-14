@@ -1572,10 +1572,13 @@ async def edo_respond_finalize(
     if response_type == "signed" and invoice_number:
         inv = await db.get_invoice_by_number(invoice_number)
         if inv:
+            from ..utils import utcnow, to_iso
+            _now = to_iso(utcnow())
             if edo_type == "sign_closing":
                 await db.set_invoice_edo_signed(inv["id"], True)
+                await db.update_invoice(inv["id"], docs_edo_signed_at=_now, docs_edo_signed_by=u.id)
             elif edo_type == "sign_invoice":
-                await db.update_invoice(inv["id"], docs_edo_signed=1)
+                await db.update_invoice(inv["id"], docs_edo_signed=1, docs_edo_signed_at=_now, docs_edo_signed_by=u.id)
 
             if edo_type in {"sign_closing", "sign_invoice"}:
                 signed_label = (

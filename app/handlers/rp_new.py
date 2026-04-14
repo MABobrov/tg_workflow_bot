@@ -879,10 +879,11 @@ async def _do_montazh_assign(
     import json
     from datetime import datetime
     att_json = json.dumps(attachments, ensure_ascii=False) if attachments else None
+    _now = datetime.now().isoformat()
     await db.conn.execute(
         "UPDATE invoices SET assigned_to = ?, montazh_stage = ?, "
-        "montazh_assign_attachments_json = ?, updated_at = ? WHERE id = ?",
-        (installer_uid, MontazhStage.ASSIGNED, att_json, datetime.now().isoformat(), invoice_id),
+        "montazh_assign_attachments_json = ?, montazh_assigned_at = ?, updated_at = ? WHERE id = ?",
+        (installer_uid, MontazhStage.ASSIGNED, att_json, _now, _now, invoice_id),
     )
     await db.conn.commit()
     if integrations:
@@ -3205,6 +3206,7 @@ async def lead_finalize(
         f"lead_{role_suffix}_phone": lead_phone,
         f"lead_{role_suffix}_address": lead_address,
         f"lead_{role_suffix}_date": now_date,
+        "lead_tracking_id": lead_id,
     })
     await db.link_lead_tracking(lead_id, invoice_id=invoice_id)
 

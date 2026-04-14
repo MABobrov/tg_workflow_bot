@@ -698,7 +698,7 @@ async def gd_zp_manager_approve(
     if not inv:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
-    await db.set_invoice_zp_manager_status(invoice_id, "approved")
+    await db.set_invoice_zp_manager_status(invoice_id, "approved", approved_by=cb.from_user.id)
     amt = inv.get("zp_manager_amount") or 0
     await _close_zp_tasks(db, invoice_id, TaskType.ZP_MANAGER)
     await cb.message.answer(  # type: ignore[union-attr]

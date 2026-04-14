@@ -2067,11 +2067,25 @@ class Database:
         return rows
 
     async def update_montazh_stage(self, invoice_id: int, stage: str) -> None:
-        """Обновить этап монтажа по счёту."""
-        await self.conn.execute(
-            "UPDATE invoices SET montazh_stage = ?, updated_at = ? WHERE id = ?",
-            (stage, to_iso(utcnow()), invoice_id),
-        )
+        """Обновить этап монтажа по счёту + записать таймстемп стадии."""
+        now = to_iso(utcnow())
+        _stage_ts_col = {
+            "assigned": "montazh_assigned_at",
+            "in_work": "montazh_in_work_at",
+            "razmery_ok": "montazh_razmery_ok_at",
+            "invoice_ok": "montazh_invoice_ok_at",
+        }
+        ts_col = _stage_ts_col.get(stage)
+        if ts_col:
+            await self.conn.execute(
+                f"UPDATE invoices SET montazh_stage = ?, {ts_col} = ?, updated_at = ? WHERE id = ?",
+                (stage, now, now, invoice_id),
+            )
+        else:
+            await self.conn.execute(
+                "UPDATE invoices SET montazh_stage = ?, updated_at = ? WHERE id = ?",
+                (stage, now, invoice_id),
+            )
         await self.conn.commit()
 
     # --- Installer init helpers (ZP & materials) ---
@@ -3245,6 +3259,7 @@ class Database:
         status: str,
         amount: float | None = None,
         requested_by: int | None = None,
+        approved_by: int | None = None,
     ) -> None:
         """Update manager (Отд.Продаж) ZP status on invoice."""
         fields: dict[str, Any] = {"zp_manager_status": status}
@@ -3256,6 +3271,8 @@ class Database:
             fields["zp_manager_requested_at"] = to_iso(utcnow())
         elif status == "approved":
             fields["zp_manager_approved_at"] = to_iso(utcnow())
+            if approved_by is not None:
+                fields["zp_manager_approved_by"] = approved_by
         await self.update_invoice(invoice_id, **fields)
 
     async def set_invoice_zp_installer_status(

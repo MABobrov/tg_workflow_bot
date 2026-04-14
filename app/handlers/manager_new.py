@@ -994,7 +994,8 @@ async def invoice_start_edo_check(
         return
 
     if answer == "yes":
-        await db.update_invoice(invoice_id, docs_edo_signed=1)
+        from ..utils import utcnow, to_iso
+        await db.update_invoice(invoice_id, docs_edo_signed=1, docs_edo_signed_at=to_iso(utcnow()), docs_edo_signed_by=cb.from_user.id)
         await cb.message.answer(  # type: ignore[union-attr]
             f"✅ Зафиксировано: документы по счёту №{inv['invoice_number']} подписаны в ЭДО."
         )

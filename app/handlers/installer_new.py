@@ -1348,7 +1348,8 @@ async def installer_zp_price_ok(
     if not inv:
         return
     # Помечаем что монтажник согласен с ценой
-    await db.update_invoice(inv_id, montazh_stage="invoice_ok")
+    from ..utils import utcnow, to_iso
+    await db.update_invoice(inv_id, montazh_stage="invoice_ok", montazh_invoice_ok_at=to_iso(utcnow()))
     try:
         await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
     except Exception:
