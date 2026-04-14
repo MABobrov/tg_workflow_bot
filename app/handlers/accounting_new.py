@@ -944,24 +944,91 @@ async def acc_question_start(cb: CallbackQuery, state: FSMContext, db: Database)
 
 
 @router.message(AccQuestionSG.text, F.text)
-async def acc_question_send(message: Message, state: FSMContext, db: Database, notifier: Notifier) -> None:
-    """Отправить вопрос инициатору задачи."""
-    data = await state.get_data()
-    await state.clear()
-    task_id = data.get("task_id")
-    creator_id = data.get("creator_id")
-    if not task_id or not creator_id:
-        await message.answer("❌ Ошибка: данные потеряны.")
-        return
-
-    question_text = message.text.strip()  # type: ignore[union-attr]
+async def acc_question_text(message: Message, state: FSMContext) -> None:
+    """Получить текст вопроса, перейти к вложениям."""
+    question_text = (message.text or "").strip()  # type: ignore[union-attr]
     if len(question_text) < 3:
         await message.answer("⚠️ Минимум 3 символа.")
         return
 
-    # Получаем данные задачи для контекста
+    await state.update_data(question_text=question_text, attachments=[])
+    await state.set_state(AccQuestionSG.attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Отправить", callback_data="acc_q:send")
+    b.button(text="❌ Отмена", callback_data="acc_q:cancel")
+    b.adjust(1)
+    await message.answer(
+        "📎 Прикрепите файлы (фото/документ) или нажмите «Отправить»:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(AccQuestionSG.attachments)
+async def acc_question_attach(message: Message, state: FSMContext) -> None:
+    """Получить вложения к вопросу."""
+    data = await state.get_data()
+    attachments: list[dict[str, Any]] = data.get("attachments", [])
+
+    if message.document:
+        attachments.append({
+            "file_type": "document",
+            "file_id": message.document.file_id,
+            "caption": message.caption,
+        })
+    elif message.photo:
+        ph = message.photo[-1]
+        attachments.append({
+            "file_type": "photo",
+            "file_id": ph.file_id,
+            "caption": message.caption,
+        })
+    elif message.video:
+        attachments.append({
+            "file_type": "video",
+            "file_id": message.video.file_id,
+            "caption": message.caption,
+        })
+    else:
+        await message.answer("📎 Прикрепите фото/документ или нажмите «Отправить».")
+        return
+
+    await state.update_data(attachments=attachments)
+
+    b = InlineKeyboardBuilder()
+    b.button(text=f"✅ Отправить ({len(attachments)} файл.)", callback_data="acc_q:send")
+    b.button(text="❌ Отмена", callback_data="acc_q:cancel")
+    b.adjust(1)
+    await message.answer(
+        f"📎 Файлов: <b>{len(attachments)}</b>. Ещё файлы или «Отправить»:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "acc_q:cancel")
+async def acc_question_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await cb.answer("❌ Отменено")
+    await cb.message.answer("Отменено.")  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "acc_q:send")
+async def acc_question_send(cb: CallbackQuery, state: FSMContext, db: Database, notifier: Notifier) -> None:
+    """Отправить вопрос с вложениями инициатору задачи."""
+    data = await state.get_data()
+    await state.clear()
+    await cb.answer()
+
+    task_id = data.get("task_id")
+    creator_id = data.get("creator_id")
+    question_text = data.get("question_text", "")
+    attachments: list[dict[str, Any]] = data.get("attachments", [])
+
+    if not task_id or not creator_id:
+        await cb.message.answer("❌ Ошибка: данные потеряны.")  # type: ignore[union-attr]
+        return
+
     task = await db.get_task(int(task_id))
-    task_type = task.get("type", "") if task else ""
     payload = {}
     if task and task.get("payload_json"):
         try:
@@ -970,26 +1037,25 @@ async def acc_question_send(message: Message, state: FSMContext, db: Database, n
             pass
     inv_num = payload.get("invoice_number", "")
 
-    acc_user = message.from_user  # type: ignore[union-attr]
+    acc_user = cb.from_user
     acc_label = f"@{acc_user.username}" if acc_user.username else "Бухгалтерия"
 
-    text = (
-        f"❓ <b>Вопрос от бухгалтерии</b>\n"
-        f"Задача #{task_id}"
-    )
+    text = f"❓ <b>Вопрос от бухгалтерии</b>\nЗадача #{task_id}"
     if inv_num:
         text += f" · Счёт {inv_num}"
-    text += (
-        f"\nОт: {acc_label}\n\n"
-        f"💬 {question_text}"
-    )
+    text += f"\nОт: {acc_label}\n\n💬 {question_text}"
 
     try:
         await notifier.safe_send(creator_id, text)
-        await message.answer(f"✅ Вопрос отправлен инициатору задачи #{task_id}.")
+        for att in attachments:
+            await notifier.safe_send_media(
+                creator_id, att["file_type"], att["file_id"], caption=att.get("caption"),
+            )
+        n_files = f" + {len(attachments)} файл." if attachments else ""
+        await cb.message.answer(f"✅ Вопрос отправлен инициатору задачи #{task_id}.{n_files}")  # type: ignore[union-attr]
     except Exception:
         log.exception("Failed to send question to user %s", creator_id)
-        await message.answer("❌ Не удалось отправить вопрос.")
+        await cb.message.answer("❌ Не удалось отправить вопрос.")  # type: ignore[union-attr]
 
 
 # =====================================================================

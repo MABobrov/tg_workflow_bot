@@ -520,6 +520,7 @@ class AccDocCommentSG(StatesGroup):
 class AccQuestionSG(StatesGroup):
     """Бухгалтерия: вопрос инициатору задачи."""
     text = State()               # текст вопроса
+    attachments = State()        # вложения (фото/документ)
 
 
 class TaskCancelReasonSG(StatesGroup):
