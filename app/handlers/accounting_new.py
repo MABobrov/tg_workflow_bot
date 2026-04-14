@@ -892,7 +892,7 @@ async def acc_doc_comment_save(message: Message, state: FSMContext, db: Database
     field = data.get("field")
     await state.clear()
     if not inv_id or not field:
-        await message.answer("❌ Ошибка: данные потеряны.")
+        await message.answer("❌ Сессия устарела. Пожалуйста, введите данные заново.")
         return
     text = message.text.strip()  # type: ignore[union-attr]
     value = None if text == "—" else text
@@ -1025,7 +1025,7 @@ async def acc_question_send(cb: CallbackQuery, state: FSMContext, db: Database, 
     attachments: list[dict[str, Any]] = data.get("attachments", [])
 
     if not task_id or not creator_id:
-        await cb.message.answer("❌ Ошибка: данные потеряны.")  # type: ignore[union-attr]
+        await cb.message.answer("❌ Сессия устарела. Пожалуйста, введите данные заново.")  # type: ignore[union-attr]
         return
 
     # Контекст исходной задачи
