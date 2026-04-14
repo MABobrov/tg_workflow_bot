@@ -154,16 +154,20 @@ async def acc_sync_data(message: Message, db: Database, config: Config) -> None:
 
     # Собираем статистику
     invoices_work = await db.list_invoices_in_work(limit=500, only_regular=True)
-    invoices_ended = await db.list_invoices(status=InvoiceStatus.ENDED, limit=500, only_regular=True)
+    all_ended = await db.list_invoices(status=InvoiceStatus.ENDED, limit=500, only_regular=True)
+    # ended без документов → в работе для бухгалтерии
+    ended_no_docs = [inv for inv in all_ended if not _is_fully_documented(inv)]
+    ended_ok = [inv for inv in all_ended if _is_fully_documented(inv)]
+    work_ids = {inv["id"] for inv in invoices_work}
+    for inv in ended_no_docs:
+        if inv["id"] not in work_ids:
+            invoices_work.append(inv)
+
     tasks = await db.list_tasks_for_user(user_id, limit=100)
     unconfirmed = [t for t in tasks if not t.get("accepted_at")]
 
     # Документы без подписания
-    docs_pending = sum(
-        1 for inv in invoices_work
-        if not (inv.get("docs_edo_signed") and inv.get("edo_signed")
-                and inv.get("docs_originals_holder") and inv.get("closing_originals_holder"))
-    )
+    docs_pending = sum(1 for inv in invoices_work if not _is_fully_documented(inv))
 
     # Просроченные сроки
     overdue = 0
@@ -180,7 +184,8 @@ async def acc_sync_data(message: Message, db: Database, config: Config) -> None:
     text = (
         "🔄 <b>Синхронизация данных</b>\n\n"
         f"📊 Счетов в работе: <b>{len(invoices_work)}</b>\n"
-        f"🏁 Закрытых счетов: <b>{len(invoices_ended)}</b>\n"
+        f"🏁 Полностью закрытых: <b>{len(ended_ok)}</b>\n"
+        f"📋 ended без документов: <b>{len(ended_no_docs)}</b>\n"
         f"📥 Непринятых задач: <b>{len(unconfirmed)}</b>\n"
         f"📋 Документы не заполнены: <b>{docs_pending}</b>\n"
         f"🔴 Просрочено сроков: <b>{overdue}</b>\n\n"
@@ -297,6 +302,17 @@ async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
     )
 
 
+def _is_fully_documented(inv: dict[str, Any]) -> bool:
+    """True if invoice has all documents signed and no debts."""
+    return bool(
+        inv.get("docs_edo_signed")
+        and inv.get("edo_signed")
+        and inv.get("docs_originals_holder")
+        and inv.get("closing_originals_holder")
+        and inv.get("no_debts")
+    )
+
+
 def _build_acc_summary(
     invoices: list[dict[str, Any]],
     title: str = "📊 Счета в работе — сводка",
@@ -372,8 +388,18 @@ async def _show_acc_invoices_work(
     target: Message | CallbackQuery,
     db: Database,
 ) -> None:
-    """Показать сводку + inline-список счетов в работе для бухгалтерии."""
+    """Показать сводку + inline-список счетов в работе для бухгалтерии.
+
+    Includes ended invoices whose documents are not fully signed.
+    """
     invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
+
+    # Добавить ended-счета с незаполненными документами
+    ended = await db.list_invoices(status=InvoiceStatus.ENDED, limit=50, only_regular=True)
+    ended_ids = {inv["id"] for inv in invoices}
+    for inv in ended:
+        if inv["id"] not in ended_ids and not _is_fully_documented(inv):
+            invoices.append(inv)
 
     msg = target.message if isinstance(target, CallbackQuery) else target
     if not invoices:
@@ -922,9 +948,10 @@ async def acc_work_request_cancel(
 async def acc_invoice_end(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.ACCOUNTING]):
         return
-    invoices = await db.list_invoices(status=InvoiceStatus.ENDED, limit=50, only_regular=True)
+    all_ended = await db.list_invoices(status=InvoiceStatus.ENDED, limit=200, only_regular=True)
+    invoices = [inv for inv in all_ended if _is_fully_documented(inv)]
     if not invoices:
-        await answer_service(message, "🏁 Нет закрытых счетов.", delay_seconds=60)
+        await answer_service(message, "🏁 Нет полностью закрытых счетов.", delay_seconds=60)
         return
 
     # Сводная карточка
