@@ -89,6 +89,15 @@ async def acceptance_reminders_loop(
         try:
             now_dt = datetime.now(timezone.utc)
 
+            # Helper: resolve assigned user role for keyboard
+            _role_cache: dict[int, str | None] = {}
+
+            async def _assigned_role(uid: int) -> str | None:
+                if uid not in _role_cache:
+                    u = await db.get_user_optional(uid)
+                    _role_cache[uid] = u.role if u else None
+                return _role_cache[uid]
+
             # 1. Непринятые задачи — напоминание каждые 15 мин
             cutoff_15m = (now_dt - timedelta(minutes=15)).isoformat()
             tasks_15m = await db.list_tasks_needing_15m_reminder(cutoff_15m)
@@ -97,12 +106,13 @@ async def acceptance_reminders_loop(
                 if not assigned:
                     continue
                 tid = int(task["id"])
+                role = await _assigned_role(int(assigned))
                 await notifier.safe_send(
                     int(assigned),
                     f"🔔 <b>Напоминание</b>\n\n"
                     f"Задача #{tid} ожидает подтверждения.\n"
                     f"Нажмите «✅ Принято» для подтверждения.",
-                    reply_markup=task_actions_kb(task),
+                    reply_markup=task_actions_kb(task, assigned_role=role),
                 )
                 await db.mark_task_reminded_15(tid)
 
@@ -114,11 +124,12 @@ async def acceptance_reminders_loop(
                 if not assigned:
                     continue
                 tid = int(task["id"])
+                role = await _assigned_role(int(assigned))
                 await notifier.safe_send(
                     int(assigned),
                     f"🔔 <b>Напоминание о задаче</b>\n\n"
                     f"Задача #{tid} ожидает выполнения.",
-                    reply_markup=task_actions_kb(task),
+                    reply_markup=task_actions_kb(task, assigned_role=role),
                 )
                 await db.mark_task_reminded_2h(tid)
 

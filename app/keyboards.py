@@ -682,12 +682,20 @@ def tasks_kb(
     return b.as_markup()
 
 
-def task_actions_kb(task: dict[str, Any]) -> InlineKeyboardMarkup:
+def task_actions_kb(task: dict[str, Any], *, assigned_role: str | None = None) -> InlineKeyboardMarkup:
     ttype = task.get("type")
     status = task.get("status")
     b = InlineKeyboardBuilder()
 
     tid = int(task["id"])
+
+    # Бухгалтерия — упрощённая клавиатура: Принято + Вопрос
+    if assigned_role == "accounting":
+        if status == TaskStatus.OPEN and not task.get("accepted_at"):
+            b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+        b.button(text="❓ Вопрос", callback_data=f"acc_q:{tid}")
+        b.adjust(1)
+        return b.as_markup()
 
     # accept button — only for open tasks not yet accepted
     if status == TaskStatus.OPEN and not task.get("accepted_at"):
