@@ -1393,8 +1393,26 @@ async def edo_respond_type(cb: CallbackQuery, state: FSMContext) -> None:
     resp_type = cb.data.split(":")[-1]  # type: ignore[union-attr]
     await state.update_data(response_type=resp_type)
     await state.set_state(EdoResponseSG.comment)
+    b = InlineKeyboardBuilder()
+    b.button(text="⏭ Пропустить", callback_data="edo_resp_skip_comment")
     await cb.message.answer(  # type: ignore[union-attr]
-        "Добавьте <b>комментарий</b> (или «—» для пропуска):"
+        "Напишите <b>комментарий</b> текстом или нажмите «Пропустить»:",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "edo_resp_skip_comment", EdoResponseSG.comment)
+async def edo_resp_skip_comment(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    await state.update_data(comment="")
+    await state.set_state(EdoResponseSG.attachments)
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Отправить", callback_data="edo_respond:send")
+    b.button(text="⏭ Без вложений", callback_data="edo_respond:send")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "Прикрепите файлы или нажмите «Отправить»:",
+        reply_markup=b.as_markup(),
     )
 
 
