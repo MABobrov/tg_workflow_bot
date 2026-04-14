@@ -75,6 +75,7 @@ LEADS_HEADER = [
     "Менеджер",       # E
     "Источник",       # F
     "Статус",         # G
+    "Сумма сделки",   # H — price из amoCRM
 ]
 
 INVOICES_HEADER = [
@@ -520,7 +521,16 @@ class GoogleSheetsService:
             sid = lead.get("status_id")
             status = str(sid) if sid else ""
 
-        return [date_str, client_name, name, phone, manager, source, status]
+        # Сумма сделки
+        price = lead.get("price")
+        price_str = ""
+        if price:
+            try:
+                price_str = f"{float(price):,.0f}"
+            except (ValueError, TypeError):
+                price_str = str(price)
+
+        return [date_str, client_name, name, phone, manager, source, status, price_str]
 
     def _task_row_values(self, task: dict[str, Any], project_code: str = "") -> list[Any]:
         payload = self._task_payload_fields(task)

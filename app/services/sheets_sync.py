@@ -185,8 +185,14 @@ async def export_to_sheets(
 
     # --- Leads (amoCRM) ---
     amo_leads = await db.list_all_amo_leads(limit=10000)
-    # Filter: only Неразобранное (58140186) and лиды от робота (62065726)
-    LEADS_SHEET_STATUS_IDS = {58140186, 62065726}
+    # Filter: лиды для отображения в Sheets
+    LEADS_SHEET_STATUS_IDS = {
+        58140186,   # Неразобранное
+        62065726,   # лиды от робота
+        65104054,   # Отправка КП
+        64427054,   # В производстве
+        72381182,   # Закрывающие документы
+    }
     filtered_leads = [
         l for l in amo_leads
         if l.get("status_id") and int(l["status_id"]) in LEADS_SHEET_STATUS_IDS
