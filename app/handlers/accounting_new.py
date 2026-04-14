@@ -32,7 +32,7 @@ from ..keyboards import (
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import AccDocCommentSG, AccRequestToManagerSG, EdoResponseSG
+from ..states import AccDocCommentSG, AccQuestionSG, AccRequestToManagerSG, EdoResponseSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup
 from .auth import require_role_callback, require_role_message
 
@@ -127,12 +127,13 @@ async def acc_inbox_tasks(message: Message, db: Database) -> None:
 
         from ..callbacks import TaskCb
         b = InlineKeyboardBuilder()
-        # Кнопка "Принято" + "Документы" если привязан к счёту
+        # Кнопка "Принято" + "Документы" если привязан к счёту + "Вопрос"
         b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
         inv_id = payload.get("invoice_id")
         if inv_id:
             b.button(text="✏️ Документы", callback_data=f"acc_doc:menu:{inv_id}")
-        b.adjust(2)
+        b.button(text="❓ Вопрос", callback_data=f"acc_q:{tid}")
+        b.adjust(2, 1)
         await message.answer(text, reply_markup=b.as_markup())
 
     footer = InlineKeyboardBuilder()
@@ -904,6 +905,91 @@ async def acc_doc_comment_save(message: Message, state: FSMContext, db: Database
         )
     else:
         await message.answer("✅ Сохранено.")
+
+
+# =====================================================================
+# ВОПРОС ИНИЦИАТОРУ ЗАДАЧИ
+# =====================================================================
+
+@router.callback_query(F.data.regexp(r"^acc_q:\d+$"))
+async def acc_question_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Бухгалтер задаёт вопрос инициатору входящей задачи."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+
+    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    task = await db.get_task(task_id)
+    if not task:
+        await cb.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
+        return
+
+    creator_id = task.get("created_by")
+    if not creator_id:
+        await cb.message.answer("⚠️ Инициатор задачи не определён.")  # type: ignore[union-attr]
+        return
+
+    creator = await db.get_user_optional(int(creator_id))
+    creator_label = f"@{creator.username}" if creator and creator.username else str(creator_id)
+
+    await state.clear()
+    await state.set_state(AccQuestionSG.text)
+    await state.update_data(task_id=task_id, creator_id=int(creator_id))
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"❓ <b>Вопрос по задаче #{task_id}</b>\n"
+        f"Инициатор: {creator_label}\n\n"
+        "Введите текст вопроса:",
+    )
+
+
+@router.message(AccQuestionSG.text, F.text)
+async def acc_question_send(message: Message, state: FSMContext, db: Database, notifier: Notifier) -> None:
+    """Отправить вопрос инициатору задачи."""
+    data = await state.get_data()
+    await state.clear()
+    task_id = data.get("task_id")
+    creator_id = data.get("creator_id")
+    if not task_id or not creator_id:
+        await message.answer("❌ Ошибка: данные потеряны.")
+        return
+
+    question_text = message.text.strip()  # type: ignore[union-attr]
+    if len(question_text) < 3:
+        await message.answer("⚠️ Минимум 3 символа.")
+        return
+
+    # Получаем данные задачи для контекста
+    task = await db.get_task(int(task_id))
+    task_type = task.get("type", "") if task else ""
+    payload = {}
+    if task and task.get("payload_json"):
+        try:
+            payload = json.loads(task["payload_json"]) if isinstance(task["payload_json"], str) else task["payload_json"]
+        except (json.JSONDecodeError, TypeError):
+            pass
+    inv_num = payload.get("invoice_number", "")
+
+    acc_user = message.from_user  # type: ignore[union-attr]
+    acc_label = f"@{acc_user.username}" if acc_user.username else "Бухгалтерия"
+
+    text = (
+        f"❓ <b>Вопрос от бухгалтерии</b>\n"
+        f"Задача #{task_id}"
+    )
+    if inv_num:
+        text += f" · Счёт {inv_num}"
+    text += (
+        f"\nОт: {acc_label}\n\n"
+        f"💬 {question_text}"
+    )
+
+    try:
+        await notifier.safe_send(creator_id, text)
+        await message.answer(f"✅ Вопрос отправлен инициатору задачи #{task_id}.")
+    except Exception:
+        log.exception("Failed to send question to user %s", creator_id)
+        await message.answer("❌ Не удалось отправить вопрос.")
 
 
 # =====================================================================

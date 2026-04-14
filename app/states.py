@@ -517,6 +517,11 @@ class AccDocCommentSG(StatesGroup):
     waiting_text = State()       # ожидание текста
 
 
+class AccQuestionSG(StatesGroup):
+    """Бухгалтерия: вопрос инициатору задачи."""
+    text = State()               # текст вопроса
+
+
 class TaskCancelReasonSG(StatesGroup):
     """#33: Отмена задачи с причиной (после подтверждения получателем)."""
     reason = State()             # текст причины
