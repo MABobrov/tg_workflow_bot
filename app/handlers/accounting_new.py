@@ -297,8 +297,11 @@ async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
     )
 
 
-def _build_acc_summary(invoices: list[dict[str, Any]]) -> str:
-    """Build accounting summary card for invoices in work."""
+def _build_acc_summary(
+    invoices: list[dict[str, Any]],
+    title: str = "📊 Счета в работе — сводка",
+) -> str:
+    """Build accounting summary card."""
     cnt = len(invoices)
     total_amount = sum(float(inv.get("amount") or 0) for inv in invoices)
     total_debt = sum(float(inv.get("outstanding_debt") or 0) for inv in invoices)
@@ -337,7 +340,7 @@ def _build_acc_summary(invoices: list[dict[str, Any]]) -> str:
     )
 
     lines = [
-        f"📊 <b>Счета в работе — сводка</b> ({cnt})",
+        f"<b>{title}</b> ({cnt})",
         "",
         "<pre>",
         f"{'Всего счетов':22s} {cnt:>5}",
@@ -919,20 +922,32 @@ async def acc_work_request_cancel(
 async def acc_invoice_end(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.ACCOUNTING]):
         return
-    invoices = await db.list_invoices(status=InvoiceStatus.ENDED, limit=30, only_regular=True)
+    invoices = await db.list_invoices(status=InvoiceStatus.ENDED, limit=50, only_regular=True)
     if not invoices:
         await answer_service(message, "🏁 Нет закрытых счетов.", delay_seconds=60)
         return
 
-    await message.answer(f"🏁 <b>Закрытые Счета</b> ({len(invoices)}):")
+    # Сводная карточка
+    summary = _build_acc_summary(invoices, title="🏁 Закрытые Счета — сводка")
+    await message.answer(summary)
 
-    for inv in invoices[:15]:
-        text = await _format_acc_card(inv, db)
-        b = InlineKeyboardBuilder()
-        b.button(text="📨 Запрос менеджеру", callback_data=f"acc_work:req:{inv['id']}")
-        b.button(text="✏️ Документы", callback_data=f"acc_doc:menu:{inv['id']}")
-        b.adjust(2)
-        await message.answer(text, reply_markup=b.as_markup())
+    # Inline-кнопки счетов
+    b = InlineKeyboardBuilder()
+    for inv in invoices[:20]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        try:
+            amt = f"{float(inv.get('amount', 0)):,.0f}₽"
+        except (ValueError, TypeError):
+            amt = ""
+        b.button(
+            text=f"🏁 {num} · {amt}",
+            callback_data=f"acc_work:card:{inv['id']}",
+        )
+    b.adjust(1)
+    await message.answer(
+        "Нажмите на счёт для просмотра:",
+        reply_markup=b.as_markup(),
+    )
 
     footer = InlineKeyboardBuilder()
     footer.button(text="⬅️ Назад", callback_data="nav:home")
