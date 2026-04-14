@@ -163,49 +163,54 @@ INVOICES_HEADER = [
     "Расчет vs Факт",     # 77
     "",                    # 78 (перенесено в 63)
     "",                    # 79 (перенесено в 64)
-    # — Кредитный учёт (80-85) —
-    "Кредит вход",         # 80 — сумма входящего кредита
-    "Кредит вход коммент", # 81 — Менеджер, адрес
-    "Кредит расход",       # 82 — накопительная сумма расходов
-    "Дата расход кред",    # 83 — дата расхода кредитных средств
-    "Кредит назначение",   # 84 — лог назначений расходов
-    "Кредит баланс",       # 85 — формула: вход - расход
+    # — Резерв (80-85) — перенесены в 99-104 —
+    "",                    # 80 (резерв)
+    "",                    # 81 (резерв)
+    "",                    # 82 (резерв)
+    "",                    # 83 (резерв)
+    "",                    # 84 (резерв)
+    "",                    # 85 (резерв)
     # — Сквозная нумерация (86) —
     "№ п/п",                # 86
-    # — Лиды и Счета по менеджерам (87-116) —
-    # КВ (87-96)
-    "Лид КВ №",             # 87
-    "Лид КВ источник",      # 88
-    "Лид КВ дата",          # 89
-    "Лид КВ имя",           # 90
-    "Лид КВ телефон",       # 91
-    "Лид КВ адрес",         # 92
-    "Счет КВ №",            # 93
-    "Счет КВ телефон",      # 94
-    "Счет КВ адрес",        # 95
-    "Счет КВ дата",         # 96
-    # КИА (97-106)
-    "Лид КИА №",            # 97
-    "Лид КИА источник",     # 98
-    "Лид КИА дата",         # 99
-    "Лид КИА имя",          # 100
-    "Лид КИА телефон",      # 101
-    "Лид КИА адрес",        # 102
-    "Счет КИА №",           # 103
-    "Счет КИА телефон",     # 104
-    "Счет КИА адрес",       # 105
-    "Счет КИА дата",        # 106
-    # НПН (107-116)
-    "Лид НПН №",            # 107
-    "Лид НПН источник",     # 108
-    "Лид НПН дата",         # 109
-    "Лид НПН имя",          # 110
-    "Лид НПН телефон",      # 111
-    "Лид НПН адрес",        # 112
-    "Счет НПН №",           # 113
-    "Счет НПН телефон",     # 114
-    "Счет НПН адрес",       # 115
-    "Счет НПН дата",        # 116
+    # — Менеджерский блок (87-104) —
+    # Таймстемпы монтажных стадий (87-90)
+    "Монтаж назначен",       # 87 — montazh_assigned_at
+    "Монтаж в работе",       # 88 — montazh_in_work_at
+    "Размеры ОК дата",       # 89 — montazh_razmery_ok_at
+    "Счёт ОК дата",          # 90 — montazh_invoice_ok_at
+    # Аудит оплаты (91-92)
+    "Оплата подтв. кем",     # 91 — payment_confirmed_by
+    "Оплата подтв. дата",    # 92 — payment_confirmed_at
+    # Аудит ЗП менеджера (93)
+    "ЗП мен. одобрил",       # 93 — zp_manager_approved_by
+    # Аудит ЭДО (94-95)
+    "ЭДО подпись дата",      # 94 — docs_edo_signed_at
+    "ЭДО подпись кем",       # 95 — docs_edo_signed_by
+    # Статус заказа материалов (96-97)
+    "Заказ профиль",         # 96 — profile_order_status
+    "Заказ металл",          # 97 — metal_order_status
+    # Связка лид→счёт (98)
+    "ID лида",               # 98 — lead_tracking_id
+    # Кредитный учёт (перенос из 80-85) (99-104)
+    "Кредит вход",           # 99 — сумма входящего кредита
+    "Кредит вход коммент",   # 100 — Менеджер, адрес
+    "Кредит расход",         # 101 — накопительная сумма расходов
+    "Дата расход кред",      # 102 — дата расхода кредитных средств
+    "Кредит назначение",     # 103 — лог назначений расходов
+    "Кредит баланс",         # 104 — формула: вход - расход
+    # Резерв (105-116)
+    "",                      # 105 (резерв)
+    "",                      # 106 (резерв)
+    "",                      # 107 (резерв)
+    "",                      # 108 (резерв)
+    "",                      # 109 (резерв)
+    "",                      # 110 (резерв)
+    "",                      # 111 (резерв)
+    "",                      # 112 (резерв)
+    "",                      # 113 (резерв)
+    "",                      # 114 (резерв)
+    "",                      # 115 (резерв)
+    "",                      # 116 (резерв)
     # — ЗП Монтажник: платёжка / подтверждение (117-118) —
     "Платёжка ЗП дата",     # 117 — дата отправки платёжки ГД
     "ЗП подтверждено дата", # 118 — дата подтверждения монтажником
@@ -650,45 +655,51 @@ class GoogleSheetsService:
             # — Аналитика —
             77: invoice.get("_plan_fact_label") or "",                   # BZ Расчет vs Факт
             # 78, 79 заполняются ниже из cost_card
-            # — Кредитный учёт —
-            85: f"=IF(CC{row}=\"\",\"\",CC{row}-CE{row})",              # CH Кредит баланс
+            # — Кредитный учёт (перенесён в 99-104) —
+            104: f"=IF(CV{row}=\"\",\"\",CV{row}-CX{row})",             # DA Кредит баланс
         }
 
         # — Сквозная нумерация (86) —
         cells[86] = row - 1  # № п/п
 
-        # — Лиды и Счета по менеджерам (87-116) —
-        for _i, _suf in enumerate(("kv", "kia", "npn")):
-            _base = 87 + _i * 10
-            cells[_base]     = invoice.get(f"lead_{_suf}_num") or ""
-            cells[_base + 1] = invoice.get(f"lead_{_suf}_source") or _li.get(f"source_{_suf}") or ""  # Источник
-            cells[_base + 2] = self._fmt_sheet_date(invoice.get(f"lead_{_suf}_date"))
-            cells[_base + 3] = invoice.get(f"lead_{_suf}_name") or ""
-            cells[_base + 4] = invoice.get(f"lead_{_suf}_phone") or ""
-            cells[_base + 5] = invoice.get(f"lead_{_suf}_address") or ""
-            cells[_base + 6] = invoice.get(f"inv_{_suf}_num") or ""
-            cells[_base + 7] = invoice.get(f"inv_{_suf}_phone") or ""
-            cells[_base + 8] = invoice.get(f"inv_{_suf}_address") or ""
-            cells[_base + 9] = self._fmt_sheet_date(invoice.get(f"inv_{_suf}_date"))
+        # — Менеджерский блок (87-98) —
+        # Таймстемпы монтажных стадий
+        cells[87] = self._fmt_sheet_date(invoice.get("montazh_assigned_at"))
+        cells[88] = self._fmt_sheet_date(invoice.get("montazh_in_work_at"))
+        cells[89] = self._fmt_sheet_date(invoice.get("montazh_razmery_ok_at"))
+        cells[90] = self._fmt_sheet_date(invoice.get("montazh_invoice_ok_at"))
+        # Аудит оплаты
+        cells[91] = invoice.get("payment_confirmed_by") or ""
+        cells[92] = self._fmt_sheet_date(invoice.get("payment_confirmed_at"))
+        # Аудит ЗП менеджера
+        cells[93] = invoice.get("zp_manager_approved_by") or ""
+        # Аудит ЭДО
+        cells[94] = self._fmt_sheet_date(invoice.get("docs_edo_signed_at"))
+        cells[95] = invoice.get("docs_edo_signed_by") or ""
+        # Статус заказа материалов
+        cells[96] = invoice.get("profile_order_status") or ""
+        cells[97] = invoice.get("metal_order_status") or ""
+        # Связка лид→счёт
+        cells[98] = invoice.get("lead_tracking_id") or ""
 
-        # Кредит входящий (80-81): is_credit=1 — единственный источник правды
+        # Кредит входящий (99-100, перенос из 80-81): is_credit=1 — единственный источник правды
         is_credit = bool(invoice.get("is_credit"))
         if is_credit:
-            cells[80] = self._fmt_amount(invoice.get("amount"))          # CC Кредит вход
+            cells[99] = self._fmt_amount(invoice.get("amount"))          # Кредит вход
             mgr_label = manager_label or ""
             addr = invoice.get("object_address") or ""
-            cells[81] = f"{mgr_label}, {addr}".strip(", ") if (mgr_label or addr) else ""
+            cells[100] = f"{mgr_label}, {addr}".strip(", ") if (mgr_label or addr) else ""
         else:
-            cells[80] = ""
-            cells[81] = ""
+            cells[99] = ""
+            cells[100] = ""
 
-        # Кредит расход (82), дата (83), назначение (84): прямая сумма ВСЕХ расходов
+        # Кредит расход (101), дата (102), назначение (103): прямая сумма ВСЕХ расходов
         credit_exp = invoice.get("_credit_expenses") or {}
         credit_exp_total = credit_exp.get("total") or 0
         if is_credit:
             if invoice.get("status") in ("ended", "credit"):
                 # Закрытый счёт — кредит полностью израсходован, баланс = 0
-                cells[82] = cells[80]
+                cells[101] = cells[99]
             else:
                 # ВСЕ затраты КВ (кредитные/наличные) без привязки к мат. счёту
                 _cf_op = sum(float(invoice.get(f) or 0) for f in (
@@ -705,25 +716,25 @@ class GoogleSheetsService:
                 if _c:
                     _cf_bot = _c.get("supplier_payments_total", 0) + _c.get("materials_total", 0)
                 cf_total = _cf_op + _cf_bot + credit_exp_total
-                cells[82] = self._fmt_amount(cf_total) if cf_total else ""
+                cells[101] = self._fmt_amount(cf_total) if cf_total else ""
         elif credit_exp_total:
-            cells[82] = self._fmt_amount(credit_exp_total)
+            cells[101] = self._fmt_amount(credit_exp_total)
         else:
-            cells[82] = ""
+            cells[101] = ""
         # Дата расхода кредитных средств
         credit_items = credit_exp.get("items") or []
         if credit_items:
             from datetime import datetime as _dt
             try:
                 last_dt = _dt.fromisoformat(credit_items[-1]["created_at"])
-                cells[83] = last_dt.strftime("%d.%m.%Y")
+                cells[102] = last_dt.strftime("%d.%m.%Y")
             except (ValueError, TypeError, KeyError):
-                cells[83] = ""
+                cells[102] = ""
         elif is_credit and invoice.get("updated_at"):
-            cells[83] = format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name)[:10] if invoice.get("updated_at") else ""
+            cells[102] = format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name)[:10] if invoice.get("updated_at") else ""
         else:
-            cells[83] = ""
-        cells[84] = credit_exp.get("log") or ""
+            cells[102] = ""
+        cells[103] = credit_exp.get("log") or ""
 
         # Расч.мат., Установка, Грузчики, Логистика — из БД
         est_glass = float(invoice.get("estimated_glass") or 0)

@@ -583,6 +583,24 @@ class Database:
             ("invoices", "montazh_assign_attachments_json", "TEXT"),
             # Статус заказа материалов (заказано / бланк отправлен / размеры подтверждены)
             ("invoices", "glass_order_status", "TEXT"),
+            # --- Менеджерский блок: таймстемпы монтажных стадий ---
+            ("invoices", "montazh_assigned_at", "TEXT"),
+            ("invoices", "montazh_in_work_at", "TEXT"),
+            ("invoices", "montazh_razmery_ok_at", "TEXT"),
+            ("invoices", "montazh_invoice_ok_at", "TEXT"),
+            # --- Аудит: подтверждение оплаты ---
+            ("invoices", "payment_confirmed_by", "INTEGER"),
+            ("invoices", "payment_confirmed_at", "TEXT"),
+            # --- Аудит: ЗП менеджера ---
+            ("invoices", "zp_manager_approved_by", "INTEGER"),
+            # --- Аудит: ЭДО ---
+            ("invoices", "docs_edo_signed_at", "TEXT"),
+            ("invoices", "docs_edo_signed_by", "INTEGER"),
+            # --- Статус заказа материалов (профиль/металл) ---
+            ("invoices", "profile_order_status", "TEXT"),
+            ("invoices", "metal_order_status", "TEXT"),
+            # --- Связка лид→счёт ---
+            ("invoices", "lead_tracking_id", "INTEGER"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
