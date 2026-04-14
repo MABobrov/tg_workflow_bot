@@ -1575,9 +1575,10 @@ async def edo_respond_finalize(
             from ..utils import utcnow, to_iso
             _now = to_iso(utcnow())
             if edo_type == "sign_closing":
+                # edo_signed_at пишется внутри set_invoice_edo_signed → колонка 137
                 await db.set_invoice_edo_signed(inv["id"], True)
-                await db.update_invoice(inv["id"], docs_edo_signed_at=_now, docs_edo_signed_by=u.id)
             elif edo_type == "sign_invoice":
+                # docs_edo_signed_at → колонка 94 (первичка)
                 await db.update_invoice(inv["id"], docs_edo_signed=1, docs_edo_signed_at=_now, docs_edo_signed_by=u.id)
 
             if edo_type in {"sign_closing", "sign_invoice"}:
