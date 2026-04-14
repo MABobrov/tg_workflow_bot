@@ -221,6 +221,22 @@ INVOICES_HEADER = [
     "Коммент. монтажник ОК",  # 126
     "Способ оплаты",          # 127
     "Статус заказа стекла",   # 128
+    # --- Бухгалтерия (129-143) ---
+    "Первичка ЭДО",           # 129
+    "Первичка бумага",         # 130
+    "Первичка оригиналы",     # 131
+    "Первичка коммент",        # 132
+    "Вторичка ЭДО",           # 133
+    "Вторичка оригиналы",     # 134
+    "Вторичка коммент",        # 135
+    "Статус закр.док",         # 136
+    "Дата ЭДО подписи",       # 137
+    "Дата долгов нет",         # 138
+    "Платёжка ЗП файл",       # 139
+    "ЭДО запросов всего",     # 140
+    "ЭДО открытых",           # 141
+    "Последний ЭДО ответ",    # 142
+    "Дата последнего ЭДО",    # 143
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -835,6 +851,25 @@ class GoogleSheetsService:
         cells[126] = invoice.get("installer_ok_comment") or ""
         cells[127] = invoice.get("payment_method") or ""
         cells[128] = invoice.get("glass_order_status") or ""
+
+        # --- Бухгалтерия (129-143) ---
+        _holder_map = {"gd": "У ГД", "manager": "У менеджера"}
+        cells[129] = "Да" if invoice.get("docs_edo_signed") else "Нет"
+        cells[130] = "Да" if invoice.get("docs_paper_signed") else "Нет"
+        cells[131] = _holder_map.get(invoice.get("docs_originals_holder") or "", "—")
+        cells[132] = invoice.get("docs_originals_comment") or ""
+        cells[133] = "Да" if invoice.get("edo_signed") else "Нет"
+        cells[134] = _holder_map.get(invoice.get("closing_originals_holder") or "", "—")
+        cells[135] = invoice.get("closing_originals_comment") or ""
+        cells[136] = invoice.get("closing_docs_status") or ""
+        cells[137] = self._fmt_sheet_date(invoice.get("edo_signed_at"))
+        cells[138] = self._fmt_sheet_date(invoice.get("no_debts_at"))
+        cells[139] = "Есть" if invoice.get("zp_installer_payment_file_id") else "Нет"
+        _edo = invoice.get("_edo_stats") or {}
+        cells[140] = _edo.get("total", 0) or ""
+        cells[141] = _edo.get("open", 0) or ""
+        cells[142] = _edo.get("last_response_type") or ""
+        cells[143] = self._fmt_sheet_date(_edo.get("last_completed_at"))
 
         # M (12): Дата окончания = receipt_date + deadline_days
         _receipt = invoice.get("receipt_date")

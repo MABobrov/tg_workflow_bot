@@ -281,6 +281,7 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_edo_req_status ON edo_requests(status);
             CREATE INDEX IF NOT EXISTS idx_edo_req_assigned ON edo_requests(assigned_to, status);
+            CREATE INDEX IF NOT EXISTS idx_edo_req_invoice ON edo_requests(invoice_id);
 
             CREATE TABLE IF NOT EXISTS lead_tracking (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1672,6 +1673,35 @@ class Database:
         )
         row = await cur.fetchone()
         return row is not None
+
+    async def get_edo_stats_for_invoice(self, invoice_id: int) -> dict[str, Any]:
+        """Aggregate EDO request stats for an invoice (for sheet export)."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM edo_requests WHERE invoice_id = ?",
+            (invoice_id,),
+        )
+        total = (await cur.fetchone())["cnt"]
+
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM edo_requests WHERE invoice_id = ? AND status = 'open'",
+            (invoice_id,),
+        )
+        open_count = (await cur.fetchone())["cnt"]
+
+        cur = await self.conn.execute(
+            "SELECT response_type, completed_at FROM edo_requests "
+            "WHERE invoice_id = ? AND status = 'done' "
+            "ORDER BY completed_at DESC LIMIT 1",
+            (invoice_id,),
+        )
+        last = await cur.fetchone()
+
+        return {
+            "total": total,
+            "open": open_count,
+            "last_response_type": last["response_type"] if last else None,
+            "last_completed_at": last["completed_at"] if last else None,
+        }
 
     async def get_full_invoice_cost_card(self, invoice_id: int) -> dict[str, Any]:
         """

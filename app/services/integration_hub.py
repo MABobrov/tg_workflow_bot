@@ -133,6 +133,11 @@ class IntegrationHub:
                             mu = await self.db.get_user_optional(int(creator))
                             if mu:
                                 manager_label = f"@{mu.username}" if mu.username else str(mu.telegram_id)
+                        try:
+                            inv["_edo_stats"] = await self.db.get_edo_stats_for_invoice(inv_id)
+                        except Exception:
+                            log.debug("Failed to get edo_stats for invoice %s", inv_id, exc_info=True)
+                            inv["_edo_stats"] = {}
                         await self.sheets.upsert_invoice(inv, manager_label=manager_label)
                         log.info("Synced invoice row #%s (%s) to Invoices sheet", inv_id, inv.get("invoice_number"))
                 elif ev.kind == "amocrm_create_lead" and self.amocrm:

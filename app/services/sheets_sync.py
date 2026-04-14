@@ -172,6 +172,13 @@ async def export_to_sheets(
             else:
                 invoice["_credit_expenses"] = {}
 
+            # EDO request stats for accounting columns 140-143
+            try:
+                invoice["_edo_stats"] = await db.get_edo_stats_for_invoice(int(invoice["id"]))
+            except Exception:
+                log.debug("Failed to get edo_stats for invoice %s", invoice.get("id"), exc_info=True)
+                invoice["_edo_stats"] = {}
+
             invoice_items.append((invoice, manager_label, cost))
 
         invoice_count = await sheets.upsert_invoices_bulk(invoice_items)
