@@ -297,11 +297,79 @@ async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
     )
 
 
+def _build_acc_summary(invoices: list[dict[str, Any]]) -> str:
+    """Build accounting summary card for invoices in work."""
+    cnt = len(invoices)
+    total_amount = sum(float(inv.get("amount") or 0) for inv in invoices)
+    total_debt = sum(float(inv.get("outstanding_debt") or 0) for inv in invoices)
+
+    # Первичка
+    prim_edo_ok = sum(1 for inv in invoices if inv.get("docs_edo_signed"))
+    prim_edo_wait = cnt - prim_edo_ok
+    prim_gd = sum(1 for inv in invoices if inv.get("docs_originals_holder") == "gd")
+    prim_mgr = sum(1 for inv in invoices if inv.get("docs_originals_holder") == "manager")
+    prim_none = cnt - prim_gd - prim_mgr
+
+    # Вторичка
+    clos_edo_ok = sum(1 for inv in invoices if inv.get("edo_signed"))
+    clos_edo_wait = cnt - clos_edo_ok
+    clos_gd = sum(1 for inv in invoices if inv.get("closing_originals_holder") == "gd")
+    clos_mgr = sum(1 for inv in invoices if inv.get("closing_originals_holder") == "manager")
+    clos_none = cnt - clos_gd - clos_mgr
+
+    # Просрочки
+    overdue = 0
+    for inv in invoices:
+        dl = inv.get("deadline_end_date")
+        if dl:
+            try:
+                end = datetime.fromisoformat(dl).date()
+                if (end - date.today()).days < 0:
+                    overdue += 1
+            except (ValueError, TypeError):
+                pass
+
+    # Документы не заполнены
+    docs_pending = sum(
+        1 for inv in invoices
+        if not (inv.get("docs_edo_signed") and inv.get("edo_signed")
+                and inv.get("docs_originals_holder") and inv.get("closing_originals_holder"))
+    )
+
+    lines = [
+        f"📊 <b>Счета в работе — сводка</b> ({cnt})",
+        "",
+        "<pre>",
+        f"{'Всего счетов':22s} {cnt:>5}",
+        f"{'Сумма':22s} {total_amount:>12,.0f}₽",
+        f"{'Долг':22s} {total_debt:>12,.0f}₽",
+        f"{'─' * 30}",
+        "Первичка",
+        f"  {'ЭДО ✅':22s} {prim_edo_ok:>5}",
+        f"  {'ЭДО ⏳':22s} {prim_edo_wait:>5}",
+        f"  {'Ориг. у ГД':22s} {prim_gd:>5}",
+        f"  {'Ориг. у менеджера':22s} {prim_mgr:>5}",
+        f"  {'Без оригиналов':22s} {prim_none:>5}",
+        f"{'─' * 30}",
+        "Вторичка",
+        f"  {'ЭДО ✅':22s} {clos_edo_ok:>5}",
+        f"  {'ЭДО ⏳':22s} {clos_edo_wait:>5}",
+        f"  {'Закр. у ГД':22s} {clos_gd:>5}",
+        f"  {'Закр. у менеджера':22s} {clos_mgr:>5}",
+        f"  {'Без закрывающих':22s} {clos_none:>5}",
+        f"{'─' * 30}",
+        f"{'🔴 Просрочено':22s} {overdue:>5}",
+        f"{'📋 Док. не заполнены':22s} {docs_pending:>5}",
+        "</pre>",
+    ]
+    return "\n".join(lines)
+
+
 async def _show_acc_invoices_work(
     target: Message | CallbackQuery,
     db: Database,
 ) -> None:
-    """Показать карточки счетов в работе для бухгалтерии."""
+    """Показать сводку + inline-список счетов в работе для бухгалтерии."""
     invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
 
     msg = target.message if isinstance(target, CallbackQuery) else target
@@ -309,15 +377,31 @@ async def _show_acc_invoices_work(
         await msg.answer("✅ Нет счетов в работе.")  # type: ignore[union-attr]
         return
 
-    await msg.answer(f"📊 <b>Счета в работе</b> ({len(invoices)})")  # type: ignore[union-attr]
+    # Сводная карточка
+    summary = _build_acc_summary(invoices)
+    await msg.answer(summary)  # type: ignore[union-attr]
 
-    for inv in invoices[:15]:
-        text = await _format_acc_card(inv, db)
-        b = InlineKeyboardBuilder()
-        b.button(text="📨 Запрос менеджеру", callback_data=f"acc_work:req:{inv['id']}")
-        b.button(text="✏️ Документы", callback_data=f"acc_doc:menu:{inv['id']}")
-        b.adjust(2)
-        await msg.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    # Inline-кнопки счетов
+    b = InlineKeyboardBuilder()
+    for inv in invoices[:20]:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        status_icon = {
+            "pending": "⏳", "in_progress": "🔄", "paid": "✅",
+            "on_hold": "⏸", "closing": "📌",
+        }.get(inv.get("status", ""), "❓")
+        try:
+            amt = f"{float(inv.get('amount', 0)):,.0f}₽"
+        except (ValueError, TypeError):
+            amt = ""
+        b.button(
+            text=f"{status_icon} {num} · {amt}",
+            callback_data=f"acc_work:card:{inv['id']}",
+        )
+    b.adjust(1)
+    await msg.answer(  # type: ignore[union-attr]
+        "Нажмите на счёт для просмотра:",
+        reply_markup=b.as_markup(),
+    )
 
     footer = InlineKeyboardBuilder()
     footer.button(text="🔄 Обновить", callback_data="acc_work:refresh")
@@ -332,6 +416,27 @@ async def acc_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer("🔄 Обновлено")
     await _show_acc_invoices_work(cb, db)
+
+
+@router.callback_query(F.data.regexp(r"^acc_work:card:\d+$"))
+async def acc_invoices_work_card(cb: CallbackQuery, db: Database) -> None:
+    """Карточка конкретного счёта — бухгалтерия."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    text = await _format_acc_card(inv, db)
+    b = InlineKeyboardBuilder()
+    b.button(text="📨 Запрос менеджеру", callback_data=f"acc_work:req:{inv['id']}")
+    b.button(text="✏️ Документы", callback_data=f"acc_doc:menu:{inv['id']}")
+    b.adjust(2)
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data.regexp(r"^acc_work:view:\d+$"))
