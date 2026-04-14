@@ -166,13 +166,6 @@ class ChatProxySG(StatesGroup):
     writing_attachments = State()  # Прикрепление файлов
 
 
-class BroadcastSG(StatesGroup):
-    """Рассылка 'Сообщение Всем'."""
-    text = State()              # Ввод текста
-    attachments = State()       # Прикрепление файлов
-    confirm = State()           # Подтверждение
-
-
 class GdTaskCreateSG(StatesGroup):
     """Создание задачи от ГД из чат-прокси."""
     pick_installer = State()  # Выбор монтажника (для montazh)
@@ -295,11 +288,6 @@ class InvoiceEndSG(StatesGroup):
     closing_originals_comment = State()  # доп. пояснение
 
 
-class GdInvoiceEndSG(StatesGroup):
-    """ГД: Счет End — финальное решение по закрытию счёта."""
-    viewing = State()            # просмотр карточки с условиями
-
-
 class EdoRequestSG(StatesGroup):
     """Менеджер/РП: запрос ЭДО к бухгалтерии."""
     invoice_pick = State()       # выбор счёта из списка
@@ -317,11 +305,6 @@ class EdoResponseSG(StatesGroup):
     attachments = State()        # вложения
 
 
-class MyInvoicesSG(StatesGroup):
-    """Менеджер: Мои Счета — просмотр списка счетов."""
-    viewing = State()
-
-
 class LeadToProjectSG(StatesGroup):
     """РП: Лид в проект — назначение лида менеджеру."""
     pick_manager = State()       # выбор менеджера (КВ / КИА / НПН)
@@ -330,11 +313,6 @@ class LeadToProjectSG(StatesGroup):
     address = State()            # адрес объекта
     source = State()             # источник лида
     attachments = State()        # вложения
-
-
-class RoleSwitchSG(StatesGroup):
-    """РП: Смена роли — переключение РП ↔ Менеджер НПН."""
-    confirm = State()            # подтверждение переключения
 
 
 class InstallerInvoiceOkSG(StatesGroup):
@@ -377,13 +355,6 @@ class InstallerDailyReportSG(StatesGroup):
     """Монтажник: Отчёт за день — текстовое сообщение РП."""
     text = State()               # объект, что сделано, проблемы, простой
     attachments = State()        # вложения
-
-
-class ZameryWorkSG(StatesGroup):
-    """Замерщик: работа с замерами."""
-    viewing = State()            # просмотр входящих запросов
-    responding = State()         # ответ: «ок» + бланк замера
-    attachments = State()        # фото, видео, комментарии
 
 
 class ManagerChatProxySG(StatesGroup):
