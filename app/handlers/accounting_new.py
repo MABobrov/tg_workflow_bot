@@ -317,16 +317,33 @@ async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
         f"{'Сумма':{W}s}{amt}",
         f"{'Долг':{W}s}{debt}",
         f"{'Срок':{W}s}{dl_text}",
-        f"{'─' * 32}",
-        f"{'Первичка ЭДО':{W}s}{p_edo}",
-        f"{'Первичка бумага':{W}s}{p_paper}",
-        f"{'Первичка ориг.':{W}s}{p_orig}",
-        f"{'Вторичка ЭДО':{W}s}{c_edo}",
-        f"{'Вторичка ориг.':{W}s}{c_orig}",
-        f"{'Статус закр.док':{W}s}{c_status}",
-        f"{'Долгов нет':{W}s}{no_debts}",
-        "</pre>",
     ]
+
+    # Документы — показываем только подписанные/заполненные
+    doc_lines: list[str] = []
+    if inv.get("docs_edo_signed"):
+        doc_lines.append(f"{'Первичка ЭДО':{W}s}✅")
+    if inv.get("docs_paper_signed"):
+        doc_lines.append(f"{'Первичка бумага':{W}s}✅")
+    p_h = inv.get("docs_originals_holder")
+    if p_h:
+        doc_lines.append(f"{'Первичка ориг.':{W}s}✅{_HOLDER_LABELS.get(p_h, '')}")
+    if inv.get("edo_signed"):
+        doc_lines.append(f"{'Вторичка ЭДО':{W}s}✅")
+    c_h = inv.get("closing_originals_holder")
+    if c_h:
+        doc_lines.append(f"{'Вторичка ориг.':{W}s}✅{_HOLDER_LABELS.get(c_h, '')}")
+    c_status = inv.get("closing_docs_status")
+    if c_status:
+        doc_lines.append(f"{'Статус закр.док':{W}s}{c_status}")
+    if inv.get("no_debts"):
+        doc_lines.append(f"{'Долгов нет':{W}s}✅")
+
+    if doc_lines:
+        lines.append(f"{'─' * 32}")
+        lines.extend(doc_lines)
+
+    lines.append("</pre>")
     return "\n".join(lines)
 
 
