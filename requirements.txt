@@ -6,3 +6,4 @@ python-dotenv>=1.0.1
 # Optional integrations
 gspread>=6.0.0
 google-auth>=2.0.0
+aiohttp-socks>=0.8.0

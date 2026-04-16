@@ -8,6 +8,7 @@ from pathlib import Path
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.types import ReplyKeyboardRemove
 from dotenv import load_dotenv
@@ -114,9 +115,12 @@ async def main() -> None:
 
     work_chat_id = await get_work_chat_id(db, config)
 
+    _proxy_url = os.environ.get("TG_PROXY_URL", "socks5://172.19.0.1:40001")
+    _session = AiohttpSession(proxy=_proxy_url) if _proxy_url else None
     bot = Bot(
         token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=_session,
     )
     notifier = Notifier(
         bot,
