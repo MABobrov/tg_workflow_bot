@@ -203,6 +203,7 @@ class InvoiceCreateSG(StatesGroup):
     amount = State()
     invoice_number = State()
     comment = State()
+    credit_type = State()      # тип оплаты: б/н (0) или кредит (1)
     urgency = State()          # срочность: 1h / 7h / 24h
     attachments = State()
 
@@ -237,6 +238,7 @@ class CheckKpSG(StatesGroup):
     address = State()            # адрес установки
     # --- Обе ветки ---
     amount = State()             # полная сумма
+    credit_type = State()        # тип клиента: б/н (0) или кредит (1)
     # --- Только для нового клиента ---
     payment_type = State()       # тип оплаты (100%, рассрочка и т.д.)
     deadline_days = State()      # срок по договору (дни)

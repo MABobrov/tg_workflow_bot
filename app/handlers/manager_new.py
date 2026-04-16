@@ -257,24 +257,48 @@ async def check_kp_amount(message: Message, state: FSMContext) -> None:
     await state.update_data(amount=amount)
     data = await state.get_data()
 
+    # Оба ветки → сначала выбор типа клиента (кредит/безнал)
+    _b = InlineKeyboardBuilder()
+    _b.button(text="🏢 Безналичный (юрлицо)", callback_data="kp_credit:0")
+    _b.button(text="💰 Кредитный (физлицо)", callback_data="kp_credit:1")
+    _b.adjust(1)
+    await state.set_state(CheckKpSG.credit_type)
+    step = "4" if data.get("flow_type") != "lead" else "3"
+    await message.answer(
+        f"Шаг {step}/7: Тип клиента:",
+        reply_markup=_b.as_markup(),
+    )
+
+
+
+
+@router.callback_query(CheckKpSG.credit_type, F.data.startswith("kp_credit:"))
+async def check_kp_credit_type(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    is_credit = int((cb.data or "").split(":", 1)[1])
+    await state.update_data(is_credit=is_credit)
+    label = "💰 Кредитный" if is_credit else "🏢 Безналичный"
+    await cb.message.edit_text(f"✅ Тип клиента: <b>{label}</b>")  # type: ignore[union-attr]
+    data = await state.get_data()
     if data.get("flow_type") == "lead":
-        # Короткий путь: после суммы → комментарий
+        # Короткий путь: → комментарий
         await state.set_state(CheckKpSG.comment)
-        await message.answer("Добавьте <b>комментарий</b> (или отправьте «—» для пропуска):")
+        await cb.message.answer(  # type: ignore[union-attr]
+            "Добавьте <b>комментарий</b> (или отправьте «—» для пропуска):"
+        )
     else:
         # Полная форма: → тип оплаты
-        await state.set_state(CheckKpSG.payment_type)
         b = InlineKeyboardBuilder()
         b.button(text="100% предоплата", callback_data="kp_pay:100")
         b.button(text="50/50", callback_data="kp_pay:5050")
         b.button(text="Рассрочка", callback_data="kp_pay:installment")
         b.button(text="Другое", callback_data="kp_pay:other")
         b.adjust(2)
-        await message.answer(
-            "Шаг 4/7: Выберите <b>тип оплаты</b>:",
+        await state.set_state(CheckKpSG.payment_type)
+        await cb.message.answer(  # type: ignore[union-attr]
+            "Выберите <b>тип оплаты</b>:",
             reply_markup=b.as_markup(),
         )
-
 
 @router.callback_query(CheckKpSG.payment_type, F.data.startswith("kp_pay:"))
 async def check_kp_payment_type(cb: CallbackQuery, state: FSMContext) -> None:
@@ -409,6 +433,7 @@ async def check_kp_comment(
             "comment": comment,
             "manager_role": role or "manager",
             "manager_id": message.from_user.id,
+            "is_credit": data.get("is_credit", 0),
         },
     )
 

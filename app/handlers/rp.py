@@ -1003,13 +1003,36 @@ async def invoice_comment(message: Message, state: FSMContext) -> None:
     comment = text if text != "-" else ""
     await state.update_data(comment=comment, attachments=[])
 
-    from ..keyboards import urgency_kb
-    await state.set_state(InvoiceCreateSG.urgency)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as _IKB
+    _b = _IKB()
+    _b.button(text="🏢 Безналичный (юрлицо)", callback_data="inv_credit:0")
+    _b.button(text="💰 Кредитный (физлицо)", callback_data="inv_credit:1")
+    _b.adjust(1)
+    await state.set_state(InvoiceCreateSG.credit_type)
     await message.answer(
-        "Шаг 7: срочность оплаты:",
-        reply_markup=urgency_kb(prefix="inv_urgency"),
+        "Шаг 7: тип оплаты клиента:",
+        reply_markup=_b.as_markup(),
     )
 
+
+
+
+@router.callback_query(
+    InvoiceCreateSG.credit_type,
+    lambda cb: cb.data and cb.data.startswith("inv_credit:"),
+)
+async def invoice_credit_type(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    is_credit = int((cb.data or "").split(":", 1)[1])
+    await state.update_data(is_credit=is_credit)
+    label = "💰 Кредитный" if is_credit else "🏢 Безналичный"
+    await cb.message.edit_text(f"✅ Тип оплаты: <b>{label}</b>")  # type: ignore[union-attr]
+    from ..keyboards import urgency_kb
+    await state.set_state(InvoiceCreateSG.urgency)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "Шаг 8: срочность оплаты:",
+        reply_markup=urgency_kb(prefix="inv_urgency"),
+    )
 
 @router.callback_query(
     InvoiceCreateSG.urgency,
@@ -1121,6 +1144,7 @@ async def invoice_finalize(
             "sender_username": u.username,
             "parent_invoice_id": parent_invoice_id,
             "material_type": material_type,
+            "is_credit": data.get("is_credit", 0),
         },
     )
 
@@ -1143,6 +1167,8 @@ async def invoice_finalize(
         f"💰 Сумма: {amount}\n"
         f"🔢 № счёта: {invoice_number}\n"
     )
+    _credit_label = "💰 Кредитный (физлицо)" if data.get("is_credit") else "🏢 Безналичный (юрлицо)"
+    msg += f"💳 Тип: {_credit_label}\n"
     if parent_invoice_id:
         parent_inv = await db.get_invoice(parent_invoice_id)
         if parent_inv:
