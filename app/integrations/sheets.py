@@ -306,7 +306,7 @@ class GoogleSheetsService:
             return ""
         try:
             dt = datetime.fromisoformat(text)
-            return f"=DATE({dt.year},{dt.month},{dt.day})"
+            return f"=DATE({dt.year};{dt.month};{dt.day})"
         except ValueError:
             return text
 
@@ -634,7 +634,11 @@ class GoogleSheetsService:
             42: self._fmt_amount(invoice.get("npn_request_op")),     # AQ Запрос НПН ← ОП AU
             43: self._fmt_amount(invoice.get("npn_payout_op")),     # AR Выдано НПН ← ОП AV
             44: self._fmt_sheet_date(invoice.get("npn_payout_date_op")),  # AS Дата НПН ← ОП AW
-            46: invoice.get("status") or "",
+            46: (lambda s: {
+                "assigned": "Назначен", "in_work": "В работе",
+                "razmery_ok": "Размеры ОК", "invoice_ok": "Счет ОК",
+                "invoice_end": "Счет End", "none": "—",
+            }.get(s, s or ""))(invoice.get("montazh_stage", "")),
             47: _ROLE_LABELS.get(invoice.get("creator_role", ""), invoice.get("creator_role") or ""),
             48: invoice.get("supplier") or "",
             49: invoice.get("material_type") or "",
@@ -646,7 +650,7 @@ class GoogleSheetsService:
                             and float(invoice.get("zp_installer_amount") or 0) > 0)
                         ) else "",
             53: "Да" if invoice.get("no_debts") else "",
-            54: "",  # очистка (перенесено в 74)
+            54: "кредит" if invoice.get("is_credit") else "б.н.",  # BC Система оплаты
             55: "",  # очистка (перенесено в 75)
             56: invoice.get("zp_installer_status") or "",
             59: format_dt_iso(invoice.get("created_at"), self.cfg.timezone_name),
@@ -900,7 +904,7 @@ class GoogleSheetsService:
                 from datetime import datetime as _dt, timedelta as _td
                 _rd = _dt.fromisoformat(str(_receipt).strip())
                 _end = _rd + _td(days=int(_deadline_d))
-                cells[12] = f"=DATE({_end.year},{_end.month},{_end.day})"
+                cells[12] = f"=DATE({_end.year};{_end.month};{_end.day})"
             except (ValueError, TypeError):
                 pass
 
