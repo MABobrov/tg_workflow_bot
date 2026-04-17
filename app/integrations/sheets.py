@@ -670,7 +670,7 @@ class GoogleSheetsService:
             77: invoice.get("_plan_fact_label") or "",                   # BZ Расчет vs Факт
             # 78, 79 заполняются ниже из cost_card
             # — Кредитный учёт (перенесён в 99-104) —
-            104: f"=IF(CV{row}=\"\",\"\",CV{row}-CX{row})",             # DA Кредит баланс
+            104: f'=IF(CV{row}="";"";CV{row}-CX{row})',             # DA Кредит баланс
         }
 
         # — Сквозная нумерация (86) —
@@ -819,25 +819,39 @@ class GoogleSheetsService:
         _mont_zp = float(invoice.get("zp_installer_amount") or 0)
         _zp_status = invoice.get("zp_installer_status") or ""
 
+        # Y/BL/BM/BN/BO — «факт»-показатели по умолчанию пусты; заполняются только ниже
+        # при наличии cost-card И статуса ended/credit.
+        cells[24] = ""
+        cells[63] = ""
+        cells[64] = ""
+        cells[65] = ""
+        cells[66] = ""
+
         if _c:
             fact_pct = _c.get("margin_pct", 0)
             fact_margin = _c.get("margin", 0)
-            cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""
             cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
             cells[58] = self._fmt_amount(_c.get("total_cost"))
-            # НДС факт (65) и Налог на приб. факт (66)
-            cells[65] = self._fmt_amount(_c.get("nds_fact"))         # BN НДС факт
-            cells[66] = self._fmt_amount(_c.get("profit_tax_fact"))  # BO Налог на приб. факт
-            # BL/BM: только для закрытых счетов (BQ "Счет END" = Да)
+            # Y Рент-ть факт, BN НДС факт, BO Налог на приб. факт, BL Прибыль факт, BM Перерасчет
+            # — все "факт"-показатели пишутся ТОЛЬКО для закрытых счетов
             _is_closed = invoice.get("status") in ("ended", "credit")
-            if _is_closed and fact_margin:
-                cells[63] = self._fmt_amount(fact_margin)              # BL Прибыль факт
-                # BM: Перерасчет прибыли — только если план > факт
-                if _profit_op and _profit_op > fact_margin:
-                    cells[64] = self._fmt_amount(fact_margin - _profit_op)  # BM Перерасчет
+            if _is_closed:
+                cells[24] = f"{fact_pct:.1f}%" if fact_pct else ""
+                cells[65] = self._fmt_amount(_c.get("nds_fact"))         # BN НДС факт
+                cells[66] = self._fmt_amount(_c.get("profit_tax_fact"))  # BO Налог на приб. факт
+                if fact_margin:
+                    cells[63] = self._fmt_amount(fact_margin)              # BL Прибыль факт
+                    if _profit_op and _profit_op > fact_margin:
+                        cells[64] = self._fmt_amount(fact_margin - _profit_op)  # BM Перерасчет
+                    else:
+                        cells[64] = ""
                 else:
+                    cells[63] = ""
                     cells[64] = ""
             else:
+                cells[24] = ""
+                cells[65] = ""
+                cells[66] = ""
                 cells[63] = ""
                 cells[64] = ""
             cells[78] = ""  # CA — очищено
