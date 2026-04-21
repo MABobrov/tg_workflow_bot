@@ -711,7 +711,8 @@ class GoogleSheetsService:
         credit_exp = invoice.get("_credit_expenses") or {}
         credit_exp_total = credit_exp.get("total") or 0
         if is_credit:
-            if invoice.get("status") in ("ended", "credit"):
+            _credit_fully_closed = is_credit and all(invoice.get(f) for f in ("installer_ok", "edo_signed", "no_debts"))
+            if invoice.get("status") == "ended" or _credit_fully_closed:
                 # Закрытый счёт — кредит полностью израсходован, баланс = 0
                 cells[101] = cells[99]
             else:
