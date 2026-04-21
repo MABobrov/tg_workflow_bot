@@ -484,7 +484,7 @@ class Database:
             ("invoices", "zamery_info_op", "TEXT"),             # I: Замеры (из ОП)
             ("invoices", "agent_payout_op", "REAL"),            # AE: Выпл. Агент.
             ("invoices", "men_zp_payout_op", "REAL"),           # AF: Выпл.МенЗП
-            ("invoices", "npn_request_op", "TEXT"),             # AS: Запрос НПН
+            ("invoices", "npn_request_op", "REAL"),             # AQ: Запрос НПН (сумма)
             ("invoices", "npn_payout_op", "REAL"),              # AU: Выдано НПН (сумма)
             ("invoices", "npn_payout_date_op", "TEXT"),         # AV: Дата НПН
             ("invoices", "taxes_fact_op", "REAL"),              # AX: Налоги факт
@@ -601,6 +601,9 @@ class Database:
             ("invoices", "metal_order_status", "TEXT"),
             # --- Связка лид→счёт ---
             ("invoices", "lead_tracking_id", "INTEGER"),
+            # --- MinIO mirror keys for attachments ---
+            ("attachments", "minio_object_key", "TEXT"),
+            ("chat_attachments", "minio_object_key", "TEXT"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -612,6 +615,33 @@ class Database:
                 continue
             await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
         await self.conn.commit()
+
+        # --- Миграция npn_request_op TEXT → REAL (однократно) ---
+        # Столбец AQ «Запрос НПН» исторически был TEXT, значения мешались:
+        # "3520" / "3850.0" / "3 520,00". Приводим к REAL affinity + нормализация.
+        cur = await self.conn.execute("PRAGMA table_info(invoices)")
+        _cols_info = await cur.fetchall()
+        _npn_col = next(
+            (c for c in _cols_info if str(c["name"]) == "npn_request_op"),
+            None,
+        )
+        if _npn_col and str(_npn_col["type"]).upper() != "REAL":
+            await self.conn.execute(
+                "ALTER TABLE invoices ADD COLUMN npn_request_op_new REAL"
+            )
+            await self.conn.execute(
+                "UPDATE invoices SET npn_request_op_new = CASE "
+                "WHEN npn_request_op IS NULL OR TRIM(npn_request_op) = '' THEN NULL "
+                "ELSE CAST(REPLACE(REPLACE(npn_request_op, ' ', ''), ',', '.') AS REAL) "
+                "END"
+            )
+            await self.conn.execute(
+                "ALTER TABLE invoices DROP COLUMN npn_request_op"
+            )
+            await self.conn.execute(
+                "ALTER TABLE invoices RENAME COLUMN npn_request_op_new TO npn_request_op"
+            )
+            await self.conn.commit()
 
         # --- Миграция city → address (однократно) ---
         for suffix in ("kv", "kia", "npn"):
@@ -2332,14 +2362,15 @@ class Database:
         file_unique_id: str | None,
         file_type: str,
         caption: str | None,
+        minio_object_key: str | None = None,
     ) -> None:
         now = to_iso(utcnow())
         await self.conn.execute(
             """
-            INSERT INTO attachments(task_id, tg_file_id, tg_file_unique_id, file_type, caption, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO attachments(task_id, tg_file_id, tg_file_unique_id, file_type, caption, minio_object_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, file_id, file_unique_id, file_type, caption, now),
+            (task_id, file_id, file_unique_id, file_type, caption, minio_object_key, now),
         )
         await self.conn.commit()
 
@@ -2760,15 +2791,16 @@ class Database:
         file_type: str,
         tg_file_unique_id: str | None = None,
         caption: str | None = None,
+        minio_object_key: str | None = None,
     ) -> dict[str, Any]:
         now = to_iso(utcnow())
         cur = await self.conn.execute(
             """
             INSERT INTO chat_attachments
-                (chat_message_id, tg_file_id, tg_file_unique_id, file_type, caption, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (chat_message_id, tg_file_id, tg_file_unique_id, file_type, caption, minio_object_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (chat_message_id, tg_file_id, tg_file_unique_id, file_type, caption, now),
+            (chat_message_id, tg_file_id, tg_file_unique_id, file_type, caption, minio_object_key, now),
         )
         await self.conn.commit()
         row_id = cur.lastrowid
