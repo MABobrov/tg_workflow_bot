@@ -1362,8 +1362,8 @@ class GoogleSheetsService:
         49: "npn_payout_date_op",       # AX: Дата НПН
         # 50: AY (Месяц — не импортируем)
         50: "taxes_fact_op",             # AY: Налоги факт
-        51: "profit_fact_credit_op",     # AZ: Фактическая прибыль по кредитным счетам
-        52: "profit_fact_op",            # BA: Фактическая прибыль по каждому счёту
+        # 51, 52 removed (2026-04-21): BA/BB in Импорт ОП are operator-entered
+        # manually, bot should not copy them. Use cost_card.margin (BL) instead.
     }
 
     def _parse_num(self, val: str) -> float | None:
