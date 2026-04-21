@@ -24,6 +24,7 @@ from ..enums import (
     InvoiceStatus, Role, TaskStatus,
     ZAMERY_SOURCE_LABELS,
 )
+from ..integrations.minio_storage import MinioStorage
 from ..keyboards import (
     ZAM_BTN_MY_OBJECTS,
     ZAM_BTN_PAYMENT,
@@ -37,6 +38,7 @@ from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryCostEditSG, ZameryQuickBookSG, ZameryZpSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
+from ._mirror import mirror_attachment
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -698,24 +700,25 @@ async def zamery_complete_start(cb: CallbackQuery, state: FSMContext, db: Databa
 
 
 @router.message(ZameryCompleteSG.attachments)
-async def zamery_complete_file(message: Message, state: FSMContext) -> None:
+async def zamery_complete_file(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     """Приём файлов: фото, видео, документы."""
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("complete_attachments", [])
 
-    if message.photo:
-        ph = message.photo[-1]
-        attachments.append({"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id, "caption": message.caption})
-    elif message.video:
-        attachments.append({"file_type": "video", "file_id": message.video.file_id, "file_unique_id": message.video.file_unique_id, "caption": message.caption})
-    elif message.document:
-        attachments.append({"file_type": "document", "file_id": message.document.file_id, "file_unique_id": message.document.file_unique_id, "caption": message.caption})
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"zamery/{uid}")
+    if att is None:
         await message.answer("Пришлите файл, фото или видео. Или нажмите «Далее».")
         return
+    attachments.append(att)
 
     await state.update_data(complete_attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(ZameryCompleteSG.attachments, F.data == "zam_complete:next")
@@ -1775,31 +1778,25 @@ async def _ask_attachments(target: Any, state: FSMContext) -> None:
 
 
 @router.message(ZameryQuickBookSG.attachments, F.content_type.in_({"photo", "document"}))
-async def zamery_book_attachment(message: Message, state: FSMContext) -> None:
+async def zamery_book_attachment(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     """Получен файл — сохраняем и ждём ещё."""
     data = await state.get_data()
     attachments = data.get("book_attachments", [])
-    if message.photo:
-        biggest = message.photo[-1]
-        attachments.append({
-            "file_id": biggest.file_id,
-            "file_unique_id": biggest.file_unique_id,
-            "file_type": "photo",
-            "caption": message.caption,
-        })
-    elif message.document:
-        attachments.append({
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "file_type": "document",
-            "caption": message.caption,
-        })
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"zamery/{uid}")
+    if att is not None:
+        attachments.append(att)
     await state.update_data(book_attachments=attachments)
     b = InlineKeyboardBuilder()
     b.button(text=f"✅ Сохранить замер ({len(attachments)} вл.)", callback_data="zamsched:book:finalize")
     b.adjust(1)
+    suffix = " (☁️ зеркало)" if att and att.get("minio_object_key") else ""
     await message.answer(
-        f"📎 Добавлено: {len(attachments)}. Отправьте ещё или сохраните:",
+        f"📎 Добавлено: {len(attachments)}.{suffix} Отправьте ещё или сохраните:",
         reply_markup=b.as_markup(),
     )
 
@@ -1903,6 +1900,7 @@ async def _finalize_schedule_book(
             file_unique_id=a.get("file_unique_id"),
             file_type=a["file_type"],
             caption=a.get("caption"),
+            minio_object_key=a.get("minio_object_key"),
         )
 
     await state.clear()

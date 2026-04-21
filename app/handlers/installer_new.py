@@ -23,6 +23,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from ..config import Config
 from ..db import Database
 from ..enums import InvoiceStatus, MontazhStage, Role, TaskStatus, TaskType
+from ..integrations.minio_storage import MinioStorage
 from ..keyboards import (
     INST_BTN_DAILY_REPORT,
     INST_BTN_IN_WORK,
@@ -50,6 +51,7 @@ from ..states import (
     InstallerZpSG,
 )
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
+from ._mirror import mirror_attachment
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -234,36 +236,22 @@ async def order_mat_comment(message: Message, state: FSMContext) -> None:
 
 
 @router.message(InstallerOrderMaterialsSG.attachments)
-async def order_mat_attachments(message: Message, state: FSMContext) -> None:
+async def order_mat_attachments(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("attachments", [])
-    if message.document:
-        attachments.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.video:
-        attachments.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"installer/{uid}")
+    if att is None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
+    attachments.append(att)
     await state.update_data(attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "inst_order:create")
@@ -325,6 +313,7 @@ async def order_mat_finalize(
             file_unique_id=a.get("file_unique_id"),
             file_type=a["file_type"],
             caption=a.get("caption"),
+            minio_object_key=a.get("minio_object_key"),
         )
 
     initiator = await get_initiator_label(db, u.id)
@@ -875,20 +864,22 @@ async def razmery_comment(message: Message, state: FSMContext) -> None:
 
 
 @router.message(InstallerRazmerySG.attachments)
-async def razmery_attach(message: Message, state: FSMContext) -> None:
+async def razmery_attach(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments = data.get("razmery_attachments", [])
-    if message.document:
-        attachments.append({"file_type": "document", "file_id": message.document.file_id})
-    elif message.photo:
-        attachments.append({"file_type": "photo", "file_id": message.photo[-1].file_id})
-    elif message.video:
-        attachments.append({"file_type": "video", "file_id": message.video.file_id})
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"installer/{uid}")
+    if att is None:
         await message.answer("Прикрепите файл/фото или нажмите кнопку.")
         return
+    attachments.append(att)
     await state.update_data(razmery_attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "razmok_new:create")
@@ -1038,20 +1029,22 @@ async def razmery_result_comment(message: Message, state: FSMContext) -> None:
 
 
 @router.message(InstallerRazmerySG.result_attachments)
-async def razmery_result_attach(message: Message, state: FSMContext) -> None:
+async def razmery_result_attach(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments = data.get("razmery_result_attachments", [])
-    if message.document:
-        attachments.append({"file_type": "document", "file_id": message.document.file_id})
-    elif message.photo:
-        attachments.append({"file_type": "photo", "file_id": message.photo[-1].file_id})
-    elif message.video:
-        attachments.append({"file_type": "video", "file_id": message.video.file_id})
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"installer/{uid}")
+    if att is None:
         await message.answer("Прикрепите файл/фото или нажмите кнопку.")
         return
+    attachments.append(att)
     await state.update_data(razmery_result_attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "razmok_inst:result_send")
@@ -1756,35 +1749,20 @@ async def zpadj_comment(message: Message, state: FSMContext) -> None:
 
 
 @router.message(InstallerZpAdjustSG.attachments)
-async def zpadj_attachments(message: Message, state: FSMContext) -> None:
+async def zpadj_attachments(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     """Шаг 3: приём вложений."""
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("attachments", [])
-    if message.document:
-        attachments.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.video:
-        attachments.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"installer/{uid}")
+    if att is None:
         await message.answer("Пришлите фото/видео/документ или нажмите кнопку.")
         return
+    attachments.append(att)
     await state.update_data(attachments=attachments)
 
     b = InlineKeyboardBuilder()
@@ -1938,6 +1916,7 @@ async def zpadj_finalize(
                 file_unique_id=a.get("file_unique_id"),
                 file_type=a["file_type"],
                 caption=a.get("caption"),
+                minio_object_key=a.get("minio_object_key"),
             )
 
         initiator = await get_initiator_label(db, u.id)
@@ -2030,36 +2009,22 @@ async def daily_report_text(message: Message, state: FSMContext) -> None:
 
 
 @router.message(InstallerDailyReportSG.attachments)
-async def daily_report_attachments(message: Message, state: FSMContext) -> None:
+async def daily_report_attachments(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("attachments", [])
-    if message.document:
-        attachments.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.video:
-        attachments.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"installer/{uid}")
+    if att is None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
+    attachments.append(att)
     await state.update_data(attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "inst_report:send")

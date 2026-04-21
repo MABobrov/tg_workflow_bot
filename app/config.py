@@ -120,6 +120,14 @@ class Config:
     remind_soon_minutes: int
     remind_overdue_minutes: int
 
+    # MinIO object storage (attachments mirror, optional)
+    minio_enabled: bool
+    minio_endpoint: Optional[str]
+    minio_access_key: Optional[str]
+    minio_secret_key: Optional[str]
+    minio_bucket: str
+    minio_secure: bool
+
     def get_role_id(self, role: str) -> int | None:
         """Return default telegram_id for a given role string."""
         mapping = {
@@ -227,6 +235,13 @@ def load_config() -> Config:
     remind_soon_minutes = _parse_int(os.getenv("REMIND_SOON_MINUTES", "60")) or 60
     remind_overdue_minutes = _parse_int(os.getenv("REMIND_OVERDUE_MINUTES", "10")) or 10
 
+    minio_enabled = _parse_bool(os.getenv("MINIO_ENABLED"), default=False)
+    minio_endpoint = os.getenv("MINIO_ENDPOINT")
+    minio_access_key = os.getenv("MINIO_ACCESS_KEY")
+    minio_secret_key = os.getenv("MINIO_SECRET_KEY")
+    minio_bucket = (os.getenv("MINIO_BUCKET") or "attachments").strip()
+    minio_secure = _parse_bool(os.getenv("MINIO_SECURE"), default=False)
+
     return Config(
         bot_token=token,
         admin_ids=admin_ids,
@@ -279,4 +294,10 @@ def load_config() -> Config:
         reminders_enabled=reminders_enabled,
         remind_soon_minutes=remind_soon_minutes,
         remind_overdue_minutes=remind_overdue_minutes,
+        minio_enabled=minio_enabled,
+        minio_endpoint=minio_endpoint,
+        minio_access_key=minio_access_key,
+        minio_secret_key=minio_secret_key,
+        minio_bucket=minio_bucket,
+        minio_secure=minio_secure,
     )

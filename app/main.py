@@ -17,6 +17,7 @@ from .config import load_config
 from .db import Database
 from .integrations.amocrm import AmoCRMService, AmoConfig
 from .integrations.sheets import GoogleSheetsService, SheetsConfig
+from .integrations.minio_storage import MinioConfig, MinioStorage
 from .middlewares.keep_menu import KeepMenuMiddleware
 from .middlewares.update_logger import UpdateLoggingMiddleware
 from .middlewares.usage_audit import UsageAuditMiddleware
@@ -191,6 +192,21 @@ async def main() -> None:
 
     integrations = IntegrationHub(db=db, sheets=sheets_service, amocrm=amocrm_service)
     await integrations.start()
+
+    storage = MinioStorage(MinioConfig(
+        enabled=config.minio_enabled,
+        endpoint=config.minio_endpoint or "",
+        access_key=config.minio_access_key or "",
+        secret_key=config.minio_secret_key or "",
+        bucket=config.minio_bucket,
+        secure=config.minio_secure,
+    ))
+    if storage.enabled:
+        ok = await storage.ensure_bucket()
+        log.info("MinIO storage enabled (bucket=%s, endpoint=%s, ready=%s)",
+                 config.minio_bucket, config.minio_endpoint, ok)
+    else:
+        log.info("MinIO storage DISABLED (set MINIO_ENABLED=true to activate)")
 
     dp = Dispatcher()
     dp.update.outer_middleware(UpdateLoggingMiddleware())
@@ -376,6 +392,7 @@ async def main() -> None:
             config=config,
             notifier=notifier,
             integrations=integrations,
+            storage=storage,
         )
     finally:
         # Cancel all background tasks and await them

@@ -13,6 +13,7 @@ from ..callbacks import ProjectCb, TaskCb
 from ..config import Config
 from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
+from ..integrations.minio_storage import MinioStorage
 from ..keyboards import GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY, main_menu, projects_kb
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
@@ -20,6 +21,7 @@ from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import GdZpPaymentSG, SupplierPaymentSG
 from ..utils import answer_service, fmt_project_card, format_plan_fact_card, parse_amount, private_only_reply_markup, refresh_recipient_keyboard
+from ._mirror import mirror_attachment
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -891,21 +893,22 @@ async def supplier_pay_comment(message: Message, state: FSMContext) -> None:
 
 
 @router.message(SupplierPaymentSG.attachments)
-async def supplier_pay_attach(message: Message, state: FSMContext) -> None:
+async def supplier_pay_attach(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("attachments", [])
-    if message.document:
-        attachments.append({"file_type": "document", "file_id": message.document.file_id, "file_unique_id": message.document.file_unique_id, "caption": message.caption})
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id, "caption": message.caption})
-    elif message.video:
-        attachments.append({"file_type": "video", "file_id": message.video.file_id, "file_unique_id": message.video.file_unique_id, "caption": message.caption})
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"supplier_pay/{uid}")
+    if att is None:
         await message.answer("Пришлите файл/фото или нажмите «✅ Отправить ПП».")
         return
+    attachments.append(att)
     await state.update_data(attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "supplpay:create")
@@ -973,6 +976,7 @@ async def supplier_pay_finalize(
             file_unique_id=a.get("file_unique_id"),
             file_type=a["file_type"],
             caption=a.get("caption"),
+            minio_object_key=a.get("minio_object_key"),
         )
 
     amount_s = f"{amount:,.0f}".replace(",", " ") if isinstance(amount, (int, float)) else "—"

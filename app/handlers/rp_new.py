@@ -38,6 +38,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from ..config import Config
 from ..db import Database
 from ..enums import InvoiceStatus, MontazhStage, Role, TaskStatus, TaskType
+from ..integrations.minio_storage import MinioStorage
 from ..keyboards import (
     RP_BTN_CHECK_KP,
     RP_BTN_CHAT_GD,
@@ -90,6 +91,7 @@ from ..states import (
     RpSupplierInvoiceSG,
 )
 from ..utils import answer_service, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
+from ._mirror import mirror_attachment
 from .auth import RoleFilter, require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -772,28 +774,20 @@ async def rp_montazh_start_attach(cb: CallbackQuery, state: FSMContext, db: Data
 
 
 @router.message(RpMontazhAssignSG.attachments, F.content_type.in_({"photo", "document", "video"}))
-async def rp_montazh_attach_file(message: Message, state: FSMContext) -> None:
+async def rp_montazh_attach_file(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     """Принять файл от РП."""
     data = await state.get_data()
     attachments: list[dict] = data.get("attachments", [])
 
-    if message.photo:
-        file_id = message.photo[-1].file_id
-        file_type = "photo"
-    elif message.video:
-        file_id = message.video.file_id
-        file_type = "video"
-    elif message.document:
-        file_id = message.document.file_id
-        file_type = "document"
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    if att is None:
         return
-
-    attachments.append({
-        "file_type": file_type,
-        "file_id": file_id,
-        "caption": message.caption or "",
-    })
+    attachments.append(att)
     await state.update_data(attachments=attachments)
 
     b = InlineKeyboardBuilder()
@@ -801,8 +795,9 @@ async def rp_montazh_attach_file(message: Message, state: FSMContext) -> None:
         text=f"✅ Отправить монтажнику ({len(attachments)} вл.)",
         callback_data="rp_montazh:finish_attach",
     )
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
     await message.answer(
-        f"📎 Принял. Файлов: {len(attachments)}. Отправьте ещё или нажмите кнопку.",
+        f"📎 Принял. Файлов: {len(attachments)}.{suffix} Отправьте ещё или нажмите кнопку.",
         reply_markup=b.as_markup(),
     )
 
@@ -1323,25 +1318,22 @@ async def rp_razmery_form_comment(message: Message, state: FSMContext) -> None:
 
 
 @router.message(RpRazmerySG.attachments)
-async def rp_razmery_form_attach(message: Message, state: FSMContext) -> None:
+async def rp_razmery_form_attach(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments = data.get("rp_razmery_attachments", [])
-    if message.document:
-        attachments.append({"file_type": "document", "file_id": message.document.file_id})
-    elif message.photo:
-        attachments.append({"file_type": "photo", "file_id": message.photo[-1].file_id})
-    elif message.video:
-        attachments.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    if att is None:
         await message.answer("Прикрепите файл/фото или нажмите кнопку.")
         return
+    attachments.append(att)
     await state.update_data(rp_razmery_attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "razmok_rp:form_create")
@@ -1969,36 +1961,21 @@ async def rp_sinv_material(cb: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.message(RpSupplierInvoiceSG.attachments)
-async def rp_sinv_attach(message: Message, state: FSMContext) -> None:
+async def rp_sinv_attach(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     """Получить файл(ы) от РП для отправки ГД."""
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("attachments", [])
 
-    if message.document:
-        attachments.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.video:
-        attachments.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    if att is None:
         await message.answer("📎 Прикрепите файл или фото. Для продолжения нажмите кнопку.")
         return
+    attachments.append(att)
 
     await state.update_data(attachments=attachments)
 
@@ -2133,6 +2110,7 @@ async def _rp_sinv_finalize(
             file_unique_id=a.get("file_unique_id"),
             file_type=a["file_type"],
             caption=a.get("caption"),
+            minio_object_key=a.get("minio_object_key"),
         )
 
     initiator = await get_initiator_label(db, from_user.id) if from_user else "?"
@@ -3096,36 +3074,22 @@ async def lead_source_manual(message: Message, state: FSMContext) -> None:
 
 
 @router.message(LeadToProjectSG.attachments)
-async def lead_attachments(message: Message, state: FSMContext) -> None:
+async def lead_attachments(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("attachments", [])
-    if message.document:
-        attachments.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.video:
-        attachments.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    if att is None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
+    attachments.append(att)
     await state.update_data(attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "lead:create")
@@ -3237,6 +3201,7 @@ async def lead_finalize(
             file_unique_id=a.get("file_unique_id"),
             file_type=a["file_type"],
             caption=a.get("caption"),
+            minio_object_key=a.get("minio_object_key"),
         )
 
     role_label = {
@@ -3573,34 +3538,18 @@ async def kp_resp_bn(cb: CallbackQuery, state: FSMContext, db: Database) -> None
 
 
 @router.message(KpReviewSG.documents)
-async def kp_review_documents(message: Message, state: FSMContext) -> None:
+async def kp_review_documents(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     """Сбор документов для б/н ответа на КП."""
     data = await state.get_data()
     documents: list[dict[str, Any]] = data.get("documents", [])
 
-    if message.document:
-        documents.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        documents.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.video:
-        documents.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    if att is None:
         if documents:
             # Текстовое сообщение = переход к номеру счёта
             await state.update_data(documents=documents)
@@ -3609,14 +3558,16 @@ async def kp_review_documents(message: Message, state: FSMContext) -> None:
             return
         await message.answer("Пришлите файл или фото:")
         return
+    documents.append(att)
 
     await state.update_data(documents=documents)
 
     b = InlineKeyboardBuilder()
     b.button(text="✅ Далее (комментарий)", callback_data="kp_review:next")
     b.adjust(1)
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
     await message.answer(
-        f"📎 Принял. Документов: <b>{len(documents)}</b>.\n"
+        f"📎 Принял. Документов: <b>{len(documents)}</b>.{suffix}\n"
         "Ещё файлы или нажмите «Далее».",
         reply_markup=b.as_markup(),
     )

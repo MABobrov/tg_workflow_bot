@@ -24,6 +24,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from ..config import Config
 from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
+from ..integrations.minio_storage import MinioStorage
 from ..keyboards import (
     gd_chat_submenu,
     gd_chat_submenu_finance,
@@ -38,6 +39,7 @@ from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..states import ChatProxySG, GdTaskCreateSG, ReplyToGDSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, utcnow, to_iso
+from ._mirror import mirror_attachment
 
 log = logging.getLogger(__name__)
 
@@ -335,6 +337,7 @@ async def handle_writing(
     db: Database,
     config: Config,
     notifier: Notifier,
+    storage: MinioStorage | None = None,
 ) -> None:
     """Process GD's outgoing message in chat-proxy."""
     data = await state.get_data()
@@ -354,32 +357,10 @@ async def handle_writing(
 
     label = channel_label(channel)
     text = (message.text or message.caption or "").strip()
-    has_attach = False
 
-    # Handle file/photo attachments
-    file_info: dict[str, Any] | None = None
-    if message.document:
-        file_info = {
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-        }
-        has_attach = True
-    elif message.photo:
-        ph = message.photo[-1]
-        file_info = {
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-        }
-        has_attach = True
-    elif message.video:
-        file_info = {
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-        }
-        has_attach = True
+    # Handle file/photo attachments via shared helper (uploads to MinIO if enabled)
+    file_info = await mirror_attachment(message, storage, prefix=f"chat/{channel}/{u.id}")
+    has_attach = file_info is not None
 
     if not text and not file_info:
         await message.answer("Введите текст или прикрепите файл.")
@@ -421,6 +402,7 @@ async def handle_writing(
             file_type=file_info["file_type"],
             tg_file_unique_id=file_info.get("file_unique_id"),
             caption=message.caption,
+            minio_object_key=file_info.get("minio_object_key"),
         )
 
     # Forward to recipient with reply button (для всех каналов, включая группу)
@@ -894,38 +876,24 @@ async def gd_task_create_time(message: Message, state: FSMContext, config: Confi
 
 
 @router.message(GdTaskCreateSG.attachments)
-async def gd_task_create_attach(message: Message, state: FSMContext) -> None:
+async def gd_task_create_attach(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments = data.get("task_attachments", [])
 
-    if message.document:
-        attachments.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.video:
-        attachments.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"gd_task/{uid}")
+    if att is None:
         await message.answer("Прикрепите файл/фото/видео или нажмите кнопку.")
         return
+    attachments.append(att)
 
     await state.update_data(task_attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "gd_task_cancel")
@@ -1029,6 +997,7 @@ async def gd_task_create_finalize(
                 file_unique_id=a.get("file_unique_id"),
                 file_type=a["file_type"],
                 caption=a.get("caption"),
+                minio_object_key=a.get("minio_object_key"),
             )
 
         msg = (
@@ -1094,6 +1063,7 @@ async def reply_to_gd_send(
     db: Database,
     config: Config,
     notifier: Notifier,
+    storage: MinioStorage | None = None,
 ) -> None:
     """Forward employee reply to GD."""
     data = await state.get_data()
@@ -1103,14 +1073,7 @@ async def reply_to_gd_send(
         return
 
     text = (message.text or message.caption or "").strip()
-    file_info = None
-    if message.document:
-        file_info = {"file_type": "document", "file_id": message.document.file_id, "file_unique_id": message.document.file_unique_id}
-    elif message.photo:
-        ph = message.photo[-1]
-        file_info = {"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id}
-    elif message.video:
-        file_info = {"file_type": "video", "file_id": message.video.file_id, "file_unique_id": message.video.file_unique_id}
+    file_info = await mirror_attachment(message, storage, prefix=f"chat_reply/{channel}/{u.id}")
 
     if not text and not file_info:
         await message.answer("Введите текст или прикрепите файл.")
@@ -1142,6 +1105,7 @@ async def reply_to_gd_send(
             file_type=file_info["file_type"],
             tg_file_unique_id=file_info.get("file_unique_id"),
             caption=message.caption,
+            minio_object_key=file_info.get("minio_object_key"),
         )
 
     # Auto-detect credit expense from manager reply

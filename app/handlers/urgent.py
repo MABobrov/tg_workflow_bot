@@ -12,6 +12,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from ..config import Config
 from ..db import Database
 from ..enums import Role, TaskStatus, TaskType
+from ..integrations.minio_storage import MinioStorage
 from ..keyboards import main_menu, task_actions_kb, invoice_select_kb
 from ..services.assignment import resolve_default_assignee
 from ..services.integration_hub import IntegrationHub
@@ -19,6 +20,7 @@ from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import NotUrgentGDSG, UrgentGDSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
+from ._mirror import mirror_attachment
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -144,48 +146,74 @@ async def urgent_gd_description(message: Message, state: FSMContext) -> None:
 
 
 @router.message(UrgentGDSG.attachments)
-async def urgent_gd_attachments(message: Message, state: FSMContext) -> None:
+async def urgent_gd_attachments(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("attachments", [])
 
+    file_type: str | None = None
+    file_id: str | None = None
+    file_unique_id: str | None = None
+    original_name: str | None = None
+    content_type: str | None = None
+
     if message.document:
-        attachments.append(
-            {
-                "file_type": "document",
-                "file_id": message.document.file_id,
-                "file_unique_id": message.document.file_unique_id,
-                "caption": message.caption,
-            }
-        )
+        file_type = "document"
+        file_id = message.document.file_id
+        file_unique_id = message.document.file_unique_id
+        original_name = message.document.file_name
+        content_type = message.document.mime_type
     elif message.photo:
         ph = message.photo[-1]
-        attachments.append(
-            {
-                "file_type": "photo",
-                "file_id": ph.file_id,
-                "file_unique_id": ph.file_unique_id,
-                "caption": message.caption,
-            }
-        )
+        file_type = "photo"
+        file_id = ph.file_id
+        file_unique_id = ph.file_unique_id
+        content_type = "image/jpeg"
     elif message.video:
-        attachments.append(
-            {
-                "file_type": "video",
-                "file_id": message.video.file_id,
-                "file_unique_id": message.video.file_unique_id,
-                "caption": message.caption,
-            }
-        )
+        file_type = "video"
+        file_id = message.video.file_id
+        file_unique_id = message.video.file_unique_id
+        content_type = message.video.mime_type or "video/mp4"
     elif message.text and message.text.strip() and message.text.strip() != "❌ Отмена":
         note = message.text.strip()
         prev = data.get("description", "")
         data["description"] = (prev + "\n" + note).strip() if prev else note
+        await state.update_data(description=data.get("description", ""))
+        await answer_service(message, "📝 Заметка добавлена к описанию.")
+        return
     else:
         await message.answer("Пришлите файл/фото или нажмите «✅ Отправить ГД».")
         return
 
+    minio_object_key: str | None = None
+    if storage is not None and storage.enabled and file_id and file_unique_id:
+        try:
+            minio_object_key = await storage.store_telegram_file(
+                bot=message.bot,
+                file_id=file_id,
+                file_unique_id=file_unique_id,
+                file_type=file_type,
+                prefix=f"urgent/{message.from_user.id}" if message.from_user else "urgent/anon",
+                original_name=original_name,
+                content_type=content_type,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("MinIO mirror failed (urgent): %s", exc)
+
+    attachments.append({
+        "file_type": file_type,
+        "file_id": file_id,
+        "file_unique_id": file_unique_id,
+        "caption": message.caption,
+        "minio_object_key": minio_object_key,
+    })
+
     await state.update_data(attachments=attachments, description=data.get("description", ""))
-    await answer_service(message, f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if minio_object_key else ""
+    await answer_service(message, f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "urgentgd:create")
@@ -245,6 +273,7 @@ async def urgent_gd_finalize(
             file_unique_id=a.get("file_unique_id"),
             file_type=a["file_type"],
             caption=a.get("caption"),
+            minio_object_key=a.get("minio_object_key"),
         )
 
     initiator = await get_initiator_label(db, u.id)
@@ -351,32 +380,18 @@ async def not_urgent_gd_description(message: Message, state: FSMContext) -> None
 
 
 @router.message(NotUrgentGDSG.attachments)
-async def not_urgent_gd_attachments(message: Message, state: FSMContext) -> None:
+async def not_urgent_gd_attachments(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("attachments", [])
 
-    if message.document:
-        attachments.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.video:
-        attachments.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"not_urgent/{uid}")
+    if att is not None:
+        attachments.append(att)
     elif message.text and message.text.strip():
         note = message.text.strip()
         prev = data.get("description", "")
@@ -386,7 +401,8 @@ async def not_urgent_gd_attachments(message: Message, state: FSMContext) -> None
         return
 
     await state.update_data(attachments=attachments, description=data.get("description", ""))
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att and att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "noturggd:create")
@@ -448,6 +464,7 @@ async def not_urgent_gd_finalize(
             file_unique_id=a.get("file_unique_id"),
             file_type=a["file_type"],
             caption=a.get("caption"),
+            minio_object_key=a.get("minio_object_key"),
         )
 
     initiator = await get_initiator_label(db, u.id)

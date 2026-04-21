@@ -34,6 +34,7 @@ from ..enums import (
     TaskType,
     ZAMERY_SOURCE_LABELS,
 )
+from ..integrations.minio_storage import MinioStorage
 from ..keyboards import (
     MGR_BTN_CHECK_KP,
     MGR_BTN_CHAT_RP,
@@ -73,6 +74,7 @@ from ..states import (
     ZameryRequestSG,
 )
 from ..utils import answer_service, format_materials_list, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
+from ._mirror import mirror_attachment
 from .auth import RoleFilter, require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -332,33 +334,17 @@ async def check_kp_deadline(message: Message, state: FSMContext) -> None:
 
 
 @router.message(CheckKpSG.documents)
-async def check_kp_documents(message: Message, state: FSMContext) -> None:
+async def check_kp_documents(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("documents", [])
 
-    if message.document:
-        attachments.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.video:
-        attachments.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
+    if att is None:
         if not attachments:
             await message.answer("Пришлите файл или фото КП:")
             return
@@ -370,11 +356,13 @@ async def check_kp_documents(message: Message, state: FSMContext) -> None:
             await state.set_state(CheckKpSG.comment)
             await message.answer("Шаг 7/7: Добавьте <b>комментарий</b> (или отправьте «—» для пропуска):")
         return
+    attachments.append(att)
 
     await state.update_data(documents=attachments)
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
     await answer_service(
         message,
-        f"📎 Принял. Файлов: <b>{len(attachments)}</b>.\n"
+        f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}\n"
         "Отправьте ещё файлы или напишите что-нибудь для перехода к следующему шагу.",
     )
 
@@ -444,6 +432,7 @@ async def check_kp_comment(
             file_unique_id=a.get("file_unique_id"),
             file_type=a["file_type"],
             caption=a.get("caption"),
+            minio_object_key=a.get("minio_object_key"),
         )
 
     initiator = await get_initiator_label(db, message.from_user.id)
@@ -774,38 +763,24 @@ async def invoice_start_est_logistics(message: Message, state: FSMContext) -> No
 
 
 @router.message(InvoiceStartSG.attachments)
-async def invoice_start_attachments(message: Message, state: FSMContext) -> None:
+async def invoice_start_attachments(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("attachments", [])
 
-    if message.document:
-        attachments.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.video:
-        attachments.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
+    if att is None:
         await message.answer("Пришлите файл/фото/видео или нажмите «✅ Отправить ГД».")
         return
+    attachments.append(att)
 
     await state.update_data(attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data.in_({"inv_start:send", "inv_start:send_no_attach"}))
@@ -893,6 +868,7 @@ async def invoice_start_send(
             file_unique_id=a.get("file_unique_id"),
             file_type=a["file_type"],
             caption=a.get("caption"),
+            minio_object_key=a.get("minio_object_key"),
         )
 
     # Notify GD
@@ -1733,38 +1709,24 @@ async def edo_comment(message: Message, state: FSMContext) -> None:
 
 
 @router.message(EdoRequestSG.attachments)
-async def edo_attachments(message: Message, state: FSMContext) -> None:
+async def edo_attachments(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("attachments", [])
 
-    if message.document:
-        attachments.append({
-            "file_type": "document",
-            "file_id": message.document.file_id,
-            "file_unique_id": message.document.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({
-            "file_type": "photo",
-            "file_id": ph.file_id,
-            "file_unique_id": ph.file_unique_id,
-            "caption": message.caption,
-        })
-    elif message.video:
-        attachments.append({
-            "file_type": "video",
-            "file_id": message.video.file_id,
-            "file_unique_id": message.video.file_unique_id,
-            "caption": message.caption,
-        })
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
+    if att is None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
+    attachments.append(att)
 
     await state.update_data(attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "edo:create")
@@ -1832,6 +1794,7 @@ async def edo_finalize(
             file_unique_id=a.get("file_unique_id"),
             file_type=a["file_type"],
             caption=a.get("caption"),
+            minio_object_key=a.get("minio_object_key"),
         )
 
     type_label = {
@@ -2839,21 +2802,22 @@ async def zamery_volume(message: Message, state: FSMContext) -> None:
 
 
 @router.message(ZameryRequestSG.attachments)
-async def zamery_attachments(message: Message, state: FSMContext) -> None:
+async def zamery_attachments(
+    message: Message,
+    state: FSMContext,
+    storage: MinioStorage | None = None,
+) -> None:
     data = await state.get_data()
     attachments: list[dict[str, Any]] = data.get("attachments", [])
-    if message.document:
-        attachments.append({"file_type": "document", "file_id": message.document.file_id, "file_unique_id": message.document.file_unique_id, "caption": message.caption})
-    elif message.photo:
-        ph = message.photo[-1]
-        attachments.append({"file_type": "photo", "file_id": ph.file_id, "file_unique_id": ph.file_unique_id, "caption": message.caption})
-    elif message.video:
-        attachments.append({"file_type": "video", "file_id": message.video.file_id, "file_unique_id": message.video.file_unique_id, "caption": message.caption})
-    else:
+    uid = message.from_user.id if message.from_user else "anon"
+    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
+    if att is None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
+    attachments.append(att)
     await state.update_data(attachments=attachments)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.")
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "zam:create")
@@ -2946,6 +2910,7 @@ async def zamery_finalize(
             file_unique_id=a.get("file_unique_id"),
             file_type=a["file_type"],
             caption=a.get("caption"),
+            minio_object_key=a.get("minio_object_key"),
         )
 
     source_label = ZAMERY_SOURCE_LABELS.get(source_type, source_type)
