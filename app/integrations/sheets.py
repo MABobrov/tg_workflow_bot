@@ -600,6 +600,9 @@ class GoogleSheetsService:
                 cells[_base + 9] = self._fmt_sheet_date(invoice.get(f"inv_{_suf}_date"))
             return cells
 
+        _credit_fully_closed = bool(invoice.get("is_credit")) and all(
+            invoice.get(_f) for _f in ("installer_ok", "edo_signed", "no_debts")
+        )
         cells: dict[int, Any] = {
             0: row - 1,   # № п/п — сквозная нумерация
             1: _role_label,  # Роль
@@ -657,8 +660,8 @@ class GoogleSheetsService:
             60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
             # — Статусы жизненного цикла —
             # 61-66: не используются
-            67: "Да" if invoice.get("status") in ("in_progress", "credit") else "", # BP В работе
-            68: "Да" if invoice.get("status") == "ended" else "",  # BQ Счет END
+            67: "Да" if invoice.get("status") == "in_progress" or (invoice.get("status") == "credit" and not _credit_fully_closed) else "", # BP В работе
+            68: "Да" if invoice.get("status") == "ended" or _credit_fully_closed else "",  # BQ Счет END
             69: self._fmt_amount(invoice.get("loaders_fact_op")),    # BR Грузчики факт ← ОП AP
             72: self._fmt_amount(invoice.get("logistics_fact_op") or invoice.get("actual_logistics")),  # BU Логистика Факт
             73: _li.get("lead_status", ""),   # BV Статус лида
@@ -711,7 +714,6 @@ class GoogleSheetsService:
         credit_exp = invoice.get("_credit_expenses") or {}
         credit_exp_total = credit_exp.get("total") or 0
         if is_credit:
-            _credit_fully_closed = is_credit and all(invoice.get(f) for f in ("installer_ok", "edo_signed", "no_debts"))
             if invoice.get("status") == "ended" or _credit_fully_closed:
                 # Закрытый счёт — кредит полностью израсходован, баланс = 0
                 cells[101] = cells[99]
