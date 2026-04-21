@@ -657,7 +657,7 @@ class GoogleSheetsService:
             60: format_dt_iso(invoice.get("updated_at"), self.cfg.timezone_name),
             # — Статусы жизненного цикла —
             # 61-66: не используются
-            67: "Да" if invoice.get("status") == "in_progress" else "", # BP В работе
+            67: "Да" if invoice.get("status") in ("in_progress", "credit") else "", # BP В работе
             68: "Да" if invoice.get("status") == "ended" else "",  # BQ Счет END
             69: self._fmt_amount(invoice.get("loaders_fact_op")),    # BR Грузчики факт ← ОП AP
             72: self._fmt_amount(invoice.get("logistics_fact_op") or invoice.get("actual_logistics")),  # BU Логистика Факт
