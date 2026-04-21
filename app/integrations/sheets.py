@@ -827,11 +827,24 @@ class GoogleSheetsService:
         cells[65] = ""
         cells[66] = ""
 
+        # BF/BG: credit invoices use cost_card; non-credit use ОП fact fallback.
+        if _c and invoice.get("is_credit"):
+            cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
+            cells[58] = self._fmt_amount(_c.get("total_cost"))
+        elif not invoice.get("is_credit"):
+            _bf = (invoice.get("amount") or 0) - (invoice.get("outstanding_debt") or 0)
+            _bg = (
+                (invoice.get("materials_fact_op") or 0)
+                + (invoice.get("montazh_fact_op") or 0)
+                + (invoice.get("loaders_fact_op") or 0)
+                + (invoice.get("logistics_fact_op") or 0)
+            )
+            cells[57] = self._fmt_amount(_bf) if _bf > 0 else ""
+            cells[58] = self._fmt_amount(_bg) if _bg > 0 else ""
+
         if _c:
             fact_pct = _c.get("margin_pct", 0)
             fact_margin = _c.get("margin", 0)
-            cells[57] = self._fmt_amount(_c.get("supplier_payments_total"))
-            cells[58] = self._fmt_amount(_c.get("total_cost"))
             # Y Рент-ть факт, BN НДС факт, BO Налог на приб. факт, BL Прибыль факт, BM Перерасчет
             # — все "факт"-показатели пишутся ТОЛЬКО для закрытых счетов
             _is_closed = invoice.get("status") in ("ended", "credit")
