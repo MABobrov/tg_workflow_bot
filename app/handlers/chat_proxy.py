@@ -147,6 +147,26 @@ _CHANNEL_TO_ROLE = {
 }
 
 
+# Регекс для invoice_number в тексте: '26323-1КВ', '2642-1НПН', 'КВ 4', 'КИА 11', 'НПН 2'
+_INVOICE_NUMBER_RE = re.compile(
+    r"(\d+-\d+(?:КВ|КИА|НПН))|((?:КВ|КИА|НПН)\s*\d+)",
+    re.IGNORECASE,
+)
+
+
+def _extract_invoice_number(text: str) -> str | None:
+    """Extract first invoice_number-like token from text. None if not found."""
+    if not text:
+        return None
+    m = _INVOICE_NUMBER_RE.search(text)
+    if not m:
+        return None
+    found = m.group(1) or m.group(2) or ""
+    # Нормализация: 'КВ  4' -> 'КВ 4', upper-case суффикс
+    found = re.sub(r"\s+", " ", found.strip())
+    return found
+
+
 async def _auto_credit_expense(
     db: "Database",
     channel: str,
@@ -156,24 +176,50 @@ async def _auto_credit_expense(
     entered_by: int,
     chat_message_id: int | None = None,
 ) -> None:
-    """Auto-record credit expense to the latest active credit invoice of this manager role.
+    """Auto-record credit expense to the credit invoice referenced in message text.
 
-    Finds credit invoices (is_credit=1) for the manager role matching the channel,
-    picks the most recent one, and records the expense.
+    GAP 3.1 fix: ищем invoice_number в тексте сообщения (regex). Привязываем
+    расход к этому конкретному счёту (если он кредитный для роли канала).
+    Если номер не найден или не подходит — НЕ пишем (избегаем рандомной
+    привязки к 'последнему кредитному').
     """
     role = _CHANNEL_TO_ROLE.get(channel)
     if not role:
         return
 
+    inv_num = _extract_invoice_number(description)
+    if not inv_num:
+        import logging
+        logging.getLogger(__name__).info(
+            "_auto_credit_expense: no invoice_number in text, skip (channel=%s)", channel,
+        )
+        return
+
     try:
         cur = await db.conn.execute(
-            "SELECT id FROM invoices "
-            "WHERE creator_role = ? AND is_credit = 1 "
-            "ORDER BY created_at DESC LIMIT 1",
-            (role,),
+            "SELECT id, invoice_number, creator_role, is_credit FROM invoices "
+            "WHERE invoice_number = ? COLLATE NOCASE",
+            (inv_num,),
         )
         row = await cur.fetchone()
         if not row:
+            import logging
+            logging.getLogger(__name__).info(
+                "_auto_credit_expense: invoice_number=%r not found, skip", inv_num,
+            )
+            return
+        if not row["is_credit"]:
+            import logging
+            logging.getLogger(__name__).info(
+                "_auto_credit_expense: invoice %r is not credit, skip", inv_num,
+            )
+            return
+        if row["creator_role"] != role:
+            import logging
+            logging.getLogger(__name__).info(
+                "_auto_credit_expense: invoice %r role=%s but channel role=%s, skip",
+                inv_num, row["creator_role"], role,
+            )
             return
 
         invoice_id = int(row["id"])

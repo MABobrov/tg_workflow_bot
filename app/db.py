@@ -1779,6 +1779,18 @@ class Database:
         sp_list = await self.list_supplier_payments_for_invoice(invoice_id)
         supplier_payments_total = sum(s["amount"] for s in sp_list)
 
+        # 2a) GAP 3.2: для кредитных счетов добавить credit_expenses
+        # (записи из чатов КВ/КИА/НПН Кред через _auto_credit_expense).
+        # Берём MAX чтобы избежать двойного учёта если расход введён обоими путями.
+        if inv.get("is_credit"):
+            cur = await self.conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM credit_expenses WHERE invoice_id = ?",
+                (invoice_id,),
+            )
+            row_ce = await cur.fetchone()
+            credit_exp_total = float(row_ce[0] or 0) if row_ce else 0.0
+            supplier_payments_total = max(supplier_payments_total, credit_exp_total)
+
         # 3) ЗП (только approved) — для информации, НЕ входят в total_cost
         zp_zamery = float(inv.get("zp_zamery_total") or 0) if inv.get("zp_status") == "approved" else 0.0
         zp_manager = float(inv.get("zp_manager_amount") or 0) if inv.get("zp_manager_status") == "approved" else 0.0
