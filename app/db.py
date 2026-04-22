@@ -1284,7 +1284,7 @@ class Database:
             "SELECT COUNT(*) FROM invoices "
             "WHERE zp_status = 'requested' "
             "   OR zp_manager_status = 'requested' "
-            "   OR zp_installer_status IN ('requested', 'approved', 'payment_sent')",
+            "   OR zp_installer_status IN ('requested', 'approved')",
         )
         row = await cur.fetchone()
         return row[0] if row else 0
@@ -3341,7 +3341,7 @@ class Database:
         conditions = {
             "zamery": "zp_status = 'requested'",
             "manager": "zp_manager_status = 'requested'",
-            "installer": "zp_installer_status IN ('requested', 'approved', 'payment_sent')",
+            "installer": "zp_installer_status IN ('requested', 'approved')",
         }
         if zp_type and zp_type in conditions:
             where = conditions[zp_type]
