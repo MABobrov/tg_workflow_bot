@@ -138,7 +138,13 @@ class IntegrationHub:
                         except Exception:
                             log.debug("Failed to get edo_stats for invoice %s", inv_id, exc_info=True)
                             inv["_edo_stats"] = {}
-                        await self.sheets.upsert_invoice(inv, manager_label=manager_label)
+                        cost = None
+                        if not inv.get("parent_invoice_id"):
+                            try:
+                                cost = await self.db.get_full_invoice_cost_card(inv_id)
+                            except Exception:
+                                log.debug("Failed to get cost_card for invoice %s", inv_id, exc_info=True)
+                        await self.sheets.upsert_invoice(inv, manager_label=manager_label, cost=cost)
                         log.info("Synced invoice row #%s (%s) to Invoices sheet", inv_id, inv.get("invoice_number"))
                 elif ev.kind == "amocrm_create_lead" and self.amocrm:
                     pid = int(ev.payload["project_id"])

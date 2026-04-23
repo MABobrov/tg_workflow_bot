@@ -1532,6 +1532,7 @@ async def invoice_end_gd_final(
         await integrations.sync_invoice_status(
             inv["invoice_number"], InvoiceStatus.ENDED, MontazhStage.INVOICE_END,
         )
+        await integrations.sync_invoice_row(invoice_id)
         linked_tasks = await db.search_tasks_by_payload(
             field="invoice_id",
             value=str(invoice_id),
