@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import email.utils
+import hashlib
+import hmac
 import json
 import logging
 from dataclasses import dataclass
@@ -337,6 +340,30 @@ class AmoCRMService:
             return []
         return list(data.get("_embedded", {}).get("users", []))
 
+    # ----------- webhooks API (subscription management) -----------
+
+    async def list_webhooks(self) -> list[dict[str, Any]]:
+        """GET /api/v4/webhooks — list account webhook subscriptions."""
+        data = await self._request("GET", "/api/v4/webhooks")
+        if not isinstance(data, dict):
+            return []
+        return list(data.get("_embedded", {}).get("webhooks", []))
+
+    async def register_webhook(self, destination: str, settings: list[str]) -> dict[str, Any]:
+        """POST /api/v4/webhooks — subscribe URL to events.
+
+        settings examples: ['add_lead', 'update_lead', 'status_lead', 'delete_lead'].
+        """
+        body = {"destination": destination, "settings": settings}
+        data = await self._request("POST", "/api/v4/webhooks", json_body=body)
+        return data if isinstance(data, dict) else {}
+
+    async def delete_webhook(self, destination: str) -> dict[str, Any]:
+        """DELETE /api/v4/webhooks — unsubscribe by destination URL."""
+        body = {"destination": destination}
+        data = await self._request("DELETE", "/api/v4/webhooks", json_body=body)
+        return data if isinstance(data, dict) else {}
+
     # ----------- contacts API -----------
 
     async def get_contact(self, contact_id: int) -> dict[str, Any]:
@@ -360,6 +387,180 @@ class AmoCRMService:
     def extract_contact_name(contact: dict[str, Any]) -> str | None:
         """Extract contact display name."""
         return contact.get("name") or None
+
+    # ----------- account / lead helpers used by virtual-manager -----------
+
+    async def get_account_amojo_id(self) -> str | None:
+        """GET /api/v4/account?with=amojo_id — returns the chat-API scope ID for this account."""
+        data = await self._request("GET", "/api/v4/account", params=[("with", "amojo_id")])
+        if isinstance(data, dict):
+            value = data.get("amojo_id")
+            return str(value) if value else None
+        return None
+
+    async def update_lead_custom_fields(
+        self,
+        lead_id: int,
+        fields: dict[int, Any],
+    ) -> dict[str, Any]:
+        """PATCH /api/v4/leads/{id} with custom_fields_values=[{field_id, values:[{value}]}].
+
+        `fields` is a {field_id: value} mapping. Values are stringified.
+        """
+        if not fields:
+            raise ValueError("update_lead_custom_fields: empty fields dict")
+        custom_fields_values = [
+            {"field_id": int(fid), "values": [{"value": "" if val is None else str(val)}]}
+            for fid, val in fields.items()
+        ]
+        payload = {"custom_fields_values": custom_fields_values}
+        data = await self._request("PATCH", f"/api/v4/leads/{int(lead_id)}", json_body=payload)
+        return data if isinstance(data, dict) else {}
+
+    async def add_lead_note(self, lead_id: int, text: str) -> dict[str, Any]:
+        """POST /api/v4/leads/{id}/notes — append a 'common' note."""
+        body = [
+            {
+                "note_type": "common",
+                "params": {"text": text},
+            }
+        ]
+        data = await self._request("POST", f"/api/v4/leads/{int(lead_id)}/notes", json_body=body)
+        return data if isinstance(data, dict) else {}
+
+    async def get_lead_notes(
+        self,
+        lead_id: int,
+        *,
+        note_type: str | None = "common",
+        limit: int = 50,
+        order_desc: bool = True,
+    ) -> list[dict[str, Any]]:
+        """GET /api/v4/leads/{id}/notes — return list of note dicts (may be empty).
+
+        Defaults to 'common' notes ordered by created_at desc. amoCRM answers
+        204 No Content (→ _request raises) when no notes match; we map to [].
+        """
+        params: list[tuple[str, Any]] = [("limit", int(limit))]
+        if note_type:
+            params.append(("filter[note_type]", note_type))
+        if order_desc:
+            params.append(("order[created_at]", "desc"))
+        try:
+            data = await self._request("GET", f"/api/v4/leads/{int(lead_id)}/notes", params=params)
+        except RuntimeError as exc:
+            if "204" in str(exc):
+                return []
+            raise
+        if not data or not isinstance(data, dict):
+            return []
+        return list(data.get("_embedded", {}).get("notes", []))
+
+    @staticmethod
+    def extract_last_note(
+        notes: list[dict[str, Any]],
+        responsible_user_id: int | None = None,
+    ) -> str | None:
+        """From notes (assumed created_at desc) pick the note text to show:
+        the most-recent 'common' note by the responsible manager if there is one,
+        otherwise the most-recent 'common' note by any author. None if none has text."""
+        rid = int(responsible_user_id) if responsible_user_id is not None else None
+        fallback: str | None = None
+        for note in notes:
+            text = ((note.get("params") or {}).get("text") or "").strip()
+            if not text:
+                continue
+            if rid is not None and note.get("created_by") == rid:
+                return text  # responsible's most-recent note wins
+            if fallback is None:
+                fallback = text  # remember most-recent any-author note
+        return fallback
+
+    # ----------- amoCRM Chat API (Mojo) -----------
+
+    @staticmethod
+    def verify_chat_signature(channel_secret: str, body: bytes, signature: str) -> bool:
+        """Verify incoming amoCRM Chat webhook signature.
+
+        amoCRM signs webhook bodies with HMAC-SHA1(channel_secret, body), hex-encoded.
+        """
+        if not signature or not channel_secret:
+            return False
+        expected = hmac.new(
+            channel_secret.encode("utf-8"),
+            body,
+            hashlib.sha1,
+        ).hexdigest().lower()
+        return hmac.compare_digest(expected, signature.strip().lower())
+
+    @staticmethod
+    def _build_chat_signature(
+        channel_secret: str,
+        method: str,
+        path: str,
+        body_bytes: bytes,
+        content_type: str,
+        date_header: str,
+    ) -> tuple[str, str]:
+        """Build the HMAC-SHA1 signature + Content-MD5 for an outbound Mojo request.
+
+        Sign string: f"{METHOD}\\n{MD5}\\n{CONTENT_TYPE}\\n{DATE}\\n{PATH}"
+        """
+        md5 = hashlib.md5(body_bytes).hexdigest().lower()
+        sign_string = f"{method.upper()}\n{md5}\n{content_type}\n{date_header}\n{path}"
+        signature = hmac.new(
+            channel_secret.encode("utf-8"),
+            sign_string.encode("utf-8"),
+            hashlib.sha1,
+        ).hexdigest().lower()
+        return signature, md5
+
+    async def send_chat_event(
+        self,
+        amojo_url: str,
+        scope_id: str,
+        channel_secret: str,
+        event_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """POST {amojo_url}/v2/origin/custom/{scope_id} — send an event (e.g. new_message).
+
+        `scope_id` typically equals f"{channel_id}_{amojo_id}" or as configured by amoCRM.
+        Authentication is per-request HMAC; OAuth tokens are NOT used here.
+        """
+        await self.start()
+        if self._session is None:
+            raise RuntimeError("amoCRM session not started; call start() first")
+
+        path = f"/v2/origin/custom/{scope_id}"
+        url = amojo_url.rstrip("/") + path
+        body = json.dumps(event_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        content_type = "application/json"
+        date_header = email.utils.formatdate(usegmt=True)
+
+        signature, md5 = self._build_chat_signature(
+            channel_secret=channel_secret,
+            method="POST",
+            path=path,
+            body_bytes=body,
+            content_type=content_type,
+            date_header=date_header,
+        )
+        headers = {
+            "Date": date_header,
+            "Content-Type": content_type,
+            "Content-MD5": md5,
+            "X-Signature": signature,
+            "User-Agent": "tg_workflow_bot/virtual_manager",
+        }
+
+        async with self._session.post(url, data=body, headers=headers) as resp:
+            text = await resp.text()
+            if resp.status >= 400:
+                raise RuntimeError(f"amoCRM Chat send failed {resp.status}: {text}")
+            try:
+                return json.loads(text) if text else {}
+            except json.JSONDecodeError:
+                return {"raw": text}
 
     # ----------- pipelines API -----------
 

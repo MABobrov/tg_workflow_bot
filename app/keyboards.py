@@ -26,7 +26,7 @@ ADMIN_RESYNC_BUTTON = "🔄 Синхронизация Sheets"
 GD_BTN_INBOX_GD = "📥 Входящие для ГД"
 GD_BTN_INVOICES = "Счета на Оплату"
 GD_BTN_SEARCH_INVOICE = "🔍 Поиск счёта"
-GD_BTN_CHAT_RP = "Чат с РП (НПН)"
+GD_BTN_CHAT_RP = "Чат с РП"
 GD_BTN_ZAMERY = "Замеры"
 GD_BTN_ACCOUNTING = "Бухгалтерия"
 GD_BTN_MONTAZH = "Монтажная гр."
@@ -42,6 +42,9 @@ GD_BTN_NPN_CRED = "НПН Кред"
 GD_SUBBTN_KV_CRED = "Менеджер КВ (кредит)"
 GD_SUBBTN_KIA_CRED = "Менеджер КИА (кредит)"
 GD_SUBBTN_NPN_CRED = "Менеджер НПН (кредит)"
+# TZ кошелёк 02.06: действия внутри finance-канала ГД (кошелёк = канал).
+GD_BTN_CRED_BAL = "🏦 Баланс кошелька"
+GD_BTN_CRED_SPEND = "➕ Расход кредита"
 GD_BTN_INVOICES_WORK = "📊 Счета в работе"
 GD_BTN_INVOICE_END_GD = "🏁 Счёт END"
 GD_BTN_SUPPLIER_PAY = "💸 Оплата поставщику"
@@ -49,6 +52,7 @@ GD_BTN_BACK_HOME = BACK_TO_HOME
 GD_BTN_REFRESH = "🔄 Обновить меню"
 GD_BTN_HELP = "📚 Справка"
 GD_BTN_DAILY_SUMMARY = "📊 Сводка дня"
+GD_BTN_RECALC = "📊 Перерасчёт прибыли"
 
 # --- Manager-specific buttons (КВ / КИА / НПН) ---
 MGR_BTN_INBOX = "Задачи / Лид в проект"
@@ -63,20 +67,28 @@ MGR_BTN_MY_INVOICES = "Мои Счета"
 MGR_BTN_MORE = "Еще"
 MGR_BTN_SYNC = "Синхронизация данных"
 MGR_BTN_CANCEL = "Отмена"
+MGR_BTN_REMIND = "⏰ Напомнить"       # самонапоминалка: менеджер ставит себе задачу-напоминание
 # --- Manager "Еще" submenu ---
-MGR_BTN_CRED = "Менеджер (кред)"
-MGR_BTN_NOT_URGENT = "Не срочно ГД"
+MGR_BTN_FUNDS = "💰 Финансы"          # сводная карточка: аванс/депозит/расход депо/запрос ЗП
+MGR_BTN_CREDIT_MENU = "🏦 Кредит"      # кредит-механизм (баланс + расход + чат внутри)
+MGR_BTN_CRED = "Менеджер (кред)"      # legacy chat-proxy entry (доступ к кредит-чату — внутри «Кредит»)
+MGR_BTN_CRED_ADD = "➕ Добавить расход кред"
+MGR_BTN_GD_CONTACT = "📞 Связь с ГД"
 MGR_BTN_SEARCH_INVOICE = "Поиск Счета КВ / КИА / НПН"
 MGR_BTN_HELP = "Справка"
 MGR_BTN_BACK_HOME = BACK_TO_HOME
 # --- Legacy constants (kept for handler compatibility) ---
-MGR_BTN_URGENT = "🚨 Срочно ГД"
 MGR_BTN_ZP = "💰 Запрос ЗП"
 MGR_BTN_ISSUE = "🆘 Проблема/Вопрос"
+MGR_BTN_DEPOSIT_WITHDRAW = "💸 Расход депозита"
+# funds-2balances 25.05: BASE prefix — handler делает startswith, текст может быть с суффиксом (X ₽).
+MGR_BTN_ADV_DISTRIBUTE_BASE = "💰 Наполнить ЗП из аванса"
+MGR_BTN_DEPO_TO_ADV_BASE = "↔️ Депо → Аванс"
 
 # --- RP-specific buttons (new layout March 2026) ---
 RP_BTN_CHECK_KP = "Проверка КП / Выставление Счета"
 RP_BTN_CHAT_GD = "Чат с ГД"
+RP_BTN_GD_CONTACT = "📞 Связь с ГД"
 RP_BTN_INVOICES_WORK = "Счета в Работе"
 RP_BTN_MGR_KV = "Менеджер 1 (КВ)"
 RP_BTN_INVOICES_PAY = "Счета на оплату"
@@ -87,6 +99,9 @@ RP_BTN_INVOICE_CLOSED = "Счет закрыт"
 RP_BTN_LEAD = "Лид на расчет"
 RP_BTN_CANCEL = "❌ Отмена"
 RP_BTN_MORE = "📂 Еще"
+# TZ кошелёк 02.06: кредитный кошелёк для РП (выбор кошелька КВ/КИА/НПН inline).
+RP_BTN_CREDIT_BAL = "🏦 Кредитный баланс"
+RP_BTN_CREDIT_SPEND = "🏦 Расход кредита"
 # --- RP/NPN role-switching buttons (top row of main menu) ---
 RP_BTN_ROLE_RP = "✅ РП"
 RP_BTN_ROLE_NPN = "👤 Менеджер НПН"
@@ -108,6 +123,9 @@ RP_BTN_URGENT = "🚨 Срочно ГД"                    # legacy
 RP_BTN_SEARCH_INVOICE = "🔍 Поиск счёта"          # legacy
 RP_BTN_SYNC = "🔄 Синхронизация данных"            # legacy
 RP_BTN_HELP = "📚 Справка"                        # legacy
+RP_BTN_ZP_RP = "💰 Запрос ЗП РП"                  # B1 TZ v8 legacy (handler dead-code, см. RP_BTN_SALARY_HUB)
+RP_BTN_SALARY_REQUEST = "💼 Запрос оклада"        # B5 v2 TZ 27.05 legacy (handler dead-code, см. RP_BTN_SALARY_HUB)
+RP_BTN_SALARY_HUB = "💰 Запрос ЗП"                # TZ 28.05 хаб: Оклад / ЗП-счета / Аванс / Депозит
 
 # --- Accounting buttons ---
 ACC_BTN_INBOX = "📥 Входящие задачи"
@@ -126,8 +144,7 @@ INST_BTN_ORDER_EXTRA = "📦 Заказ доп.материалов"
 INST_BTN_MY_OBJECTS = "📌 Мои объекты"
 INST_BTN_DAILY_REPORT = "📝 Отчёт за день"
 INST_BTN_IN_WORK = "🔨 В Работу"
-INST_BTN_NOT_URGENT = "📩 Не срочно ГД"
-INST_BTN_URGENT = "🚨 Срочно ГД"
+INST_BTN_GD_CONTACT = "📞 Связь с ГД"
 INST_BTN_ZP = "💰 Запрос ЗП"
 INST_BTN_SYNC = "🔄 Синхронизация данных"
 
@@ -146,11 +163,15 @@ ROLE_SELECTOR_LABELS: dict[str, str] = {}
 
 
 def _build_reply_rows(rows: list[list[str]]) -> ReplyKeyboardMarkup:
+    # Правило раскладки: ВСЕ reply-меню и подменю — строго по 2 кнопки в ряд.
+    # Одиночная кнопка во всю ширину запрещена. Поэтому исходная разбивка на ряды
+    # игнорируется: кнопки берутся по порядку и пакуются по 2. При нечётном числе
+    # кнопок последняя неизбежно остаётся одна.
     kb = ReplyKeyboardBuilder()
     for row in rows:
         for label in row:
             kb.button(text=label)
-    kb.adjust(*[len(row) for row in rows])
+    kb.adjust(2, repeat=True)
     return kb.as_markup(resize_keyboard=True, is_persistent=True)
 
 
@@ -183,7 +204,8 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [MGR_BTN_ZAMERY, MGR_BTN_EDO],
             [MGR_BTN_MONTAZH, MGR_BTN_CHAT_RP],
             [MGR_BTN_MY_INVOICES, MGR_BTN_MORE],
-            [MGR_BTN_SYNC, MGR_BTN_CANCEL],
+            [MGR_BTN_REMIND, MGR_BTN_SYNC],
+            [MGR_BTN_CANCEL],
         ]
     if role == Role.RP:
         return [
@@ -192,7 +214,8 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [RP_BTN_INVOICES_PAY, RP_BTN_MGR_KIA],
             [RP_BTN_EDO, RP_BTN_MONTAZH],
             [RP_BTN_INVOICE_CLOSED, RP_BTN_LEAD],
-            [RP_BTN_CANCEL, RP_BTN_MORE],
+            [RP_BTN_GD_CONTACT, RP_BTN_MORE],
+            [MGR_BTN_REMIND, RP_BTN_CANCEL],
         ]
     if role == Role.TD:
         # TD merged into GD — redirect to GD menu
@@ -217,14 +240,13 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [INST_BTN_ORDER_MAT, INST_BTN_ORDER_EXTRA],
             [INST_BTN_INVOICE_OK, INST_BTN_RAZMERY_OK],
             [INST_BTN_MY_OBJECTS, INST_BTN_DAILY_REPORT],
-            [INST_BTN_ZP, INST_BTN_NOT_URGENT],
-            [INST_BTN_URGENT, INST_BTN_SYNC],
-            ["📋 Все задачи"],
+            [INST_BTN_ZP, INST_BTN_GD_CONTACT],
+            [INST_BTN_SYNC, "📋 Все задачи"],
         ]
     if role == Role.GD:
         return [
             [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
-            [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
+            [GD_BTN_DAILY_SUMMARY, GD_BTN_SUPPLIER_PAY],
             [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
             [GD_BTN_SEARCH_INVOICE, GD_BTN_ZAMERY],
@@ -258,14 +280,15 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
     if role in MANAGER_ROLES or role == Role.MANAGER:
         return [
             [MGR_BTN_CRED],
-            [MGR_BTN_NOT_URGENT, MGR_BTN_SEARCH_INVOICE],
+            [MGR_BTN_GD_CONTACT, MGR_BTN_SEARCH_INVOICE],
             ["📋 Все задачи", MGR_BTN_HELP],
             [MGR_BTN_CANCEL, MGR_BTN_BACK_HOME],
         ]
     if role == Role.RP:
         return [
             [RP_BTN_SEARCH_INVOICE, RP_BTN_SYNC],
-            ["📋 Все задачи", RP_BTN_HELP],
+            [RP_BTN_ZP_RP, "📋 Все задачи"],
+            [RP_BTN_HELP],
             [RP_BTN_CANCEL, RP_BTN_BACK_HOME],
         ]
     if role == Role.TD:
@@ -413,6 +436,7 @@ def main_menu(
     gd_invoice_unread: int | None = None,
     gd_invoice_end_unread: int | None = None,
     gd_supplier_pay_unread: int | None = None,
+    gd_total_open_tasks: int | None = None,
     isolated_role: bool = False,
     rp_tasks: int = 0,
     rp_messages: int = 0,
@@ -423,6 +447,11 @@ def main_menu(
     rp_ch_mgr_kv: int = 0,
     rp_ch_mgr_kia: int = 0,
     rp_ch_montazh: int = 0,
+    rp_invoice_paid: int = 0,
+    inst_in_work: int = 0,
+    inst_zp_badge: int = 0,
+    mgr_invoice_end_ready: int = 0,
+    mgr_recalc_confirm: int = 0,
 ) -> ReplyKeyboardMarkup:
     raw_role = role  # preserve original DB order before parse_roles sorting
     parsed_roles = parse_roles(role)
@@ -473,13 +502,17 @@ def main_menu(
     _uc = unread_channels or {}
     # For composite channel "otd_prodazh", sum manager sub-channels (without rp)
     _otd_sum = sum(_uc.get(sc, 0) for sc in ("manager_kv", "manager_kia", "manager_npn"))
-    _cred_sum = sum(_uc.get(sc, 0) for sc in ("manager_kv", "manager_kia", "manager_npn"))
+    # «📂 Ещё» badge — сумма ВСЕХ бейджей в подменю (кред-чаты + Счёт END + "Все задачи")
+    _cred_msgs = sum(_uc.get(sc, 0) for sc in ("manager_kv", "manager_kia", "manager_npn"))
+    _ie = gd_invoice_end_unread or 0
+    _gd_total = gd_total_open_tasks or 0
+    _more_sum = _cred_msgs + _ie + _gd_total
     _chan_labels: dict[str, str] = {}
     for chan, base_btn in _CHAN_BTN.items():
         if chan == "otd_prodazh":
             cnt = _otd_sum
         elif chan == "cred":
-            cnt = _cred_sum
+            cnt = _more_sum
         else:
             cnt = _uc.get(chan, 0)
         _chan_labels[base_btn] = f"{base_btn} 🔴{cnt}" if cnt > 0 else base_btn
@@ -520,6 +553,22 @@ def main_menu(
                     row[i] = f"{RP_BTN_MGR_KIA} 🔴{rp_ch_mgr_kia}"
                 if btn == RP_BTN_MONTAZH and rp_ch_montazh > 0:
                     row[i] = f"{RP_BTN_MONTAZH} 🔴{rp_ch_montazh}"
+                if btn == RP_BTN_INVOICES_WORK and rp_invoice_paid > 0:
+                    row[i] = f"{RP_BTN_INVOICES_WORK} 🔴{rp_invoice_paid}"
+                # Installer «В Работу» badge — кол-во счетов на принятие
+                if btn == INST_BTN_IN_WORK and inst_in_work > 0:
+                    row[i] = f"{INST_BTN_IN_WORK} 🔴{inst_in_work}"
+                # Installer «Запрос ЗП» badge — открытые запросы из депозита от ГД
+                if btn == INST_BTN_ZP and inst_zp_badge > 0:
+                    row[i] = f"{INST_BTN_ZP} 🔴{inst_zp_badge}"
+                # Manager «Счет End» badge — счета, готовые к закрытию (ТЗ 18.06)
+                if btn == MGR_BTN_INVOICE_END and mgr_invoice_end_ready > 0:
+                    row[i] = f"{MGR_BTN_INVOICE_END} 🔴{mgr_invoice_end_ready}"
+                # Manager «Ещё» badge — открытые задачи «Перерасчёт → согласие»
+                # (ТЗ 02.07): всплывает на главную кнопку «Ещё», сам пункт —
+                # «💰 Финансы» внутри подменю (см. manager_more_menu recalc_count).
+                if btn == MGR_BTN_MORE and mgr_recalc_confirm > 0:
+                    row[i] = f"{MGR_BTN_MORE} 🔴{mgr_recalc_confirm}"
 
     # GD gets a custom layout — Отмена и Ещё уже в grid, админ в подменю
     if _is_pure_gd(role) or _is_pure_td(role):
@@ -682,12 +731,27 @@ def tasks_kb(
     return b.as_markup()
 
 
-def task_actions_kb(task: dict[str, Any], *, assigned_role: str | None = None) -> InlineKeyboardMarkup:
+def task_actions_kb(
+    task: dict[str, Any],
+    *,
+    assigned_role: str | None = None,
+    viewer_role: str | None = None,
+) -> InlineKeyboardMarkup:
     ttype = task.get("type")
     status = task.get("status")
     b = InlineKeyboardBuilder()
 
     tid = int(task["id"])
+
+    # Личная напоминалка (self_reminder): не рабочая задача — generic-кнопки
+    # «Принято/Завершить/Отклонить» бессмысленны. Оставляем только «🗑 Отменить
+    # напоминание» (закрывает задачу → reminders_loop её больше не пошлёт).
+    # Для уже закрытых (done/rejected) — без кнопок.
+    if ttype == TaskType.SELF_REMINDER:
+        if status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+            b.button(text="🗑 Отменить напоминание", callback_data=f"selfrem_cancel:{tid}")
+            b.adjust(1)
+        return b.as_markup()
 
     # Бухгалтерия — упрощённая клавиатура: Принято + Вопрос
     if assigned_role == "accounting":
@@ -697,13 +761,150 @@ def task_actions_kb(task: dict[str, Any], *, assigned_role: str | None = None) -
         b.adjust(1)
         return b.as_markup()
 
+    # ZP installer для ГД — «Принято» (для OPEN без accepted_at) + «Завершить» (→ FSM платёжки) + «Снять задачу».
+    # «Завершить» переадресует на gdzp_inst:pdf:{invoice_id} (td.gd_zp_payment_start):
+    # FSM запросит PDF → перешлёт монтажнику → закроет задачу.
+    if ttype == TaskType.ZP_INSTALLER and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        _payload = try_json_loads(task.get("payload_json"))
+        _inv_id = (_payload or {}).get("invoice_id") if isinstance(_payload, dict) else None
+        b = InlineKeyboardBuilder()
+        if status == TaskStatus.OPEN and not task.get("accepted_at"):
+            b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+        if _inv_id:
+            b.button(text="✅ Завершить", callback_data=f"gdzp_inst:pdf:{int(_inv_id)}")
+        b.button(text="🚫 Снять задачу", callback_data=TaskCb(task_id=tid, action="cancel").pack())
+        b.adjust(1)
+        return b.as_markup()
+
+    # ЗП РП 10% (RpZpPayCb-флоу) / Оклад РП (RpSalaryTaskCb-флоу): открытие задачи из
+    # общего инбокса ГД должно вести в ТОТ ЖЕ платёжный флоу, что уведомление РП→ГД и
+    # «Прочие ЗП» — «✅ Выплатить»/«❌ Отклонить», а НЕ generic «Завершить»/«Взять»
+    # (они закрыли бы задачу мимо записи AR/AS + notify РП). [[feedback_card_template_standard]]
+    # ⚠️ Исключение (owner 31.07): у Оклада РП ниже есть ещё «✅ Принято». Она безопасна —
+    # accept_task пишет ТОЛЬКО accepted_at, статус не трогает, задача остаётся в очереди
+    # на выплату. У ЗП РП 10% такой кнопки намеренно нет: owner её не заказывал.
+    if ttype == TaskType.ZP_RP and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        from .callbacks import RpZpPayCb, RpZpRejectCb
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ Выплатить", callback_data=RpZpPayCb(task_id=tid).pack())
+        b.button(text="❌ Отклонить", callback_data=RpZpRejectCb(task_id=tid).pack())
+        b.adjust(2)
+        return b.as_markup()
+    if ttype == TaskType.RP_SALARY and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        from .callbacks import RpSalaryTaskCb
+        b = InlineKeyboardBuilder()
+        # «✅ Принято» (owner 31.07) — ТОЛЬКО подтверждение получения, по образцу
+        # ZP_INSTALLER выше: task_actions accept → db.accept_task ставит accepted_at
+        # (глушит 15-мин напоминание) и статус НЕ меняет. Задача остаётся open,
+        # бейджи ГД считают по status → неоплаченный оклад из меню не исчезает.
+        # Выплата по-прежнему возможна ТОЛЬКО через «✅ Выплатить» (запись в БК +
+        # гашение аванса + notify РП).
+        _show_accept = status == TaskStatus.OPEN and not task.get("accepted_at")
+        if _show_accept:
+            b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+        b.button(text="✅ Выплатить", callback_data=RpSalaryTaskCb(task_id=tid, action="open").pack())
+        b.button(text="❌ Отклонить", callback_data=RpSalaryTaskCb(task_id=tid, action="reject_start").pack())
+        if _show_accept:
+            b.adjust(1, 2)
+        else:
+            b.adjust(2)
+        return b.as_markup()
+
+    # Кредит-заявка (kind=credit_payment_request) имеет type=INVOICE_PAYMENT, но
+    # ДОЛЖНА исполняться через кредит-флоу (_finalize_credit_execution: верный
+    # cost_type/назначение + списание кошелька + связь с ЗП монтажника), а НЕ через
+    # обычную «оплату поставщику» (она читает material_type → теряет тип, не трогает
+    # zp_installer → задвоение ЗП). Из общего списка задач даём кредит-кнопки.
+    if ttype == TaskType.INVOICE_PAYMENT and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        _cpr = try_json_loads(task.get("payload_json"))
+        if isinstance(_cpr, dict) and _cpr.get("kind") == "credit_payment_request":
+            b = InlineKeyboardBuilder()
+            b.button(text="✅ Исполнить", callback_data=f"credit_exec:{tid}")
+            b.button(text="❌ Отклонить", callback_data=f"credit_rej:{tid}")
+            b.adjust(1)
+            return b.as_markup()
+        # Своя трата хозяина кредит-кошелька на подтверждении ГД (owner 27.06):
+        # кредит-кнопки (cw_gd_ok → экран вложения + запись расхода). НЕ обычная
+        # оплата поставщику — inv_received/inv_pay перетёрли бы тип расхода.
+        if isinstance(_cpr, dict) and _cpr.get("kind") == "credit_spend_gd_confirm":
+            b = InlineKeyboardBuilder()
+            b.button(text="✅ Подтвердить", callback_data=f"cw_gd_ok:{tid}")
+            b.button(text="❌ Отклонить", callback_data=f"cw_gd_no:{tid}")
+            b.adjust(1)
+            return b.as_markup()
+
+    # Перерасчёт прибыли → аванс (ТЗ 02.07): recalc_confirm закрывается ТОЛЬКО
+    # кнопкой «✅ С перерасчётом согласен» (recalc_agree → зачисление аванса |CN|
+    # через create_gd_advance_topup). Как и у ZP_RP/RP_SALARY, generic
+    # «Завершить»/«Принято»/«Взять» закрыли бы задачу МИМО зачисления → аванс
+    # не начисляется, а задача «съедена». Свой early-return убирает generic-кнопки.
+    if ttype == TaskType.RECALC_CONFIRM and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        _rp = try_json_loads(task.get("payload_json"))
+        _rinv = (_rp or {}).get("invoice_id") if isinstance(_rp, dict) else None
+        b = InlineKeyboardBuilder()
+        if _rinv:
+            b.button(text="✅ С перерасчётом согласен", callback_data=f"recalc_agree:{int(_rinv)}")
+        b.adjust(1)
+        return b.as_markup()
+
+    # «Нет документов по счёту» (INVOICE_DOCS_MISSING, ТЗ 10.07): менеджеру —
+    # «✅ Принято» (глушит 15-мин эскалацию, не закрывая задачу) + выбор статуса
+    # первички (docstat:*). Generic «Завершить/Взять/Отклонить» закрыли бы задачу
+    # мимо смысла и не дают «указать статус документов» — свой early-return.
+    # «✅ Оформлены» доспрашивает ЭДО/держателя оригиналов → пишет в счёт →
+    # задача закрывается (иначе daily_sync пересоздаёт её по docs_edo_signed=0).
+    if ttype == TaskType.INVOICE_DOCS_MISSING and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        b = InlineKeyboardBuilder()
+        if status == TaskStatus.OPEN and not task.get("accepted_at"):
+            b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+        b.button(text="✅ Оформлены", callback_data=f"docstat:formalized:{tid}")
+        b.button(text="⏳ В работе", callback_data=f"docstat:in_work:{tid}")
+        b.button(text="📤 Запрошены у клиента", callback_data=f"docstat:requested:{tid}")
+        b.adjust(1)
+        return b.as_markup()
+
+    # Запрос ГД из депозита: списание пишет ТОЛЬКО двухшаговый флоу inst_depo_req
+    # (read → exec → installer_new.py:4842 create_gd_deposit_withdrawal). Generic-
+    # «Завершить» закрывал задачу МИМО денег и делал её неисполнимой навсегда (обе
+    # точки требуют IN_PROGRESS). До 03.08 ветки здесь не было вовсе — тип проваливался
+    # в generic-блок ниже, и кнопку заново вооружал ежечасный reminder-push
+    # (reminders.py:329/350). Так ушли 3 запроса из 6: #346 (80 000, списание вписано
+    # руками 22.07), #347 (45 000) и #353. Цена не только в записи: несписанные 80 000
+    # по #346 висели на депозите Павла фантомом 14 дней, и по ним ГД создал ложный
+    # запрос #353. Кнопки шага — зеркало _depo_req_step_kb (installer_new.py:4621);
+    # работают у ЛЮБОГО адресата (_depo_req_load проверяет только assigned_to), поэтому
+    # карточка заменяет вход «💳 Депозит», закрытый ролью монтажника + списком
+    # ADVANCE_ENABLED_INSTALLERS — именно его отсутствие и гнало РП на generic-кнопку.
+    # «✅ Принято» намеренно НЕ добавляется: inst_depo_req:read сам делает accept и
+    # перевод в IN_PROGRESS, две кнопки на один переход конфликтуют.
+    if ttype == TaskType.GD_DEPOSIT_REQUEST and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        b = InlineKeyboardBuilder()
+        if status == TaskStatus.OPEN:
+            b.button(text="✅ Подтвердить прочтение", callback_data=f"inst_depo_req:read:{tid}")
+        else:
+            b.button(text="✅ Подтвердить исполнение", callback_data=f"inst_depo_req:exec:{tid}")
+        b.button(text="❌ Отклонить", callback_data=f"inst_depo_req:reject:{tid}")
+        # Постановщику-ГД нужен способ снять ошибочный запрос (случай #347 — дубль,
+        # закрытый generic'ом): cancel ведёт в REJECTED и денег не двигает.
+        b.button(text="🚫 Снять задачу", callback_data=TaskCb(task_id=tid, action="cancel").pack())
+        b.adjust(1)
+        return b.as_markup()
+
+    # Менеджер (ТЗ 23.06): единая кнопка «Принято» = принять + взять в работу +
+    # уведомить постановщика за один тап (action=accept_take). Прочие роли —
+    # прежние «Принято» (accept) + «Взять в работу» (take).
+    _is_manager_viewer = viewer_role in MANAGER_ROLES or viewer_role == Role.MANAGER
+
     # accept button — only for open tasks not yet accepted
-    if status == TaskStatus.OPEN and not task.get("accepted_at"):
+    if status == TaskStatus.OPEN and not task.get("accepted_at") and not _is_manager_viewer:
         b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
 
     if status == TaskStatus.OPEN:
+        if _is_manager_viewer:
+            b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept_take").pack())
         b.button(text="✅ Завершить", callback_data=TaskCb(task_id=tid, action="done").pack())
-        b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="take").pack())
+        if not _is_manager_viewer:
+            b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="take").pack())
         b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
     elif status == TaskStatus.IN_PROGRESS:
         b.button(text="✅ Завершить", callback_data=TaskCb(task_id=tid, action="done").pack())
@@ -715,6 +916,18 @@ def task_actions_kb(task: dict[str, Any], *, assigned_role: str | None = None) -
         b.button(text="✅ Оплата подтверждена", callback_data=TaskCb(task_id=tid, action="pay_ok").pack())
         b.button(text="⚠️ Нужна доплата", callback_data=TaskCb(task_id=tid, action="pay_need").pack())
         b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
+
+    # Счёт END (запрос от менеджера ГД) — кнопка ✅ ОК переводит счёт в status='ended'.
+    # «🔍 На проверку» — отправить менеджеру (создателю) уведомление с просьбой перепроверить
+    # данные счёта; задача остаётся IN_PROGRESS у ГД (вариант b из ТЗ v3).
+    if ttype == TaskType.INVOICE_END_REQUEST and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ ОК (Счёт End)", callback_data=TaskCb(task_id=tid, action="invend_ok").pack())
+        b.button(text="🔍 На проверку", callback_data=TaskCb(task_id=tid, action="invend_review").pack())
+        b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
+        b.button(text="🚫 Снять задачу", callback_data=TaskCb(task_id=tid, action="cancel").pack())
+        b.adjust(1)
+        return b.as_markup()
 
     # Заказ материалов — кнопки для РП
     if ttype in {TaskType.ORDER_PROFILE, TaskType.ORDER_GLASS, TaskType.ORDER_MATERIALS} and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
@@ -746,11 +959,16 @@ def task_actions_kb(task: dict[str, Any], *, assigned_role: str | None = None) -
             b.button(text="💳 Оплатить", callback_data=TaskCb(task_id=tid, action="del_pay").pack())
             b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
 
-    # Пакетный запрос ЗП замерщика → ГД
+    # Пакетный запрос ЗП замерщика → ГД. Объединение «Оплата замеров» + леджер
+    # (ТЗ 06.07): открытие задачи ведёт в тот же флоу, что уведомление замерщик→ГД —
+    # «✅ Выплатить» (ZamZpPayCb → тумблер-выбор замеров → платёж в леджер +
+    # mark_zamery_paid) / «❌ Отклонить» (ZamZpRejectCb), а НЕ generic-кнопки
+    # (они закрыли бы задачу мимо записи платежа и уведомления). [[feedback_card_template_standard]]
     if ttype == TaskType.ZP_ZAMERY_BATCH and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        from .callbacks import ZamZpPayCb, ZamZpRejectCb
         b = InlineKeyboardBuilder()
-        b.button(text="✅ ЗП ОК", callback_data=f"zampay_gd:ok:{tid}")
-        b.button(text="❌ Отклонить", callback_data=f"zampay_gd:no:{tid}")
+        b.button(text="✅ Выплатить", callback_data=ZamZpPayCb(task_id=tid).pack())
+        b.button(text="❌ Отклонить", callback_data=ZamZpRejectCb(task_id=tid).pack())
         b.adjust(2)
         return b.as_markup()
 
@@ -768,6 +986,11 @@ def task_actions_kb(task: dict[str, Any], *, assigned_role: str | None = None) -
     # «Снять задачу» — для всех активных задач
     if status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         b.button(text="🚫 Снять задачу", callback_data=TaskCb(task_id=tid, action="cancel").pack())
+
+    # Доп. кнопка «Закрыть» — только для менеджера НПН (для очистки устаревших
+    # задач LEAD_TO_PROJECT/INVOICE_END из inbox). Использует существующий action='cancel'.
+    if viewer_role == Role.MANAGER_NPN and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        b.button(text="🗑 Закрыть", callback_data=TaskCb(task_id=tid, action="cancel").pack())
 
     b.adjust(1)
     return b.as_markup()
@@ -790,18 +1013,37 @@ def gd_more_menu(
     is_admin: bool = False,
     show_role_selector_back: bool = False,
     unread_channels: dict[str, int] | None = None,
+    gd_invoice_end_unread: int | None = None,
+    gd_total_open_tasks: int | None = None,
+    credit_channels: dict[str, int] | None = None,
 ) -> ReplyKeyboardMarkup:
-    """Подменю 'Ещё' для ГД с бейджами непрочитанных."""
+    """Подменю 'Ещё' для ГД с бейджами непрочитанных (🔴) и кредит-заявок (💳)."""
     _uc = unread_channels or {}
+    _cc = credit_channels or {}
 
     def _badge(base: str, chan: str) -> str:
+        label = base
         cnt = _uc.get(chan, 0)
-        return f"{base} 🔴{cnt}" if cnt > 0 else base
+        if cnt > 0:
+            label = f"{label} 🔴{cnt}"
+        ccnt = _cc.get(chan, 0)
+        if ccnt > 0:
+            label = f"{label} 💳{ccnt}"
+        return label
+
+    invoice_end_label = GD_BTN_INVOICE_END_GD
+    if gd_invoice_end_unread and gd_invoice_end_unread > 0:
+        invoice_end_label = f"{GD_BTN_INVOICE_END_GD} 🔴{gd_invoice_end_unread}"
+
+    all_tasks_label = "📋 Все задачи"
+    if gd_total_open_tasks and gd_total_open_tasks > 0:
+        all_tasks_label = f"📋 Все задачи 🔴{gd_total_open_tasks}"
 
     rows = [
         [_badge(GD_SUBBTN_KV_CRED, "manager_kv"), _badge(GD_SUBBTN_KIA_CRED, "manager_kia")],
         [_badge(GD_SUBBTN_NPN_CRED, "manager_npn"), GD_BTN_SYNC],
-        [GD_BTN_DAILY_SUMMARY, "📋 Все задачи"],
+        [invoice_end_label, all_tasks_label],
+        [GD_BTN_RECALC],
     ]
     if is_admin:
         rows.append([GD_BTN_ADMIN, GD_BTN_REFRESH])
@@ -821,10 +1063,16 @@ def gd_chat_submenu(back_label: str = "⬅️ Назад") -> ReplyKeyboardMarku
 
 
 def gd_chat_submenu_finance(back_label: str = "⬅️ Назад") -> ReplyKeyboardMarkup:
-    """Подменю для чат-прокси с кнопкой отчёта (КВ/КИА)."""
+    """Подменю ГД для финансового канала менеджера (КВ/КИА/НПН).
+
+    Убраны для ГД (owner 09.07): «📖 Переписка», «📊 Отчёт».
+    «➕ Расход кредита» ВОЗВРАЩЕНА по запросу owner 21.07 (реверс правки 09.07):
+    ГД должен иметь возможность списать кредитный баланс прямо из канала.
+    Карточка баланса теперь показывается сразу при входе в канал (enter_chat_menu).
+    """
     rows = [
-        ["📖 Переписка", "✏️ Написать"],
-        ["📋 Задачи", "📊 Отчёт"],
+        ["✏️ Написать", "📋 Задачи"],
+        [GD_BTN_CRED_BAL, GD_BTN_CRED_SPEND],
         [back_label],
     ]
     return _build_reply_rows(rows)
@@ -843,7 +1091,7 @@ def gd_sales_submenu(back_label: str = "⬅️ Назад") -> ReplyKeyboardMark
 def gd_sales_write_to_kb() -> ReplyKeyboardMarkup:
     """'Кому писать?' подменю для Отд.Продаж."""
     rows = [
-        ["➡️ РП (НПН)", "➡️ Менеджер КВ"],
+        ["➡️ РП", "➡️ Менеджер КВ"],
         ["➡️ Менеджер КИА", "➡️ Менеджер НПН"],
         ["➡️ Всем в отдел", "⬅️ Назад"],
     ]
@@ -868,23 +1116,52 @@ def gd_chat_write_to_kb_universal(
     return _build_reply_rows(rows)
 
 
-def manager_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
-    """Подменю 'Еще' для менеджеров (КВ / КИА / НПН)."""
+def manager_more_menu(
+    show_role_selector_back: bool = False,
+    credit_count: int = 0,
+    recalc_count: int = 0,
+) -> ReplyKeyboardMarkup:
+    """Подменю 'Еще' для менеджеров (КВ / КИА / НПН).
+
+    Финансы-рефактор 02.06: денежные механизмы (аванс / депозит / расход
+    депозита / запрос ЗП) сведены в одну кнопку «💰 Финансы» → сводная
+    эталон-карточка с inline-действиями. Кредит-механизм — «🏦 Кредит»
+    (баланс + расход + кредит-чат внутри). Действия идут INLINE под карточками,
+    поэтому reply-меню «Ещё» НЕ подменяется и показывается всегда.
+
+    credit_count: число ожидающих кредит-заявок владельца → бейдж «💳N» на
+    кнопке «🏦 Кредит» (handler-матч учитывает бейдж, см. manager_new).
+    """
+    credit_label = MGR_BTN_CREDIT_MENU
+    if credit_count and credit_count > 0:
+        credit_label = f"{MGR_BTN_CREDIT_MENU} 💳{credit_count}"
+    # ТЗ 02.07: бейдж 🔴N на «💰 Финансы» — открытые задачи «Перерасчёт → согласие».
+    funds_label = MGR_BTN_FUNDS
+    if recalc_count and recalc_count > 0:
+        funds_label = f"{MGR_BTN_FUNDS} 🔴{recalc_count}"
     rows: list[list[str]] = [
-        [MGR_BTN_CRED],
-        [MGR_BTN_NOT_URGENT, MGR_BTN_URGENT],
+        [funds_label, credit_label],
+        [MGR_BTN_GD_CONTACT, MGR_BTN_HELP],
         [MGR_BTN_SEARCH_INVOICE, "📋 Все задачи"],
-        [MGR_BTN_HELP],
+        [MGR_BTN_CANCEL, MGR_BTN_BACK_HOME],
     ]
-    rows.append([MGR_BTN_CANCEL, MGR_BTN_BACK_HOME])
     return _build_reply_rows(rows)
 
 
+def _fmt_money_short(amount: float) -> str:
+    """Короткий формат «1 234 567» → «1 234к» (для кнопок-меню)."""
+    if amount >= 1000:
+        return f"{int(round(amount / 1000)):,}к".replace(",", " ")
+    return f"{int(round(amount))}"
+
+
 def rp_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
-    """Подменю 'Еще' для РП: Поиск, Синхронизация, Справка."""
+    """Подменю 'Еще' для РП: Поиск, Синхронизация, Запрос ЗП (хаб), Все задачи, Справка."""
     rows: list[list[str]] = [
         [RP_BTN_SEARCH_INVOICE, RP_BTN_SYNC],
-        ["📋 Все задачи", RP_BTN_HELP],
+        [RP_BTN_SALARY_HUB],
+        [RP_BTN_CREDIT_BAL, RP_BTN_CREDIT_SPEND],
+        [RP_BTN_HELP, "📋 Все задачи"],
     ]
     rows.append([RP_BTN_CANCEL, RP_BTN_BACK_HOME])
     return _build_reply_rows(rows)
@@ -905,6 +1182,7 @@ def manager_chat_submenu(back_label: str = "⬅️ Назад") -> ReplyKeyboard
     rows = [
         ["📖 Переписка", "✏️ Написать"],
         ["📊 Отчёт", "📋 Задачи"],
+        [MGR_BTN_CRED_ADD],
         [back_label],
     ]
     return _build_reply_rows(rows)
@@ -937,13 +1215,16 @@ def rp_montazh_submenu(back_label: str = "⬅️ Назад") -> ReplyKeyboardMa
     return _build_reply_rows(rows)
 
 
-def edo_type_kb() -> InlineKeyboardMarkup:
-    """4 inline-кнопки для выбора типа ЭДО-запроса."""
+def edo_type_kb(*, with_back: bool = False) -> InlineKeyboardMarkup:
+    """4 inline-кнопки для выбора типа ЭДО-запроса. Req 23: добавлены кнопки навигации."""
     b = InlineKeyboardBuilder()
     b.button(text="1. Подписать по ЭДО (счет №_)", callback_data="edo:sign_invoice")
     b.button(text="2. Закрывающие по ЭДО (счет №_)", callback_data="edo:sign_closing")
     b.button(text="3. Подписать по ЭДО УПД поставщика", callback_data="edo:sign_upd")
     b.button(text="4. Другое: пояснить суть", callback_data="edo:other")
+    if with_back:
+        b.button(text="⬅️ К списку счетов", callback_data="edo:back_pick")
+    b.button(text="🏠 В главное меню", callback_data="edo:home")
     b.adjust(1)
     return b.as_markup()
 
@@ -1005,7 +1286,7 @@ def zamery_incoming_kb(requests: list[dict[str, Any]], *, back_callback: str | N
 
 
 def edo_invoice_pick_kb(invoices: list[dict[str, Any]]) -> InlineKeyboardMarkup:
-    """Inline-пикер счетов для ЭДО-запроса."""
+    """Inline-пикер счетов для ЭДО-запроса. Req 23: «В главное меню»."""
     b = InlineKeyboardBuilder()
     for inv in invoices[:15]:
         num = inv.get("invoice_number") or f"#{inv['id']}"
@@ -1018,12 +1299,25 @@ def edo_invoice_pick_kb(invoices: list[dict[str, Any]]) -> InlineKeyboardMarkup:
             label += f" — {addr}"
         b.button(text=label[:55], callback_data=f"edo_inv:{inv['id']}")
     b.button(text="✍️ Ввести номер вручную", callback_data="edo_inv:manual")
+    b.button(text="🏠 В главное меню", callback_data="edo:home")
     b.adjust(1)
     return b.as_markup()
 
 
-def invoice_list_kb(invoices: list[dict], action_prefix: str = "inv", *, back_callback: str | None = None, hide_amount: bool = False) -> InlineKeyboardMarkup:
-    """Inline-кнопки со списком счетов."""
+def invoice_list_kb(
+    invoices: list[dict],
+    action_prefix: str = "inv",
+    *,
+    back_callback: str | None = None,
+    hide_amount: bool = False,
+    show_address: bool = False,
+) -> InlineKeyboardMarkup:
+    """Inline-кнопки со списком счетов.
+
+    show_address=True — вместо «№счёта» в кнопке выводим object_address
+    (если адрес пустой — fallback на номер). Удобно для menu «Мои Счета»
+    у менеджера: легче ориентироваться по улице.
+    """
     b = InlineKeyboardBuilder()
     for inv in invoices:
         status_emoji = {
@@ -1031,10 +1325,13 @@ def invoice_list_kb(invoices: list[dict], action_prefix: str = "inv", *, back_ca
             "paid": "✅", "on_hold": "⏸", "rejected": "❌",
             "closing": "📌", "ended": "🏁", "credit": "🏦",
         }.get(inv.get("status", ""), "❓")
+        addr = (inv.get("object_address") or "").strip()
+        num = inv.get("invoice_number") or "?"
+        label = addr if (show_address and addr) else f"№{num}"
         if hide_amount:
-            text = f"{status_emoji} №{inv.get('invoice_number', '?')}"
+            text = f"{status_emoji} {label}"
         else:
-            text = f"{status_emoji} №{inv.get('invoice_number', '?')} — {(inv.get('amount') or 0):.0f}₽"
+            text = f"{status_emoji} {label} — {(inv.get('amount') or 0):.0f}₽"
         b.button(text=text[:60], callback_data=f"{action_prefix}:view:{inv['id']}")
     if back_callback:
         b.button(text="⬅️ Назад", callback_data=back_callback)
@@ -1080,6 +1377,95 @@ def lead_picker_for_kp_kb(
         text = f"📌 {name} | {source} ({date_str})" if source else f"📌 {name} ({date_str})"
         b.button(text=text[:60], callback_data=f"kp_lead:pick:{t['id']}")
     b.button(text="➕ Новый клиент", callback_data="kp_lead:new")
+    b.adjust(1)
+    return b.as_markup()
+
+
+# --- Меню «Проверить КП / Счет» у менеджера: новое + ответы РП ---
+
+def mgr_check_kp_menu_kb(unconfirmed: int = 0) -> InlineKeyboardMarkup:
+    """Точка входа в подменю «Проверить КП / Счет».
+
+    Два пункта:
+    - 🆕 Новое КП на проверку РП
+    - 📥 Ответы РП (с бейджем неподтверждённых)
+    """
+    b = InlineKeyboardBuilder()
+    b.button(text="🆕 Новое КП на проверку РП", callback_data="kp_menu:new")
+    badge = f" 🔴{unconfirmed}" if unconfirmed > 0 else ""
+    b.button(text=f"📥 Ответы РП{badge}", callback_data="kp_menu:history")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def mgr_check_kp_history_kb(items: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+    """Список CHECK_KP-задач менеджера (его исходящие КП и ответы РП).
+
+    Префиксы строк:
+    - ✅ — DONE и menager уже подтвердил
+    - 📥 — DONE, ждёт подтверждения менеджера
+    - ❌ — REJECTED (РП отклонил)
+    - ⌛ — OPEN/IN_PROGRESS (РП ещё не ответил)
+    """
+    b = InlineKeyboardBuilder()
+    for t in items:
+        payload = try_json_loads(t.get("payload_json"))
+        status = (t.get("status") or "").lower()
+        confirmed = bool(payload.get("manager_confirmed"))
+        rejected = bool(payload.get("response_rejected"))
+        if rejected or status == "rejected":
+            prefix = "❌"
+        elif status == "done":
+            prefix = "✅" if confirmed else "📥"
+        else:
+            prefix = "⌛"
+        inv_num = payload.get("invoice_number") or "—"
+        client = (payload.get("client_name") or "—")[:18]
+        finalized = (payload.get("response_finalized_at") or t.get("updated_at") or t.get("created_at") or "")[:10]
+        label = f"{prefix} №{inv_num} | {client} ({finalized})"
+        b.button(text=label[:60], callback_data=f"kp_hist:open:{t['id']}")
+    b.button(text="⬅️ Назад", callback_data="kp_menu:back")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def mgr_check_kp_card_kb(
+    task_id: int, has_docs: bool, confirmed: bool, rejected: bool, finished: bool
+) -> InlineKeyboardMarkup:
+    """Кнопки на карточке одного ответа РП у менеджера."""
+    b = InlineKeyboardBuilder()
+    if finished and has_docs and not rejected:
+        b.button(text="📄 Получить документы", callback_data=f"kp_hist:docs:{task_id}")
+    if finished and not confirmed and not rejected:
+        b.button(text="✅ Подтвердить получение", callback_data=f"mgr_kp_ok:{task_id}")
+    b.button(text="⬅️ К списку", callback_data="kp_menu:history")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def invoice_start_lead_picker_kb(
+    invoices: list[dict[str, Any]],
+) -> InlineKeyboardMarkup:
+    """Inline-кнопки: список лидов с выставленным счётом + «Без лида».
+
+    Используется для кнопки «Счёт в работу» (менеджер).
+    Под капотом: каждая кнопка → callback `invstart_inv:pick:{invoice_id}`.
+    Кнопка «Без лида» → `invstart_inv:manual` (ввести номер счёта вручную).
+    """
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        num = (inv.get("invoice_number") or "—")[:18]
+        client = (inv.get("client_name") or inv.get("object_address") or "—")[:22]
+        amount = float(inv.get("amount") or 0)
+        is_credit = int(inv.get("is_credit") or 0)
+        marker = "💰" if is_credit else "💼"
+        amount_str = f"{amount:,.0f}₽" if amount else ""
+        text = f"{marker} №{num} | {client}"
+        if amount_str:
+            text += f" | {amount_str}"
+        b.button(text=text[:60], callback_data=f"invstart_inv:pick:{inv['id']}")
+    b.button(text="➕ Без лида (ввести номер)", callback_data="invstart_inv:manual")
+    b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
     return b.as_markup()
 
@@ -1167,6 +1553,7 @@ def invoices_work_list_kb(
     💰 = статус оплаты: ⏳ ждёт подтверждения / 🔄 в работе / ✅ оплачен
     📄 = статус документов (ЭДО): ⏳ не подписано / ✅ подписано
     """
+    from .rp_start_card import _street  # сокращённое имя улицы (как в карточке этапов)
     b = InlineKeyboardBuilder()
     for inv in invoices:
         # 💰 payment status indicator
@@ -1182,7 +1569,9 @@ def invoices_work_list_kb(
         except (ValueError, TypeError):
             amount_str = f"{inv.get('amount', 0)}₽"
 
-        text = f"💰{pay_emoji} 📄{doc_emoji} №{inv.get('invoice_number', '?')} — {amount_str}"
+        # Название улицы (сокращённо) вместо №счёта — запрос user 03.06 (как было ранее).
+        street = _street(inv.get("object_address"), 22)
+        text = f"💰{pay_emoji} 📄{doc_emoji} {street} — {amount_str}"
         b.button(text=text[:60], callback_data=f"rp_work:view:{inv['id']}")
     b.button(text="➕ Добавить из закрытых", callback_data="rp_work:add_ended")
     b.button(text="🔄 Обновить", callback_data="rp_work:refresh")

@@ -87,11 +87,21 @@ from ..states import (
     LeadToProjectSG,
     ManagerChatProxySG,
     RpMontazhAssignSG,
+    RpMontazhNaemSG,
+    RpMontazhRegroupSG,
+    RpMontazhZpSG,
     RpRazmerySG,
     RpSupplierInvoiceSG,
 )
-from ..utils import answer_service, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
+from ..utils import answer_service, build_invoice_section, close_condition_core_rows, fmt_money, format_invoice_card_standard, get_initiator_label, invoice_status_emoji, invoice_status_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
+from ..rp_start_card import _matrix, _street
 from ._mirror import mirror_attachment
+from .installer_new import (
+    _advance_cg_amount,
+    _advance_raw_cur,
+    _apply_montazh_bonus,
+    _is_credit,
+)
 from .auth import RoleFilter, require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -129,6 +139,7 @@ async def _rp_auto_refresh(handler, event: Message, data: dict):  # type: ignore
         rp_ch_kv = await db_rp.count_rp_channel_unread(u.id, "rp_to_manager_kv")
         rp_ch_kia = await db_rp.count_rp_channel_unread(u.id, "rp_to_manager_kia")
         rp_ch_mont = await db_rp.count_rp_channel_unread(u.id, "montazh")
+        rp_ch_paid = await db_rp.count_rp_channel_unread(u.id, "rp_invoice_paid")
         kb = main_menu(
             menu_role,
             is_admin=is_admin,
@@ -138,6 +149,7 @@ async def _rp_auto_refresh(handler, event: Message, data: dict):  # type: ignore
             rp_check_kp=rp_ckp, rp_invoices_pay=rp_ipay,
             rp_ch_mgr_kv=rp_ch_kv, rp_ch_mgr_kia=rp_ch_kia,
             rp_ch_montazh=rp_ch_mont,
+            rp_invoice_paid=rp_ch_paid,
         )
         await answer_service(event, "🔄", reply_markup=kb, delay_seconds=1)
     except Exception:
@@ -153,34 +165,6 @@ async def _current_role(db: Database, user_id: int) -> str | None:
 async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
     user = await db.get_user_optional(user_id)
     return resolve_menu_scope(user_id, user.role if user else None)
-
-
-def _invoice_status_label(status: str | None) -> str:
-    return {
-        "new": "🆕 Новый",
-        "pending": "⏳ Ждёт подтверждения ГД",
-        "in_progress": "🔄 В работе",
-        "paid": "✅ Оплачен",
-        "on_hold": "⏸ Отложен",
-        "rejected": "❌ Отклонён",
-        "closing": "📌 Закрытие",
-        "ended": "🏁 Счет End",
-        "credit": "🏦 Кредит",
-    }.get(status or "", status or "—")
-
-
-def _invoice_status_emoji(status: str | None) -> str:
-    return {
-        "new": "🆕",
-        "pending": "⏳",
-        "in_progress": "🔄",
-        "paid": "✅",
-        "on_hold": "⏸",
-        "rejected": "❌",
-        "closing": "📌",
-        "ended": "🏁",
-        "credit": "🏦",
-    }.get(status or "", "❓")
 
 
 async def _answer_or_edit(
@@ -246,24 +230,19 @@ async def rp_invoice_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    status_label = _invoice_status_label(inv.get("status"))
+    creator_label = "—"
+    if inv.get("created_by"):
+        try:
+            creator_label = await get_initiator_label(db, int(inv["created_by"]))
+        except (TypeError, ValueError):
+            pass
 
-    text = (
-        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
-        f"📍 Адрес: {inv.get('object_address', '-')}\n"
-        f"💰 Сумма: {inv.get('amount', 0):,.0f}₽\n"
-        f"📊 Статус: {status_label}\n"
-        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
-    )
-    conditions = await db.check_close_conditions(invoice_id)
-    c1 = "✅" if conditions["installer_ok"] else "⏳"
-    c2 = "✅" if conditions["edo_signed"] else "⏳"
-    c3 = "✅" if conditions["no_debts"] else "⏳"
-    text += (
-        f"\n<b>Условия:</b>\n"
-        f"{c1} 1. Монтажник — Счет ОК\n"
-        f"{c2} 2. ЭДО — подписано\n"
-        f"{c3} 3. Долгов нет\n"
+    section = await build_invoice_section(db, inv, invoice_id)
+    text = format_invoice_card_standard(
+        inv=inv,
+        creator_label=creator_label,
+        section=section,
+        comment=inv.get("description") or None,
     )
     await cb.message.answer(text)  # type: ignore[union-attr]
 
@@ -286,7 +265,7 @@ def _invoices_pay_kb(
     """Inline-кнопки для «Счета на оплату»: список + кнопка создания."""
     b = InlineKeyboardBuilder()
     for inv in invoices:
-        status_emoji = _invoice_status_emoji(inv.get("status"))
+        status_emoji = invoice_status_emoji(inv.get("status"))
         try:
             amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
         except (ValueError, TypeError):
@@ -300,13 +279,118 @@ def _invoices_pay_kb(
     return b.as_markup()
 
 
+async def _build_rp_sent_invoices_card(db: Database, user_id: int) -> str | None:
+    """Карточка «Отправлено в оплату» для РП — что он уже отправил ГД и статус.
+
+    Зеркало ГД-карточки (`_build_gd_invoices_view` в gd.py): те же задачи
+    INVOICE_PAYMENT и тот же дизайн, но выборка по СОЗДАТЕЛЮ, а не по
+    исполнителю (задача создаётся РП с created_by=РП, assigned_to=ГД —
+    rp.py invoice_finalize). Блок = 3 строки:
+
+        {иконка} {Категория}                {сумма}
+        №{номер счёта} · {улица}
+        {статус} · мен. {КВ/КИА/НПН}
+
+    У ГД третья строка — «от: {инициатор} ({роль})»; для РП инициатор всегда
+    он сам, поэтому на её месте статус задачи. Формулировки — существующий
+    generic `task_status_label` (Новая / В работе), user 15.07. Внизу «Итого».
+
+    Только активные OPEN+IN_PROGRESS — как у ГД (user 15.07). Display-only:
+    кнопок на задачи НЕТ — они назначены ГД, а `_can_manage_task` (tasks.py)
+    пропускает только assigned_to/админа, так что у РП «✅ Принять» падала бы
+    в «Эта задача назначена другому человеку».
+    [[feedback_card_display_only_no_data_writes]] [[feedback_card_template_standard]]
+    """
+    import html
+
+    from ..rp_start_card import CATS, _mt_to_cat, vw
+    from ..utils import task_status_label
+
+    tasks = await db.list_tasks_by_creator_and_type(
+        created_by=user_id,
+        type_filter=TaskType.INVOICE_PAYMENT,
+        statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
+        limit=100,
+    )
+    if not tasks:
+        return None
+
+    icon_by_cat = {k: ic for (k, ic, *_rest) in CATS}
+    title_by_cat = {k: ttl for (k, _ic, _fld, ttl) in CATS}
+
+    def _money(n: float) -> str:
+        return f"{float(n):,.0f}₽".replace(",", " ")
+
+    INDENT = "   "
+    blocks: list[list[tuple[str, str]]] = []  # блок = [(label, value)]; value="" → без right-align
+    total = 0.0
+    for t in tasks:
+        payload = try_json_loads(t.get("payload_json") or "{}") or {}
+        inv_num = payload.get("invoice_number") or f"#{t['id']}"
+        amount = float(payload.get("amount") or 0)
+        total += amount
+        cat = _mt_to_cat(payload.get("material_type") or "")
+        icon = icon_by_cat.get(cat, "🧱")
+        cat_title = title_by_cat.get(cat, "Прочее")
+        inv_id = payload.get("invoice_id") or payload.get("parent_invoice_id")
+        addr = ""
+        if inv_id:
+            inv = await db.get_invoice(int(inv_id))
+            addr = (inv or {}).get("object_address") or ""
+        street = _street(addr, 14) if addr else "—"
+        mgr = "КИА" if "КИА" in inv_num else ("НПН" if "НПН" in inv_num else "КВ")
+        blocks.append([
+            (f"{icon} {cat_title}", _money(amount)),
+            (f"№{html.escape(str(inv_num))} · {html.escape(street)}", ""),
+            (f"{html.escape(task_status_label(t.get('status')))} · мен. {mgr}", ""),
+        ])
+
+    foot = [("Итого", _money(total))]
+
+    # Динамическая ширина: max визуальная по всем right-align и левым строкам —
+    # чтобы суммы и footer сходились в один столбец (идентично ГД).
+    raw: list[int] = []
+    for blk in blocks:
+        for lbl, val in blk:
+            raw.append(vw(INDENT) + vw(lbl) + (1 + vw(val) if val else 0))
+    for lbl, val in foot:
+        raw.append(vw(INDENT) + vw(lbl) + 1 + vw(val))
+    width = max(raw) if raw else 30
+
+    def _rline(lbl: str, val: str) -> str:
+        pad = max(1, width - vw(INDENT) - vw(lbl) - vw(val))
+        return f"{INDENT}{lbl}{' ' * pad}{val}"
+
+    body_lines: list[str] = []
+    for i, blk in enumerate(blocks):
+        if i:
+            body_lines.append("")  # пустая строка-разделитель между блоками
+        for lbl, val in blk:
+            body_lines.append(_rline(lbl, val) if val else f"{INDENT}{lbl}")
+    body_lines.append(INDENT + "━" * max(3, width - vw(INDENT)))
+    for lbl, val in foot:
+        body_lines.append(_rline(lbl, val))
+
+    body = "\n".join(body_lines)
+    return f"<b>💰  Отправлено в оплату</b>\n<pre>{body}</pre>"
+
+
 async def _show_invoices_pay_dashboard(
     target: Message | CallbackQuery,
     db: Database,
 ) -> None:
     pending = await db.list_invoices(status=InvoiceStatus.PENDING_PAYMENT, limit=30)
     in_progress = await db.list_invoices(status=InvoiceStatus.IN_PROGRESS, limit=30)
-    all_inv = list(pending) + list(in_progress)
+    credit = await db.list_invoices(status=InvoiceStatus.CREDIT, limit=30)
+    all_inv = list(pending) + list(in_progress) + list(credit)
+
+    # Карточка «Отправлено в оплату» (ТЗ 15.07) — в ТЕЛЕ этого же сообщения,
+    # а НЕ отдельным: на «🔄 Обновить» _answer_or_edit редактирует сообщение
+    # in-place, и второе сообщение плодило бы копию при каждом обновлении
+    # (та же грабля, из-за которой у ГД убрали «Обновить» 26.06).
+    _uid = target.from_user.id if target.from_user else None
+    _sent = await _build_rp_sent_invoices_card(db, int(_uid)) if _uid else None
+    _sent_block = f"\n\n{_sent}" if _sent else ""
 
     if not all_inv:
         b = InlineKeyboardBuilder()
@@ -318,7 +402,8 @@ async def _show_invoices_pay_dashboard(
             target,
             "💳 <b>Счета на оплату</b>\n\n"
             "Нет счетов, ожидающих оплаты ✅\n\n"
-            "Можно создать новый счёт или обновить список.",
+            "Можно создать новый счёт или обновить список."
+            + _sent_block,
             reply_markup=b.as_markup(),
         )
         return
@@ -328,11 +413,14 @@ async def _show_invoices_pay_dashboard(
         header_parts.append(f"⏳ Ожидают: {len(pending)}")
     if in_progress:
         header_parts.append(f"🔄 В работе: {len(in_progress)}")
+    if credit:
+        header_parts.append(f"💳 Кредит: {len(credit)}")
 
     await _answer_or_edit(
         target,
         f"💳 <b>Счета на оплату</b> ({len(all_inv)})\n"
-        f"{' | '.join(header_parts)}\n\n"
+        f"{' | '.join(header_parts)}"
+        f"{_sent_block}\n\n"
         "Нажмите для просмотра или создайте новый:",
         reply_markup=_invoices_pay_kb(all_inv),
     )
@@ -370,7 +458,11 @@ async def rp_invoices_pay_create(cb: CallbackQuery, state: FSMContext, db: Datab
     from ..states import InvoiceCreateSG
     from ..keyboards import invoice_select_kb
 
-    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+    # include_credit=True: при подаче счёта в оплату ГД в списке должны быть
+    # и обычные, и кредитные счета (is_credit=1) со статусом в работе.
+    invoices = await db.list_invoices_in_work(
+        limit=20, only_regular=True, include_credit=True,
+    )
     if not invoices:
         await cb.message.answer(  # type: ignore[union-attr]
             "⚠️ Нет счетов в работе."
@@ -396,7 +488,8 @@ async def rp_invoice_end(message: Message, db: Database) -> None:
         return
     invoices = await db.list_invoices(status=InvoiceStatus.CLOSING)
     ended = await db.list_invoices(status=InvoiceStatus.ENDED, limit=10)
-    all_inv = list(invoices) + list(ended)
+    credit = await db.list_invoices(status=InvoiceStatus.CREDIT, limit=30)
+    all_inv = list(invoices) + list(ended) + list(credit)
 
     if not all_inv:
         await answer_service(message, "🏁 Нет счетов в процессе закрытия / закрытых.", delay_seconds=60)
@@ -431,7 +524,11 @@ async def rp_issue(message: Message, db: Database) -> None:
 # МЕНЕДЖЕР 1 (КВ) — chat-proxy
 # =====================================================================
 
-@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_MGR_KV) or (m.text or "").strip().startswith(RP_SUBBTN_MGR_KV))
+@router.message(lambda m: (
+    ((m.text or "").strip().startswith(RP_BTN_MGR_KV)
+     or (m.text or "").strip().startswith(RP_SUBBTN_MGR_KV))
+    and "(кредит)" not in (m.text or "")
+))
 async def rp_chat_mgr_kv(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
@@ -439,7 +536,7 @@ async def rp_chat_mgr_kv(message: Message, state: FSMContext, db: Database) -> N
     await state.set_state(ManagerChatProxySG.menu)
     await state.update_data(channel="rp_to_manager_kv")
     # #38: Invoice picker перед чатом
-    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+    invoices = await db.list_invoices_in_work(limit=20, only_regular=True, include_credit=True)
     kv_invoices = [i for i in invoices if i.get("creator_role") == "manager_kv"]
     if kv_invoices:
         b = InlineKeyboardBuilder()
@@ -462,7 +559,11 @@ async def rp_chat_mgr_kv(message: Message, state: FSMContext, db: Database) -> N
         )
 
 
-@router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_MGR_KIA) or (m.text or "").strip().startswith(RP_SUBBTN_MGR_KIA))
+@router.message(lambda m: (
+    ((m.text or "").strip().startswith(RP_BTN_MGR_KIA)
+     or (m.text or "").strip().startswith(RP_SUBBTN_MGR_KIA))
+    and "(кредит)" not in (m.text or "")
+))
 async def rp_chat_mgr_kia(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
@@ -470,7 +571,7 @@ async def rp_chat_mgr_kia(message: Message, state: FSMContext, db: Database) -> 
     await state.set_state(ManagerChatProxySG.menu)
     await state.update_data(channel="rp_to_manager_kia")
     # #38: Invoice picker перед чатом
-    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+    invoices = await db.list_invoices_in_work(limit=20, only_regular=True, include_credit=True)
     kia_invoices = [i for i in invoices if i.get("creator_role") == "manager_kia"]
     if kia_invoices:
         b = InlineKeyboardBuilder()
@@ -562,20 +663,21 @@ async def rp_chat_montazh(message: Message, state: FSMContext, db: Database) -> 
     await state.update_data(channel="montazh")
 
     # Считаем счета в работе
-    in_work_all = await db.list_invoices_in_work(limit=50)
+    in_work_all = await db.list_invoices_in_work(limit=50, include_credit=True)
     in_work_montazh = [
         i for i in in_work_all
         if i.get("montazh_stage") in ("in_work", "razmery_ok", "invoice_ok")
     ]
     n_in_work = len(in_work_montazh)
+    n_send = await db.count_invoices_to_send_montazh()
 
     b = InlineKeyboardBuilder()
     b.button(text=f"📋 Счета в работе ({n_in_work})", callback_data="rp_montazh:list_inwork")
-    b.button(text="➕ Счёт в работу", callback_data="rp_montazh:send_to_work")
+    b.button(text=(f"➕ Счёт в монтаж 🔴{n_send}" if n_send else "➕ Счёт в монтаж"), callback_data="rp_montazh:send_to_work")
     b.button(text="💬 Чат", callback_data="rp_montazh:chat")
     b.button(text="📐 Размеры", callback_data="rp_montazh:razmery")
     b.button(text="⬅️ Назад", callback_data="nav:home")
-    b.adjust(2, 2, 1)
+    b.adjust(1)
 
     await message.answer(
         "🔧 <b>Монтажная гр.</b>\n\nВыберите действие:",
@@ -616,19 +718,20 @@ async def rp_montazh_in_work(message: Message, state: FSMContext, db: Database) 
         return  # Only handle montazh context
 
     # Считаем счета в работе (montazh_stage in_work+)
-    in_work = await db.list_invoices_in_work(limit=50)
+    in_work = await db.list_invoices_in_work(limit=50, include_credit=True)
     in_work_montazh = [
         i for i in in_work
         if i.get("montazh_stage") in ("in_work", "razmery_ok", "invoice_ok")
     ]
     n_in_work = len(in_work_montazh)
+    n_send = await db.count_invoices_to_send_montazh()
 
     b = InlineKeyboardBuilder()
     b.button(
         text=f"📋 Счета в работе ({n_in_work})",
         callback_data="rp_montazh:list_inwork",
     )
-    b.button(text="➕ Счёт в работу", callback_data="rp_montazh:send_to_work")
+    b.button(text=(f"➕ Счёт в монтаж 🔴{n_send}" if n_send else "➕ Счёт в монтаж"), callback_data="rp_montazh:send_to_work")
     b.adjust(1)
 
     await message.answer(
@@ -645,10 +748,12 @@ async def rp_montazh_list_inwork(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
 
-    invoices = await db.list_invoices_in_work(limit=50)
+    invoices = await db.list_invoices_in_work(limit=50, include_credit=True)
     in_work = [
         i for i in invoices
         if i.get("montazh_stage") in ("in_work", "razmery_ok", "invoice_ok")
+        or (i.get("edo_task_id") == 2
+            and i.get("montazh_stage") in ("assigned", "in_work", "razmery_ok", "invoice_ok"))
     ]
     if not in_work:
         await cb.message.answer(  # type: ignore[union-attr]
@@ -663,7 +768,9 @@ async def rp_montazh_list_inwork(cb: CallbackQuery, db: Database) -> None:
             amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
         except (ValueError, TypeError):
             amount_str = f"{inv.get('amount', 0)}₽"
-        text = f"{ok_emoji} №{inv.get('invoice_number', '?')} — {amount_str}"
+        street = _street(inv.get("object_address"), 22)
+        grp = "2️⃣" if inv.get("edo_task_id") == 2 else "1️⃣"
+        text = f"{grp}{ok_emoji} {street} — {amount_str}"
         b.button(text=text[:60], callback_data=f"rp_montazh:work_view:{inv['id']}")
     b.button(text="🔄 Обновить", callback_data="rp_montazh:list_inwork")
     b.adjust(1)
@@ -691,34 +798,40 @@ async def rp_montazh_send_to_work(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
 
-    cur = await db.conn.execute(
-        "SELECT * FROM invoices WHERE "
-        "(montazh_stage IS NULL OR montazh_stage IN ('none','assigned')) "
-        "AND status IN ('in_progress', 'paid') "
-        "AND parent_invoice_id IS NULL "
-        "ORDER BY created_at DESC LIMIT 20",
-    )
-    invoices = [dict(r) for r in await cur.fetchall()]
+    invoices = await db.list_invoices_to_send_montazh(limit=20)
 
     if not invoices:
         await cb.message.answer(  # type: ignore[union-attr]
-            "➕ <b>Счёт в работу</b>\n\nНет счетов без подтверждения монтажника ✅"
+            "➕ <b>Счёт в монтаж</b>\n\nНет счетов без подтверждения монтажника ✅"
         )
         return
 
     b = InlineKeyboardBuilder()
+    # Собираем строки, затем добиваем улицы невидимым пробелом (U+00A0) до одной
+    # ширины: Telegram центрирует кнопки, равная ширина = ровный столбик (иконки в
+    # один левый край). Шрифт кнопок пропорциональный — выравнивание приблизительное,
+    # но зигзаг названий разной длины уходит. User 31.05 (левый край нельзя → подгон).
+    rows = []
     for inv in invoices:
-        num = inv.get("invoice_number") or f"#{inv['id']}"
-        addr = (inv.get("object_address") or "")[:20]
         stage = inv.get("montazh_stage") or ""
-        prefix = "📩" if stage == "assigned" else "📄"
-        text = f"{prefix} №{num} — {addr}"
-        b.button(text=text[:55], callback_data=f"rp_montazh:assign:{inv['id']}")
+        if (inv.get("status") or "") == "credit":
+            prefix = "🏦"
+        elif inv.get("edo_task_id") == 2:
+            prefix = "2️⃣"
+        elif stage == "assigned":
+            prefix = "📩"
+        else:
+            prefix = "📄"
+        rows.append((inv, prefix, _street(inv.get("object_address"), 30)))
+    pad_w = max((len(s) for _, _, s in rows), default=0)
+    for inv, prefix, street in rows:
+        text = f"{prefix} {street.ljust(pad_w, chr(0xA0))}"
+        b.button(text=text[:60], callback_data=f"rp_montazh:assign:{inv['id']}")
     b.button(text="⬅️ Назад", callback_data="rp_montazh:back_menu")
     b.adjust(1)
 
     await cb.message.answer(  # type: ignore[union-attr]
-        f"➕ <b>Счёт в работу</b> ({len(invoices)})\n\n"
+        f"➕ <b>Счёт в монтаж</b> ({len(invoices)})\n\n"
         "Выберите счёт для отправки монтажнику:",
         reply_markup=b.as_markup(),
     )
@@ -726,7 +839,7 @@ async def rp_montazh_send_to_work(cb: CallbackQuery, db: Database) -> None:
 
 @router.callback_query(F.data.startswith("rp_montazh:assign:"))
 async def rp_montazh_assign(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Выбор: прикрепить файлы или отправить сразу."""
+    """Выбор монтажной группы: штатный Игорь (1) или Наёмники (2)."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
@@ -749,12 +862,938 @@ async def rp_montazh_assign(cb: CallbackQuery, state: FSMContext, db: Database) 
 
     num = inv.get("invoice_number", "?")
     b = InlineKeyboardBuilder()
+    b.button(text="1️⃣ Наша монтажная группа", callback_data=f"rp_montazh:grp_igor:{invoice_id}")
+    b.button(text="2️⃣ Наёмная монтажная группа", callback_data=f"rp_montazh:grp_naem:{invoice_id}")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"📄 <b>Счёт №{num}</b>\n\nКто выполняет монтаж?",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("rp_montazh:grp_igor:"))
+async def rp_montazh_grp_igor(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Группа 1 (штатный Игорь): выбор — прикрепить файлы или отправить сразу."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    num = inv.get("invoice_number", "?")
+    b = InlineKeyboardBuilder()
     b.button(text="📎 Прикрепить файлы", callback_data=f"rp_montazh:attach:{invoice_id}")
     b.button(text="➡️ Отправить без вложений", callback_data=f"rp_montazh:send_now:{invoice_id}")
     b.adjust(1)
     await cb.message.answer(  # type: ignore[union-attr]
         f"📄 <b>Счёт №{num}</b>\n\nПрикрепить вложения для монтажника?",
         reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("rp_montazh:grp_naem:"))
+async def rp_montazh_grp_naem(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Группа 2 (Наёмная монт. группа): спросить согласованную сумму ЗП монтажа.
+
+    Поток: РП вводит согласованную сумму → (для б/н спрашиваем «+10%? Да/Нет», кредит —
+    без вопроса) → фиксируем `montazh_agreed_amount`, метим счёт наёмным (`edo_task_id=2`,
+    `assigned_to=NULL`, `montazh_stage='assigned'`) → счёт переезжает в «Счета в работе».
+    Запрос ЗП к ГД — позже, по кнопке «✅ Монтаж ОК».
+    """
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    # Защита от повторной обработки уже работающего счёта (старая кнопка)
+    stage = inv.get("montazh_stage") or ""
+    if stage in ("in_work", "razmery_ok", "invoice_ok", "invoice_end") or inv.get("installer_ok"):
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"⚠️ Счёт №{inv.get('invoice_number', '?')} уже в работе у монтажной группы.",
+        )
+        return
+    await state.set_state(RpMontazhNaemSG.amount)
+    await state.update_data(naem_invoice_id=invoice_id)
+    num = inv.get("invoice_number", "?")
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"👥 <b>Счёт №{num} — Наёмная монтажная группа 2️⃣</b>\n\n"
+        f"Введите <b>согласованную сумму ЗП монтажа</b> (₽):",
+    )
+
+
+async def _finalize_naem(
+    db: Database, integrations: IntegrationHub, invoice_id: int,
+    agreed: int, target_msg: Message, base: int | None = None,
+    actor_id: int | None = None,
+) -> None:
+    """Зафиксировать наёмный счёт: согласованная сумма + метка 2️⃣ + переезд в «В работе».
+
+    base — сумма, которую ввёл РП ДО надбавки +10% (для карточки ГД). None → =agreed.
+    agreed — сумма ЗП ТЕКУЩЕЙ (наёмной) группы; в БД уходит объединённая (см. ниже).
+
+    ⛔ Фикс owner 25.07 — объединение платежей (та же механика, что в _finalize_zp_edit,
+    ТЗ owner 15.07): если по счёту ЗП монтажа уже выплачена ПРОШЛОЙ группе (DR =
+    cost_montazh > 0), то Согласовано = DR + X, montazh_paid_prev = DR. Раньше этот путь
+    писал montazh_agreed_amount = X и НЕ трогал montazh_paid_prev → вторая наёмная группа
+    затирала первую и в BS попадала ЗП только последней (инцидент 25.07, сч. 41 Раушская:
+    32 100 вместо 64 200 за две группы). Правило owner: «Выплачено ВСЕГДА ≥ Согласовано».
+    Повторная запись НЕ накапливает: Согласовано всегда выводится заново из DR (как в
+    _finalize_zp_edit).
+
+    ⛔ Фикс owner 29.07 — база аванса. Раньше montazh_adv_prev здесь НЕ трогали
+    («живые авансы текущей группы должны вычитаться из остатка»), но при DR > 0
+    ТЕКУЩЕЙ группы ещё нет: всё, что привязано к счёту сейчас, — аванс ПРОШЛОЙ,
+    и он уже внутри paid_prev (через DR). Без снимка _advance_raw_cur
+    (installer_new.py:2293) приписывал его новой группе как свой, и
+    _zp_remainder_for_invoice ужимал её остаток ровно на его размер — новая
+    группа недополучала (функтест: остаток 15 000 вместо 40 000 при чужом
+    авансе 25 000). Аванс не суммируется с ЗП монтаж, он её закрывает
+    [[feedback_installer_advance_closes_zp_not_added]] → засчитывать дважды нельзя.
+    Логика симметрична парному _finalize_regroup (ниже, merged-ветка).
+    DR = 0 → поле как было: аванс принадлежит текущей группе, отнимать нечего.
+    """
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await target_msg.answer("❌ Счёт не найден.")
+        return
+    # Идемпотентность: уже прошедший «assigned» счёт не сбрасываем (защита от старой кнопки)
+    stage = inv.get("montazh_stage") or ""
+    if stage in ("in_work", "razmery_ok", "invoice_ok", "invoice_end") or inv.get("installer_ok"):
+        await target_msg.answer(
+            f"⚠️ Счёт №{inv.get('invoice_number', '?')} уже в работе у монтажной группы.",
+        )
+        return
+    dr = float(inv.get("cost_montazh") or 0)
+    _merged = dr > 0.001
+    agreed_total = int(round(dr + agreed))
+    # База аванса — калька _finalize_regroup (merged-ветка): снимаем всё, что
+    # привязано к счёту сейчас, иначе аванс прошлой группы уйдёт новой как её
+    # собственный (см. docstring). DR = 0 → поле не трогаем.
+    _adv_prev_col = (
+        await db.get_installer_advance_for_invoice(invoice_id) if _merged
+        else float(inv.get("montazh_adv_prev") or 0)
+    )
+    from datetime import datetime
+    _now = datetime.now().isoformat()
+    await db.conn.execute(
+        "UPDATE invoices SET montazh_agreed_amount = ?, montazh_base_amount = ?, "
+        "montazh_paid_prev = ?, montazh_adv_prev = ?, edo_task_id = 2, assigned_to = NULL, "
+        "montazh_stage = 'assigned', montazh_assigned_at = ?, updated_at = ? WHERE id = ?",
+        (agreed_total, base if base is not None else agreed, dr, _adv_prev_col,
+         _now, _now, invoice_id),
+    )
+    await db.conn.commit()
+    try:
+        await db.audit(
+            actor_id=actor_id, action="rp_montazh_naem_amount_set",
+            entity="invoice", entity_id=str(invoice_id),
+            payload={"amount": agreed, "agreed": agreed_total, "paid_prev": dr,
+                     "adv_prev": _adv_prev_col},
+        )
+    except Exception:
+        log.debug("naem: audit failed inv=%s", invoice_id, exc_info=True)
+    if integrations:
+        await integrations.sync_invoice_row(invoice_id)
+    num = inv.get("invoice_number", "?")
+    lines = [
+        f"✅ Счёт №{num} закреплён за <b>Наёмной монтажной группой</b> 2️⃣",
+        f"💰 Согласованная сумма ЗП монтажа: <b>{agreed:,.0f}₽</b>",
+    ]
+    if dr > 0:
+        lines.append(
+            f"🔗 С учётом выплаченного прошлой группе ({dr:,.0f}₽): "
+            f"<b>{agreed_total:,.0f}₽</b>"
+        )
+    lines.append("")
+    lines.append(
+        "Перенесён в «Счета в работе». Когда монтаж выполнен — нажмите «✅ Монтаж ОК»."
+    )
+    await target_msg.answer("\n".join(lines))
+    # ТЗ owner 16.07: после назначения — карточка «💰 ЗП монтаж» (сумма уже введена
+    # РП → карточка её отражает, кнопка = исправить).
+    try:
+        await _send_montazh_zp_card(db, target_msg, invoice_id)
+    except Exception:
+        log.warning("naem: montazh zp card failed inv=%s", invoice_id, exc_info=True)
+
+
+@router.message(RpMontazhNaemSG.amount)
+async def rp_montazh_naem_amount(
+    message: Message, state: FSMContext, db: Database, integrations: IntegrationHub,
+) -> None:
+    """РП ввёл согласованную сумму ЗП монтажа для наёмной группы."""
+    if not message.from_user:
+        return
+    text = (message.text or "").strip().replace(" ", "").replace(",", "")
+    try:
+        amount = int(float(text))
+    except (ValueError, TypeError):
+        await message.answer("❌ Введите число:")
+        return
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть больше 0:")
+        return
+
+    data = await state.get_data()
+    invoice_id = data.get("naem_invoice_id")
+    if not invoice_id:
+        await state.clear()
+        await message.answer("❌ Счёт не найден, начните заново.")
+        return
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await state.clear()
+        await message.answer("❌ Счёт не найден.")
+        return
+
+    # ТЗ owner 17.07: РП больше НЕ спрашиваем «прибавить 10%?». Для б/н надбавка
+    # 10% начисляется АВТОМАТИЧЕСКИ (_apply_montazh_bonus), для кредита — сумма как
+    # введена. Базу (ввод РП до надбавки) храним для карточки ГД.
+    await state.clear()
+    agreed = amount if _is_credit(inv) else _apply_montazh_bonus(inv, amount)
+    await _finalize_naem(
+        db, integrations, invoice_id, agreed, message, base=amount,
+        actor_id=message.from_user.id,
+    )
+
+
+@router.callback_query(F.data.startswith("rp_naem_bonus:"))
+async def rp_montazh_naem_bonus(
+    cb: CallbackQuery, db: Database, integrations: IntegrationHub,
+) -> None:
+    """РП выбрал, прибавлять ли 10% к согласованной сумме (только б/н)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    try:
+        _, choice, raw_id, raw_amount = cb.data.split(":")  # type: ignore[union-attr]
+        invoice_id = int(raw_id)
+        amount = int(raw_amount)
+    except (ValueError, AttributeError):
+        await cb.message.answer("❌ Ошибка данных, начните заново.")  # type: ignore[union-attr]
+        return
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    agreed = _apply_montazh_bonus(inv, amount) if choice == "yes" else amount
+    await _finalize_naem(
+        db, integrations, invoice_id, agreed, cb.message,  # type: ignore[arg-type]
+        actor_id=cb.from_user.id if cb.from_user else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Карточка «💰 ЗП монтаж» после назначения группы + «✏️ Внести сумму ЗП монтаж»
+# (ТЗ owner 16.07, переназначение монтажа часть 2). Показывается РП ВСЕГДА после
+# назначения (обе ветки: 1️⃣ Игорь и 2️⃣ наёмная; в regroup НЕ показываем — там РП
+# сумму только что ввёл сам). Запись кнопки — механика merge 15.07:
+# Согласовано = cost_montazh (DR, выплачено прошлым) + X, montazh_paid_prev = DR →
+# заявка ЗП потом уйдёт на доплату X (naem_ok/_zp_remainder_for_invoice вычитают
+# paid_prev), на листе BJ = X, после выплаты BS = X + DR (paid_prev-нога в
+# sheets._invoice_cells). В лист напрямую не пишем — только sync_invoice_row.
+# ---------------------------------------------------------------------------
+
+
+async def _build_montazh_zp_card(
+    db: Database, invoice_id: int,
+) -> tuple[str, Any] | None:
+    """Текст + клавиатура карточки «💰 ЗП монтаж» (используется и в td.py при
+    отклонении ГД — РП получает карточку для повторного внесения суммы)."""
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        return None
+    from ..utils import format_card_section
+    from .installer_new import _calc_est_montazh  # lazy: circular import
+    est = float(_calc_est_montazh(inv) or 0)
+    dr = float(inv.get("cost_montazh") or 0)  # «Выплачено» = только DR (решение owner №2)
+
+    def _f(n: float) -> str:
+        return f"{float(n):,.0f}₽".replace(",", " ")
+
+    items: list[tuple[str, str]] = [
+        ("Счёт", f"№{inv.get('invoice_number', '?')}"),
+        ("Адрес", str(inv.get("object_address") or "—")),
+        ("Расчётная ЗП", _f(est)),
+        ("Выплачено", _f(dr)),
+        ("Остаток расчёта", _f(max(est - dr, 0.0))),
+    ]
+    agreed = float(inv.get("montazh_agreed_amount") or 0)
+    if agreed > 0:  # наёмная ветка: сумма уже введена РП — показать, кнопка = исправить
+        items.append(("Согласовано", _f(agreed)))
+    card_text = format_card_section(
+        emoji="💰", title="ЗП монтаж", items=items, width=27, compact=True,
+    )
+    b = InlineKeyboardBuilder()
+    b.button(text="✏️ Внести сумму ЗП монтаж", callback_data=f"rp_montazh:zp_edit:{invoice_id}")
+    b.adjust(1)
+    return card_text, b.as_markup()
+
+
+async def _send_montazh_zp_card(
+    db: Database, target_msg: Message, invoice_id: int,
+) -> None:
+    """Карточка РП «💰 ЗП монтаж»: Расчётная ЗП (авто-смета) / Выплачено (DR) /
+    Остаток расчёта + кнопка «✏️ Внести сумму ЗП монтаж»."""
+    built = await _build_montazh_zp_card(db, invoice_id)
+    if not built:
+        return
+    card_text, markup = built
+    await target_msg.answer(card_text, reply_markup=markup)
+
+
+# Заявка ЗП уже в работе/выплачена → «Согласовано» менять поздно
+# [[feedback_fsm_old_buttons_trap]] — кнопка живёт в чате вечно.
+_ZP_EDIT_BLOCKED_STATUSES = ("requested", "approved", "payment_sent", "confirmed")
+
+
+@router.callback_query(F.data.startswith("rp_montazh:zp_edit:"))
+async def rp_montazh_zp_edit(
+    cb: CallbackQuery, db: Database, state: FSMContext,
+) -> None:
+    """РП нажал «✏️ Внести сумму ЗП монтаж» — вход в FSM ввода суммы."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.answer("❌ Счёт не найден", show_alert=True)
+        return
+    if (inv.get("zp_installer_status") or "not_requested") in _ZP_EDIT_BLOCKED_STATUSES:
+        await cb.answer(
+            "⚠️ По счёту уже есть заявка ЗП (или она выплачена) — сумму менять поздно.",
+            show_alert=True,
+        )
+        return
+    await cb.answer()
+    await state.set_state(RpMontazhZpSG.amount)
+    await state.update_data(zp_edit_invoice_id=invoice_id)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💰 Введите сумму ЗП монтажа для счёта №{inv.get('invoice_number', '?')} (в рублях):",
+    )
+
+
+@router.message(RpMontazhZpSG.amount)
+async def rp_montazh_zp_amount(
+    message: Message, state: FSMContext, db: Database, integrations: IntegrationHub,
+) -> None:
+    """РП ввёл сумму ЗП монтажа (флоу «✏️ Внести сумму ЗП монтаж»)."""
+    if not message.from_user:
+        return
+    text = (message.text or "").strip().replace(" ", "").replace(",", "")
+    try:
+        amount = int(float(text))
+    except (ValueError, TypeError):
+        await message.answer("❌ Введите число:")
+        return
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть больше 0:")
+        return
+
+    data = await state.get_data()
+    invoice_id = data.get("zp_edit_invoice_id")
+    if not invoice_id:
+        await state.clear()
+        await message.answer("❌ Счёт не найден, начните заново.")
+        return
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await state.clear()
+        await message.answer("❌ Счёт не найден.")
+        return
+
+    # ТЗ owner 17.07: без вопроса о 10%. Б/н — авто +10%, кредит — как введено.
+    # Базу (ввод РП до надбавки) храним для карточки ГД.
+    await state.clear()
+    x = amount if _is_credit(inv) else _apply_montazh_bonus(inv, amount)
+    await _finalize_zp_edit(
+        db, integrations, invoice_id, x, message, message.from_user.id, base=amount,
+    )
+
+
+@router.callback_query(F.data.startswith("rp_zped_bonus:"))
+async def rp_montazh_zp_bonus(
+    cb: CallbackQuery, db: Database, integrations: IntegrationHub,
+) -> None:
+    """РП выбрал, прибавлять ли 10% (флоу «✏️ Внести сумму ЗП монтаж», только б/н)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    try:
+        _, choice, raw_id, raw_amount = cb.data.split(":")  # type: ignore[union-attr]
+        invoice_id = int(raw_id)
+        amount = int(raw_amount)
+    except (ValueError, AttributeError):
+        await cb.message.answer("❌ Ошибка данных, начните заново.")  # type: ignore[union-attr]
+        return
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    x = _apply_montazh_bonus(inv, amount) if choice == "yes" else amount
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)  # одноразовость кнопки
+    except Exception:
+        pass
+    await _finalize_zp_edit(
+        db, integrations, invoice_id, x, cb.message,  # type: ignore[arg-type]
+        cb.from_user.id if cb.from_user else None,
+    )
+
+
+async def _finalize_zp_edit(
+    db: Database, integrations: IntegrationHub, invoice_id: int,
+    x: int, target_msg: Message, actor_id: int | None, base: int | None = None,
+) -> None:
+    """Запись суммы РП: Согласовано = DR + X, montazh_paid_prev = DR (механика merge
+    15.07). Перезапуск кнопки легитимен (исправление): значения выводятся заново из
+    cost_montazh, повторная запись не накапливает. montazh_adv_prev НЕ трогаем —
+    живые авансы текущей группы должны вычитаться из остатка как раньше."""
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await target_msg.answer("❌ Счёт не найден.")
+        return
+    # Гард повторной проверки: пока РП вводил сумму, заявка могла уйти в работу.
+    if (inv.get("zp_installer_status") or "not_requested") in _ZP_EDIT_BLOCKED_STATUSES:
+        await target_msg.answer("⚠️ По счёту уже есть заявка ЗП — сумма не записана.")
+        return
+    dr = float(inv.get("cost_montazh") or 0)
+    agreed = int(round(dr + x))
+    from datetime import datetime
+    _now = datetime.now().isoformat()
+    await db.conn.execute(
+        "UPDATE invoices SET montazh_agreed_amount = ?, montazh_base_amount = ?, "
+        "montazh_paid_prev = ?, updated_at = ? WHERE id = ?",
+        (agreed, base if base is not None else x, dr, _now, invoice_id),
+    )
+    await db.conn.commit()
+    try:
+        await db.audit(
+            actor_id=actor_id, action="rp_montazh_zp_amount_set",
+            entity="invoice", entity_id=str(invoice_id),
+            payload={"amount": x, "agreed": agreed, "paid_prev": dr},
+        )
+    except Exception:
+        log.debug("zp_edit: audit failed inv=%s", invoice_id, exc_info=True)
+    if integrations:
+        await integrations.sync_invoice_row(invoice_id)
+    num = inv.get("invoice_number", "?")
+    lines = [f"✅ ЗП монтаж по счёту №{num}: <b>{x:,.0f}₽</b>"]
+    if dr > 0:
+        lines.append(
+            f"Согласовано с учётом выплаченного ({dr:,.0f}₽): <b>{agreed:,.0f}₽</b>"
+        )
+    await target_msg.answer("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# «🔁 Изменить Монтажников» (ТЗ owner 15.07) — смена монт. группы на счёте,
+# который уже отдан в монтаж. РП выбирает группу 1️⃣/2️⃣ и ОБЯЗАТЕЛЬНО вводит новую
+# согласованную сумму ЗП монтажа.
+#
+# В лист напрямую не пишем: у montazh_agreed_amount нет своей колонки, а BJ/BS/BE/CB
+# пересобирает sync_invoice_row [[feedback_bs_immutable]], [[feedback_db_first_no_direct_sheet_writes]].
+# Отличие от первичного назначения (rp_montazh:assign): гарды «уже назначено» и
+# идемпотентности обойдены намеренно — в этом весь смысл механизма.
+# _REGROUP_INFLIGHT — анти-двойной-клик [[feedback_money_confirm_idempotent_gate]].
+# ---------------------------------------------------------------------------
+_REGROUP_INFLIGHT: set[tuple[int, int]] = set()
+
+_ZP_INST_LABELS = {
+    "not_requested": "⏳ Не запрошен",
+    "not_applicable": "— не применимо",
+    "requested": "📤 Отправлен ГД",
+    "approved": "✅ Одобрен ГД",
+    "payment_sent": "💸 Платёжка отправлена",
+    "confirmed": "✅ Получено монтажником",
+}
+
+
+def _grp_label(inv: dict[str, Any]) -> str:
+    """Метка текущей монтажной группы счёта (edo_task_id=2 — наёмная)."""
+    return "2️⃣ Наёмная" if inv.get("edo_task_id") == 2 else "1️⃣ Наша"
+
+
+def _montazh_payout_done(inv: dict[str, Any]) -> bool:
+    """Была ли по счёту РЕАЛЬНАЯ выплата ЗП монтажа — т.е. есть что объединять.
+
+    Зачтённый аванс сам по себе объединение не запускает: он часть ЗП ТЕКУЩЕЙ группы,
+    а не закрытый платёж прошлой (owner 15.07: «если по данному материнскому счёту ЗП
+    монтаж уже было выплачено — прибавить две эти суммы»). Иначе аванс Игоря попал бы
+    в «Согласовано» вторым слагаемым и раздул бы его.
+    """
+    return bool(
+        (inv.get("zp_installer_status") or "not_requested") in ("payment_sent", "confirmed")
+        or float(inv.get("montazh_fact_op") or 0) > 0
+        or float(inv.get("montazh_paid_prev") or 0) > 0
+    )
+
+
+async def _montazh_money_state(db: Database, inv: dict[str, Any]) -> tuple[float, float]:
+    """(Выплачено, зачтённый аванс CG) по ЗП монтажа — 1-в-1 с листом (sheets.py:1186-1219)
+    плюс выплаченное ПРОШЛЫМ группам, которого лист знать не может.
+
+    Источники «Выплачено»: AN «Монтаж Факт» из ОП, зачтённый аванс (CG, ×1.10 для б/н)
+    и выплата ботом (только payment_sent/confirmed — approved деньгами ещё не является).
+    zp_installer_remainder=1 → бот платил ОСТАТОК, поэтому аванс и выплата складываются;
+    иначе берётся максимум.
+
+    Аванс берём только за ТЕКУЩУЮ группу (_advance_raw_cur): аванс прошлой уже сидит
+    внутри montazh_paid_prev, иначе он посчитался бы дважды.
+
+    montazh_paid_prev (объединение платежей, owner 15.07) — ОТДЕЛЬНАЯ нога: выплаты
+    прошлых групп. Лист видит их только через AN, а AN — накопитель, который заполняют
+    люди в «Импорт ОП» с лагом; пока он пуст, это поле — единственный след старой выплаты.
+    Без него повторное объединение посчитало бы «Выплачено» = 0 и потеряло бы её.
+    AN накапливает ВСЕ ноги (решение owner), поэтому с ними не суммируется, а конкурирует
+    по максимуму. paid_prev = 0 (обычный счёт) → формула ровно прежняя, лист 1-в-1.
+    """
+    adv_cg = _advance_cg_amount(await _advance_raw_cur(db, inv), inv)
+    an = float(inv.get("montazh_fact_op") or 0)
+    bot_paid = (
+        float(inv.get("zp_installer_amount") or 0)
+        if inv.get("zp_installer_status") in ("payment_sent", "confirmed")
+        else 0.0
+    )
+    if inv.get("zp_installer_remainder") and bot_paid > 0:
+        leg = adv_cg + bot_paid
+    else:
+        leg = max(adv_cg, bot_paid)
+    paid_prev = float(inv.get("montazh_paid_prev") or 0)
+    # Канал DR «Затр. Монтаж» (owner 01.08) — канон sheets.py:1274. Здесь он важнее,
+    # чем в остальных трёх местах: величина уходит НЕ только в показ (строка
+    # «💰 Выплачено» в предупреждении), но и в ЗАПИСЬ — rp_montazh_regroup_merge
+    # передаёт её в _finalize_regroup(paid_prev=...), а тот пишет
+    # montazh_agreed_amount = paid_prev + новая сумма. Без DR «Согласовано по счёту»
+    # теряло транши, ушедшие через затраты (класс инцидента 26331-1НПН).
+    # Соседние ветки того же механизма DR уже берут напрямую: _finalize_naem
+    # (agreed_total = dr + agreed) и _finalize_zp_edit — правка выравнивает с ними.
+    # ⚠️ Гард _montazh_payout_done (выше) про cost_montazh по-прежнему НЕ знает:
+    # у счёта, где деньги шли ТОЛЬКО через DR, развилка «объединить» не предложится.
+    # Расширение гарда owner не заказывал — вынесено вопросом.
+    dr = float(inv.get("cost_montazh") or 0)
+    return max(an, paid_prev + leg, dr), adv_cg
+
+
+async def _regroup_picker(target_msg: Message, inv: dict[str, Any]) -> None:
+    """Пикер новой монт. группы — разметка как при первичном назначении."""
+    invoice_id = int(inv["id"])
+    b = InlineKeyboardBuilder()
+    b.button(text="1️⃣ Наша монтажная группа", callback_data=f"rp_montazh:regrp_igor:{invoice_id}")
+    b.button(text="2️⃣ Наёмная монтажная группа", callback_data=f"rp_montazh:regrp_naem:{invoice_id}")
+    b.button(text="❌ Отмена", callback_data="rp_montazh:work_refresh")
+    b.adjust(1)
+    await target_msg.answer(
+        f"🔁 <b>Счёт №{inv.get('invoice_number', '?')} — смена монтажной группы</b>\n\n"
+        f"Сейчас: {_grp_label(inv)}\n\n"
+        f"Кто выполняет монтаж?",
+        reply_markup=b.as_markup(),
+    )
+
+
+async def _regroup_warn_if_money(db: Database, inv: dict[str, Any], target_msg: Message) -> bool:
+    """Показать карточку-предупреждение, если по счёту двигались деньги. True — показана.
+
+    Вызывается ДВАЖДЫ: на входе и повторно при выборе группы. Второй вызов не избыточен —
+    деньги могли двинуться уже после отрисовки пикера (монтажник взял аванс, ГД провёл
+    выплату), а инлайн-пикер живёт в чате вечно [[feedback_fsm_old_buttons_trap]].
+    """
+    invoice_id = int(inv["id"])
+    paid, adv_cg = await _montazh_money_state(db, inv)
+    zp_st = inv.get("zp_installer_status") or "not_requested"
+    if paid <= 0.001 and adv_cg <= 0.001 and zp_st in ("not_requested", "not_applicable"):
+        return False
+
+    agreed = float(inv.get("montazh_agreed_amount") or 0)
+    # У счёта одна ячейка под ЗП монтажа — две выплаты по одному счёту не представимы.
+    # Раньше это был тупик («новой группе бот ЗП не начислит»); теперь ячейка
+    # освобождается под доплату, а старая выплата уходит в montazh_paid_prev —
+    # объединение платежей (owner 15.07). Предлагаем его ПОСЛЕ ввода новой суммы:
+    # тут ещё нечего складывать.
+    merge_line = (
+        "\n🔗 ЗП по счёту уже выплачена — после ввода новой суммы предложу "
+        "<b>объединить платежи</b>.\n"
+        if _montazh_payout_done(inv) else ""
+    )
+    b = InlineKeyboardBuilder()
+    b.button(text="⚠️ Всё равно менять", callback_data=f"rp_montazh:regrp_go:{invoice_id}")
+    b.button(text="❌ Отмена", callback_data="rp_montazh:work_refresh")
+    b.adjust(1)
+    await target_msg.answer(
+        f"⚠️ <b>Счёт №{inv.get('invoice_number', '?')} — по счёту уже двигались деньги</b>\n\n"
+        f"👥 Текущая группа: {_grp_label(inv)}\n"
+        f"📊 Согласованная ЗП монтаж: <b>{agreed:,.0f}₽</b>\n"
+        f"💰 Выплачено: <b>{paid:,.0f}₽</b>\n"
+        # Аванс — ЧАСТЬ «Выплачено» (paid = max(AN, CG, бот) ≥ CG), не добавка к нему:
+        # две строки подряд без «в т.ч.» читаются как сумма.
+        f"🏦 в т.ч. зачтённый аванс: <b>{adv_cg:,.0f}₽</b>\n"
+        f"💵 Статус ЗП: {_ZP_INST_LABELS.get(zp_st, zp_st)}\n"
+        f"{merge_line}\n"
+        f"Смена группы <b>не отменит</b> уже выплаченное. Всё равно менять?",
+        reply_markup=b.as_markup(),
+    )
+    return True
+
+
+@router.callback_query(F.data.regexp(r"^rp_montazh:regroup:\d+$"))
+async def rp_montazh_regroup(cb: CallbackQuery, db: Database) -> None:
+    """Старт смены монт. группы. Счёт с движением денег — только через предупреждение
+    (решение owner 15.07: не блокировать, но и не менять молча)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    if not await _regroup_warn_if_money(db, inv, cb.message):  # type: ignore[arg-type]
+        await _regroup_picker(cb.message, inv)  # type: ignore[arg-type]
+
+
+@router.callback_query(F.data.regexp(r"^rp_montazh:regrp_go:\d+$"))
+async def rp_montazh_regroup_confirm(
+    cb: CallbackQuery, state: FSMContext, db: Database,
+) -> None:
+    """РП подтвердил смену на «денежном» счёте → пикер группы."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    # Отметка «предупреждение принято по ЭТОМУ счёту» — иначе повторная проверка в
+    # regroup_pick снова покажет карточку и флоу зациклится.
+    await state.update_data(regroup_ack_invoice_id=invoice_id)
+    await _regroup_picker(cb.message, inv)  # type: ignore[arg-type]
+
+
+@router.callback_query(F.data.regexp(r"^rp_montazh:regrp_(igor|naem):\d+$"))
+async def rp_montazh_regroup_pick(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Новая группа выбрана → запрашиваем согласованную сумму ЗП монтажа.
+
+    Сумму спрашиваем для ОБЕИХ групп (ТЗ owner: «когда РП использует этот механизм —
+    запросить согласованную сумму»), в отличие от первичного назначения, где группа 1️⃣
+    сумму не вводит (её считает монтажник авто-сметой).
+    """
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    _, kind, raw_id = cb.data.split(":")  # type: ignore[union-attr]
+    invoice_id = int(raw_id)
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    # Пикер мог быть отрисован, когда счёт был «чистым», а деньги двинулись уже после —
+    # тогда РП обязан увидеть предупреждение (решение owner 15.07), а не проскочить мимо.
+    # Если РП уже подтвердил его по этому счёту (regrp_go) — не переспрашиваем.
+    acked = (await state.get_data()).get("regroup_ack_invoice_id") == invoice_id
+    if not acked and await _regroup_warn_if_money(db, inv, cb.message):  # type: ignore[arg-type]
+        return
+    group = "igor" if kind == "regrp_igor" else "naem"
+    await state.set_state(RpMontazhRegroupSG.amount)
+    await state.update_data(regroup_invoice_id=invoice_id, regroup_group=group)
+    grp_name = "1️⃣ Наша монтажная группа" if group == "igor" else "2️⃣ Наёмная монтажная группа"
+    cur = float(inv.get("montazh_agreed_amount") or 0)
+    cur_line = f"Сейчас согласовано: {cur:,.0f}₽\n\n" if cur else ""
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"👥 <b>Счёт №{inv.get('invoice_number', '?')} → {grp_name}</b>\n\n"
+        f"{cur_line}"
+        f"Введите <b>согласованную сумму ЗП монтажа</b> (₽):",
+    )
+
+
+@router.message(RpMontazhRegroupSG.amount)
+async def rp_montazh_regroup_amount(
+    message: Message, state: FSMContext, db: Database, integrations: IntegrationHub,
+) -> None:
+    """РП ввёл новую согласованную сумму ЗП монтажа при смене группы."""
+    if not message.from_user:
+        return
+    text = (message.text or "").strip().replace(" ", "").replace(",", "")
+    try:
+        amount = int(float(text))
+    except (ValueError, TypeError):
+        await message.answer("❌ Введите число:")
+        return
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть больше 0:")
+        return
+
+    data = await state.get_data()
+    invoice_id = data.get("regroup_invoice_id")
+    group = data.get("regroup_group")
+    if not invoice_id or not group:
+        await state.clear()
+        await message.answer("❌ Счёт не найден, начните заново.")
+        return
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await state.clear()
+        await message.answer("❌ Счёт не найден.")
+        return
+
+    await state.clear()
+    # ТЗ owner 17.07: без вопроса о 10%. Б/н — авто +10%, кредит — как введено.
+    # База (ввод РП до надбавки) прокидывается в merge/finalize для карточки ГД.
+    agreed = amount if _is_credit(inv) else _apply_montazh_bonus(inv, amount)
+    if await _maybe_offer_merge(
+        db, int(invoice_id), str(group), agreed, message, base=amount,
+    ):
+        return
+    await _finalize_regroup(
+        db, integrations, int(invoice_id), str(group), agreed, message, base=amount,
+    )
+
+
+@router.callback_query(F.data.startswith("rp_regrp_bonus:"))
+async def rp_montazh_regroup_bonus(
+    cb: CallbackQuery, db: Database, integrations: IntegrationHub,
+) -> None:
+    """РП выбрал, прибавлять ли 10% к новой согласованной сумме (только б/н)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    try:
+        _, choice, raw_id, raw_amount, group = cb.data.split(":")  # type: ignore[union-attr]
+        invoice_id = int(raw_id)
+        amount = int(raw_amount)
+    except (ValueError, AttributeError):
+        await cb.answer()
+        await cb.message.answer("❌ Ошибка данных, начните заново.")  # type: ignore[union-attr]
+        return
+
+    key = (cb.from_user.id, invoice_id)
+    if key in _REGROUP_INFLIGHT:
+        await cb.answer("Уже обрабатываю, секунду…")
+        return
+    _REGROUP_INFLIGHT.add(key)
+    try:
+        await cb.answer()
+        inv = await db.get_invoice(invoice_id)
+        if not inv:
+            await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+            return
+        # Кнопка одноразовая: _finalize_regroup намеренно без гарда идемпотентности,
+        # поэтому повторный клик по старому сообщению переиграл бы всю смену группы
+        # (сброс installer_ok/стадии на старую сумму) [[feedback_fsm_old_buttons_trap]].
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+        except Exception:
+            pass
+        agreed = _apply_montazh_bonus(inv, amount) if choice == "yes" else amount
+        if await _maybe_offer_merge(db, invoice_id, group, agreed, cb.message):  # type: ignore[arg-type]
+            return
+        await _finalize_regroup(
+            db, integrations, invoice_id, group, agreed, cb.message,  # type: ignore[arg-type]
+        )
+    finally:
+        _REGROUP_INFLIGHT.discard(key)
+
+
+async def _maybe_offer_merge(
+    db: Database, invoice_id: int, group: str, agreed_new: int, target_msg: Message,
+    base: int | None = None,
+) -> bool:
+    """Предложить объединить выплаченную ЗП монтаж с новой суммой. True — предложено.
+
+    Owner 15.07: «бот должен предложить объединить платежи зп монтаж уже выплаченного и
+    нового» — это РАЗВИЛКА КНОПКОЙ, молча складывать нельзя. Согласовано = выплаченное +
+    новое (90 000 + 130 000 = 220 000), новой группе бот начислит доплату 130 000.
+    Зовётся после ввода суммы (и вопроса о 10%) — до этого момента складывать нечего.
+    """
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await target_msg.answer("❌ Счёт не найден.")
+        return False
+    if not _montazh_payout_done(inv):
+        return False
+    paid, _adv = await _montazh_money_state(db, inv)
+    if paid <= 0.001:
+        return False
+
+    total = paid + agreed_new
+    b = InlineKeyboardBuilder()
+    b.button(
+        text=f"🔗 Объединить — {total:,.0f}₽",
+        callback_data=(
+            f"rp_regrp_merge:{invoice_id}:{agreed_new}:{group}:"
+            f"{base if base is not None else agreed_new}"
+        ),
+    )
+    # Отмена здесь = отказ от ВСЕЙ смены группы, а не только от объединения: на
+    # выплаченном счёте «сменить, но не объединять» — запрещённый исход (решение owner
+    # №1: суммы обязательно складываются). РП должен видеть, что теряет ввод.
+    b.button(text="❌ Отмена — не менять группу", callback_data="rp_montazh:work_refresh")
+    b.adjust(1)
+    await target_msg.answer(
+        f"🔗 <b>Счёт №{inv.get('invoice_number', '?')} — объединить платежи ЗП монтаж?</b>\n\n"
+        f"💰 Уже выплачено: <b>{paid:,.0f}₽</b>\n"
+        f"➕ Новая группа: <b>{agreed_new:,.0f}₽</b>\n"
+        f"━ Согласовано по счёту: <b>{total:,.0f}₽</b>\n\n"
+        f"Новой группе бот начислит <b>доплату {agreed_new:,.0f}₽</b>.\n"
+        f"Выплаченное прошлой группе остаётся на счёте.\n\n"
+        f"<i>Отмена оставит счёт как есть — группа не сменится, сумму нужно будет "
+        f"ввести заново.</i>",
+        reply_markup=b.as_markup(),
+    )
+    return True
+
+
+@router.callback_query(F.data.startswith("rp_regrp_merge:"))
+async def rp_montazh_regroup_merge(
+    cb: CallbackQuery, db: Database, integrations: IntegrationHub,
+) -> None:
+    """РП подтвердил объединение платежей ЗП монтаж (owner 15.07)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    try:
+        # rp_regrp_merge:{id}:{agreed_new}:{group}[:{base}] — база опциональна
+        # (старые кнопки без неё → base=None, карточка ГД разбивку не покажет).
+        parts = (cb.data or "").split(":")
+        _, raw_id, raw_amount, group = parts[:4]
+        invoice_id = int(raw_id)
+        agreed_new = int(raw_amount)
+        base_new = int(parts[4]) if len(parts) > 4 else None
+    except (ValueError, AttributeError):
+        await cb.answer()
+        await cb.message.answer("❌ Ошибка данных, начните заново.")  # type: ignore[union-attr]
+        return
+
+    key = (cb.from_user.id, invoice_id)
+    if key in _REGROUP_INFLIGHT:
+        await cb.answer("Уже обрабатываю, секунду…")
+        return
+    _REGROUP_INFLIGHT.add(key)
+    try:
+        await cb.answer()
+        inv = await db.get_invoice(invoice_id)
+        if not inv:
+            await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+            return
+        # Кнопка одноразовая — калька rp_regrp_bonus [[feedback_fsm_old_buttons_trap]].
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+        except Exception:
+            pass
+        # Выплаченное пересчитываем ЗАНОВО, а не берём из callback_data: карточка живёт
+        # в чате вечно, деньги могли двинуться после её отрисовки — иначе объединим по
+        # устаревшей сумме и запишем в Согласовано неправду.
+        paid, _adv = await _montazh_money_state(db, inv)
+        await _finalize_regroup(
+            db, integrations, invoice_id, group, agreed_new, cb.message,  # type: ignore[arg-type]
+            paid_prev=paid, base=base_new,
+        )
+    finally:
+        _REGROUP_INFLIGHT.discard(key)
+
+
+async def _finalize_regroup(
+    db: Database, integrations: IntegrationHub, invoice_id: int, group: str,
+    agreed: int, target_msg: Message, paid_prev: float = 0.0, base: int | None = None,
+) -> None:
+    """Записать новую монт. группу + согласованную сумму. Гардов «уже назначено»/
+    идемпотентности здесь НЕТ намеренно (ср. _finalize_naem) — счёт в работе меняют осознанно.
+
+    Сумму пишем БЕЗУСЛОВНО: `or`-паттерн вида `agreed or _calc_est_montazh(inv)` вернул бы
+    старую сумму и молча съел ввод РП. installer_ok сбрасываем — исполнитель сменился,
+    старое подтверждение недействительно [[feedback_montazh_stage_in_work_requires_installer_ok]].
+
+    paid_prev > 0 — ОБЪЕДИНЕНИЕ ПЛАТЕЖЕЙ (owner 15.07): Согласовано = выплаченное прошлым
+    группам + новая сумма (`agreed` здесь — доля ТОЛЬКО новой группы), ячейка ЗП счёта
+    освобождается под доплату новой группе.
+    """
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await target_msg.answer("❌ Счёт не найден.")
+        return
+
+    merged = paid_prev > 0.001
+    agreed_total = int(round(paid_prev + agreed)) if merged else agreed
+
+    installer_uid: int | None = None
+    if group == "igor":
+        installers = await db.find_users_by_role("installer")
+        if not installers:
+            await target_msg.answer("❌ Нет активных монтажников.")
+            return
+        installer_uid = installers[0].telegram_id
+
+    from datetime import datetime
+    _now = datetime.now().isoformat()
+    # paid_prev при обычной смене НЕ обнуляем, а переносим как есть: объединение могло
+    # пройти раньше, и его след — единственное, что помнит выплату прошлым группам.
+    _paid_prev_col = paid_prev if merged else float(inv.get("montazh_paid_prev") or 0)
+    # База аванса: всё, что привязано к счёту СЕЙЧАС, относится к прошлым группам —
+    # оно уже внутри paid_prev. Новой группе засчитываем только её собственные авансы.
+    _adv_prev_col = (
+        await db.get_installer_advance_for_invoice(invoice_id) if merged
+        else float(inv.get("montazh_adv_prev") or 0)
+    )
+    await db.conn.execute(
+        "UPDATE invoices SET montazh_agreed_amount = ?, montazh_base_amount = ?, "
+        "montazh_paid_prev = ?, "
+        "montazh_adv_prev = ?, assigned_to = ?, edo_task_id = ?, "
+        "montazh_stage = 'assigned', installer_ok = 0, installer_ok_by = NULL, "
+        "installer_ok_at = NULL, montazh_assigned_at = ?, updated_at = ? WHERE id = ?",
+        (agreed_total, base if base is not None else agreed, _paid_prev_col,
+         _adv_prev_col, installer_uid,
+         None if group == "igor" else 2, _now, _now, invoice_id),
+    )
+    await db.conn.commit()
+
+    # Открытый запрос ЗП относился к СТАРОЙ группе → снять задачу у ГД и сбросить статус
+    # (решение owner 15.07), иначе ГД выплатит старую сумму старому исполнителю.
+    # Калька gdzp_inst:no (td.py:863-865). Одобренную/выплаченную ЗП НЕ трогаем: деньги
+    # двинулись, зачёты авансов применены и назад не откатываются — такой счёт РП меняет
+    # под предупреждением, факт выплаты остаётся на счёте.
+    zp_st_now = inv.get("zp_installer_status") or "not_requested"
+    zp_withdrawn = zp_st_now == "requested"
+    if zp_withdrawn:
+        await db.set_invoice_zp_installer_status(invoice_id, "not_requested")
+        await db.close_tasks_by_invoice(invoice_id, TaskType.ZP_INSTALLER)
+    elif merged and zp_st_now in ("approved", "payment_sent", "confirmed"):
+        # Объединение: ячейка ЗП на счёте ОДНА — освобождаем её под доплату новой группе.
+        # Это осознанно перекрывает решение owner №2 от 15.07 («выплаченную ЗП не трогаем»)
+        # для кейса объединения: факт старой выплаты не теряется, он ушёл в
+        # montazh_paid_prev (+ AN/DR). amount=0 обязателен — сеттер stale-сумму не чистит,
+        # иначе старые 90 000 остались бы в расчёте «Выплачено» как нога текущей группы.
+        await db.set_invoice_zp_installer_status(invoice_id, "not_requested", amount=0)
+        await db.close_tasks_by_invoice(invoice_id, TaskType.ZP_INSTALLER)
+
+    if integrations:
+        await integrations.sync_invoice_row(invoice_id)
+
+    num = inv.get("invoice_number", "?")
+    grp_txt = "1️⃣ Наша монтажная группа" if group == "igor" else "2️⃣ Наёмная монтажная группа"
+    tail = (
+        "Ожидает принятия монтажником («🔨 В Работу»)."
+        if group == "igor"
+        else "Когда монтаж выполнен — нажмите «✅ Монтаж ОК»."
+    )
+    zp_line = "🚫 Запрос ЗП у ГД снят — запросите заново после монтажа.\n" if zp_withdrawn else ""
+    money_lines = (
+        f"🔗 Платежи объединены: выплачено <b>{paid_prev:,.0f}₽</b> + новая "
+        f"<b>{agreed:,.0f}₽</b>\n"
+        f"💰 Согласовано по счёту: <b>{agreed_total:,.0f}₽</b>\n"
+        f"👉 Новой группе к выплате: <b>{agreed:,.0f}₽</b>\n"
+        if merged else
+        f"💰 Согласованная сумма ЗП монтажа: <b>{agreed_total:,.0f}₽</b>\n"
+    )
+    await target_msg.answer(
+        f"✅ Счёт №{num} — монтажная группа изменена\n"
+        f"👥 Группа: <b>{grp_txt}</b>\n"
+        f"{money_lines}"
+        f"{zp_line}\n"
+        f"{tail}",
     )
 
 
@@ -876,7 +1915,7 @@ async def _do_montazh_assign(
     att_json = json.dumps(attachments, ensure_ascii=False) if attachments else None
     _now = datetime.now().isoformat()
     await db.conn.execute(
-        "UPDATE invoices SET assigned_to = ?, montazh_stage = ?, "
+        "UPDATE invoices SET assigned_to = ?, edo_task_id = NULL, montazh_stage = ?, "
         "montazh_assign_attachments_json = ?, montazh_assigned_at = ?, updated_at = ? WHERE id = ?",
         (installer_uid, MontazhStage.ASSIGNED, att_json, _now, _now, invoice_id),
     )
@@ -903,14 +1942,11 @@ async def _do_montazh_assign(
     if not lead_name:
         lead_name = inv.get("client_name") or ""
 
-    # Монтаж расч. (×0.71)
-    est_val = 0
-    est_inst = inv.get("estimated_installation")
-    if est_inst:
-        try:
-            est_val = int(float(est_inst) * 0.71) // 1000 * 1000
-        except (ValueError, TypeError):
-            pass
+    # Монтаж — расч. сумма по коэффициентам (б/н ×0.67 +10% надбавка, кредит ×0.95
+    # без надбавки), как в карточке монтажника «В работу». Lazy-import (circular import).
+    from .installer_new import _calc_est_montazh, _calc_est_montazh_base, _is_credit
+    est_val = _calc_est_montazh(inv)
+    est_base = _calc_est_montazh_base(inv)
 
     # Дедлайн
     from datetime import date as _date, datetime as _dt
@@ -931,25 +1967,40 @@ async def _do_montazh_assign(
         except (ValueError, TypeError):
             pass
 
-    # Карточка
-    lines = [f"🔨 <b>Новый счёт — №{num}</b>\n"]
-    lines.append("<pre>")
-    lines.append(f"{'Менеджер':16s} {mgr_label}")
-    lines.append(f"{'Адрес':16s} {addr}")
+    # Карточка — эталон-v2 через format_card_section (1-в-1 с карточкой монтажника
+    # из списка «🔨 В Работу», installer_work_view_card): итог строкой «Итого» в
+    # теле, разделитель пробелами, Монтаж двумя строками (б/н) / одной (кредит).
+    from ..utils import format_card_section
+
+    def _f(n: float) -> str:
+        return f"{float(n):,.0f}₽".replace(",", " ")
+
+    items: list[tuple[str, str]] = [
+        ("Менеджер", mgr_label),
+        ("Адрес", addr),
+    ]
     if lead_name:
-        lines.append(f"{'Клиент':16s} {lead_name}")
+        items.append(("Клиент", lead_name))
     # телефон скрыт для монтажника
-    lines.append(f"{'':16s} {'─' * 16}")
-    if est_val:
-        lines.append(f"{'Монтаж':16s} {est_val:>10,}₽")
-        lines.append(f"{'Монтаж +10%':16s} {int(est_val * 1.10):>10,}₽")
     if dl_str:
-        lines.append(f"{'Срок':16s} {dl_str}")
+        items.append(("Срок", dl_str))
     if days_left_str:
-        lines.append(f"{'Осталось':16s} {days_left_str}")
-    lines.append("</pre>")
-    lines.append("\nНажмите «🔨 В Работу» для подтверждения.")
-    card_text = "\n".join(lines)
+        items.append(("Осталось", days_left_str))
+    if est_val:
+        # б/н: база + «Монтаж+10%» (итог); кредит: одна сумма (без +10%).
+        if _is_credit(inv):
+            items.append(("Монтаж расч.", _f(est_val)))
+        else:
+            items.append(("Монтаж", _f(est_base)))
+            items.append(("Монтаж+10%", _f(est_val)))
+    card_text = format_card_section(
+        emoji="🔨",
+        title=f"Новый счёт: №{num}",
+        items=items,
+        total=_f(est_val) if est_val else None,
+        width=27,
+        compact=True,
+    ) + "\n\nНажмите «🔨 В Работу» для подтверждения."
 
     # Уведомление монтажнику
     try:
@@ -978,6 +2029,11 @@ async def _do_montazh_assign(
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ Счёт №{num} отправлен монтажнику @{installer_name}{att_note}",
     )
+    # ТЗ owner 16.07: после назначения — карточка «💰 ЗП монтаж» с кнопкой ввода суммы.
+    try:
+        await _send_montazh_zp_card(db, cb.message, invoice_id)  # type: ignore[arg-type]
+    except Exception:
+        log.warning("assign: montazh zp card failed inv=%s", invoice_id, exc_info=True)
 
 
 @router.callback_query(F.data == "rp_montazh:back_menu")
@@ -987,19 +2043,20 @@ async def rp_montazh_back_menu(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
 
-    in_work_all = await db.list_invoices_in_work(limit=50)
+    in_work_all = await db.list_invoices_in_work(limit=50, include_credit=True)
     in_work_montazh = [
         i for i in in_work_all
         if i.get("montazh_stage") in ("in_work", "razmery_ok", "invoice_ok")
     ]
     n_in_work = len(in_work_montazh)
+    n_send = await db.count_invoices_to_send_montazh()
 
     b = InlineKeyboardBuilder()
     b.button(text=f"📋 Счета в работе ({n_in_work})", callback_data="rp_montazh:list_inwork")
-    b.button(text="➕ Счёт в работу", callback_data="rp_montazh:send_to_work")
+    b.button(text=(f"➕ Счёт в монтаж 🔴{n_send}" if n_send else "➕ Счёт в монтаж"), callback_data="rp_montazh:send_to_work")
     b.button(text="💬 Чат", callback_data="rp_montazh:chat")
     b.button(text="📐 Размеры", callback_data="rp_montazh:razmery")
-    b.adjust(2, 2)
+    b.adjust(1)
 
     await cb.message.answer(  # type: ignore[union-attr]
         "🔧 <b>Монтажная гр.</b>\n\nВыберите действие:",
@@ -1082,7 +2139,7 @@ async def rp_montazh_work_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    status_label = _invoice_status_label(inv.get("status"))
+    status_label = invoice_status_label(inv.get("status"))
 
     try:
         amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
@@ -1123,10 +2180,130 @@ async def rp_montazh_work_view(cb: CallbackQuery, db: Database) -> None:
         text += "📄 ЭДО: ⏳ Не подписано\n"
 
     b = InlineKeyboardBuilder()
+    # Наёмная группа (2️⃣): РП сам подтверждает готовность монтажа → авто-запрос ЗП ГД.
+    if inv.get("edo_task_id") == 2 and not inv.get("installer_ok"):
+        b.button(text="✅ Монтаж ОК", callback_data=f"rp_montazh:naem_ok:{invoice_id}")
+    b.button(text="🔁 Изменить Монтажников", callback_data=f"rp_montazh:regroup:{invoice_id}")
     b.button(text="⬅️ Назад к списку", callback_data="rp_montazh:work_refresh")
     b.adjust(1)
 
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.regexp(r"^rp_montazh:naem_ok:\d+$"))
+async def rp_montazh_naem_ok(
+    cb: CallbackQuery, db: Database, config: Config,
+    integrations: IntegrationHub, notifier: Notifier,
+) -> None:
+    """Наёмная группа: РП подтверждает «Монтаж ОК» → готовность + авто-запрос ЗП к ГД."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    u = cb.from_user
+    if not u:
+        return
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.answer("❌ Счёт не найден.", show_alert=True)
+        return
+    if inv.get("edo_task_id") != 2:
+        await cb.answer("⚠️ Это не наёмный счёт.", show_alert=True)
+        return
+    if inv.get("installer_ok"):
+        await cb.answer("✅ Монтаж уже подтверждён.", show_alert=True)
+        return
+    if (inv.get("zp_installer_status") or "not_requested") not in ("not_requested",):
+        await cb.answer("⚠️ Запрос ЗП уже отправлен.", show_alert=True)
+        return
+    agreed = float(inv.get("montazh_agreed_amount") or 0)
+    if not agreed:
+        await cb.answer("⚠️ Сначала укажите согласованную сумму ЗП монтажа.", show_alert=True)
+        return
+    # Объединение платежей (owner 15.07): Согласовано включает ЗП, уже выплаченную ПРОШЛЫМ
+    # монтажным группам, — этой группе причитается только доплата. Без вычета ГД выплатил
+    # бы всю объединённую сумму (220 000 вместо 130 000) живыми деньгами.
+    paid_prev = float(inv.get("montazh_paid_prev") or 0)
+    due = agreed - paid_prev
+    if due <= 0:
+        await cb.answer("⚠️ Согласованная ЗП по счёту уже выплачена полностью.", show_alert=True)
+        return
+    await cb.answer(f"✅ Монтаж ОК: {due:,.0f}₽")
+
+    # 1) Готовность: installer_ok + стадия «Счёт ОК» (паритет с Игорем)
+    await db.set_invoice_installer_ok(invoice_id, True)
+    await db.update_montazh_stage(invoice_id, MontazhStage.INVOICE_OK)
+    inv_row = await db.get_invoice(invoice_id)
+    if inv_row:
+        await integrations.sync_invoice_status(
+            inv_row["invoice_number"], inv_row.get("status", ""), MontazhStage.INVOICE_OK,
+        )
+
+    # 2) Авто-запрос ЗП монтажника к ГД на согласованную сумму (за вычетом выплаченного
+    #    прошлым группам — см. due выше)
+    await db.set_invoice_zp_installer_status(
+        invoice_id, "requested", amount=due, requested_by=u.id,
+    )
+    await integrations.sync_invoice_row(invoice_id)
+
+    inv_number = inv.get("invoice_number") or "—"
+    addr = inv.get("object_address") or "—"
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
+    if gd_id:
+        await db.create_task(
+            project_id=None,
+            type_=TaskType.ZP_INSTALLER,
+            status=TaskStatus.OPEN,
+            created_by=u.id,
+            assigned_to=int(gd_id),
+            due_at_iso=None,
+            payload={
+                "invoice_id": invoice_id,
+                "invoice_number": inv_number,
+                "amount": due,
+                "source": "rp_naem_montazh_ok",
+            },
+        )
+        initiator = await get_initiator_label(db, u.id)
+        credit_warn = "\n🏦 <b>⚠️ КРЕДИТНЫЙ СЧЁТ</b>\n" if _is_credit(inv) else ""
+        # ГД видит, почему сумма меньше Согласованного, — иначе выглядит как ошибка.
+        due_note = (
+            f" — доплата\n🔗 Согласовано {agreed:,.0f}₽, "
+            f"выплачено прошлой группе {paid_prev:,.0f}₽"
+            if paid_prev > 0 else " (согласованная)"
+        )
+        # ТЗ owner 17.07: для б/н ГД видит раздельно сумму РП и сумму +10%.
+        # due = база×1.1 (к выплате новой группе), montazh_base_amount = ввод РП.
+        base_rp = float(inv.get("montazh_base_amount") or 0)
+        if not _is_credit(inv) and base_rp > 0:
+            money_block = (
+                f"💵 Внёс РП: <b>{base_rp:,.0f}₽</b>\n"
+                f"💵 С надбавкой +10%: <b>{due:,.0f}₽</b>{due_note}"
+            )
+        else:
+            money_block = f"💵 Сумма: <b>{due:,.0f}₽</b>{due_note}"
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
+        b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
+        b.adjust(2)
+        await notifier.safe_send(
+            int(gd_id),
+            f"💰 <b>Запрос ЗП монтажника (наёмная гр. 2️⃣)</b>{credit_warn}\n"
+            f"👤 От: {initiator}\n"
+            f"🔢 Счёт: №{inv_number}\n"
+            f"📍 {addr}\n"
+            f"{money_block}",
+            reply_markup=b.as_markup(),
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+    except Exception:
+        pass
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ <b>Монтаж ОК.</b> Запрос ЗП на <b>{due:,.0f}₽</b> отправлен ГД.\n"
+        f"Счёт: №{inv_number}",
+    )
 
 
 # =====================================================================
@@ -1521,7 +2698,7 @@ async def _show_invoices_work_dashboard(
     db: Database,
 ) -> None:
     """Общий хелпер: показать дашборд «Счета в Работе»."""
-    all_invoices = await db.list_invoices_in_work(limit=50)
+    all_invoices = await db.list_invoices_in_work(limit=50, include_credit=True)
     # RP sees only pending + in_progress (not paid — those are done)
     invoices = [inv for inv in all_invoices if inv.get("status") != "paid"]
 
@@ -1560,11 +2737,18 @@ async def _show_invoices_work_dashboard(
     if n_edo_pending:
         edo_parts.append(f"⏳ Не подписано: {n_edo_pending}")
 
+    # Карточка-блок «Этапы работы» — тот же матрица-блок, что в стартовой карточке РП
+    # (запрос user 03.06). _matrix грузит свои in-work счета (Б/Н + Кред), легенда+⬛.
+    try:
+        stages = await _matrix(db)
+    except Exception:
+        stages = ""
     text = (
         f"💼 <b>Счета в Работе</b> ({len(invoices)})\n\n"
         f"<b>💰 Оплата:</b> {' | '.join(header_parts)}\n"
         f"<b>📄 ЭДО:</b> {' | '.join(edo_parts)}\n\n"
-        "Нажмите на счёт для просмотра:"
+        + (f"{stages}\n\n" if stages else "")
+        + "Нажмите на счёт для просмотра:"
     )
 
     await _answer_or_edit(
@@ -1580,6 +2764,9 @@ async def rp_invoices_work(message: Message, state: FSMContext, db: Database) ->
     if not await require_role_message(message, db, roles=[Role.RP]):
         return
     await state.clear()
+    # Открытие раздела гасит бейдж 🔴N «Счёт оплачен» (канал 'rp_invoice_paid').
+    if message.from_user:
+        await db.mark_messages_read(message.from_user.id, "rp_invoice_paid")
     await _show_invoices_work_dashboard(message, db)
 
 
@@ -1621,27 +2808,17 @@ async def rp_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
         return
 
-    # Fallback for invoices without estimated data
-    status_label = _invoice_status_label(inv.get("status"))
-    try:
-        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
-    except (ValueError, TypeError):
-        amount_str = f"{inv.get('amount', 0)}₽"
-
+    # Fallback for invoices without estimated data — карточка по эталону.
     creator_label = "—"
     if inv.get("created_by"):
         creator_label = await get_initiator_label(db, int(inv["created_by"]))
-    creator_role_label = {
-        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
-    }.get(inv.get("creator_role", ""), inv.get("creator_role", ""))
 
-    text = (
-        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
-        f"📍 Адрес: {inv.get('object_address', '-')}\n"
-        f"💰 Сумма: {amount_str}\n"
-        f"📊 Статус: {status_label}\n"
-        f"👤 Создал: {creator_label} ({creator_role_label})\n"
-        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
+    section = await build_invoice_section(db, inv, invoice_id)
+    text = format_invoice_card_standard(
+        inv=inv,
+        creator_label=creator_label,
+        section=section,
+        comment=inv.get("description") or None,
     )
 
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
@@ -1807,7 +2984,7 @@ async def rp_work_add_ended(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
 
-    ended = await db.list_ended_invoices(limit=20)
+    ended = await db.list_ended_invoices(limit=20, include_credit=True)
     if not ended:
         await cb.message.answer(  # type: ignore[union-attr]
             "✅ Нет закрытых счетов для возврата."
@@ -2052,6 +3229,65 @@ async def rp_sinv_cancel(cb: CallbackQuery, state: FSMContext, db: Database, con
     await cb.message.answer("❌ Отправка счёта отменена.", reply_markup=kb)  # type: ignore[union-attr]
 
 
+async def _sinv_duplicate_warning(
+    db: Database, invoice_id: int, amount: float, material_type: str,
+) -> str | None:
+    """Текст предупреждения, если такой счёт уже отправлен/оплачен.
+
+    Дубль = тот же счёт (invoice_id) + та же сумма (±1 коп) + тот же тип.
+    """
+    from ..enums import MATERIAL_TYPE_LABELS
+    EPS = 0.01
+    mt_label = MATERIAL_TYPE_LABELS.get(material_type, material_type)
+    # 1) уже есть заявка на оплату (open/in_progress) с теми же параметрами
+    try:
+        pend = await db.search_tasks_by_payload(
+            field="invoice_id", value=str(invoice_id),
+            type_filter=[TaskType.INVOICE_PAYMENT], limit=30,
+        )
+    except Exception:
+        pend = []
+    for t in pend:
+        if t.get("status") not in (TaskStatus.OPEN, TaskStatus.IN_PROGRESS):
+            continue
+        p = try_json_loads(t.get("payload_json"))
+        same_inv = invoice_id in (p.get("invoice_id"), p.get("parent_invoice_id"))
+        if (same_inv and (p.get("material_type") or "") == material_type
+                and abs(float(p.get("amount") or 0) - amount) < EPS):
+            return (
+                "⚠️ <b>Похоже, этот счёт уже отправлен на оплату</b>\n"
+                f"Заявка #{t.get('id')} ещё ждёт ГД "
+                f"({mt_label}, {fmt_money(amount)}).\n\n"
+                "Отправить ещё раз?"
+            )
+    # 2) уже оплачен (есть supplier_payment с теми же параметрами)
+    try:
+        paid = await db.list_supplier_payments_for_invoice(invoice_id)
+    except Exception:
+        paid = []
+    for sp in paid:
+        if ((sp.get("material_type") or "") == material_type
+                and abs(float(sp.get("amount") or 0) - amount) < EPS):
+            return (
+                "⚠️ <b>Этот счёт уже оплачен</b>\n"
+                f"{mt_label}, {fmt_money(amount)} — оплата уже проведена.\n\n"
+                "Отправить ещё раз?"
+            )
+    return None
+
+
+@router.callback_query(F.data == "rp_sinv:force")
+async def rp_sinv_send_force(
+    cb: CallbackQuery, state: FSMContext, db: Database,
+    config: "Config", notifier: "Notifier",
+) -> None:
+    """РП подтвердил отправку счёта несмотря на предупреждение о дубле."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    await _rp_sinv_finalize(cb.message, state, db, config, notifier, cb.from_user, force=True)  # type: ignore[arg-type]
+
+
 async def _rp_sinv_finalize(
     event_msg: Any,
     state: FSMContext,
@@ -2059,16 +3295,30 @@ async def _rp_sinv_finalize(
     config: Any,
     notifier: Any,
     from_user: Any,
+    force: bool = False,
 ) -> None:
     """Создать задачу SUPPLIER_INVOICE и отправить ГД."""
     data = await state.get_data()
-    await state.clear()
 
     invoice_id = data.get("invoice_id")
     attachments: list[dict[str, Any]] = data.get("attachments", [])
     comment: str = data.get("comment", "")
     sinv_amount: float = float(data.get("sinv_amount") or 0)
     sinv_material_type: str = data.get("sinv_material_type") or "extra_mat"
+
+    # Защита от дублей: тот же счёт + сумма + тип, уже отправленный или
+    # оплаченный, требует явного подтверждения «Всё равно отправить».
+    if not force and invoice_id:
+        dup = await _sinv_duplicate_warning(db, int(invoice_id), sinv_amount, sinv_material_type)
+        if dup:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Всё равно отправить", callback_data="rp_sinv:force")],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="rp_sinv:cancel")],
+            ])
+            await event_msg.answer(dup, reply_markup=kb)
+            return
+
+    await state.clear()
 
     inv = await db.get_invoice(invoice_id) if invoice_id else None
     num = (inv.get("invoice_number") if inv else None) or f"#{invoice_id}"
@@ -2115,19 +3365,25 @@ async def _rp_sinv_finalize(
 
     initiator = await get_initiator_label(db, from_user.id) if from_user else "?"
     mat_label = MATERIAL_TYPE_LABELS.get(sinv_material_type, sinv_material_type)
-    gd_text = (
-        f"💳 <b>Счёт на оплату</b>\n"
-        f"👤 От: {initiator}\n"
-        f"📄 Счёт: №{num}\n"
-        f"💰 Сумма: {sinv_amount:,.0f}₽\n"
-        f"📦 Тип: {mat_label}\n"
-    )
+    from ..utils import format_card_section
+    _items: list[tuple[str, str]] = [
+        ("От", initiator),
+        ("Счёт", f"№{num}"),
+        ("Тип", mat_label),
+    ]
     if inv and inv.get("object_address"):
-        gd_text += f"📍 Объект: {inv['object_address'][:50]}\n"
-    if comment:
-        gd_text += f"💬 {comment}\n"
+        _items.append(("Объект", inv["object_address"][:50]))
     if attachments:
-        gd_text += f"\n📎 Вложений: {len(attachments)}"
+        _items.append(("Вложений", str(len(attachments))))
+    gd_text = format_card_section(
+        emoji="💳",
+        title="Счёт на оплату",
+        total=f"{sinv_amount:,.0f}₽".replace(",", " "),
+        items=_items,
+        footer=("💬", comment) if comment else None,
+        compact=True,
+        width=40,
+    )
 
     from ..keyboards import task_actions_kb
     await notifier.safe_send(
@@ -2143,6 +3399,12 @@ async def _rp_sinv_finalize(
                 await notifier.bot.send_photo(int(gd_id), a["file_id"])
         except Exception:
             log.warning("Failed to send attachment to GD %s", gd_id, exc_info=True)
+
+    try:
+        from ..utils import refresh_recipient_keyboard
+        await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+    except Exception:
+        log.exception("Failed to refresh GD keyboard after invoice_payment task")
 
     await event_msg.answer(
         f"✅ Счёт от поставщика отправлен ГД (счёт №{num}).\n"
@@ -2201,7 +3463,7 @@ async def _show_edo_dashboard(
     counts = await db.count_edo_requests_by_user(user_id)
 
     # #40: Счета в работе для подписания УПД
-    work_invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+    work_invoices = await db.list_invoices_in_work(limit=20, only_regular=True, include_credit=True)
 
     if not requests:
         b = InlineKeyboardBuilder()
@@ -2286,7 +3548,7 @@ async def rp_edo_upd_list(cb: CallbackQuery, db: Database) -> None:
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
-    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+    invoices = await db.list_invoices_in_work(limit=20, only_regular=True, include_credit=True)
     if not invoices:
         await cb.message.answer("✅ Нет счетов в работе.")  # type: ignore[union-attr]
         return
@@ -2474,9 +3736,9 @@ async def rp_invoice_closed(message: Message, state: FSMContext, db: Database) -
     await state.clear()
 
     month_start = _current_month_start()
-    invoices = await db.list_ended_invoices(month_start=month_start, limit=30)
-    total_this_month = await db.count_ended_invoices(month_start=month_start)
-    total_all = await db.count_ended_invoices()
+    invoices = await db.list_ended_invoices(month_start=month_start, limit=30, include_credit=True)
+    total_this_month = await db.count_ended_invoices(month_start=month_start, include_credit=True)
+    total_all = await db.count_ended_invoices(include_credit=True)
 
     if not invoices and total_all == 0:
         b = InlineKeyboardBuilder()
@@ -2521,9 +3783,9 @@ async def rp_invoice_closed_refresh(cb: CallbackQuery, db: Database) -> None:
     await cb.answer("🔄 Обновлено")
 
     month_start = _current_month_start()
-    invoices = await db.list_ended_invoices(month_start=month_start, limit=30)
-    total_this_month = await db.count_ended_invoices(month_start=month_start)
-    total_all = await db.count_ended_invoices()
+    invoices = await db.list_ended_invoices(month_start=month_start, limit=30, include_credit=True)
+    total_this_month = await db.count_ended_invoices(month_start=month_start, include_credit=True)
+    total_all = await db.count_ended_invoices(include_credit=True)
 
     if not invoices:
         b = InlineKeyboardBuilder()
@@ -2551,7 +3813,7 @@ async def rp_invoice_closed_all(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
 
-    invoices = await db.list_ended_invoices(limit=50)
+    invoices = await db.list_ended_invoices(limit=50, include_credit=True)
     if not invoices:
         await cb.message.answer("🏁 Нет закрытых счетов.")  # type: ignore[union-attr]
         return
@@ -2576,45 +3838,27 @@ async def rp_invoice_closed_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    try:
-        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
-    except (ValueError, TypeError):
-        amount_str = f"{inv.get('amount', 0)}₽"
-
-    is_credit = bool(inv.get("is_credit"))
-    payment_label = "🏦 Кред (кредит)" if is_credit else "💳 б/н (безналичный)"
-
-    # Creator info
     creator_label = "—"
     if inv.get("created_by"):
         creator_label = await get_initiator_label(db, int(inv["created_by"]))
 
-    text = (
-        f"🏁 <b>Счёт №{inv['invoice_number']} — ЗАКРЫТ</b>\n\n"
-        f"📍 Адрес: {inv.get('object_address', '-')}\n"
-        f"💰 Сумма: {amount_str}\n"
-        f"💳 Оплата: {payment_label}\n"
-        f"👤 Создал: {creator_label}\n"
-        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
-        f"📅 Закрыт: {(inv.get('updated_at') or '-')[:10]}\n"
-    )
-
-    # Close conditions summary
     conditions = await db.check_close_conditions(invoice_id)
-    c1 = "✅" if conditions["installer_ok"] else "⏳"
-    c2 = "✅" if conditions["edo_signed"] else "⏳"
-    c3 = "✅" if conditions["no_debts"] else "⏳"
-    c4 = "✅" if conditions["zp_approved"] else "⏳"
-    text += (
-        f"\n<b>Условия:</b>\n"
-        f"{c1} 1. Монтажник — Счет ОК\n"
-        f"{c2} 2. ЭДО — подписано\n"
-        f"{c3} 3. Долгов нет\n"
-        f"{c4} 4. ЗП — расчёт ОК\n"
-    )
+    cond_rows = close_condition_core_rows(inv, conditions)
+    cond_rows.append(("✅" if conditions.get("zp_approved") else "⏳", "ЗП — утверждено"))
+    section = ("Условия", [
+        f"{i}. {mark} {label}" for i, (mark, label) in enumerate(cond_rows, 1)
+    ])
 
-    if inv.get("close_comment"):
-        text += f"\n💬 Комментарий: {inv['close_comment']}\n"
+    closed_at = (inv.get("updated_at") or "-")[:10]
+    extra_meta = [f"📅 Закрыт: {closed_at}"]
+
+    text = format_invoice_card_standard(
+        inv=inv,
+        creator_label=creator_label,
+        section=section,
+        comment=inv.get("close_comment") or inv.get("description") or None,
+        extra_meta=extra_meta,
+    )
 
     b = InlineKeyboardBuilder()
     b.button(text="⬅️ Назад к списку", callback_data="rp_closed:refresh")
@@ -3211,14 +4455,23 @@ async def lead_finalize(
     }.get(manager_role, manager_role)
 
     initiator = await get_initiator_label(db, u.id)
-    msg = (
-        f"🎯 <b>Новый лид от РП</b>\n"
-        f"👤 От: {initiator}\n\n"
-        f"👤 Имя: {lead_name}\n"
-        f"📞 Телефон: {lead_phone}\n"
-        f"📍 Адрес: {lead_address}\n"
-        f"📌 Источник: {source}\n"
-    )
+    from ..utils import build_manager_task_card
+    try:
+        msg = await build_manager_task_card(
+            db, task, config.timezone,
+            header_emoji="🎯", header_title="Новый лид от РП",
+            actor_label=initiator,
+        )
+    except Exception:
+        log.exception("lead_to_project: card render failed, fallback")
+        msg = (
+            f"🎯 <b>Новый лид от РП</b>\n"
+            f"👤 От: {initiator}\n\n"
+            f"👤 Имя: {lead_name}\n"
+            f"📞 Телефон: {lead_phone}\n"
+            f"📍 Адрес: {lead_address}\n"
+            f"📌 Источник: {source}\n"
+        )
 
     from ..keyboards import task_actions_kb
     await notifier.safe_send(manager_id, msg, reply_markup=task_actions_kb(task))
@@ -3494,7 +4747,13 @@ async def kp_back_to_list(cb: CallbackQuery, state: FSMContext, db: Database) ->
 
 @router.callback_query(F.data.regexp(r"^kp_resp:yes:\d+$"))
 async def kp_resp_yes(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """РП нажал Да → сразу выбор типа оплаты."""
+    """РП нажал Да → сразу нужная ветка по системе оплаты из задачи.
+
+    Систему оплаты (б/н / кредит) менеджер уже указал при формировании задачи
+    (CheckKpSG → payload is_credit). Повторно у РП НЕ спрашиваем — берём из payload
+    и сразу ведём в соответствующую ветку: кред → номер счёта (банк оформляет доки),
+    б/н → сбор документов.
+    """
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
@@ -3508,10 +4767,30 @@ async def kp_resp_yes(cb: CallbackQuery, state: FSMContext, db: Database) -> Non
     await state.clear()
     await state.update_data(task_id=task_id)
 
-    await cb.message.answer(  # type: ignore[union-attr]
-        "Выберите <b>систему оплаты</b>:",
-        reply_markup=kp_payment_type_kb(task_id),
-    )
+    payload = json.loads(task.get("payload_json") or "{}")
+    is_credit = bool(payload.get("is_credit"))
+
+    if is_credit:
+        # Кред: документы оформляет банк → сразу ввод номера счёта
+        await state.set_state(KpReviewSG.invoice_number)
+        await state.update_data(payment_type="cred", documents=[])
+        await cb.message.answer(  # type: ignore[union-attr]
+            "🏦 <b>Ответ на КП (Кред)</b>\n\n"
+            "Документы не требуются (банк оформляет самостоятельно).\n\n"
+            "Введите <b>номер счёта</b>:",
+        )
+    else:
+        # б/н: сбор документов (Счёт, Договор, Приложение)
+        await state.set_state(KpReviewSG.documents)
+        await state.update_data(payment_type="bn", documents=[])
+        await cb.message.answer(  # type: ignore[union-attr]
+            "📋 <b>Ответ на КП (б/н)</b>\n\n"
+            "Прикрепите готовые документы:\n"
+            "• Счёт\n"
+            "• Договор\n"
+            "• Приложение к договору\n\n"
+            "Отправляйте файлы по одному.",
+        )
 
 
 # ---------- б/н (безналичный) → Документы → Комментарий ----------
@@ -3717,8 +4996,6 @@ async def kp_review_comment(
         else:
             upd["is_credit"] = 0
             upd["status"] = InvoiceStatus.PENDING_PAYMENT
-            if documents:
-                upd["documents_json"] = json.dumps(documents, ensure_ascii=False)
 
         # Фиксация inv_* полей по роли менеджера
         _role_suf = {"manager_kv": "kv", "manager_kia": "kia", "manager_npn": "npn"}.get(manager_role, "")
@@ -3730,6 +5007,30 @@ async def kp_review_comment(
             upd[f"inv_{_role_suf}_date"] = _utcnow().strftime("%Y-%m-%d")
         await db.update_invoice(inv_id, **upd)
 
+        try:
+            await db.audit(
+                actor_id=message.from_user.id,
+                action="invoice_kp_finalized",
+                entity="invoice",
+                entity_id=str(inv_id),
+                payload={
+                    "invoice_number": invoice_number,
+                    "project_id": project_id,
+                    "manager_id": manager_id,
+                    "manager_role": manager_role,
+                    "payment_type": payment_type,
+                    "is_credit": bool(is_credit),
+                    "amount": amount,
+                    "client_name": client_name,
+                    "address": address,
+                    "has_documents": bool(documents),
+                    "source_task_id": task_id,
+                    "comment_present": bool(comment),
+                },
+            )
+        except Exception:
+            log.exception("kp_review_comment: audit() failed for invoice=%s", inv_id)
+
         # Лид → "счет выставлен"
         try:
             await db.update_lead_to_invoice_issued(
@@ -3740,10 +5041,17 @@ async def kp_review_comment(
         except Exception:
             log.warning("Failed to update lead status for project_id=%s", project_id)
 
-    # Mark task as done, update payload with invoice info
+    # Mark task as done, update payload with invoice info + ответ РП (для подсписка у менеджера)
     await db.update_task_status(task_id, TaskStatus.DONE)
+    from ..utils import utcnow as _utcnow_payload, to_iso as _to_iso_payload
     payload["invoice_id"] = inv_id
     payload["invoice_number"] = invoice_number
+    payload["response_documents"] = documents
+    payload["response_comment"] = comment
+    payload["response_payment_type"] = payment_type
+    payload["response_is_credit"] = bool(is_credit)
+    payload["response_finalized_at"] = _to_iso_payload(_utcnow_payload())
+    payload["responder_id"] = message.from_user.id
     await db.conn.execute(
         "UPDATE tasks SET payload_json = ? WHERE id = ?",
         (json.dumps(payload, ensure_ascii=False), task_id),
@@ -3863,6 +5171,19 @@ async def kp_reject_comment(
     # Mark task as rejected
     await db.update_task_status(task_id, TaskStatus.REJECTED)
 
+    # Save РП-response в payload (для подсписка у менеджера)
+    from ..utils import utcnow as _utcnow_payload, to_iso as _to_iso_payload
+    payload["response_documents"] = []
+    payload["response_comment"] = comment
+    payload["response_rejected"] = True
+    payload["response_finalized_at"] = _to_iso_payload(_utcnow_payload())
+    payload["responder_id"] = message.from_user.id
+    await db.conn.execute(
+        "UPDATE tasks SET payload_json = ? WHERE id = ?",
+        (json.dumps(payload, ensure_ascii=False), task_id),
+    )
+    await db.conn.commit()
+
     # Update invoice status
     if invoice_id:
         await db.update_invoice(invoice_id, status=InvoiceStatus.REJECTED)
@@ -3942,36 +5263,18 @@ async def kp_issued_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    is_credit = bool(inv.get("is_credit"))
-    payment_label = "🏦 Кред (кредит)" if is_credit else "💳 б/н (безналичный)"
+    creator_label = "—"
+    if inv.get("created_by"):
+        creator_label = await get_initiator_label(db, int(inv["created_by"]))
 
-    status_label = _invoice_status_label(inv.get("status"))
-
-    try:
-        amount_str = f"{float(inv.get('amount', 0)):,.0f}₽"
-    except (ValueError, TypeError):
-        amount_str = f"{inv.get('amount', 0)}₽"
-
-    text = (
-        f"📄 <b>Счёт №{inv['invoice_number']}</b>\n\n"
-        f"📍 Адрес: {inv.get('object_address', '-')}\n"
-        f"💰 Сумма: {amount_str}\n"
-        f"💳 Оплата: {payment_label}\n"
-        f"📊 Статус: {status_label}\n"
-        f"📅 Создан: {inv.get('created_at', '-')[:10]}\n"
+    # kp_issued — без ЗП-условия (счёт ещё не закрыт, ЗП не релевантна на этом этапе).
+    section = await build_invoice_section(db, inv, invoice_id, include_zp=False)
+    text = format_invoice_card_standard(
+        inv=inv,
+        creator_label=creator_label,
+        section=section,
+        comment=inv.get("description") or None,
     )
-
-    if not is_credit:
-        conditions = await db.check_close_conditions(invoice_id)
-        c1 = "✅" if conditions["installer_ok"] else "⏳"
-        c2 = "✅" if conditions["edo_signed"] else "⏳"
-        c3 = "✅" if conditions["no_debts"] else "⏳"
-        text += (
-            f"\n<b>Условия закрытия:</b>\n"
-            f"{c1} 1. Монтажник — Счет ОК\n"
-            f"{c2} 2. ЭДО — подписано\n"
-            f"{c3} 3. Долгов нет\n"
-        )
 
     b = InlineKeyboardBuilder()
     b.button(text="⬅️ Назад к списку", callback_data="kp_resp:issued")

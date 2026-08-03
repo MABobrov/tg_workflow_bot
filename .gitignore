@@ -31,3 +31,19 @@ logs/security/
 
 # Claude Code local config
 CLAUDE.local.md
+
+# --- Бэкапы правок (добавлено 2026-08-03) ---
+*.bak
+*.bak-*
+*.bak.*
+.bak-pre-*/
+.env.bak*
+_bak_archive/
+
+# --- Одноразовые скрипты и отчёты в корне репозитория ---
+/_*.py
+/ft_*.txt
+/=
+
+# --- Локальный тулинг ---
+.claude/

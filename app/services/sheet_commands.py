@@ -19,20 +19,30 @@ Triggered fields (no command column, just field changes):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 from typing import Any
 
 from ..db import Database
 from ..enums import (
+    InvoiceStatus,
+    MontazhStage,
     Role,
     TaskStatus,
     TaskType,
 )
 from ..services.assignment import resolve_default_assignee
-from ..utils import refresh_recipient_keyboard, utcnow, to_iso
+from ..utils import format_cost_card, refresh_recipient_keyboard, utcnow, to_iso
+from ..utils import credit_zp_montazh_unpaid
 
 log = logging.getLogger(__name__)
+
+# Serializes ОП-row imports across cron + manual sync button so two
+# concurrent runs cannot fire duplicate side-effects (notify/audit/ZP)
+# on the same credit invoice. Webhook path is per-invoice and rare,
+# does not take this lock.
+_OP_SYNC_LOCK = asyncio.Lock()
 
 # --- Command registry ---
 
@@ -90,6 +100,7 @@ async def process_sheet_webhook(
     config: Any,
     notifier: Any,
     sheets_service: Any | None = None,
+    integrations: Any | None = None,
 ) -> dict[str, Any]:
     """Main entry point for processing webhook from Google Sheets.
 
@@ -118,9 +129,9 @@ async def process_sheet_webhook(
             return {"status": "error", "detail": "invoice_number is required"}
         return await _handle_command(data, inv_num, db, config, notifier)
     elif event_type == "field_change":
-        return await _handle_field_change(data, inv_num, db, config, notifier)
+        return await _handle_field_change(data, inv_num, db, config, notifier, integrations)
     elif event_type == "data_sync":
-        return await _handle_data_sync(data, inv_num, db, sheets_service)
+        return await _handle_data_sync(data, inv_num, db, sheets_service, integrations, notifier, config)
     elif event_type == "search":
         return await _handle_search(data, db, sheets_service)
     else:
@@ -461,6 +472,7 @@ async def _handle_field_change(
     db: Database,
     config: Any,
     notifier: Any,
+    integrations: Any | None = None,
 ) -> dict[str, Any]:
     """Process field changes from the sheet."""
     invoice = await db.get_invoice_by_number(inv_num)
@@ -522,6 +534,13 @@ async def _handle_field_change(
         except (TypeError, ValueError):
             new_debt_val = 0
         await db.update_invoice(int(invoice["id"]), outstanding_debt=new_debt_val)
+        # Кредит-приход (п.3 2026-06-12): гашение долга по is_credit-счёту → строка
+        # истории движений кошелька (метод гардит is_credit + только уменьшение).
+        await db.record_credit_debt_payment(
+            invoice, old_debt, new_debt_val, source="sheet_command",
+        )
+        # ч.3.2: гашение долга (ручная правка AE) → авто-закрыть fixup «no_debts»
+        await db.resolve_invoice_end_fixups(int(invoice["id"]))
         result = await _field_debt_changed(
             invoice, old_debt, new_debt_val, db, config, notifier, source,
         )
@@ -561,9 +580,176 @@ async def _handle_field_change(
         if result:
             actions.append(result)
 
+    # --- Actual completion date (Импорт ОП!J) → auto-close credit invoice ---
+    fact_date = changed.get("actual_completion_date")
+    if fact_date and source == "op":
+        invoice_fresh = await db.get_invoice_by_number(inv_num) or invoice
+        closed = await _auto_close_credit_invoice(
+            invoice=invoice_fresh,
+            fact_date=str(fact_date),
+            db=db,
+            integrations=integrations,
+            notifier=notifier,
+            config=config,
+        )
+        if closed:
+            actions.append("auto_close_credit")
+
     if not actions:
         return {"status": "ok", "action": "no_changes"}
     return {"status": "ok", "actions": actions}
+
+
+async def _auto_close_credit_invoice(
+    invoice: dict[str, Any],
+    fact_date: str,
+    db: Database,
+    integrations: Any,
+    notifier: Any,
+    config: Any,
+    *,
+    force: bool = False,
+) -> bool:
+    """Auto-close a credit invoice when «Дата Факт» (Импорт ОП!J) is filled.
+
+    Mirrors the manual InvoiceEndSG finalize in manager_new.py:1511-1584,
+    minus the 4-conditions check (not relevant for credit invoices) and UI.
+    Returns True if the invoice was closed, False otherwise.
+
+    force=True bypasses the status==ENDED guard — used by force_close_half_state.py
+    to re-emit missing side-effects for invoices that ended via raw db.import
+    without going through the full side-effects chain.
+    """
+    if not invoice:
+        log.warning("auto_close_credit: no invoice")
+        return False
+    if not invoice.get("is_credit"):
+        log.debug("auto_close_credit: skip non-credit invoice %s", invoice.get("invoice_number"))
+        return False
+    if not force and invoice.get("status") == InvoiceStatus.ENDED:
+        log.debug("auto_close_credit: invoice %s already ended", invoice.get("invoice_number"))
+        return False
+    if not fact_date:
+        log.debug("auto_close_credit: empty fact_date for %s, no-op", invoice.get("invoice_number"))
+        return False
+    # owner 2026-07-03: кредит закрывается в «Счет End» ТОЛЬКО когда ЗП монтаж
+    # выплачена. Пока не выплачена — «Дата Факт» НЕ форсит закрытие, счёт остаётся
+    # «Счет ОК». Закрытие до-сработает при выплате ЗП (td.gd_zp_payment_upload).
+    # force=True (force_close_half_state.py) обход сохранён.
+    if not force and credit_zp_montazh_unpaid(invoice):
+        log.info(
+            "auto_close_credit: %s — ЗП монтаж не выплачена (%s), оставляем «Счет ОК»",
+            invoice.get("invoice_number"), invoice.get("zp_installer_status"),
+        )
+        return False
+
+    invoice_id = int(invoice["id"])
+    invoice_number = str(invoice["invoice_number"])
+
+    # 1. Status + montazh stage + closure flags (no_debts/installer_ok).
+    # Для credit-flow бухгалтерия не участвует, поэтому edo_signed остаётся
+    # как есть. Но `no_debts` и `installer_ok` обязаны выставиться, иначе
+    # листовая логика _credit_fully_closed (и UI «В работе» / «Монтажник ОК»)
+    # покажет счёт незакрытым даже после auto-close.
+    await db.update_invoice_status(invoice_id, InvoiceStatus.ENDED)
+    await db.update_montazh_stage(invoice_id, MontazhStage.INVOICE_END)
+    if not invoice.get("installer_ok"):
+        try:
+            await db.set_invoice_installer_ok(invoice_id, ok=True)
+        except Exception:
+            log.exception("auto_close_credit: set_installer_ok failed for %s", invoice_number)
+    if not invoice.get("no_debts"):
+        try:
+            await db.set_invoice_no_debts(invoice_id, no_debts=True)
+        except Exception:
+            log.exception("auto_close_credit: set_no_debts failed for %s", invoice_number)
+
+    # 2. Sheets sync (status writeback to ОП + row re-export with cost_card → BF/BG/BL/BN/BO/Y)
+    if integrations is not None:
+        await integrations.sync_invoice_status(
+            invoice_number, InvoiceStatus.ENDED, MontazhStage.INVOICE_END,
+        )
+        await integrations.sync_invoice_row(invoice_id)
+    else:
+        log.warning("auto_close_credit: integrations is None, skip Sheets sync for %s", invoice_number)
+
+    # 3. Close related INVOICE_END_REQUEST tasks
+    linked_tasks = await db.search_tasks_by_payload(
+        field="invoice_id",
+        value=str(invoice_id),
+        type_filter=[TaskType.INVOICE_END_REQUEST],
+        limit=20,
+    )
+    for linked_task in linked_tasks:
+        if linked_task.get("status") in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+            updated_task = await db.update_task_status(int(linked_task["id"]), TaskStatus.DONE)
+            if integrations is not None:
+                await integrations.sync_task(updated_task, project_code="")
+
+    # 4. ЗП замерщика НЕ помечаем 'requested' автоматически при закрытии —
+    #    её запрашивает сам замерщик (feedback_zp_request_initiated_by_role).
+
+    # 5. Audit-log (gap INV-01, partial coverage)
+    try:
+        await db.audit(
+            actor_id=None,
+            action="invoice_auto_closed",
+            entity="invoice",
+            entity_id=str(invoice_id),
+            payload={
+                "trigger": "force_fixup" if force else "sheets_date_fact",
+                "fact_date": fact_date,
+                "invoice_number": invoice_number,
+                "is_credit": True,
+            },
+        )
+    except Exception:
+        log.exception("auto_close_credit: audit() failed for %s", invoice_number)
+
+    # 6. Cost-card breakdown + margin → ОП
+    cost_data: dict[str, Any] = {}
+    try:
+        cost_data = await db.get_full_invoice_cost_card(invoice_id)
+    except Exception:
+        log.debug("auto_close_credit: get_full_invoice_cost_card failed for %s", invoice_number, exc_info=True)
+
+    if integrations is not None and getattr(integrations, "sheets", None) and cost_data:
+        margin_pct = cost_data.get("margin_pct", 0)
+        try:
+            await integrations.sheets.write_field_to_op(
+                invoice_number, "margin_pct", f"{margin_pct:.1f}",
+            )
+        except Exception:
+            log.warning("auto_close_credit: failed to write margin to ОП for %s", invoice_number, exc_info=True)
+
+    # 7. Notify (manager + РП). Бухгалтерии не сообщаем — для credit-счетов
+    # информация по документообороту ей не предоставляется (бизнес-правило).
+    msg = (
+        f"🏁 <b>Счёт №{invoice_number}</b> (кредит) — автоматически закрыт.\n"
+        f"📅 Дата факт: {fact_date}\n"
+        f"⚡ Триггер: Импорт ОП → колонка «Дата Факт»"
+    )
+    creator_id = invoice.get("created_by")
+    rp_id = await resolve_default_assignee(db, config, Role.RP)
+
+    sent_to: set[int] = set()
+    for target_id in (creator_id, rp_id):
+        if target_id and int(target_id) not in sent_to:
+            await notifier.safe_send(int(target_id), msg)
+            sent_to.add(int(target_id))
+
+    # 8. Cost-card breakdown to manager (mirrors manager_new.py:1562-1566)
+    if creator_id and cost_data:
+        try:
+            cost_msg = format_cost_card(invoice, cost_data)
+            await notifier.safe_send(int(creator_id), cost_msg)
+        except Exception:
+            log.warning("auto_close_credit: failed to send cost_card to %s", creator_id, exc_info=True)
+
+    log.info(
+        "Auto-closed credit invoice %s (id=%s) on date_fact=%s", invoice_number, invoice_id, fact_date,
+    )
+    return True
 
 
 async def _field_reassign_manager(
@@ -822,28 +1008,194 @@ def _format_search_result(inv: dict[str, Any]) -> str:
 
 # --- Data sync (full row import) ---
 
+async def import_op_row_with_autoclose(
+    row_data: dict[str, Any],
+    db: Database,
+    integrations: Any,
+    notifier: Any,
+    config: Any,
+) -> dict[str, Any]:
+    """Import one ОП row + trigger _auto_close_credit_invoice if newly closed credit.
+
+    Single source of truth for the per-row "import + side-effects gate" logic.
+    Used by the webhook path (_handle_data_sync) and the polling path
+    (sheets_sync.import_from_source_sheet) so cron + manual button + live
+    webhook converge to identical semantics.
+
+    Auto-close fires only when *all* of the following hold:
+      - row has a non-empty actual_completion_date
+      - the invoice existed in the DB before import (`pre` is not None)
+      - it was is_credit=1 and not yet ENDED
+      - it had no actual_completion_date before this import (genuine transition)
+      - integrations + notifier + config are wired
+
+    Brand-new credit rows arriving with the fact-date already filled are
+    treated as backfill, not as a "close" event, and skip the side-effects.
+
+    Returns: {invoice_number, invoice_id, imported: bool, closed: bool,
+    error: str|None}.
+    """
+    inv_num = str(row_data.get("invoice_number") or "").strip()
+    if not inv_num:
+        return {
+            "invoice_number": "",
+            "invoice_id": None,
+            "imported": False,
+            "closed": False,
+            "error": "no invoice_number",
+        }
+
+    try:
+        pre = await db.get_invoice_by_number(inv_num)
+    except Exception as e:
+        log.exception("import_op_row: get pre-snapshot failed for %s", inv_num)
+        return {
+            "invoice_number": inv_num,
+            "invoice_id": None,
+            "imported": False,
+            "closed": False,
+            "error": f"pre_lookup: {e}",
+        }
+
+    was_credit = bool(pre and pre.get("is_credit"))
+    was_already_ended = bool(pre and pre.get("status") == InvoiceStatus.ENDED)
+    had_fact_date_before = bool(pre and pre.get("actual_completion_date"))
+
+    try:
+        inv_id = await db.import_invoice_from_sheet(row_data)
+    except Exception as e:
+        log.warning("import_op_row: import failed for %s", inv_num, exc_info=True)
+        return {
+            "invoice_number": inv_num,
+            "invoice_id": None,
+            "imported": False,
+            "closed": False,
+            "error": f"import: {e}",
+        }
+
+    if inv_id is None:
+        return {
+            "invoice_number": inv_num,
+            "invoice_id": None,
+            "imported": False,
+            "closed": False,
+            "error": "import returned None",
+        }
+
+    fact_date = row_data.get("actual_completion_date")
+
+    if not (
+        fact_date
+        and pre
+        and was_credit
+        and not was_already_ended
+        and not had_fact_date_before
+        and integrations is not None
+        and notifier is not None
+        and config is not None
+    ):
+        return {
+            "invoice_number": inv_num,
+            "invoice_id": inv_id,
+            "imported": True,
+            "closed": False,
+            "error": None,
+        }
+
+    # Restore is_credit if the import erased it (incomplete-row edge case).
+    try:
+        post = await db.get_invoice(inv_id)
+        if post and not post.get("is_credit"):
+            await db.update_invoice(inv_id, is_credit=True)
+    except Exception:
+        log.warning("import_op_row: failed to restore is_credit for %s", inv_num, exc_info=True)
+
+    # Pre-import snapshot bypasses the auto-derived status==ENDED inside the
+    # close routine. Patch id so a brand-new INSERT still resolves correctly.
+    pre_for_close = dict(pre)
+    pre_for_close["id"] = inv_id
+    pre_for_close["is_credit"] = True
+
+    try:
+        closed = await _auto_close_credit_invoice(
+            invoice=pre_for_close,
+            fact_date=str(fact_date),
+            db=db,
+            integrations=integrations,
+            notifier=notifier,
+            config=config,
+        )
+        return {
+            "invoice_number": inv_num,
+            "invoice_id": inv_id,
+            "imported": True,
+            "closed": bool(closed),
+            "error": None,
+        }
+    except Exception as e:
+        log.exception("import_op_row: auto_close failed for %s", inv_num)
+        return {
+            "invoice_number": inv_num,
+            "invoice_id": inv_id,
+            "imported": True,
+            "closed": False,
+            "error": f"auto_close: {e}",
+        }
+
+
 async def _handle_data_sync(
     data: dict[str, Any],
     inv_num: str,
     db: Database,
     sheets_service: Any | None,
+    integrations: Any | None = None,
+    notifier: Any | None = None,
+    config: Any = None,
 ) -> dict[str, Any]:
-    """Import a single row of data from the sheet into the bot DB."""
+    """Import a single row of data from the sheet into the bot DB.
+
+    Thin wrapper around import_op_row_with_autoclose: resolves the incoming
+    webhook payload (parsed row OR fallback fields) into a dict, then defers.
+    """
     row_values = data.get("row")
+    parsed: dict[str, Any] | None = None
+
     if row_values and sheets_service:
         parsed = sheets_service.parse_op_row_from_webhook(row_values)
-        if parsed:
-            inv_id = await db.import_invoice_from_sheet(parsed)
-            return {"status": "ok", "action": "data_sync", "invoice_id": inv_id}
 
-    # Fallback: import from changed_fields directly
-    fields = data.get("fields", {})
-    if fields:
-        fields["invoice_number"] = inv_num
-        inv_id = await db.import_invoice_from_sheet(fields)
-        return {"status": "ok", "action": "data_sync", "invoice_id": inv_id}
+    if not parsed:
+        fields = data.get("fields", {})
+        if fields:
+            parsed = dict(fields)
 
-    return {"status": "ok", "action": "data_sync", "detail": "no data to import"}
+    if not parsed:
+        return {"status": "ok", "action": "data_sync", "detail": "no data to import"}
+
+    if not parsed.get("invoice_number"):
+        parsed["invoice_number"] = inv_num
+
+    result = await import_op_row_with_autoclose(
+        parsed, db=db, integrations=integrations, notifier=notifier, config=config,
+    )
+
+    if not result["imported"]:
+        return {
+            "status": "ok",
+            "action": "data_sync",
+            "detail": result["error"] or "import skipped",
+        }
+
+    actions: list[str] = ["data_sync"]
+    if result["closed"]:
+        actions.append("auto_close_credit")
+    if result["error"]:
+        return {
+            "status": "error",
+            "actions": actions,
+            "invoice_id": result["invoice_id"],
+            "detail": result["error"],
+        }
+    return {"status": "ok", "actions": actions, "invoice_id": result["invoice_id"]}
 
 
 # --- Statistics commands (GD from "Общая" sheet) ---
@@ -1103,7 +1455,7 @@ async def _cmd_stats_zp_pending(
         "  i.estimated_materials, i.estimated_glass, i.estimated_profile, "
         "  i.estimated_installation, i.estimated_loaders, "
         "  i.estimated_logistics, i.actual_logistics, "
-        "  i.client_source, i.profit_tax, i.nds_amount "
+        "  i.client_source, i.profit_tax, i.nds_amount, i.is_credit "
         "FROM invoices i "
         "WHERE i.parent_invoice_id IS NULL "
         "  AND (i.zp_installer_status = 'requested' "
@@ -1141,11 +1493,20 @@ async def _cmd_stats_zp_pending(
         est_load = r["estimated_loaders"] or 0
         est_log = _effective_logistics_cost(r["estimated_logistics"], r["actual_logistics"])
         est_total = est_mat + est_inst + est_load + est_log
-        # НДС: 22/122 (выход - вход)
-        refundable = est_mat + est_log
-        output_vat = amount * 22 / 122 if amount > 0 else 0
-        input_vat = refundable * 22 / 122 if refundable > 0 else 0
-        net_vat = output_vat - input_vat
+        # НДС: 22/122 (выход - вход). Кредитные счета → НДС = 0 (зеркало факт-стороны
+        # get_full_invoice_cost_card; иначе плановая прибыль кредита занижается → rp_zp
+        # занижен). user 2026-06-19. База возврата = МАТЕРИАЛЫ (вкл. legacy
+        # estimated_materials), БЕЗ логистики — по формуле листа AZ «Налоги факт»
+        # (металл+стекло для новых; mat_and_suppliers для legacy, логистики там нет).
+        # Логистика убрана 2026-06-20 (user одобрил «убрать доставку»); display-only,
+        # на реальную выплату РП (лист, столбец T rp_10_pct_op) не влияет.
+        if r["is_credit"]:
+            net_vat = 0.0
+        else:
+            refundable = est_mat  # материалы (вкл. legacy), БЕЗ логистики — формула AZ
+            output_vat = amount * 22 / 122 if amount > 0 else 0
+            input_vat = refundable * 22 / 122 if refundable > 0 else 0
+            net_vat = output_vat - input_vat
         est_profit = amount - est_total - net_vat
         rp_zp = est_profit * 0.10 if est_profit > 0 else 0
         if rp_zp > 0:

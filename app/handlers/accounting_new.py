@@ -34,7 +34,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import AccDocCommentSG, AccQuestionSG, AccRequestToManagerSG, EdoResponseSG
-from ..utils import answer_service, get_initiator_label, private_only_reply_markup
+from ..utils import answer_service, fmt_money, format_invoice_card_standard, get_initiator_label, private_only_reply_markup
 from ._mirror import mirror_attachment
 from .auth import require_role_callback, require_role_message
 
@@ -155,45 +155,9 @@ async def acc_sync_data(message: Message, db: Database, config: Config) -> None:
         return
     user_id = message.from_user.id  # type: ignore[union-attr]
 
-    # Собираем статистику
-    invoices_work = await db.list_invoices_in_work(limit=500, only_regular=True)
-    all_ended = await db.list_invoices(status=InvoiceStatus.ENDED, limit=500, only_regular=True)
-    # ended без документов → в работе для бухгалтерии
-    ended_no_docs = [inv for inv in all_ended if not _is_fully_documented(inv)]
-    ended_ok = [inv for inv in all_ended if _is_fully_documented(inv)]
-    work_ids = {inv["id"] for inv in invoices_work}
-    for inv in ended_no_docs:
-        if inv["id"] not in work_ids:
-            invoices_work.append(inv)
-
-    tasks = await db.list_tasks_for_user(user_id, limit=100)
-    unconfirmed = [t for t in tasks if not t.get("accepted_at")]
-
-    # Документы без подписания
-    docs_pending = sum(1 for inv in invoices_work if not _is_fully_documented(inv))
-
-    # Просроченные сроки
-    overdue = 0
-    for inv in invoices_work:
-        dl = inv.get("deadline_end_date")
-        if dl:
-            try:
-                end = datetime.fromisoformat(dl).date()
-                if (end - date.today()).days < 0:
-                    overdue += 1
-            except (ValueError, TypeError):
-                pass
-
-    text = (
-        "🔄 <b>Синхронизация данных</b>\n\n"
-        f"📊 Счетов в работе: <b>{len(invoices_work)}</b>\n"
-        f"🏁 Полностью закрытых: <b>{len(ended_ok)}</b>\n"
-        f"📋 ended без документов: <b>{len(ended_no_docs)}</b>\n"
-        f"📥 Непринятых задач: <b>{len(unconfirmed)}</b>\n"
-        f"📋 Документы не заполнены: <b>{docs_pending}</b>\n"
-        f"🔴 Просрочено сроков: <b>{overdue}</b>\n\n"
-        "✅ Меню обновлено."
-    )
+    # Стартовая карточка бухгалтерии (эталон) — единый вид с /start и /menu.
+    # Read-only витрина; «Синхронизация» = обновить меню + показать сводку. user 2026-06-14.
+    text = await build_acc_start_card_text(db, user_id)
 
     is_admin = user_id in (config.admin_ids or set())
     unread = await db.count_unread_tasks(user_id)
@@ -256,97 +220,67 @@ def _doc_status_line(edo_signed: bool, originals_holder: str | None) -> str:
 
 
 async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
-    """Build a <pre> card for one invoice (accounting view)."""
-    num = inv.get("invoice_number") or f"#{inv['id']}"
-    status_label = {
-        "pending": "⏳ Ожидание", "in_progress": "🔄 В работе", "paid": "✅ Оплачен",
-        "on_hold": "⏸ На паузе", "closing": "📌 Закрытие", "ended": "🏁 Закрыт",
-        "credit": "💳 Кредит",
-    }.get(inv.get("status", ""), inv.get("status") or "—")
+    """Карточка счёта для бухгалтерии — эталон card-template-standard + блок «Документы».
 
-    try:
-        amt = f"{float(inv.get('amount', 0)):,.0f}₽"
-    except (ValueError, TypeError):
-        amt = "—"
+    Используется в «Счета в работе» (acc_invoices_work_view) и в acc_work:incomplete.
+    """
+    creator_label = "—"
+    if inv.get("created_by"):
+        base = await get_initiator_label(db, int(inv["created_by"]))
+        role_short = {
+            "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+        }.get(inv.get("creator_role", ""), "")
+        creator_label = f"{base} ({role_short})" if role_short else base
+
+    extra_meta: list[str] = []
 
     debt_val = inv.get("outstanding_debt")
     try:
-        debt = f"{float(debt_val):,.0f}₽" if debt_val else "0₽"
+        debt_f = float(debt_val) if debt_val else 0.0
     except (ValueError, TypeError):
-        debt = "0₽"
+        debt_f = 0.0
+    if debt_f > 0:
+        extra_meta.append(f"💸 Долг: {fmt_money(debt_f)}")
 
-    creator_label = "—"
-    if inv.get("created_by"):
-        creator_label = await get_initiator_label(db, int(inv["created_by"]))
-    role_label = {
-        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
-    }.get(inv.get("creator_role", ""), inv.get("creator_role") or "")
-
-    address = inv.get("object_address") or "—"
-    client = inv.get("client_name") or "—"
-
-    # Deadline
-    dl_text = "—"
     dl_end = inv.get("deadline_end_date")
     if dl_end:
         try:
             end = datetime.fromisoformat(dl_end).date()
             delta = (end - date.today()).days
             icon = "🔴" if delta < 0 else ("⚠️" if delta <= 7 else "✅")
-            dl_text = f"{end.strftime('%d.%m.%Y')} {icon}"
+            extra_meta.append(f"📅 Срок: {end.strftime('%d.%m.%Y')} {icon}")
         except (ValueError, TypeError):
             pass
 
-    # Docs
-    p_edo = "✅" if inv.get("docs_edo_signed") else "⏳"
-    p_paper = "✅" if inv.get("docs_paper_signed") else "⏳"
-    p_h = inv.get("docs_originals_holder")
-    p_orig = f"✅{_HOLDER_LABELS.get(p_h, '')}" if p_h else "⏳"
-    c_edo = "✅" if inv.get("edo_signed") else "⏳"
-    c_h = inv.get("closing_originals_holder")
-    c_orig = f"✅{_HOLDER_LABELS.get(c_h, '')}" if c_h else "⏳"
-    c_status = inv.get("closing_docs_status") or "—"
-    no_debts = "✅" if inv.get("no_debts") else "❌"
-
-    W = 18  # label width
-    lines = [
-        f"📋 <b>Счёт №{num}</b>",
-        "<pre>",
-        f"{'Статус':{W}s}{status_label}",
-        f"{'Менеджер':{W}s}{creator_label} ({role_label})",
-        f"{'Адрес':{W}s}{address[:30]}",
-        f"{'Клиент':{W}s}{client[:25]}",
-        f"{'Сумма':{W}s}{amt}",
-        f"{'Долг':{W}s}{debt}",
-        f"{'Срок':{W}s}{dl_text}",
-    ]
-
-    # Документы — показываем только подписанные/заполненные
+    # Документы — показываем только заполненные пункты.
     doc_lines: list[str] = []
     if inv.get("docs_edo_signed"):
-        doc_lines.append(f"{'Первичка ЭДО':{W}s}✅")
+        doc_lines.append("✅ Первичка ЭДО")
     if inv.get("docs_paper_signed"):
-        doc_lines.append(f"{'Первичка бумага':{W}s}✅")
+        doc_lines.append("✅ Первичка бумага")
     p_h = inv.get("docs_originals_holder")
     if p_h:
-        doc_lines.append(f"{'Первичка ориг.':{W}s}✅{_HOLDER_LABELS.get(p_h, '')}")
+        doc_lines.append(f"✅ Первичка оригиналы — {_HOLDER_LABELS.get(p_h, '?')}")
     if inv.get("edo_signed"):
-        doc_lines.append(f"{'Вторичка ЭДО':{W}s}✅")
+        doc_lines.append("✅ Вторичка ЭДО")
     c_h = inv.get("closing_originals_holder")
     if c_h:
-        doc_lines.append(f"{'Вторичка ориг.':{W}s}✅{_HOLDER_LABELS.get(c_h, '')}")
+        doc_lines.append(f"✅ Вторичка оригиналы — {_HOLDER_LABELS.get(c_h, '?')}")
     c_status = inv.get("closing_docs_status")
     if c_status:
-        doc_lines.append(f"{'Статус закр.док':{W}s}{c_status}")
+        doc_lines.append(f"📋 Статус закр. документов: {c_status}")
     if inv.get("no_debts"):
-        doc_lines.append(f"{'Долгов нет':{W}s}✅")
+        doc_lines.append("✅ Долгов нет")
 
-    if doc_lines:
-        lines.append(f"{'─' * 32}")
-        lines.extend(doc_lines)
+    section = ("Документы", doc_lines) if doc_lines else None
 
-    lines.append("</pre>")
-    return "\n".join(lines)
+    return format_invoice_card_standard(
+        inv=inv,
+        creator_label=creator_label,
+        section=section,
+        comment=inv.get("description") or None,
+        extra_meta=extra_meta or None,
+    )
 
 
 def _is_fully_documented(inv: dict[str, Any]) -> bool:
@@ -431,13 +365,72 @@ def _build_acc_summary(
     return "\n".join(lines)
 
 
+def _build_acc_work_list_card(
+    invoices: list[dict[str, Any]], title_label: str = "📊 Счета в работе"
+) -> str:
+    """Карточка-список «Счета в работе» — эталон <pre> (user 2026-06-14).
+
+    Колонки: № · Сумма · Адрес(сокр) · Долг. Заменяет прежнюю агрегатную сводку
+    (убрана по требованию user — «старая карточка не нужна»). Read-only витрина.
+    ⛔ Себестоимость/прибыль роли ACCOUNTING запрещены
+    ([[feedback_accounting_no_cost_profit_visibility]]) — здесь только сумма счёта
+    и долг по нему. «Долг» — ПОСЛЕДНЯЯ колонка: «—»/числа переменной ширины не
+    должны сдвигать «Адрес» ([[feedback_card_telegram_pre_alignment]]). Per-row
+    сумма компактна (к/М) как в build_acc_start_card_text; итоги — полным числом.
+    """
+    INDENT = "  "
+    W_NUM, W_SUM, W_ADDR = 7, 5, 6
+
+    def _k(v: float) -> str:
+        if v >= 1_000_000:
+            return f"{v / 1_000_000:.1f}".rstrip("0").rstrip(".") + "М"
+        if v >= 1000:
+            return f"{v / 1000:.0f}к"
+        return f"{v:.0f}"
+
+    def _full(v: float) -> str:
+        return f"{v:,.0f}".replace(",", " ")
+
+    total_amount = 0.0
+    total_debt = 0.0
+    rows: list[str] = []
+    for inv in invoices:
+        try:
+            amt = float(inv.get("amount") or 0)
+        except (ValueError, TypeError):
+            amt = 0.0
+        try:
+            debt = float(inv.get("outstanding_debt") or 0)
+        except (ValueError, TypeError):
+            debt = 0.0
+        total_amount += amt
+        total_debt += debt
+        num = (str(inv.get("invoice_number") or f"#{inv['id']}")[:W_NUM]).rstrip("-")
+        addr = _acc_addr(inv.get("object_address"))
+        debt_s = _k(debt) if debt > 0 else "—"
+        rows.append(
+            INDENT + f"{num:<{W_NUM}} {_k(amt):<{W_SUM}} {addr:<{W_ADDR}} {debt_s}"
+        )
+
+    title = f"<b>{title_label} ━━━ {_full(total_amount)} ₽</b>"
+    head = INDENT + f"{'№':<{W_NUM}} {'Сумма':<{W_SUM}} {'Адрес':<{W_ADDR}} Долг"
+    body = [head] + rows
+    body.append(INDENT + "━" * 17)
+    if total_debt > 0:
+        body.append(f"{INDENT}Итого: {len(invoices)} · долг {_full(total_debt)} ₽")
+    else:
+        body.append(f"{INDENT}Итого: {len(invoices)}")
+    return title + "\n<pre>" + "\n".join(body) + "</pre>"
+
+
 async def _show_acc_invoices_work(
     target: Message | CallbackQuery,
     db: Database,
 ) -> None:
-    """Показать сводку + inline-список счетов в работе для бухгалтерии.
+    """Показать карточку-список + inline-кнопки счетов в работе для бухгалтерии.
 
     Includes ended invoices whose documents are not fully signed.
+    Агрегатная сводка убрана (user 2026-06-14) — на её месте карточка-список.
     """
     invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
 
@@ -453,9 +446,9 @@ async def _show_acc_invoices_work(
         await msg.answer("✅ Нет счетов в работе.")  # type: ignore[union-attr]
         return
 
-    # Сводная карточка
-    summary = _build_acc_summary(invoices)
-    await msg.answer(summary)  # type: ignore[union-attr]
+    # Карточка-список счетов (эталон <pre>); агрегатная сводка убрана (user 2026-06-14).
+    # ⛔ Без себестоимости/прибыли ([[feedback_accounting_no_cost_profit_visibility]]).
+    await msg.answer(_build_acc_work_list_card(invoices))  # type: ignore[union-attr]
 
     # Inline-кнопки счетов
     b = InlineKeyboardBuilder()
@@ -484,6 +477,189 @@ async def _show_acc_invoices_work(
     footer.button(text="⬅️ Назад", callback_data="nav:home")
     footer.adjust(2)
     await msg.answer("—", reply_markup=footer.as_markup())  # type: ignore[union-attr]
+
+
+# =====================================================================
+# СТАРТОВАЯ (WELCOME) КАРТОЧКА БУХГАЛТЕРИИ
+# Показывается при /start, /menu, «🔄 Обновить меню» и кнопке «Синхронизация»
+# (единообразно с менеджером/РП/монтажником). user 2026-06-14.
+# =====================================================================
+
+_RU_VOWELS = set("аеёиоуыэюяАЕЁИОУЫЭЮЯ")
+
+
+def _clip_addr_consonant(name: str) -> str:
+    """Обрезать название улицы до 5–6 букв, ЗАканчивая на согласной (user 2026-06-14).
+
+    Улицы ≤6 букв — целиком. Длиннее: берём 6 букв, если 6-я согласная; иначе 5,
+    если 5-я согласная; иначе ближайшую согласную слева. Гласные на конце избегаем —
+    читаемее («Орджон»/«Гагар»/«Люблин», а не «Орджо»/«Гагари»/«Любли»).
+    """
+    name = (name or "").strip()
+    if len(name) <= 6:
+        return name
+    for L in (6, 5):
+        ch = name[L - 1]
+        if ch.isalpha() and ch not in _RU_VOWELS:
+            return name[:L]
+    for L in (4, 3, 2, 1):
+        ch = name[L - 1]
+        if ch.isalpha() and ch not in _RU_VOWELS:
+            return name[:L]
+    return name[:6]
+
+
+def _acc_addr(addr: Any) -> str:
+    """Улица для карточек бухгалтера: сокр.+согласная; пустую/непарсимую → «—».
+
+    _street(...) для непарсимого адреса возвращает «?» (rp_start_card). В карточках
+    бухгалтера показываем «—» вместо «?» (user 2026-06-14, счёт 26416-1 без
+    распознаваемой улицы). Общий _street НЕ трогаем — его делят карточки РП.
+    """
+    from ..rp_start_card import _street
+
+    s = _clip_addr_consonant(_street(addr, 99))
+    return s if s and s != "?" else "—"
+
+
+async def build_acc_start_card_text(db: Database, user_id: int) -> str:
+    """Стартовая карточка бухгалтерии — таблица счетов в эталонном дизайне (user 2026-06-14).
+
+    Компоновка строки: № счёта · Сумма · Адрес(сокр) · Первичка(значок) · Вторичка
+    (значок) · Менеджер. Значок документов — статусный (✅ готово / ⏳ ждёт):
+    первичка ✅ при docs_edo_signed И docs_originals_holder; вторичка ✅ при
+    edo_signed И closing_originals_holder. Менеджер — имя (Кирилл/Павел/Илья) по
+    created_by, fallback — код роли (КВ/КИА/НПН). Заголовок-эталон + <pre>-тело
+    + легенда снизу.
+
+    Read-only витрина ([[feedback_card_display_only_no_data_writes]]): только читает.
+    Кредит ИСКЛЮЧЁН (only_regular=True, [[feedback_credit_filter_accounting_only]]).
+    Множество счетов = in_work (only_regular) + ended-счета с незаполненными
+    документами (как _show_acc_invoices_work / acc_sync_data). Текст слева,
+    значки-эмодзи ≈ 2 кол ([[feedback_card_telegram_pre_alignment]]).
+    """
+    from ..rp_start_card import _month_now
+
+    invoices = await db.list_invoices_in_work(limit=500, only_regular=True)
+    ended = await db.list_invoices(status=InvoiceStatus.ENDED, limit=500, only_regular=True)
+    work_ids = {inv["id"] for inv in invoices}
+    for inv in ended:
+        if inv["id"] not in work_ids and not _is_fully_documented(inv):
+            invoices.append(inv)
+
+    title = f"<b>📋  Документооборот · {_month_now()}</b>"
+    if not invoices:
+        return title + "\n<pre>   Нет счетов в работе ✅</pre>"
+
+    INDENT = "  "
+    W_NUM, W_SUM, W_ADDR, W_MGR = 7, 5, 6, 6
+
+    # Имена менеджеров — один batch-запрос (created_by → first name), без N+1.
+    creator_ids = {int(inv["created_by"]) for inv in invoices if inv.get("created_by")}
+    names: dict[int, str] = {}
+    if creator_ids:
+        ph = ",".join("?" * len(creator_ids))
+        cur = await db.conn.execute(
+            f"SELECT telegram_id, full_name FROM users WHERE telegram_id IN ({ph})",
+            tuple(creator_ids),
+        )
+        for r in await cur.fetchall():
+            fn = (r["full_name"] or "").strip()
+            names[int(r["telegram_id"])] = fn.split()[0] if fn else ""
+
+    # Запросы документов бухгалтера менеджерам (EDO_REQUEST, source=accounting_request) —
+    # один batch-запрос по всем счетам сразу, без N+1. req_open = есть открытая задача
+    # (менеджер ещё не закрыл); req_any = запрос когда-либо ставился (стадия «подтверждение»).
+    inv_ids = [int(inv["id"]) for inv in invoices]
+    req_open: set[int] = set()
+    req_any: set[int] = set()
+    if inv_ids:
+        ph2 = ",".join("?" * len(inv_ids))
+        cur2 = await db.conn.execute(
+            "SELECT CAST(json_extract(payload_json,'$.invoice_id') AS INTEGER) AS inv_id, status "
+            "FROM tasks "
+            "WHERE type = 'edo_request' "
+            "AND json_extract(payload_json,'$.source') = 'accounting_request' "
+            f"AND CAST(json_extract(payload_json,'$.invoice_id') AS INTEGER) IN ({ph2})",
+            tuple(inv_ids),
+        )
+        for r in await cur2.fetchall():
+            iid = r["inv_id"]
+            if iid is None:
+                continue
+            iid = int(iid)
+            req_any.add(iid)
+            if r["status"] in ("open", "in_progress"):
+                req_open.add(iid)
+
+    _ROLE_CODE = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}
+
+    def _mgr(inv: dict[str, Any]) -> str:
+        cb = inv.get("created_by")
+        if cb and names.get(int(cb)):
+            return names[int(cb)][:W_MGR]
+        return _ROLE_CODE.get(inv.get("creator_role", ""), "—")
+
+    def _doc_prim(inv: dict[str, Any]) -> str:
+        return "✅" if (inv.get("docs_edo_signed") and inv.get("docs_originals_holder")) else "⏳"
+
+    def _doc_clos(inv: dict[str, Any]) -> str:
+        return "✅" if (inv.get("edo_signed") and inv.get("closing_originals_holder")) else "⏳"
+
+    def _sum(inv: dict[str, Any]) -> str:
+        try:
+            v = float(inv.get("amount") or 0)
+        except (ValueError, TypeError):
+            v = 0.0
+        if v >= 1_000_000:
+            return f"{v / 1_000_000:.1f}".rstrip("0").rstrip(".") + "М"
+        if v >= 1000:
+            return f"{v / 1000:.0f}к"
+        return f"{v:.0f}"
+
+    def _doc_state(inv: dict[str, Any]) -> str:
+        """Статус документооборота бухгалтера по счёту — 3 стадии (user 2026-06-14).
+
+        1) открытая задача-запрос менеджеру (ещё не закрыта) → 📨;
+        2) идёт подтверждение (запрос ставился ИЛИ отмечен ≥1 документ) →
+           значки первички+вторички ✅/⏳ (как прежние колонки 1ч/2ч);
+        3) бухгалтер не делал по счёту ничего → —.
+        """
+        iid = int(inv["id"])
+        if iid in req_open:
+            return "📨"
+        any_doc = bool(
+            inv.get("docs_edo_signed")
+            or inv.get("docs_originals_holder")
+            or inv.get("edo_signed")
+            or inv.get("closing_originals_holder")
+        )
+        if iid in req_any or any_doc:
+            return f"{_doc_prim(inv)} {_doc_clos(inv)}"
+        return "—"
+
+    # Колонки: № · Сумма · Адрес · Менеджер · Док (статус б-ра).
+    # «Док» — ПОСЛЕДНЯЯ колонка: её значки переменной ширины (📨 / ✅⏳ / —)
+    # не должны сдвигать «Менеджер» ([[feedback_card_telegram_pre_alignment]]).
+    head = INDENT + f"{'№':<{W_NUM}} {'Сумма':<{W_SUM}} {'Адрес':<{W_ADDR}} {'Менедж':<{W_MGR}} Док"
+    body = [head]
+    for inv in invoices:
+        num = (str(inv.get("invoice_number") or f"#{inv['id']}")[:W_NUM]).rstrip("-")
+        addr = _acc_addr(inv.get("object_address"))
+        body.append(
+            INDENT
+            + f"{num:<{W_NUM}} {_sum(inv):<{W_SUM}} {addr:<{W_ADDR}} "
+            + f"{_mgr(inv):<{W_MGR}} {_doc_state(inv)}"
+        )
+
+    body.append(INDENT + "━" * 17)
+    body.append(f"{INDENT}Итого: {len(invoices)}")
+
+    legend = (
+        f"{INDENT}<i>📨 запрошено у менеджера · — действий нет</i>\n"
+        f"{INDENT}<i>✅/⏳ 1ч первичка · 2ч вторичка (закрывающие)</i>"
+    )
+    return title + "\n<pre>" + "\n".join(body) + "</pre>\n" + legend
 
 
 @router.callback_query(F.data == "acc_work:refresh")
@@ -662,7 +838,7 @@ async def acc_doc_toggle_prim_edo(cb: CallbackQuery, db: Database, notifier: Not
     if not inv:
         return
     new_val = 0 if inv.get("docs_edo_signed") else 1
-    await db.update_invoice(inv_id, docs_edo_signed=new_val)
+    await db.set_invoice_docs_edo_signed(inv_id, bool(new_val), actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     label = "✅ подписано" if new_val else "⏳ не подписано"
     await _notify_manager_doc_change(db, notifier, inv, "Первичка ЭДО", label)
@@ -685,7 +861,7 @@ async def acc_doc_toggle_clos_edo(cb: CallbackQuery, db: Database, notifier: Not
     if not inv:
         return
     new_val = 0 if inv.get("edo_signed") else 1
-    await db.update_invoice(inv_id, edo_signed=new_val)
+    await db.set_invoice_edo_signed(inv_id, signed=bool(new_val), actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     label = "✅ подписано" if new_val else "⏳ не подписано"
     await _notify_manager_doc_change(db, notifier, inv, "Вторичка ЭДО", label)
@@ -751,7 +927,7 @@ async def acc_doc_prim_orig_set(cb: CallbackQuery, db: Database, notifier: Notif
     inv_id = int(parts[3])
     val = parts[4]
     holder = None if val == "none" else val
-    await db.update_invoice(inv_id, docs_originals_holder=holder)
+    await db.set_docs_originals_holder(inv_id, holder, actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     if not inv:
         return
@@ -775,7 +951,7 @@ async def acc_doc_clos_orig_set(cb: CallbackQuery, db: Database, notifier: Notif
     inv_id = int(parts[3])
     val = parts[4]
     holder = None if val == "none" else val
-    await db.update_invoice(inv_id, closing_originals_holder=holder)
+    await db.set_closing_originals_holder(inv_id, holder, actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     if not inv:
         return
@@ -1319,9 +1495,9 @@ async def acc_invoice_end(message: Message, db: Database) -> None:
         await answer_service(message, "🏁 Нет полностью закрытых счетов.", delay_seconds=60)
         return
 
-    # Сводная карточка
-    summary = _build_acc_summary(invoices, title="🏁 Закрытые Счета — сводка")
-    await message.answer(summary)
+    # Карточка-список закрытых счетов — тот же формат, что «Счета в работе» (user 2026-06-14).
+    card = _build_acc_work_list_card(invoices, title_label="🏁 Закрытые счета")
+    await message.answer(card)
 
     # Inline-кнопки счетов
     b = InlineKeyboardBuilder()
@@ -1534,14 +1710,10 @@ async def edo_respond_finalize(
     if response_type == "signed" and invoice_number:
         inv = await db.get_invoice_by_number(invoice_number)
         if inv:
-            from ..utils import utcnow, to_iso
-            _now = to_iso(utcnow())
             if edo_type == "sign_closing":
-                # edo_signed_at пишется внутри set_invoice_edo_signed → колонка 137
-                await db.set_invoice_edo_signed(inv["id"], True)
+                await db.set_invoice_edo_signed(inv["id"], True, actor_id=u.id)
             elif edo_type == "sign_invoice":
-                # docs_edo_signed_at → колонка 94 (первичка)
-                await db.update_invoice(inv["id"], docs_edo_signed=1, docs_edo_signed_at=_now, docs_edo_signed_by=u.id)
+                await db.set_invoice_docs_edo_signed(inv["id"], True, actor_id=u.id)
 
             if edo_type in {"sign_closing", "sign_invoice"}:
                 signed_label = (

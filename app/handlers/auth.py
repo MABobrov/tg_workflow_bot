@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Iterable
 
 from aiogram.filters import BaseFilter
@@ -8,6 +9,8 @@ from aiogram.types import CallbackQuery, Message
 from ..config import Config
 from ..db import Database
 from ..utils import has_any_role, parse_roles
+
+log = logging.getLogger(__name__)
 
 
 class RoleFilter(BaseFilter):
@@ -58,6 +61,10 @@ async def require_role_message(message: Message, db: Database, roles: Iterable[s
         return False
     role_raw = await get_role(db, message.from_user.id)
     if not has_any_role(role_raw, set(roles)):
+        log.warning(
+            "ROLE_DENY message user=%s text=%r role_raw=%r expected=%s",
+            message.from_user.id, (message.text or "")[:80], role_raw, [str(r) for r in roles],
+        )
         await message.answer("⛔️ Нет доступа. Попросите администратора назначить роль или используйте правильный аккаунт.")
         return False
     return True

@@ -14,7 +14,7 @@ from ..db import Database
 from ..enums import Role
 from ..integrations.amocrm import AmoCRMService
 from ..services.notifier import Notifier
-from ..utils import to_iso, utcnow
+from ..utils import format_card_section, format_dt_iso, to_iso, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -23,21 +23,39 @@ EXCLUDED_STATUS_IDS = {143}  # закрыт не реализован — не �
 TERMINAL_STATUS_IDS = {142, 143}  # успешно / закрыт — статус не обновляем
 STATUS_SYNC_INTERVAL = 1800  # 30 minutes
 
-# Оповещения в чат только для этих status_id (Неразобранное + лиды от робота)
-NOTIFY_STATUS_IDS = {58140186, 62065726}
+# Оповещения в чат только для этих status_id (Неразобранное + лиды от робота + Первичный контакт)
+NOTIFY_STATUS_IDS = {58140186, 62065726, 58140190}
 
 
-def _fmt_lead_card(lead_data: dict[str, Any]) -> str:
-    """Format a human-readable lead card for Telegram."""
+def _fmt_lead_card(
+    lead_data: dict[str, Any],
+    *,
+    emoji: str = "🔔",
+    title: str = "Новый лид",
+    extra_items: list[tuple[str, str]] | None = None,
+) -> str:
+    """Эталон-блок лида (один <pre>). emoji/title параметризованы для эскалации.
+
+    extra_items — доп. строки (Дата/Клиент) для карточки эскалации; «Новый лид»
+    в work-chat остаётся без них (extra_items=None).
+    """
     name = lead_data.get("name") or "—"
     price = lead_data.get("price")
     price_str = f"{int(price):,} ₽".replace(",", " ") if price else "—"
     amo_id = lead_data.get("amo_lead_id") or lead_data.get("id", "?")
-    return (
-        f"🔔 <b>Новый лид из amoCRM</b>\n\n"
-        f"📝 Название: {name}\n"
-        f"💰 Бюджет: {price_str}\n"
-        f"🆔 amoCRM ID: <code>{amo_id}</code>\n"
+    items = [
+        ("Название", str(name)),
+        ("Бюджет", price_str),
+        ("amoCRM ID", str(amo_id)),
+    ]
+    if extra_items:
+        items.extend(extra_items)
+    return format_card_section(
+        emoji=emoji,
+        title=title,
+        items=items,
+        compact=True,
+        width=40,
     )
 
 
@@ -131,23 +149,31 @@ async def _escalate_lead(
     notifier: Notifier,
     lead_row: dict[str, Any],
 ) -> None:
-    """Notify RP and GD about unclaimed lead after 15 minutes."""
-    text = (
-        f"⚠️ <b>Лид не взят более {ESCALATION_MINUTES} мин!</b>\n\n"
-        f"{_fmt_lead_card(lead_row)}\n"
-        f"Назначьте менеджера вручную:"
-    )
+    """Notify RP and GD about unclaimed lead after 15 minutes.
+
+    РП — карточка + «Назначьте менеджера вручную:» + кнопки назначения.
+    ГД — только карточка (без надписи и кнопок): назначение делает РП.
+    """
+    _esc_title = f"Лид не взят > {ESCALATION_MINUTES} мин"
+    extra: list[tuple[str, str]] = [
+        ("Дата", format_dt_iso(lead_row.get("created_at"), "Europe/Moscow")),
+    ]
+    _client = (lead_row.get("contact_name") or "").strip()
+    if _client:
+        extra.append(("Клиент", _client))
+    card = _fmt_lead_card(lead_row, emoji="⚠️", title=_esc_title, extra_items=extra)
+    rp_text = f"{card}\nНазначьте менеджера вручную:"
     kb = await _build_assign_kb(db, int(lead_row["id"]))
 
-    # Notify RP users
+    # РП — карточка + надпись + кнопки назначения
     rp_users = await db.find_users_by_role(Role.RP, limit=10)
     for u in rp_users:
-        await notifier.safe_send(u.telegram_id, text, reply_markup=kb)
+        await notifier.safe_send(u.telegram_id, rp_text, reply_markup=kb)
 
-    # Notify GD users
+    # ГД — только карточка (без надписи «Назначьте…» и без кнопок назначения)
     gd_users = await db.find_users_by_role(Role.GD, limit=10)
     for u in gd_users:
-        await notifier.safe_send(u.telegram_id, text, reply_markup=kb)
+        await notifier.safe_send(u.telegram_id, card)
 
     await db.set_lead_escalated(int(lead_row["id"]))
     log.info("Escalated unclaimed lead %s (amo=%s)", lead_row["id"], lead_row["amo_lead_id"])
@@ -196,6 +222,32 @@ def _extract_source(lead: dict[str, Any]) -> str | None:
             if values:
                 return str(values[0].get("value", ""))
     return None
+
+
+async def _refresh_lead_note(
+    db: Database,
+    amocrm: AmoCRMService,
+    amo_id: int,
+    responsible_user_id: int | None,
+) -> bool:
+    """Fetch the responsible manager's latest amoCRM note and store it in DB.
+
+    Returns True if the stored note changed (caller may mark the sheet dirty).
+    Note enrichment must never break lead sync, so amoCRM errors are swallowed.
+    """
+    try:
+        notes = await amocrm.get_lead_notes(amo_id)
+    except Exception:
+        log.exception("Failed to fetch notes for lead amo_id=%s", amo_id)
+        return False
+    text = AmoCRMService.extract_last_note(notes, responsible_user_id)
+    if not text:
+        return False
+    existing = await db.get_lead_by_amo_id(amo_id)
+    if existing and (existing.get("last_note") or "") == text:
+        return False
+    await db.update_lead_note(amo_id, text)
+    return True
 
 
 async def _poll_new_leads(
@@ -254,6 +306,12 @@ async def _poll_new_leads(
             tags_json=tags_json,
             source=source,
         )
+
+        # Sheet «Leads» dirty → throttle loop pushes to Google in ≤60s.
+        await db.mark_sheet_dirty("leads", True)
+
+        # enrich with the responsible manager's latest amoCRM note (Sheet «Примечание»)
+        await _refresh_lead_note(db, amocrm, amo_id, lead.get("responsible_user_id"))
 
         # publish to work chat only for Неразобранное / лиды от робота
         if status_id and int(status_id) in NOTIFY_STATUS_IDS:
@@ -320,9 +378,11 @@ async def _sync_lead_statuses(
 
             # Update status if changed
             local_status = local_lead.get("status_id")
+            changed = False
             if local_status != remote_status:
                 if not (local_status and int(local_status) in TERMINAL_STATUS_IDS):
                     await db.update_lead_status(amo_id, int(remote_status))
+                    changed = True
                     log.info("Lead %s status updated: %s -> %s", amo_id, local_status, remote_status)
 
             # Update source if changed
@@ -330,7 +390,21 @@ async def _sync_lead_statuses(
             local_source = local_lead.get("source")
             if remote_source and remote_source != local_source:
                 await db.update_lead_source(amo_id, remote_source)
+                changed = True
                 log.info("Lead %s source updated: %s -> %s", amo_id, local_source, remote_source)
+
+            # Refresh responsible manager's note for sheet-visible leads. A note
+            # add bumps the lead's updated_at, so it surfaces in this updated_at
+            # window — this is the path that keeps «Примечание» fresh post-creation.
+            eff_status = remote_status if remote_status is not None else local_status
+            if eff_status is None or int(eff_status) not in EXCLUDED_STATUS_IDS:
+                resp_id = lead.get("responsible_user_id") or local_lead.get("responsible_user_id")
+                if await _refresh_lead_note(db, amocrm, amo_id, resp_id):
+                    changed = True
+                await asyncio.sleep(0.2)
+
+            if changed:
+                await db.mark_sheet_dirty("leads", True)
 
         if len(leads) < 50:
             break
@@ -344,9 +418,13 @@ async def lead_poller_loop(
     db: Database,
     amocrm: AmoCRMService,
     notifier: Notifier,
-    interval_seconds: int = 30,
+    interval_seconds: int = 300,
 ) -> None:
     """Background loop: polls amoCRM for new leads and handles escalations.
+
+    Since 2026-05-25 this is a *fallback* for the webhook-driven path
+    (handlers/amocrm_leads_webhook.py). Default cadence relaxed 30s → 300s.
+    Escalation check still runs each tick and is unaffected by webhook latency.
 
     Runs every `interval_seconds` seconds.
     Status sync runs every STATUS_SYNC_INTERVAL seconds (~30 min).

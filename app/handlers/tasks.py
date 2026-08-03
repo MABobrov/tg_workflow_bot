@@ -12,17 +12,18 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from ..callbacks import TaskCb
 from ..config import Config
 from ..db import Database
-from ..enums import InvoiceStatus, ProjectStatus, Role, TaskStatus, TaskType
+from ..enums import InvoiceStatus, MANAGER_ROLES, ProjectStatus, Role, TaskStatus, TaskType
 from ..integrations.minio_storage import MinioStorage
 from ..keyboards import main_menu, manager_project_actions_kb, task_actions_kb
 from ..services.integration_hub import IntegrationHub
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_context import build_main_menu_for_user
-from ..services.menu_scope import resolve_menu_scope
+from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import DeliveryPaymentSG, InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCancelReasonSG, TaskCompleteSG
-from ..utils import answer_service, fmt_task_card, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
+from ..states import CreditPaymentExecuteSG, DeliveryPaymentSG, InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCancelReasonSG, TaskCompleteSG
+from ..utils import answer_service, build_manager_task_open_card, build_rp_zp_family_open_card, build_task_done_card, enrich_task_invoice_label, fmt_task_card, format_invoice_end_financials, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
 from ._mirror import mirror_attachment
+from .money_guard import money_confirm_guard
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -123,8 +124,10 @@ async def _maybe_mark_lead_tracking_response(db: Database, task: dict[str, Any] 
 async def _notify_task_creator_done(
     db: Database,
     notifier: Notifier,
+    config: Config,
     actor_id: int | None,
     task: dict[str, Any] | None,
+    project: dict[str, Any] | None = None,
 ) -> None:
     if not task:
         return
@@ -138,9 +141,17 @@ async def _notify_task_creator_done(
     if actor_id and created_by_int == actor_id:
         return
     initiator = await get_initiator_label(db, actor_id) if actor_id else "Исполнитель"
+    # ТЗ 17.06: человекочитаемая привязка к счёту (№ + адрес) вместо сырого #id.
+    await enrich_task_invoice_label(db, task)
     await notifier.safe_send(
         created_by_int,
-        f"✅ Ваша задача #{task['id']} выполнена\n👤 Исполнитель: {initiator}",
+        build_task_done_card(
+            task,
+            project,
+            config.timezone,
+            title="Задача выполнена",
+            actor_label=initiator,
+        ),
     )
 
 
@@ -218,7 +229,7 @@ def _task_take_text(task: dict[str, Any], project: dict[str, Any] | None) -> str
     return "\n".join(lines)
 
 
-_ACTIONS_BASIC = {"delete", "accept", "open", "take", "reject", "cancel"}
+_ACTIONS_BASIC = {"delete", "accept", "accept_take", "open", "take", "reject", "cancel"}
 
 _ACTIONS_EXTENDED = {
     "pay_ok", "pay_need",
@@ -227,7 +238,118 @@ _ACTIONS_EXTENDED = {
     "del_accept", "del_pay",
     "montazh_yes", "montazh_no", "montazh_comment",
     "done",
+    "invend_ok", "invend_review",
 }
+
+# Денежные типы, у которых generic-«✅ Завершить» закрыл бы задачу МИМО денег: расход в БК
+# пишет и уведомляет РП ТОЛЬКО платёжный флоу «✅ Выплатить» (rp_salary_confirm →
+# db.record_rp_salary_payment; rp_zp_pay_submit → выплата по счетам), а generic-done просто
+# ставит статус. keyboards.py:786-811 таким задачам generic-кнопки не рисует (early-return),
+# но кнопка из СТАРОГО сообщения досюда доходит — ровно так 30.06 в 15:33 «съелась» задача
+# 320 «Оклад РП 2026-07» на 66 000 ₽: ГД нажал три generic-кнопки подряд (accept → take →
+# done), задача ушла в done, а записи «Оклад РП% 2026-07» в op_company_entries нет и никогда
+# не было. Хуже того, повторно запросить оклад РП уже не может: rp_salary_request_start
+# (rp.py:1856) читает done как «уже выплачен». Тот же класс защиты, что гард RECALC_CONFIRM
+# ниже (случай 336/337/338 от 03.07). Ключ — TaskType (StrEnum): хэшируется как str, поэтому
+# строка из БД находится словарём. Сузить/расширить объём = убрать/добавить ключ.
+_DONE_BLOCKED_PAYOUT_TYPES: dict[str, str] = {
+    TaskType.RP_SALARY: (
+        "Закройте кнопкой «✅ Выплатить» — иначе оклад не попадёт в «Баланс компании». "
+        "Откройте задачу заново: «💰 Прочие ЗП» или «📥 Входящие для ГД»."
+    ),
+    TaskType.ZP_RP: (
+        "Закройте кнопкой «✅ Выплатить» — иначе ЗП РП 10% не встанет в счета и РП её не "
+        "увидит. Откройте задачу заново: «💰 Прочие ЗП» или «📥 Входящие для ГД»."
+    ),
+    # Запрос ГД из депозита (добавлен 03.08). Отличие от двух типов выше: у этого
+    # generic-кнопка рисовалась ЖИВОЙ до 03.08 (ветки в keyboards.py не было вовсе),
+    # поэтому дыра сработала на боевых данных 3 раза из 6 — #346/#347/#353. Списание
+    # пишет только шаг «исполнение» (installer_new.py:4842); закрытая мимо него задача
+    # неисполнима навсегда — и обе точки, и _depo_req_finalize требуют IN_PROGRESS.
+    TaskType.GD_DEPOSIT_REQUEST: (
+        "Закройте кнопками запроса: «✅ Подтвердить прочтение» → «✅ Подтвердить "
+        "исполнение» — иначе списание с депозита не пройдёт, а запрос станет "
+        "неисполнимым. Если запрос больше не нужен — «❌ Отклонить». Откройте "
+        "задачу заново из списка задач."
+    ),
+}
+
+# Типы, для которых ветка `done` легитимно уводит в сбор вложений (TaskCompleteSG,
+# см. ниже по файлу). Список ЗАКРЫТЫЙ и нужен как гард в taskcomplete_finalize:
+# 🔴 тот хендлер зарегистрирован БЕЗ StateFilter и берёт task_id из данных FSM.
+# Пока кнопки taskcomplete:* рождались только у DOCS_REQUEST / QUOTE_REQUEST (РП) и
+# CLOSING_DOCS (бухгалтерия), чужой task_id попасть туда не мог: эти роли не ведут
+# денежных флоу, кладущих id в тот же ключ. С добавлением URGENT_GD (03.08) кнопки
+# впервые получает ГД — а он под тем же ключом `task_id` кладёт ДЕНЕЖНУЮ задачу при
+# отклонении оклада РП (td.py:2621, RpSalaryRejectSG). Без этой проверки устаревшая
+# кнопка «⏭ Закрыть без отправки» закрыла бы оклад мимо выплаты — ровно тот класс,
+# что съел задачу 320 на 66 000 ₽. Ключ — TaskType (StrEnum), строка из БД находится.
+_TASKCOMPLETE_ALLOWED_TYPES: frozenset[str] = frozenset({
+    TaskType.DOCS_REQUEST,
+    TaskType.QUOTE_REQUEST,
+    TaskType.CLOSING_DOCS,
+    TaskType.URGENT_GD,
+})
+
+
+async def send_task_open_card(
+    target, db: Database, config: Config, task: dict, viewer_role, project=None,
+) -> None:
+    """Отправить карточку открытой задачи (текст + кнопки действий).
+
+    Общий рендер: используется веткой open в task_actions (клик по задаче) и
+    одиночным показом во «Входящие для ГД» (gd.py, user 04.07 — одна задача →
+    сразу карточка). Вложения НЕ шлёт — их досылает вызывающий при необходимости.
+    [[feedback_card_template_standard]]
+    """
+    await enrich_task_invoice_label(db, task)
+    # ЗП РП 10% / Оклад РП: эталонная карточка запроса (От/счета/Итого/статус) +
+    # кнопки Выплатить/Отклонить — тот же вид, что уведомление РП→ГД и «Прочие ЗП».
+    if task.get("type") in (TaskType.ZP_RP, TaskType.RP_SALARY):
+        # Оклад РП: зачёт выданного аванса считаем ЖИВЬЁМ (ТЗ owner 31.07). Не из payload —
+        # задачи, созданные до правки, ключей про аванс не имеют, а пересоздавать открытую
+        # задачу ради показа нельзя. Ошибка расчёта не должна ронять карточку.
+        advance = None
+        if task.get("type") == TaskType.RP_SALARY:
+            try:
+                _pl = try_json_loads(task.get("payload_json")) or {}
+                _rp_id = int(_pl.get("rp_id") or 0)
+                if _rp_id:
+                    advance = await db.get_rp_oklad_advance_offset(_rp_id)
+            except Exception:
+                log.exception(
+                    "send_task_open_card: расчёт аванса РП не удался task=%s", task.get("id"),
+                )
+        await target.answer(
+            build_rp_zp_family_open_card(task, advance),
+            reply_markup=task_actions_kb(task, viewer_role=viewer_role),
+        )
+        return
+    if project is None and task.get("project_id"):
+        try:
+            project = await db.get_project(int(task["project_id"]))
+        except Exception:
+            project = None
+    if viewer_role in MANAGER_ROLES or viewer_role == Role.MANAGER:
+        text = await build_manager_task_open_card(db, task, config.timezone)
+    else:
+        text = fmt_task_card(task, project, config.timezone)
+        # PART B (ТЗ 19.06): справочный финблок в задаче «Счёт End» — display-only.
+        # Только ГД/ТД (прибыль/себестоимость/ЗП скрыты от прочих ролей).
+        if task.get("type") == TaskType.INVOICE_END_REQUEST and ({Role.GD, Role.TD} & set(parse_roles(viewer_role))):
+            try:
+                _pl = try_json_loads(task.get("payload_json")) or {}
+                _inv_id = int(_pl.get("invoice_id") or 0)
+                if _inv_id:
+                    _inv = await db.get_invoice(_inv_id)
+                    if _inv:
+                        _pf = await db.get_plan_fact_card(_inv_id)
+                        _fin = format_invoice_end_financials(_inv, _pf)
+                        if _fin:
+                            text += "\n\n" + _fin
+            except Exception:
+                log.exception("invend open: financials block failed for task #%s", task.get("id"))
+    await target.answer(text, reply_markup=task_actions_kb(task, viewer_role=viewer_role))
 
 
 @router.callback_query(TaskCb.filter(F.action.in_(_ACTIONS_BASIC)))
@@ -249,6 +371,10 @@ async def task_actions(
         await cb.answer("Задача не найдена или была удалена.", show_alert=True)
         return
     active_statuses = {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}
+
+    # Роль зрителя — нужна task_actions_kb для роль-зависимых кнопок (#4: «Закрыть» для НПН).
+    _viewer_user = await db.get_user_optional(cb.from_user.id) if cb.from_user else None
+    viewer_role = resolve_active_menu_role(cb.from_user.id, _viewer_user.role) if (_viewer_user and cb.from_user) else None
 
     # DELETE — GD (admin) and RP
     if action == "delete":
@@ -282,14 +408,20 @@ async def task_actions(
         task = await db.get_task(task_id)
         await _maybe_mark_lead_tracking_response(db, task)
         if task:
-            await _safe_edit_task_markup(cb.message, reply_markup=task_actions_kb(task))
+            await _safe_edit_task_markup(cb.message, reply_markup=task_actions_kb(task, viewer_role=viewer_role))
         # Notify task creator
         created_by = task.get("created_by") if task else None
         if created_by:
             initiator = await get_initiator_label(db, cb.from_user.id)
+            # ТЗ 17.06: эталонная карточка вместо free-form + ВИДНО какую задачу
+            # приняли (тип / комментарий / счёт). enrich → привязка «КВ N + адрес».
+            await enrich_task_invoice_label(db, task)
             await notifier.safe_send(
                 int(created_by),
-                f"✅ Задача #{task_id} принята\n👤 Исполнитель: {initiator}"
+                build_task_done_card(
+                    task, None, config.timezone,
+                    title="Задача принята", actor_label=initiator,
+                ),
             )
         return
 
@@ -303,8 +435,7 @@ async def task_actions(
     # OPEN: show card + actions
     if action == "open":
         await cb.answer()
-        text = fmt_task_card(task, project, config.timezone)
-        await cb.message.answer(text, reply_markup=task_actions_kb(task))  # type: ignore
+        await send_task_open_card(cb.message, db, config, task, viewer_role, project=project)
 
         # send attachments, if any
         attaches = await db.list_attachments(task_id)
@@ -354,8 +485,48 @@ async def task_actions(
         except Exception:
             log.exception("Failed to update montazh_stage on take")
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
-        await _safe_edit_task_markup(cb.message, reply_markup=task_actions_kb(task))
+        await _safe_edit_task_markup(cb.message, reply_markup=task_actions_kb(task, viewer_role=viewer_role))
         await answer_service(cb.message, _task_take_text(task, project))  # type: ignore[arg-type]
+        return
+
+    # ACCEPT+TAKE — менеджерская единая «Принято» (ТЗ 23.06): принять + взять в
+    # работу (→ IN_PROGRESS) + уведомить постановщика за один тап. Объединяет
+    # семантику accept (нотификация) и take (статус). Только для роли менеджер
+    # (кнопка показывается лишь менеджеру в task_actions_kb).
+    if action == "accept_take":
+        status = task.get("status")
+        if status == TaskStatus.IN_PROGRESS:
+            await cb.answer("Эта задача уже в работе.", show_alert=True)
+            return
+        if status not in active_statuses:
+            await cb.answer("Эта задача уже закрыта.", show_alert=True)
+            return
+        task = await db.update_task_status(
+            task_id, TaskStatus.IN_PROGRESS,
+            expected_statuses=tuple(active_statuses),
+        )
+        if task is None:
+            await cb.answer("Задача уже была обработана.", show_alert=True)
+            return
+        if not task.get("accepted_at"):
+            await db.accept_task(task_id)
+            task = await db.get_task(task_id)
+        await _maybe_mark_lead_tracking_response(db, task)
+        await cb.answer("✅ Принято, взято в работу")
+        await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+        await _safe_edit_task_markup(cb.message, reply_markup=task_actions_kb(task, viewer_role=viewer_role))
+        # Уведомить постановщика (как в accept) — эталонная карточка «Задача принята».
+        created_by = task.get("created_by") if task else None
+        if created_by:
+            initiator = await get_initiator_label(db, cb.from_user.id)
+            await enrich_task_invoice_label(db, task)
+            await notifier.safe_send(
+                int(created_by),
+                build_task_done_card(
+                    task, None, config.timezone,
+                    title="Задача принята", actor_label=initiator,
+                ),
+            )
         return
 
     # REJECT
@@ -748,6 +919,149 @@ async def task_actions_part2(
             )
         return
 
+    # INVOICE_END_REQUEST → ✅ ОК — ГД подтверждает закрытие счёта (status = ended).
+    # Логика по образцу auto_close_credit_invoice (services/sheet_commands.py:600).
+    if action == "invend_ok" and task.get("type") == TaskType.INVOICE_END_REQUEST:
+        if task.get("status") not in active_statuses:
+            await cb.answer("Эта задача уже закрыта.", show_alert=True)
+            return
+        payload = try_json_loads(task.get("payload_json"))
+        invoice_id = payload.get("invoice_id") if payload else None
+        if not invoice_id:
+            await cb.answer("В задаче нет invoice_id.", show_alert=True)
+            return
+        try:
+            invoice_id = int(invoice_id)
+        except (TypeError, ValueError):
+            await cb.answer("Некорректный invoice_id.", show_alert=True)
+            return
+        invoice = await db.get_invoice(invoice_id)
+        if not invoice:
+            await cb.answer("Счёт не найден.", show_alert=True)
+            return
+        invoice_number = str(invoice.get("invoice_number", ""))
+
+        from ..enums import MontazhStage as _MontazhStage
+        await db.update_invoice_status(invoice_id, InvoiceStatus.ENDED)
+        await db.update_montazh_stage(invoice_id, _MontazhStage.INVOICE_END)
+        if not invoice.get("installer_ok"):
+            try:
+                await db.set_invoice_installer_ok(invoice_id, ok=True)
+            except Exception:
+                log.exception("invend_ok: set_installer_ok failed for %s", invoice_number)
+        if not invoice.get("no_debts"):
+            try:
+                await db.set_invoice_no_debts(invoice_id, no_debts=True)
+            except Exception:
+                log.exception("invend_ok: set_no_debts failed for %s", invoice_number)
+
+        try:
+            await integrations.sync_invoice_status(invoice_number, InvoiceStatus.ENDED, _MontazhStage.INVOICE_END)
+            await integrations.sync_invoice_row(invoice_id)
+        except Exception:
+            log.exception("invend_ok: sheets sync failed for %s", invoice_number)
+
+        updated_task = await db.update_task_status(
+            task_id, TaskStatus.DONE,
+            expected_statuses=tuple(active_statuses),
+        )
+        if updated_task is not None:
+            try:
+                await integrations.sync_task(updated_task, project_code="")
+            except Exception:
+                log.exception("invend_ok: sync_task failed for #%s", task_id)
+
+        await db.audit(
+            actor_id=cb.from_user.id if cb.from_user else None,
+            action="invoice_end_confirmed_by_gd",
+            entity="invoice",
+            entity_id=str(invoice_id),
+            payload={"task_id": task_id, "invoice_number": invoice_number},
+        )
+
+        await cb.answer("✅ Счёт переведён в END")
+        try:
+            await _safe_edit_task_markup(cb.message, reply_markup=None)
+        except Exception:
+            pass
+
+        # Уведомить менеджера (creator задачи)
+        creator_id = (updated_task or task).get("created_by")
+        if creator_id:
+            initiator = await get_initiator_label(db, cb.from_user.id)
+            try:
+                await notifier.safe_send(
+                    int(creator_id),
+                    f"🏁 Счёт №{invoice_number} подтверждён ГД как Счёт END\n"
+                    f"👤 От: {initiator}",
+                )
+            except Exception:
+                log.exception("invend_ok: notify creator failed (uid=%s)", creator_id)
+        return
+
+    # INVOICE_END_REQUEST → 🔍 На проверку — ГД просит менеджера перепроверить данные.
+    # Задача остаётся открытой (IN_PROGRESS), менеджер получает уведомление.
+    # payload_json.review_requested=True — маркер для аудита/UI.
+    if action == "invend_review" and task.get("type") == TaskType.INVOICE_END_REQUEST:
+        if task.get("status") not in active_statuses:
+            await cb.answer("Эта задача уже закрыта.", show_alert=True)
+            return
+        payload = try_json_loads(task.get("payload_json")) or {}
+        invoice_id = payload.get("invoice_id")
+        invoice_number = payload.get("invoice_number") or "?"
+
+        # Перевести в IN_PROGRESS, если ещё OPEN.
+        if task.get("status") == TaskStatus.OPEN:
+            try:
+                await db.update_task_status(
+                    task_id, TaskStatus.IN_PROGRESS,
+                    expected_statuses=(TaskStatus.OPEN,),
+                )
+            except Exception:
+                log.exception("invend_review: update_task_status failed for #%s", task_id)
+
+        # Записать маркер «отправлено на проверку» в payload.
+        payload["review_requested"] = True
+        payload["review_requested_by"] = cb.from_user.id if cb.from_user else None
+        import json as _json
+        try:
+            await db.conn.execute(
+                "UPDATE tasks SET payload_json = ? WHERE id = ?",
+                (_json.dumps(payload, ensure_ascii=False), int(task_id)),
+            )
+            await db.conn.commit()
+        except Exception:
+            log.exception("invend_review: payload update failed for #%s", task_id)
+
+        await db.audit(
+            actor_id=cb.from_user.id if cb.from_user else None,
+            action="invoice_end_sent_for_review",
+            entity="task",
+            entity_id=str(task_id),
+            payload={"invoice_id": invoice_id, "invoice_number": invoice_number},
+        )
+
+        # Уведомить менеджера (creator задачи).
+        creator_id = task.get("created_by")
+        if creator_id:
+            initiator = await get_initiator_label(db, cb.from_user.id)
+            try:
+                await notifier.safe_send(
+                    int(creator_id),
+                    f"🔍 ГД отправил Счёт №{invoice_number} на проверку.\n"
+                    f"👤 От: {initiator}\n\n"
+                    f"Проверьте данные счёта и при необходимости отправьте «Счёт End» снова.",
+                )
+            except Exception:
+                log.exception("invend_review: notify creator failed (uid=%s)", creator_id)
+
+        await cb.answer("🔍 Отправлено менеджеру на проверку.")
+        try:
+            await _safe_edit_task_markup(cb.message, reply_markup=None)
+        except Exception:
+            pass
+        return
+
     # ORDER actions (TD) -> accept order or open supplier payment flow
     if action == "pay_supplier" and task.get("type") in {TaskType.ORDER_PROFILE, TaskType.ORDER_GLASS, TaskType.ORDER_MATERIALS}:
         _order_payload = try_json_loads(task.get("payload_json"))
@@ -797,6 +1111,22 @@ async def task_actions_part2(
 
     # INVOICE_PAYMENT — шаг 1: Принять (OPEN → IN_PROGRESS)
     if action == "inv_received" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        # Кредит-заявку нельзя проводить обычной «оплатой поставщику» (читает
+        # material_type → теряет cost_type=montazh, перетирает назначение, не
+        # трогает zp_installer → задвоение ЗП). Перенаправляем на кредит-флоу.
+        _cpr0 = try_json_loads(task.get("payload_json"))
+        if isinstance(_cpr0, dict) and _cpr0.get("kind") == "credit_payment_request":
+            await cb.answer()
+            _b = InlineKeyboardBuilder()
+            _b.button(text="✅ Исполнить", callback_data=f"credit_exec:{task_id}")
+            _b.button(text="❌ Отклонить", callback_data=f"credit_rej:{task_id}")
+            _b.adjust(1)
+            await cb.message.answer(  # type: ignore[union-attr]
+                "⚠️ Это кредит-заявка (расход кошелька). Исполните её кнопкой "
+                "«✅ Исполнить» ниже — обычная «оплата поставщику» здесь не применяется.",
+                reply_markup=_b.as_markup(),
+            )
+            return
         if task.get("status") != TaskStatus.OPEN:
             await cb.answer("Этот счёт уже принят.", show_alert=True)
             return
@@ -812,6 +1142,45 @@ async def task_actions_part2(
         _mat_type = payload.get("material_type") or ""
         # Уведомить РП о принятии
         sender_id = _invoice_task_sender_id(payload)
+        _inv_id_for_audit = payload.get("invoice_id")
+        try:
+            await db.audit(
+                actor_id=cb.from_user.id,
+                action="invoice_received_by_gd",
+                entity="invoice",
+                entity_id=str(_inv_id_for_audit) if _inv_id_for_audit else None,
+                payload={
+                    "invoice_number": _inv_num,
+                    "supplier": payload.get("supplier"),
+                    "amount": _amount,
+                    "material_type": _mat_type,
+                    "task_id": task_id,
+                    "sender_id": sender_id,
+                },
+            )
+        except Exception:
+            log.exception("inv_received: audit() failed for invoice=%s", _inv_id_for_audit)
+        # DS «Затр. Грузчики» (owner 25.07): пишем ПРИ ПРИНЯТИИ задачи в работу,
+        # а не после оплаты. Сумма оплаты совпадает с заявленной (owner), поэтому
+        # на шаге оплаты cost_loaders повторно НЕ прибавляем — метка
+        # ds_cost_applied в payload это гарантирует. Остальные столбцы затрат
+        # (DP/DQ/DR/DT/DU/DV) по-прежнему заполняются при оплате.
+        if _mat_type == "loaders" and _inv_id_for_audit and not payload.get("ds_cost_applied"):
+            try:
+                _amt_ds = float(_amount or 0)
+            except (TypeError, ValueError):
+                _amt_ds = 0.0
+            if _amt_ds > 0:
+                try:
+                    await db.bump_invoice_cost(int(_inv_id_for_audit), "loaders", _amt_ds)
+                    await db.update_task_payload(task_id, {"ds_cost_applied": True})
+                    payload["ds_cost_applied"] = True
+                    await integrations.sync_invoice_row(int(_inv_id_for_audit))
+                except Exception:
+                    log.exception(
+                        "inv_received: DS (cost_loaders) при принятии не записан, inv=%s",
+                        _inv_id_for_audit,
+                    )
         if sender_id:
             from ..enums import MATERIAL_TYPE_LABELS
             _mat_label = MATERIAL_TYPE_LABELS.get(_mat_type, _mat_type)
@@ -843,6 +1212,19 @@ async def task_actions_part2(
 
     # INVOICE_PAYMENT — шаг 2: Подтвердить оплату (вложение + комментарий → закрыть)
     if action == "inv_pay" and task.get("type") == TaskType.INVOICE_PAYMENT:
+        _cpr1 = try_json_loads(task.get("payload_json"))
+        if isinstance(_cpr1, dict) and _cpr1.get("kind") == "credit_payment_request":
+            await cb.answer()
+            _b = InlineKeyboardBuilder()
+            _b.button(text="✅ Исполнить", callback_data=f"credit_exec:{task_id}")
+            _b.button(text="❌ Отклонить", callback_data=f"credit_rej:{task_id}")
+            _b.adjust(1)
+            await cb.message.answer(  # type: ignore[union-attr]
+                "⚠️ Это кредит-заявка (расход кошелька). Исполните её кнопкой "
+                "«✅ Исполнить» ниже — обычная оплата поставщику здесь не применяется.",
+                reply_markup=_b.as_markup(),
+            )
+            return
         if task.get("status") != TaskStatus.IN_PROGRESS:
             await cb.answer("Сначала примите счёт.", show_alert=True)
             return
@@ -854,15 +1236,43 @@ async def task_actions_part2(
         await state.clear()
         await state.set_state(InvoicePaymentSG.attaching_pp)
         await state.update_data(invoice_task_id=task_id)
+        # Дублируем карточку «Детали» оплаты для ГД («Объект» = адрес объекта,
+        # резолвим из parent_invoice_id; запрос ГД 01.06). Только отображение.
+        # Вся сборка в try/except Exception: сбой построения Детали НЕ должен
+        # ронять подтверждение оплаты (паттерн РП-карточки 01.06).
+        _details = ""
+        try:
+            from ..utils import fmt_payment_details_card
+            _pay_payload = try_json_loads(task.get("payload_json"))
+            _obj_addr = ""
+            _pid = _pay_payload.get("parent_invoice_id") or _pay_payload.get("invoice_id")
+            if _pid:
+                try:
+                    _pinv = await db.get_invoice(int(_pid))
+                    if _pinv:
+                        _obj_addr = _pinv.get("object_address") or ""
+                except (TypeError, ValueError):
+                    pass
+            _details = fmt_payment_details_card(_pay_payload, object_address=_obj_addr)
+        except Exception:
+            _details = ""
         b = InlineKeyboardBuilder()
         b.button(text="✅ Отправить", callback_data=f"inv_pp_done:{task_id}")
+        b.button(text="✅ Оплачено (без платёжки)", callback_data=f"inv_pp_paid_no_pdf:{task_id}")
         b.button(text="❌ Отмена", callback_data=f"inv_pp_cancel:{task_id}")
         b.adjust(1)
+        _confirm_text = (
+            "💳 <b>Подтверждение оплаты</b>\n\n"
+            "Прикрепите документ (PDF/фото) и/или напишите комментарий, "
+            "затем нажмите «✅ Отправить».\n\n"
+            "Если платёжки нет — можно просто нажать «✅ Оплачено (без платёжки)» "
+            "(по желанию добавив комментарий)."
+        )
+        if _details:
+            _confirm_text = _details + "\n\n" + _confirm_text
         await notifier.bot.send_message(
             cb.from_user.id,
-            "💳 <b>Подтверждение оплаты</b>\n\n"
-            "Прикрепите документ (PDF/фото) и/или напишите комментарий.\n"
-            "Когда готовы — нажмите «✅ Отправить».",
+            _confirm_text,
             reply_markup=b.as_markup(),
             parse_mode="HTML",
         )
@@ -881,6 +1291,23 @@ async def task_actions_part2(
             if invoice_number:
                 await integrations.sync_invoice_status(invoice_number, InvoiceStatus.ON_HOLD)
         sender_id = _invoice_task_sender_id(payload)
+        try:
+            await db.audit(
+                actor_id=cb.from_user.id,
+                action="invoice_held_by_gd",
+                entity="invoice",
+                entity_id=str(invoice_id) if invoice_id is not None else None,
+                payload={
+                    "invoice_number": invoice_number,
+                    "supplier": supplier,
+                    "amount": amount,
+                    "task_id": task_id,
+                    "sender_id": sender_id,
+                    "new_status": InvoiceStatus.ON_HOLD,
+                },
+            )
+        except Exception:
+            log.exception("inv_hold: audit() failed for invoice=%s", invoice_id)
         if sender_id:
             initiator = await get_initiator_label(db, cb.from_user.id)
             await notifier.safe_send(
@@ -914,16 +1341,32 @@ async def task_actions_part2(
         task = await db.update_task_status(task_id, TaskStatus.REJECTED)
         payload = try_json_loads(task.get("payload_json"))
         invoice_id, invoice_number, supplier, amount = _invoice_task_details(payload)
-        if invoice_id is not None:
-            await db.update_invoice_status(invoice_id, InvoiceStatus.REJECTED)
-            if invoice_number:
-                await integrations.sync_invoice_status(invoice_number, InvoiceStatus.REJECTED)
+        # Отклоняем ТОЛЬКО заявку на оплату — сам счёт-проект не трогаем.
+        # Прежде здесь стоял update_invoice_status(invoice_id, REJECTED):
+        # отклонение дубль-заявки роняло весь счёт в rejected и прятало его
+        # расходы в таблице (инцидент 2649-1КВ, 2026-05-27).
         sender_id = _invoice_task_sender_id(payload)
+        try:
+            await db.audit(
+                actor_id=cb.from_user.id,
+                action="invoice_payment_rejected_by_gd",
+                entity="invoice",
+                entity_id=str(invoice_id) if invoice_id is not None else None,
+                payload={
+                    "invoice_number": invoice_number,
+                    "supplier": supplier,
+                    "amount": amount,
+                    "task_id": task_id,
+                    "sender_id": sender_id,
+                },
+            )
+        except Exception:
+            log.exception("inv_reject: audit() failed for invoice=%s", invoice_id)
         if sender_id:
             initiator = await get_initiator_label(db, cb.from_user.id)
             await notifier.safe_send(
                 int(sender_id),
-                "❌ <b>Счёт отклонён</b>\n"
+                "❌ <b>Заявка на оплату отклонена</b>\n"
                 f"👤 От: {initiator}\n\n"
                 f"🔢 № счёта: {invoice_number or '—'}\n"
                 f"🏢 Поставщик: {supplier or '—'}\n"
@@ -939,7 +1382,7 @@ async def task_actions_part2(
                 db,
                 config,
                 cb.from_user.id,
-                "❌ Счёт отклонён. РП уведомлён.",
+                "❌ Заявка на оплату отклонена. РП уведомлён.",
                 role=role_now,
                 isolated_role=isolated_role,
             )
@@ -1060,11 +1503,53 @@ async def task_actions_part2(
         if task.get("status") not in active_statuses:
             await cb.answer("Эта задача уже закрыта.", show_alert=True)
             return
+        # Перерасчёт прибыли закрывается ТОЛЬКО кнопкой согласия (recalc_agree →
+        # зачисление аванса). keyboards.py убирает generic-кнопки у таких задач,
+        # но устаревшая кнопка из старого сообщения досюда доходит и закрыла бы
+        # задачу МИМО денег — ровно так 03.07 «съелись» три задачи (336/337/338).
+        if task.get("type") == TaskType.RECALC_CONFIRM:
+            await cb.answer(
+                "Закройте кнопкой «✅ С перерасчётом согласен» — иначе аванс "
+                "не начислится.",
+                show_alert=True,
+            )
+            return
+        # Оклад РП / ЗП РП 10% — тот же капкан, но кнопка «✅ Выплатить»; прецедент —
+        # задача 320 (оклад 2026-07, 66 000 ₽), 30.06 15:33. Состав типов и тексты —
+        # в _DONE_BLOCKED_PAYOUT_TYPES (см. комментарий у константы). Гард стоит ПОСЛЕ
+        # проверки статуса (уже закрытая задача отвечает как раньше) и ДО любой записи.
+        _payout_only_alert = _DONE_BLOCKED_PAYOUT_TYPES.get(task.get("type"))
+        if _payout_only_alert:
+            await cb.answer(_payout_only_alert, show_alert=True)
+            return
         # For request/closing tasks we can optionally collect and send attachments to manager
-        if task.get("type") in {TaskType.DOCS_REQUEST, TaskType.QUOTE_REQUEST, TaskType.CLOSING_DOCS} and project:
-            target_user_id = project.get("manager_id")
-            if task.get("type") == TaskType.CLOSING_DOCS:
+        _docs_reply = (
+            task.get("type") in {TaskType.DOCS_REQUEST, TaskType.QUOTE_REQUEST, TaskType.CLOSING_DOCS}
+            and project
+        )
+        # «🚨 Срочно ГД» (owner 03.08): бухгалтерия просит у ГД выписки — ответ обязан
+        # вернуться постановщику ФАЙЛАМИ, а не только карточкой «Задача выполнена».
+        # Адресат — created_by, а не manager_id: у urgent_gd project_id пуст, поэтому
+        # прежнее условие `and project` не пускало сюда этот тип в принципе.
+        _urgent_reply = task.get("type") == TaskType.URGENT_GD
+        if _docs_reply or _urgent_reply:
+            if _docs_reply:
                 target_user_id = project.get("manager_id")
+                if task.get("type") == TaskType.CLOSING_DOCS:
+                    target_user_id = project.get("manager_id")
+                _prompt = (
+                    "Пришлите готовые документы (файлы/фото) несколькими сообщениями.\n"
+                    "Когда закончите — нажмите «✅ Отправить и закрыть».\n"
+                    "Или можно «⏭ Закрыть без отправки»."
+                )
+            else:
+                target_user_id = task.get("created_by")
+                _prompt = (
+                    "📎 Приложите файлы для ответа постановщику — можно несколькими "
+                    "сообщениями.\n"
+                    "Когда закончите — нажмите «✅ Отправить и закрыть».\n"
+                    "Если файлы не нужны — «⏭ Закрыть без отправки»."
+                )
             await _safe_edit_task_markup(cb.message, reply_markup=None)
             await state.clear()
             await state.set_state(TaskCompleteSG.attachments)
@@ -1076,9 +1561,7 @@ async def task_actions_part2(
             b.adjust(1)
 
             await cb.message.answer(
-                "Пришлите готовые документы (файлы/фото) несколькими сообщениями.\n"
-                "Когда закончите — нажмите «✅ Отправить и закрыть».\n"
-                "Или можно «⏭ Закрыть без отправки».",
+                _prompt,
                 reply_markup=b.as_markup(),
             )  # type: ignore
             return
@@ -1095,8 +1578,10 @@ async def task_actions_part2(
         await _notify_task_creator_done(
             db,
             notifier,
+            config,
             cb.from_user.id if cb.from_user else None,
             task,
+            project,
         )
         await _safe_edit_task_markup(cb.message, reply_markup=None)
         await state.clear()
@@ -1159,6 +1644,18 @@ async def taskcomplete_finalize(
         await cb.message.answer("Эта задача уже закрыта.")  # type: ignore[union-attr]
         await state.clear()
         return
+    # 🔴 Гард типа — см. _TASKCOMPLETE_ALLOWED_TYPES. Сюда попадает task_id из FSM, а не
+    # из callback_data, поэтому устаревшая кнопка из старого сообщения может указывать на
+    # ЧУЖУЮ задачу — например на оклад РП, id которого положил в тот же ключ флоу
+    # отклонения (td.py:2621). Закрывать такую задачу этим путём нельзя: денежная запись
+    # идёт только через свой флоу. Состояние НАМЕРЕННО не чистим — человек может быть в
+    # середине другого потока, и state.clear() сломал бы его.
+    if task.get("type") not in _TASKCOMPLETE_ALLOWED_TYPES:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "⚠️ Эта кнопка — от другой задачи (устаревшее сообщение). "
+            f"Задача #{task_id} закрывается своими кнопками, откройте её из списка задач."
+        )
+        return
     project = await db.get_project(int(task["project_id"])) if task.get("project_id") else None
     target_user_id = data.get("target_user_id")
 
@@ -1182,11 +1679,23 @@ async def taskcomplete_finalize(
             else None
         )
         initiator = await get_initiator_label(db, cb.from_user.id)
+        # «Срочно ГД» — это ответ ГД постановщику, а не «документы по проекту»: шапка
+        # своя, чтобы бухгалтерия видела, на какой свой запрос пришёл файл.
+        if task.get("type") == TaskType.URGENT_GD:
+            _head = (
+                f"📎 <b>Ответ на задачу #{task_id}</b>\n"
+                f"👤 От: {initiator}\n\n"
+                f"См. вложения."
+            )
+        else:
+            _head = (
+                f"📄 <b>Документы по задаче #{task_id} готовы</b>\n"
+                f"👤 От: {initiator}\n\n"
+                f"См. вложения."
+            )
         await notifier.safe_send(
             int(target_user_id),
-            f"📄 <b>Документы по задаче #{task_id} готовы</b>\n"
-            f"👤 От: {initiator}\n\n"
-            f"См. вложения.",
+            _head,
             reply_markup=manager_markup,
         )
         # send actual files
@@ -1199,8 +1708,10 @@ async def taskcomplete_finalize(
     await _notify_task_creator_done(
         db,
         notifier,
+        config,
         cb.from_user.id if cb.from_user else None,
         task,
+        project,
     )
 
     await _safe_edit_task_markup(cb.message, reply_markup=None)
@@ -1251,41 +1762,37 @@ async def invoice_pp_collect(
         return
 
 
-@router.callback_query(F.data.startswith("inv_pp_done:"))
-async def invoice_pp_finalize(
+async def _invoice_pp_finalize_core(
     cb: CallbackQuery,
     state: FSMContext,
     db: Database,
     config: Config,
     notifier: Notifier,
     integrations: IntegrationHub,
+    u: Any,
+    task_id: int,
+    pp_files: list[dict[str, Any]],
+    pp_comment: str,
+    no_pdf_mode: bool = False,
 ) -> None:
-    """Send payment order to RP and close invoice task."""
-    await cb.answer()
-    u = cb.from_user
-    if not u:
-        return
-
-    data = await state.get_data()
-    task_id = data.get("invoice_task_id")
-    pp_files = data.get("pp_files", [])
-    pp_comment = data.get("pp_comment", "")
-
-    if not task_id:
-        await state.clear()
-        return
-    if not pp_files and not pp_comment:
-        await cb.message.answer(  # type: ignore[union-attr]
-            "Прикрепите документ или напишите комментарий, потом нажмите «✅ Отправить»."
-        )
-        return
-
+    """Core: close invoice task and notify RP. Used by inv_pp_done and inv_pp_paid_no_pdf."""
     task = await db.get_task(int(task_id))
     if task.get("status") not in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         await state.clear()
         await cb.message.answer("Этот счёт уже обработан.")  # type: ignore[union-attr]
         return
     payload = try_json_loads(task.get("payload_json"))
+    # КРИТИЧНО: кредит-заявку нельзя финализировать обычной оплатой поставщику —
+    # она читает material_type (у кредит-заявки его нет → extra_mat), перетирает
+    # назначение и НЕ закрывает парную zp_installer → потеря типа расхода и
+    # задвоение ЗП монтажника. Исполняется только через _finalize_credit_execution.
+    if isinstance(payload, dict) and payload.get("kind") == "credit_payment_request":
+        await state.clear()
+        await cb.message.answer(  # type: ignore[union-attr]
+            "⚠️ Это кредит-заявка — исполните её через кредит-расход (кнопка "
+            "«✅ Исполнить»), а не обычной оплатой поставщику."
+        )
+        return
     sender_id = _invoice_task_sender_id(payload)
     invoice_id, inv_num, supplier, amount = _invoice_task_details(payload)
 
@@ -1304,7 +1811,30 @@ async def invoice_pp_finalize(
 
     # Auto-create SUPPLIER_PAYMENT for cost tracking
     _parent_inv_id = payload.get("parent_invoice_id") or payload.get("invoice_id")
+    try:
+        _audit_inv_id = invoice_id if invoice_id is not None else _parent_inv_id
+        await db.audit(
+            actor_id=u.id,
+            action="invoice_paid_by_gd",
+            entity="invoice",
+            entity_id=str(_audit_inv_id) if _audit_inv_id is not None else None,
+            payload={
+                "invoice_number": inv_num,
+                "supplier": supplier,
+                "amount": amount,
+                "task_id": task_id,
+                "parent_invoice_id": _parent_inv_id,
+                "has_pp_files": bool(pp_files),
+                "pp_files_count": len(pp_files) if pp_files else 0,
+                "has_pp_comment": bool(pp_comment),
+                "no_pdf_mode": bool(no_pdf_mode),
+                "sender_id": sender_id,
+            },
+        )
+    except Exception:
+        log.exception("invoice_pp_finalize: audit() failed for invoice=%s", invoice_id)
     _sp_amount = payload.get("amount")
+    _sp_id: int | None = None
     if _parent_inv_id is not None and _sp_amount:
         _sp_mat_type = payload.get("material_type") or "extra_mat"
         _sp_supplier = payload.get("supplier") or ""
@@ -1324,12 +1854,12 @@ async def invoice_pp_finalize(
                     "material_type": _sp_mat_type,
                     "parent_invoice_id": int(_parent_inv_id),
                     "td_id": u.id,
-                    "td_username": u.username or "",
+                    "td_username": getattr(u, "username", "") or "",
                     "auto_from_invoice_payment": int(task_id),
                 },
             )
             # Also write to supplier_payments table
-            await db.create_supplier_payment(
+            _sp_id = await db.create_supplier_payment(
                 parent_invoice_id=int(_parent_inv_id),
                 amount=float(_sp_amount),
                 material_type=_sp_mat_type,
@@ -1337,9 +1867,55 @@ async def invoice_pp_finalize(
                 supplier=_sp_supplier,
                 task_id=sp_task["id"] if sp_task else None,
                 created_by=u.id,
+                # DS «Затр. Грузчики» уже записан при принятии задачи в работу
+                # (owner 25.07) — второй раз к cost_loaders не прибавляем.
+                update_cost=not bool(payload.get("ds_cost_applied")),
             )
         except Exception:
             log.warning("Failed to auto-create SUPPLIER_PAYMENT from task %s", task_id, exc_info=True)
+
+        # п.2 (10.06): авто-списание кредит-кошелька при оплате поставщику по
+        # КРЕДИТ-счёту. ГД уже подтвердил оплату на этом шаге → списываем сразу,
+        # без доп. гейта (решение user 10.06). Закрывает дыру, из-за которой КВ 8
+        # «потерял» 24 812,59 (оплаты наполняли cost_*/DU, но не трогали кошелёк).
+        # Отдельный try: сбой списания НЕ должен ломать финализацию/уведомление РП.
+        if _sp_id is not None:
+            try:
+                _parent_inv = await db.get_invoice(int(_parent_inv_id))
+                _pc_role = (_parent_inv or {}).get("creator_role") or ""
+                if (
+                    _parent_inv
+                    and int(_parent_inv.get("is_credit") or 0) == 1
+                    and _pc_role in ("manager_kv", "manager_kia", "manager_npn")
+                ):
+                    from ..utils import apply_credit_wallet_spend
+                    _cw_purpose = (
+                        f"Оплата поставщику (счёт {_sp_inv_num})"
+                        if _sp_inv_num else "Оплата поставщику"
+                    )
+                    if _sp_supplier:
+                        _cw_purpose += f" — {_sp_supplier}"
+                    await apply_credit_wallet_spend(
+                        db, integrations,
+                        wallet_role=_pc_role,
+                        amount=float(_sp_amount),
+                        mode="bound",
+                        purpose=_cw_purpose,
+                        entered_by=u.id,
+                        invoice_id=int(_parent_inv_id),
+                        cost_type=_sp_mat_type,
+                        invoice_number=_sp_inv_num,
+                        existing_supplier_payment_id=int(_sp_id),
+                    )
+                    log.info(
+                        "п.2 авто-списание кошелька %s: счёт=%s sp=%s сумма=%s",
+                        _pc_role, _sp_inv_num, _sp_id, _sp_amount,
+                    )
+            except Exception:
+                log.warning(
+                    "п.2 авто-списание кошелька не удалось (task=%s, inv=%s)",
+                    task_id, _parent_inv_id, exc_info=True,
+                )
 
     project = None
     if task.get("project_id"):
@@ -1361,14 +1937,58 @@ async def invoice_pp_finalize(
 
     # Notify RP
     if sender_id:
-        initiator = await get_initiator_label(db, u.id)
-        msg = (
-            "✅ <b>Счёт оплачен</b>\n"
-            f"👤 От: {initiator}\n\n"
-            f"🔢 № счёта: {inv_num}\n"
-            f"🏢 Поставщик: {supplier}\n"
-            f"💰 Сумма: {amount}"
-        )
+        title_txt = "Счёт оплачен" if pp_files else "Счёт оплачен (без платёжки)"
+        # Карточка В1 (стиль стартовой РП): «Поставщик» был пуст → РП угадывал
+        # платёж. Money-хендлер: ЛЮБОЙ сбой сборки НЕ должен ломать финализацию /
+        # отправку РП → fallback на старый текст.
+        try:
+            import re as _re
+            from ..utils import format_card_section
+            from ..rp_start_card import CATS, _money, _mt_to_cat, _street
+
+            def _short(block: str) -> str:
+                parts = block.split("<pre>", 1)
+                if len(parts) == 2:
+                    return _re.sub(r"━{2,}", "━", parts[0]) + "<pre>" + parts[1]
+                return block
+
+            # Адрес объекта: первый счёт (дочерний/родитель) с непустым адресом
+            object_address = ""
+            for _aid in (invoice_id, _parent_inv_id):
+                if _aid is not None:
+                    _inv_a = await db.get_invoice(int(_aid))
+                    if _inv_a and (_inv_a.get("object_address") or "").strip():
+                        object_address = _inv_a["object_address"]
+                        break
+
+            _cat = _mt_to_cat(payload.get("material_type"))
+            _crow = next((c for c in CATS if c[0] == _cat), None)
+            _ptype = f"{_crow[1]} {_crow[3]}" if _crow else "🧱 Доп.мат"
+
+            items = [
+                ("От", "Ген.Дир"),
+                ("Объект", _street(object_address, 22) if object_address else "—"),
+                ("№ счёта", inv_num),
+                ("Тип", _ptype),
+            ]
+            msg = _short(format_card_section(
+                emoji="✅",
+                title=title_txt,
+                items=items,
+                total=f"{_money(amount)} ₽",
+                width=30,
+                compact=True,
+            ))
+        except Exception:
+            log.exception("invoice_pp_finalize: build RP card failed, fallback to plain text")
+            initiator = await get_initiator_label(db, u.id)
+            msg = (
+                f"✅ <b>{title_txt}</b>\n"
+                f"👤 От: {initiator}\n\n"
+                f"🔢 № счёта: {inv_num}\n"
+                f"🏢 Поставщик: {supplier}\n"
+                f"💰 Сумма: {amount}"
+            )
         if pp_comment:
             msg += f"\n\n💬 Комментарий ГД: {pp_comment}"
         if pp_files:
@@ -1378,6 +1998,21 @@ async def invoice_pp_finalize(
             await notifier.safe_send_media(
                 int(sender_id), a["file_type"], a["file_id"], caption=a.get("caption"),
             )
+        # Бейдж 🔴N на «Счета в Работе»: пуш РП проходит мимо счётчиков, поэтому
+        # пишем непрочитанное в канал 'rp_invoice_paid' (гаснет при открытии раздела).
+        # Money-хендлер → в try/except, чтобы НЕ сорвать финализацию.
+        try:
+            await db.save_chat_message(
+                channel="rp_invoice_paid",
+                sender_id=u.id,
+                direction="incoming",
+                text=f"Счёт оплачен: {inv_num}",
+                receiver_id=int(sender_id),
+                has_attachment=bool(pp_files),
+                invoice_id=invoice_id if invoice_id is not None else _parent_inv_id,
+            )
+        except Exception:
+            log.exception("invoice_pp_finalize: save badge chat_message failed")
 
     # Уведомить монтажника о поступлении оплаты (если счёт привязан)
     if invoice_id is not None:
@@ -1397,15 +2032,108 @@ async def invoice_pp_finalize(
     await state.clear()
 
     role_now, isolated_role = await _current_menu(db, u.id)
+    ack_text = (
+        "✅ Счёт оплачен. Платёжка отправлена РП."
+        if pp_files
+        else "✅ Счёт закрыт без платёжки. РП уведомлён."
+    )
     await _answer_with_menu(
         cb.message,
         db,
         config,
         u.id,
-        "✅ Счёт оплачен. Платёжка отправлена РП.",
+        ack_text,
         role=role_now,
         isolated_role=isolated_role,
     )
+
+
+# п.2 (10.06): in-flight claim от двойного клика по «Оплачено». Финализация
+# теперь СПИСЫВАЕТ кредит-кошелёк (денежный confirm) → повторный вход недопустим,
+# иначе задвоение списания ([[feedback_money_confirm_idempotent_gate]]). Claim
+# берётся СИНХРОННО (до первого await), снимается в finally; после успеха задача
+# уже DONE и статус-гард в _core ловит любые поздние клики.
+_PP_FINALIZE_INFLIGHT: set[int] = set()
+
+
+@router.callback_query(F.data.startswith("inv_pp_done:"))
+async def invoice_pp_finalize(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    """Send payment order to RP and close invoice task (requires file or comment)."""
+    u = cb.from_user
+    if not u:
+        await cb.answer()
+        return
+    data = await state.get_data()
+    task_id = data.get("invoice_task_id")
+    pp_files = data.get("pp_files", [])
+    pp_comment = data.get("pp_comment", "")
+    if not task_id:
+        await cb.answer()
+        await state.clear()
+        return
+    if not pp_files and not pp_comment:
+        await cb.answer(
+            "Прикрепите документ или напишите комментарий, потом нажмите «✅ Отправить».",
+            show_alert=True,
+        )
+        return
+    tid = int(task_id)
+    if tid in _PP_FINALIZE_INFLIGHT:
+        await cb.answer("Счёт уже обрабатывается, подождите…", show_alert=True)
+        return
+    _PP_FINALIZE_INFLIGHT.add(tid)
+    await cb.answer()
+    try:
+        await _invoice_pp_finalize_core(
+            cb, state, db, config, notifier, integrations,
+            u, tid, pp_files, pp_comment, no_pdf_mode=False,
+        )
+    finally:
+        _PP_FINALIZE_INFLIGHT.discard(tid)
+
+
+@router.callback_query(F.data.startswith("inv_pp_paid_no_pdf:"))
+async def invoice_pp_paid_no_pdf(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    """Close invoice task WITHOUT payment order PDF. Default comment 'Оплачено' if user typed nothing."""
+    u = cb.from_user
+    if not u:
+        await cb.answer()
+        return
+    data = await state.get_data()
+    task_id = data.get("invoice_task_id")
+    pp_files = data.get("pp_files", [])
+    pp_comment = data.get("pp_comment", "") or "Оплачено"
+    if not task_id:
+        await cb.answer()
+        await state.clear()
+        return
+    tid = int(task_id)
+    if tid in _PP_FINALIZE_INFLIGHT:
+        await cb.answer("Счёт уже обрабатывается, подождите…", show_alert=True)
+        return
+    _PP_FINALIZE_INFLIGHT.add(tid)
+    await cb.answer()
+    try:
+        await _invoice_pp_finalize_core(
+            cb, state, db, config, notifier, integrations,
+            u, tid, pp_files, pp_comment, no_pdf_mode=True,
+        )
+    finally:
+        _PP_FINALIZE_INFLIGHT.discard(tid)
 
 
 @router.callback_query(F.data.startswith("inv_pp_cancel:"))
@@ -1578,6 +2306,7 @@ async def delivery_payment_attachment(message: Message, state: FSMContext) -> No
 
 
 @router.callback_query(F.data == "delpay_gd:finalize")
+@money_confirm_guard
 async def delivery_payment_finalize(
     cb: CallbackQuery,
     state: FSMContext,
@@ -1603,6 +2332,17 @@ async def delivery_payment_finalize(
         return
 
     task = await db.get_task(int(task_id))
+    # Денежный confirm: финализация создаёт supplier_payment + (кредит) списывает
+    # кошелёк → поздний/повторный клик после закрытия задачи НЕ должен провести
+    # оплату повторно ([[feedback_money_confirm_idempotent_gate]]).
+    if not task:
+        await cb.message.answer("Ошибка: задача не найдена.")  # type: ignore
+        await state.clear()
+        return
+    if str(task.get("status")) == "done":
+        await cb.message.answer("Эта доставка уже оплачена.")  # type: ignore
+        await state.clear()
+        return
     payload = try_json_loads(task.get("payload_json"))
     inv_id = payload.get("invoice_id")
     inv_num = payload.get("invoice_number", "")
@@ -1621,6 +2361,65 @@ async def delivery_payment_finalize(
                 )
             except Exception:
                 log.warning("Failed to write delivery cost to ОП sheet")
+
+        # Root-fix (delpay_gd): помимо actual_logistics (план/факт) записываем
+        # логистику как supplier_payment → cost_logistics ("Затр. Логистика"/DT),
+        # как через пикер оплаты. Раньше этот канал был невидим в затратах/прибыли.
+        # sp-строку линкуем к самой delivery-задаче (task_id), отдельную
+        # SUPPLIER_PAYMENT-задачу не плодим. Money-хендлер → весь блок в try/except,
+        # сбой НЕ должен срывать финализацию и уведомление РП.
+        _sp_id: int | None = None
+        if float(amount or 0) > 0:
+            try:
+                _sp_id = await db.create_supplier_payment(
+                    parent_invoice_id=int(inv_id),
+                    amount=float(amount),
+                    material_type="logistics",
+                    invoice_number=inv_num,
+                    supplier="",
+                    task_id=int(task_id),
+                    created_by=u.id,
+                )
+            except Exception:
+                log.warning(
+                    "delivery_payment_finalize: create logistics supplier_payment "
+                    "failed (task=%s inv=%s)", task_id, inv_id, exc_info=True,
+                )
+            # КРЕДИТ-счёт → списываем кредит-кошелёк (зеркало пикера, п.2 10.06),
+            # переиспользуя готовый sp_id (без дубля оплаты); иначе — просто
+            # пересинкаем строку счёта, чтобы cost_logistics дошёл до листа (DT).
+            if _sp_id is not None:
+                try:
+                    _inv = await db.get_invoice(int(inv_id))
+                    _role = (_inv or {}).get("creator_role") or ""
+                    if (
+                        _inv
+                        and int(_inv.get("is_credit") or 0) == 1
+                        and _role in ("manager_kv", "manager_kia", "manager_npn")
+                    ):
+                        from ..utils import apply_credit_wallet_spend
+                        await apply_credit_wallet_spend(
+                            db, integrations,
+                            wallet_role=_role,
+                            amount=float(amount),
+                            mode="bound",
+                            purpose=(
+                                f"Оплата доставки (счёт {inv_num})"
+                                if inv_num else "Оплата доставки"
+                            ),
+                            entered_by=u.id,
+                            invoice_id=int(inv_id),
+                            cost_type="logistics",
+                            invoice_number=inv_num,
+                            existing_supplier_payment_id=int(_sp_id),
+                        )
+                    else:
+                        await integrations.sync_invoice_row(int(inv_id))
+                except Exception:
+                    log.warning(
+                        "delivery_payment_finalize: credit debit / row sync "
+                        "failed (task=%s inv=%s)", task_id, inv_id, exc_info=True,
+                    )
 
     # Update task payload with payment info
     payload["gd_amount"] = amount
@@ -1658,4 +2457,109 @@ async def delivery_payment_finalize(
     await state.clear()
     await cb.message.answer(  # type: ignore
         f"✅ Доставка оплачена: {amount:.0f}₽. Задача закрыта.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Orphan-PDF auto-link: catch PDF/photo sent BEFORE 'inv_pay' was clicked
+# ---------------------------------------------------------------------------
+
+@router.message(F.document | F.photo)
+async def invoice_pp_orphan_catch(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    storage: MinioStorage | None = None,
+) -> None:
+    """
+    Catch document/photo sent outside InvoicePaymentSG.attaching_pp.
+    If user has exactly ONE INVOICE_PAYMENT task in IN_PROGRESS, auto-link
+    the file to it (sets FSM state and pp_files), so the PDF is not lost.
+    Reason: GD sometimes sends payment PDF BEFORE clicking "💸 Оплатить?",
+    which used to drop the file silently (unhandled message).
+    """
+    if await state.get_state() is not None:
+        return
+    u = message.from_user
+    if not u:
+        return
+    try:
+        open_tasks = await db.list_tasks_for_user(
+            assigned_to=u.id,
+            statuses=("in_progress",),
+            type_filter=TaskType.INVOICE_PAYMENT,
+            limit=5,
+        )
+    except Exception:
+        log.exception("invoice_pp_orphan_catch: list_tasks_for_user failed for uid=%s", u.id)
+        return
+    if not open_tasks:
+        return
+    if len(open_tasks) > 1:
+        # Несколько открытых задач-оплат — бот не может угадать, к какой привязать
+        # файл. Раньше тихо терялся (return). Теперь подсказываем открыть нужную
+        # задачу и нажать её кнопку, затем прислать платёжку. owner 27.06.
+        await message.answer(
+            "📎 Файл получен, но у вас несколько открытых задач на оплату — "
+            "бот не может определить, к какой его привязать.\n"
+            "Откройте нужную задачу, нажмите её кнопку (например «💸 Оплатить» / "
+            "«✅ Исполнено»), затем пришлите платёжку.",
+        )
+        return
+    task = open_tasks[0]
+    task_id = int(task["id"])
+    att = await mirror_attachment(message, storage, prefix=f"tasks/{u.id}")
+    if att is None:
+        return
+    payload = try_json_loads(task.get("payload_json"))
+    suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
+    # Кредит-трата хозяина кошелька (kind=credit_spend_gd_confirm): если ГД шлёт
+    # платёжку ДО клика «✅ Подтвердить», файл должен попасть в КРЕДИТ-флоу
+    # подтверждения (cw_gd_send/skip → запись расхода кошелька + вложение), а НЕ в
+    # supplier-оплату (inv_pp_done → _invoice_pp_finalize_core создаёт
+    # SUPPLIER_PAYMENT, расход кошелька не пишется — мис-роутинг). owner 27.06.
+    if isinstance(payload, dict) and payload.get("kind") == "credit_spend_gd_confirm":
+        await state.set_state(InvoicePaymentSG.attaching_pp)
+        await state.update_data(cw_tid=task_id, pp_files=[att])
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ Подтвердить", callback_data=f"cw_gd_send:{task_id}")
+        b.button(text="✅ Без вложения", callback_data=f"cw_gd_skip:{task_id}")
+        b.button(text="❌ Отмена", callback_data=f"cw_gd_acancel:{task_id}")
+        b.adjust(1)
+        await message.answer(
+            f"📎 Документ принят.{suffix}\n"
+            "Нажмите «✅ Подтвердить» — расход кошелька запишется с вложением.",
+            reply_markup=b.as_markup(),
+        )
+        return
+    # Кредит-оплата менеджером (kind=credit_payment_request, §C): задача тоже
+    # type=INVOICE_PAYMENT, поэтому попадает сюда. Если менеджер шлёт платёжку ДО
+    # клика «✅ Исполнено» (state ещё None), файл должен идти в КРЕДИТ-исполнение
+    # (credit_exec_send → _finalize_credit_execution: запись расхода + close), а НЕ
+    # в supplier-оплату (inv_pp_done создаёт SUPPLIER_PAYMENT — мис-роутинг). owner 27.06.
+    if isinstance(payload, dict) and payload.get("kind") == "credit_payment_request":
+        await state.set_state(CreditPaymentExecuteSG.waiting)
+        await state.update_data(credit_task_id=task_id, credit_exec_file=att)
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ Исполнено", callback_data=f"credit_exec_send:{task_id}")
+        b.button(text="❌ Отмена", callback_data=f"credit_exec_acancel:{task_id}")
+        b.adjust(1)
+        await message.answer(
+            f"📎 Платёжка принята.{suffix}\n"
+            "Нажмите «✅ Исполнено» — расход спишется и задача закроется.",
+            reply_markup=b.as_markup(),
+        )
+        return
+    await state.set_state(InvoicePaymentSG.attaching_pp)
+    await state.update_data(invoice_task_id=task_id, pp_files=[att])
+    _, inv_num, _, _ = _invoice_task_details(payload)
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Отправить", callback_data=f"inv_pp_done:{task_id}")
+    b.button(text="❌ Отмена", callback_data=f"inv_pp_cancel:{task_id}")
+    b.adjust(1)
+    inv_label = f"счёта №{inv_num}" if inv_num else f"задачи #{task_id}"
+    await message.answer(
+        f"📎 Файл принят для оплаты {inv_label}.{suffix}\n"
+        f"Нажмите «✅ Отправить» для подтверждения.",
+        reply_markup=b.as_markup(),
     )

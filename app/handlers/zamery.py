@@ -13,11 +13,12 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from aiogram import Router, F
+from aiogram import Router, F, html
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from ..callbacks import ZamAttrCb, ZamZpPayCb, ZamZpRejectCb
 from ..config import Config
 from ..db import Database
 from ..enums import (
@@ -36,10 +37,11 @@ from ..keyboards import (
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryCostEditSG, ZameryQuickBookSG, ZameryZpSG
-from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
+from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryQuickBookSG, ZameryZpSG
+from ..utils import answer_service, format_card_section, format_zamery_settlement_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from ._mirror import mirror_attachment
 from .auth import require_role_callback, require_role_message
+from .money_guard import money_confirm_guard
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -112,21 +114,17 @@ async def zamery_inbox(message: Message, db: Database) -> None:
         await answer_service(message, "📐 Нет входящих заявок на замеры ✅", delay_seconds=60)
         return
 
-    # Статистика по менеджерам
+    # Сводка по менеджерам (эталон-карточка: счётчики + Всего в футере)
     stats = await db.get_zamery_stats_by_manager(uid)
-    stat_lines = []
-    role_short = {
-        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
-    }
-    for s in stats:
-        rn = role_short.get(s.get("requester_role", ""), s.get("requester_role", "?"))
-        stat_lines.append(f"  {rn}: {s['cnt']} заявок")
-
-    text = f"📐 <b>Замеры</b> ({len(all_reqs)}):\n\n"
-    if stat_lines:
-        text += "<b>По менеджерам:</b>\n" + "\n".join(stat_lines) + "\n\n"
-    text += "Нажмите на заявку для просмотра:"
-
+    mgr_items = [
+        (_REQ_ROLE_SHORT.get(s.get("requester_role", ""), s.get("requester_role", "?")), str(s["cnt"]))
+        for s in stats
+    ]
+    text = format_card_section(
+        "📐", "Замеры",
+        items=mgr_items or [("Заявок", str(len(all_reqs)))],
+        footer=("Всего", str(len(all_reqs))) if mgr_items else None,
+    )
     await message.answer(text, reply_markup=zamery_incoming_kb(all_reqs, back_callback="nav:home"))
 
 
@@ -149,45 +147,8 @@ async def zamery_view_request(
         await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
         return
 
-    source_label = ZAMERY_SOURCE_LABELS.get(req.get("source_type", ""), "—")
-    role_short = {
-        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
-    }.get(req.get("requester_role", ""), "?")
     initiator = await get_initiator_label(db, req["requested_by"])
-    status_label = {
-        "open": "⏳ Новая", "in_progress": "🔄 В работе",
-        "done": "✅ Выполнена", "rejected": "❌ Отклонена",
-    }.get(req.get("status", ""), "❓")
-
-    text = (
-        f"📐 <b>Заявка на замер #{req['id']}</b>\n\n"
-        f"👤 Менеджер: {initiator}"
-    )
-    if role_short:
-        text += f" ({role_short})"
-    text += f"\n📍 Адрес: {req.get('address', '—')}\n"
-    if req.get("client_contact"):
-        text += f"📞 Контакт: <code>{req['client_contact']}</code>\n"
-    if req.get("volume_m2"):
-        text += f"📊 Объём: {req['volume_m2']} м²\n"
-    mkad_km = req.get("mkad_km") or 0
-    mkad_surcharge = req.get("mkad_surcharge") or 0
-    if mkad_km and mkad_km > 0:
-        if mkad_surcharge:
-            text += f"📍 МКАД: {mkad_km} км (наценка: {mkad_surcharge}₽)\n"
-        else:
-            text += f"📍 МКАД: {mkad_km} км\n"
-    else:
-        text += "📍 МКАД: внутри МКАД\n"
-    total_cost = req.get("total_cost")
-    if total_cost:
-        text += f"💰 Стоимость замера: <b>{total_cost}₽</b>\n"
-    if req.get("description"):
-        text += f"\n📝 Описание: {req['description']}\n"
-    text += f"📌 Источник: {source_label}\n"
-    text += f"📊 Статус: {status_label}\n"
-    created_at = req.get("created_at") or "—"
-    text += f"📅 Создана: {str(created_at)[:16]}\n"
+    text = _format_request_card(req, initiator, with_schedule=False)
 
     b = InlineKeyboardBuilder()
     if req.get("status") in ("open", "in_progress"):
@@ -462,41 +423,7 @@ async def zamery_my_objects(message: Message, db: Database) -> None:
     """📋 Мои замеры — дашборд: конверсия + подменю."""
     if not await require_role_message(message, db, roles=[Role.ZAMERY]):
         return
-
-    user_id = message.from_user.id  # type: ignore[union-attr]
-
-    # Конверсия
-    conv = await db.get_zamery_conversion_stats(user_id)
-    role_short = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}
-
-    text = "📋 <b>Мои замеры</b>\n\n"
-    text += f"📊 <b>Конверсия:</b> {conv['conversion_pct']}% "
-    text += f"({conv['total_with_invoice']} счетов из {conv['total_done']} замеров)\n"
-    if conv["by_role"]:
-        parts = []
-        for r in conv["by_role"]:
-            rn = role_short.get(r.get("requester_role", ""), "?")
-            parts.append(f"{rn}: {r['pct']}%")
-        text += "По менеджерам: " + " | ".join(parts) + "\n"
-
-    # Кол-во активных заявок и счетов
-    active_reqs = await db.list_zamery_requests(assigned_to=user_id, status="in_progress", limit=50)
-    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
-    active_inv = [i for i in invoices if i["status"] in (
-        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
-    )]
-
-    b = InlineKeyboardBuilder()
-    b.button(
-        text=f"📐 Заявки на замер ({len(active_reqs)})",
-        callback_data="zam_my:requests",
-    )
-    b.button(
-        text=f"📋 Счета в работе ({len(active_inv)})",
-        callback_data="zam_my:invoices",
-    )
-    b.adjust(1)
-    await message.answer(text, reply_markup=b.as_markup())
+    await _render_my_objects(message, db, message.from_user.id)  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data == "zam_my:requests")
@@ -544,14 +471,17 @@ async def zamery_my_invoices(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("📋 Нет счетов в работе.")  # type: ignore[union-attr]
         return
 
-    lines = []
+    items = []
     for inv in active[:20]:
         status_emoji = {"in_progress": "🔄", "paid": "✅"}.get(inv["status"], "❓")
-        lines.append(
-            f"{status_emoji} №{inv['invoice_number']} — "
-            f"{(inv.get('object_address') or '-')[:30]}"
-        )
-    text = f"📋 <b>Счета в работе</b> ({len(active)}):\n\n" + "\n".join(lines)
+        items.append((
+            f"{status_emoji} №{inv['invoice_number']}",
+            html.quote((inv.get("object_address") or "—")[:30]),
+        ))
+    text = format_card_section(
+        "📋", "Счета в работе", items=items,
+        footer=("Всего", str(len(active))), compact=True,
+    )
     await cb.message.answer(text)  # type: ignore[union-attr]
 
 
@@ -561,32 +491,7 @@ async def zamery_my_back(cb: CallbackQuery, db: Database) -> None:
     if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
         return
     await cb.answer()
-    # Переиспользуем логику через фейковое сообщение нельзя — просто показываем заново
-    user_id = cb.from_user.id
-    conv = await db.get_zamery_conversion_stats(user_id)
-    role_short = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}
-
-    text = "📋 <b>Мои замеры</b>\n\n"
-    text += f"📊 <b>Конверсия:</b> {conv['conversion_pct']}% "
-    text += f"({conv['total_with_invoice']} счетов из {conv['total_done']} замеров)\n"
-    if conv["by_role"]:
-        parts = []
-        for r in conv["by_role"]:
-            rn = role_short.get(r.get("requester_role", ""), "?")
-            parts.append(f"{rn}: {r['pct']}%")
-        text += "По менеджерам: " + " | ".join(parts) + "\n"
-
-    active_reqs = await db.list_zamery_requests(assigned_to=user_id, status="in_progress", limit=50)
-    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
-    active_inv = [i for i in invoices if i["status"] in (
-        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
-    )]
-
-    b = InlineKeyboardBuilder()
-    b.button(text=f"📐 Заявки на замер ({len(active_reqs)})", callback_data="zam_my:requests")
-    b.button(text=f"📋 Счета в работе ({len(active_inv)})", callback_data="zam_my:invoices")
-    b.adjust(1)
-    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    await _render_my_objects(cb.message, db, cb.from_user.id)  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data.startswith("zam_myreq:view:"))
@@ -606,55 +511,8 @@ async def zamery_myreq_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
         return
 
-    source_label = ZAMERY_SOURCE_LABELS.get(req.get("source_type", ""), "—")
-    role_short = {
-        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
-    }.get(req.get("requester_role", ""), "?")
     initiator = await get_initiator_label(db, req["requested_by"])
-    status_label = {
-        "open": "⏳ Новая", "in_progress": "🔄 В работе",
-        "done": "✅ Выполнена", "rejected": "❌ Отклонена",
-    }.get(req.get("status", ""), "❓")
-
-    text = f"📐 <b>Заявка на замер #{req['id']}</b>\n\n"
-    text += f"👤 Менеджер: {initiator}"
-    if role_short:
-        text += f" ({role_short})"
-    text += f"\n📍 Адрес: {req.get('address', '—')}\n"
-    if req.get("client_contact"):
-        text += f"📞 Контакт: <code>{req['client_contact']}</code>\n"
-    if req.get("volume_m2"):
-        text += f"📊 Объём: {req['volume_m2']} м²\n"
-    mkad_km = req.get("mkad_km") or 0
-    mkad_surcharge = req.get("mkad_surcharge") or 0
-    if mkad_km and mkad_km > 0:
-        if mkad_surcharge:
-            text += f"📍 МКАД: {mkad_km} км (наценка: {mkad_surcharge}₽)\n"
-        else:
-            text += f"📍 МКАД: {mkad_km} км\n"
-    else:
-        text += "📍 МКАД: внутри МКАД\n"
-    total_cost = req.get("total_cost")
-    if total_cost:
-        text += f"💰 Стоимость замера: <b>{total_cost}₽</b>\n"
-    # Дата/время если назначены
-    if req.get("scheduled_date"):
-        try:
-            d = date.fromisoformat(req["scheduled_date"])
-            day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-            text += f"📅 Дата: {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}\n"
-        except ValueError:
-            pass
-    if req.get("scheduled_time_interval"):
-        text += f"⏰ Время: {req['scheduled_time_interval']}\n"
-    if req.get("accept_comment"):
-        text += f"💬 Комментарий: {req['accept_comment']}\n"
-    if req.get("description"):
-        text += f"\n📝 Описание: {req['description']}\n"
-    text += f"📌 Источник: {source_label}\n"
-    text += f"📊 Статус: {status_label}\n"
-    created_at = req.get("created_at") or "—"
-    text += f"📅 Создана: {str(created_at)[:16]}\n"
+    text = _format_request_card(req, initiator, with_schedule=True)
 
     b = InlineKeyboardBuilder()
     if req.get("status") == "in_progress":
@@ -813,26 +671,44 @@ async def _finalize_complete(
 
     await msg_target.answer(f"✅ Замер #{req_id} отправлен менеджеру.")  # type: ignore[union-attr]
 
-    # Уведомить менеджера
-    notify_text = (
-        f"✅ <b>Замер #{req_id} выполнен</b>\n\n"
-        f"📍 Адрес: {req.get('address', '—')}\n"
-    )
-    if time_label:
-        notify_text += f"⏱ Время выполнения: {time_label}\n"
+    # Кто выполнил замер (исполнитель)
+    actor_uid = event.from_user.id if event.from_user else None
+    initiator = await get_initiator_label(db, actor_uid) if actor_uid else None
+
+    # Дата замера (человекочитаемо)
+    scheduled_label = ""
     if req.get("scheduled_date"):
         try:
             d = date.fromisoformat(req["scheduled_date"])
             day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-            notify_text += f"📅 Дата замера: {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}"
+            scheduled_label = f"{day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}"
             if req.get("scheduled_time_interval"):
-                notify_text += f" {req['scheduled_time_interval']}"
-            notify_text += "\n"
+                scheduled_label += f" {req['scheduled_time_interval']}"
         except ValueError:
             pass
-    if comment:
-        notify_text += f"💬 Комментарий: {comment}\n"
 
+    # Эталонная карточка-отчёт «замер выполнен» (единый вид для менеджера и РП)
+    zam_items: list[tuple[str, str]] = [
+        ("Статус", "Выполнен"),
+        ("Адрес", html.quote(str(req.get("address") or "—"))),
+    ]
+    if scheduled_label:
+        zam_items.append(("Дата замера", html.quote(scheduled_label)))
+    if time_label:
+        zam_items.append(("Время выполнения", html.quote(time_label)))
+    if comment:
+        zam_items.append(("Комментарий", html.quote(str(comment))))
+    head = "✅ <b>Замер выполнен</b>"
+    if initiator:
+        head += f"\n👤 Исполнитель: {initiator}"
+    notify_text = (
+        f"{head}\n\n"
+        + format_card_section(
+            emoji="📐", title=f"Замер #{req_id}", items=zam_items, compact=True,
+        )
+    )
+
+    # Уведомить менеджера
     await notifier.safe_send(req["requested_by"], notify_text)
     # Отправить вложения
     for a in attachments:
@@ -842,16 +718,10 @@ async def _finalize_complete(
             await notifier.safe_send_media(req["requested_by"], ft, fid, caption=a.get("caption"))
     await refresh_recipient_keyboard(notifier, db, config, req["requested_by"])
 
-    # Уведомить РП о завершении замера
+    # Уведомить РП о завершении замера (та же карточка)
     rp_id = await resolve_default_assignee(db, config, Role.RP)
     if rp_id and rp_id != req["requested_by"]:
-        rp_msg = (
-            f"✅ <b>Замер #{req_id} выполнен</b>\n"
-            f"📍 {req.get('address', '—')}\n"
-        )
-        if time_label:
-            rp_msg += f"⏱ {time_label}\n"
-        await notifier.safe_send(int(rp_id), rp_msg)
+        await notifier.safe_send(int(rp_id), notify_text)
         # Отправить бланк замера РП
         for a in attachments:
             ft = a.get("file_type", "document")
@@ -870,16 +740,271 @@ async def _finalize_complete(
 # ОПЛАТА ЗАМЕРОВ (список неоплаченных + кнопки ЗП)
 # =====================================================================
 
-def _get_unpaid_invoices(invoices: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Фильтр: неоплаченные замеры."""
-    return [
-        i for i in invoices
-        if i.get("zp_status", "not_requested") != "approved"
-        and i["status"] in (
-            InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
-            InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
+def _fmt_money(x: float | int | None) -> str:
+    """Целое со space-разделителем тысяч, без ₽ (для эталон-ячеек <pre>)."""
+    return f"{int(x or 0):,}".replace(",", " ")
+
+
+# Эталон-помощники экрана «Оплата замеров» (источник = zamery_requests, ТЗ 06.07).
+_ZAM_PAY_STATUS_LABEL = {
+    "not_requested": "К оплате",
+    "requested": "На проверке",
+    "paid": "Оплачено",
+}
+_ZAM_PAY_STATUS_ICON = {"not_requested": "🟡", "requested": "⏳", "paid": "✅"}
+
+
+def _zam_ident(z: dict[str, Any]) -> str:
+    """Опознавательный признак замера = адрес (fallback — #id), HTML-экранирован."""
+    return html.quote(z.get("address") or f"#{z.get('id', '?')}")
+
+
+# ---- Атрибуция замеров: бот спрашивает замерщика, кто из менеджеров направлял ----
+# UNK-замеры (без счёта и без следа в чатах) атрибутирует только замерщик по памяти.
+# Аналитика: пишет requester_role/requested_by, на долг/total_cost НЕ влияет.
+_ATTR_MANAGERS: dict[str, dict[str, Any]] = {
+    "kv":  {"role": "manager_kv",  "tg_id": 5641023011, "name": "Кирилл", "short": "КВ"},
+    "npn": {"role": "manager_npn", "tg_id": 6546325840, "name": "Паша",   "short": "НПН"},
+    "kia": {"role": "manager_kia", "tg_id": 495451226,  "name": "Илья",   "short": "КИА"},
+}
+
+
+def _attr_fmt_ddmm(iso: str | None) -> str:
+    """ISO-дата → «дд.мм» для карточек атрибуции."""
+    if not iso:
+        return "—"
+    try:
+        return datetime.strptime(str(iso)[:10], "%Y-%m-%d").strftime("%d.%m")
+    except (ValueError, TypeError):
+        return str(iso)
+
+
+def build_attr_question(req: dict[str, Any]) -> tuple[str, Any]:
+    """Карточка-вопрос замерщику: кто из менеджеров направлял на этот замер."""
+    zam_id = int(req["id"])
+    text = (
+        "❓ <b>Кто отправлял тебя на замер?</b>\n\n"
+        f"📍 {html.quote(req.get('address') or '—')}\n"
+        f"🗓 {_attr_fmt_ddmm(req.get('scheduled_date'))}"
+    )
+    b = InlineKeyboardBuilder()
+    b.button(text="Кирилл", callback_data=ZamAttrCb(zam_id=zam_id, role="kv").pack())
+    b.button(text="Паша", callback_data=ZamAttrCb(zam_id=zam_id, role="npn").pack())
+    b.button(text="Илья", callback_data=ZamAttrCb(zam_id=zam_id, role="kia").pack())
+    b.button(text="🤷 Не помню", callback_data=ZamAttrCb(zam_id=zam_id, role="unknown").pack())
+    b.adjust(3, 1)
+    return text, b.as_markup()
+
+
+@router.callback_query(ZamAttrCb.filter())
+async def zamery_attr_answer(
+    cb: CallbackQuery, callback_data: ZamAttrCb,
+    db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """Замерщик отвечает на вопрос атрибуции: проставить менеджера / «не помню».
+
+    Пишет requester_role+requested_by в zamery_requests (аналитика, долг не трогает),
+    затем уведомляет ГД прогрессом. Гард: только свой done-замер.
+    """
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    zam_id = callback_data.zam_id
+    role_key = callback_data.role
+    req = await db.get_zamery_request(zam_id)
+    if (
+        not req
+        or req.get("assigned_to") != cb.from_user.id
+        or req.get("status") != "done"
+    ):
+        await cb.answer("❌ Замер не найден.", show_alert=True)
+        return
+
+    # «↩️ Изменить» — вернуть карточку-вопрос с кнопками выбора
+    if role_key == "change":
+        text, kb = build_attr_question(req)
+        try:
+            await cb.message.edit_text(text, reply_markup=kb)  # type: ignore[union-attr]
+        except Exception:
+            pass
+        await cb.answer()
+        return
+
+    addr = req.get("address") or "—"
+    change_kb = InlineKeyboardBuilder()
+    change_kb.button(
+        text="↩️ Изменить",
+        callback_data=ZamAttrCb(zam_id=zam_id, role="change").pack(),
+    )
+
+    if role_key == "unknown":
+        # «Не помню» — оставить/вернуть без менеджера (UNK)
+        if req.get("requester_role") or req.get("requested_by"):
+            await db.update_zamery_request(zam_id, requester_role="", requested_by=0)
+        await db.audit(
+            actor_id=cb.from_user.id, action="zam_attr_unknown",
+            entity="zamery_request", entity_id=str(zam_id),
+            payload={"address": addr, "by": "surveyor"},
         )
+        try:
+            await cb.message.edit_text(  # type: ignore[union-attr]
+                f"🤷 <b>{html.quote(addr)}</b> — оставил без менеджера.",
+                reply_markup=change_kb.as_markup(),
+            )
+        except Exception:
+            pass
+        await cb.answer("Ок")
+        gd_note = f"🤷 {addr} — «не помню»"
+    else:
+        m = _ATTR_MANAGERS.get(role_key)
+        if not m:
+            await cb.answer("❌ Неизвестный выбор.", show_alert=True)
+            return
+        await db.update_zamery_request(
+            zam_id, requester_role=m["role"], requested_by=m["tg_id"],
+        )
+        await db.audit(
+            actor_id=cb.from_user.id, action="zam_attr_set",
+            entity="zamery_request", entity_id=str(zam_id),
+            payload={"role": m["role"], "requested_by": m["tg_id"],
+                     "address": addr, "by": "surveyor"},
+        )
+        try:
+            await cb.message.edit_text(  # type: ignore[union-attr]
+                f"✅ <b>{html.quote(addr)}</b> → {m['name']} ({m['short']})",
+                reply_markup=change_kb.as_markup(),
+            )
+        except Exception:
+            pass
+        await cb.answer("Записал ✅")
+        gd_note = f"✅ {addr} → {m['name']} ({m['short']})"
+
+    # Уведомить ГД: прогресс + сколько замеров ещё без менеджера
+    try:
+        rows = await db.list_zamery_attribution(cb.from_user.id)
+        remaining = sum(1 for r in rows if not r.get("requester_role"))
+        gd_id = await resolve_default_assignee(db, config, Role.GD)
+        if gd_id:
+            tail = (
+                "\n\n🎉 Все замеры распределены."
+                if remaining == 0
+                else f"\n\nОсталось без менеджера: {remaining}"
+            )
+            await notifier.safe_send(
+                int(gd_id), f"🗺 <b>Атрибуция замеров</b>\n{gd_note}{tail}",
+            )
+    except Exception:
+        log.exception("zamery_attr_answer: GD notify failed")
+
+
+def _zam_pay_group(z: dict[str, Any]) -> str:
+    """Группа замера на экране оплаты: paid | requested | not_requested.
+
+    «Оплачено» = paid_amount проставлен; иначе — по pay_status.
+    """
+    if z.get("paid_amount") is not None:
+        return "paid"
+    return z.get("pay_status") or "not_requested"
+
+
+_DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+_REQ_ROLE_SHORT = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}
+_REQ_STATUS_LABEL = {
+    "open": "⏳ Новая", "in_progress": "🔄 В работе",
+    "done": "✅ Выполнена", "rejected": "❌ Отклонена",
+}
+
+
+def _format_request_card(
+    req: dict[str, Any], initiator: str, *, with_schedule: bool,
+) -> str:
+    """Карточка заявки на замер в эталон-дизайне (compact: длинные кирилл.
+    значения не выравниваются вправо — [[feedback_card_telegram_pre_alignment]])."""
+    role_short = _REQ_ROLE_SHORT.get(req.get("requester_role", ""), "")
+    source_label = ZAMERY_SOURCE_LABELS.get(req.get("source_type", ""), "—")
+    status_label = _REQ_STATUS_LABEL.get(req.get("status", ""), "❓")
+
+    # user 29.06: для замерщика показываем ТОЛЬКО дивизион менеджера (НПН/КВ/КИА),
+    # без личного имени/username (initiator больше не выводим).
+    mgr = role_short or "—"
+    items: list[tuple[str, str]] = [
+        ("Менеджер", mgr),
+        ("Адрес", html.quote(req.get("address") or "—")),
     ]
+    if req.get("client_contact"):
+        items.append(("Контакт", html.quote(str(req["client_contact"]))))
+    if req.get("volume_m2"):
+        items.append(("Объём", f"{req['volume_m2']} м²"))
+    mkad_km = req.get("mkad_km") or 0
+    mkad_surcharge = req.get("mkad_surcharge") or 0
+    if mkad_km and mkad_km > 0:
+        items.append((
+            "МКАД",
+            f"{mkad_km} км" + (f" (+{_fmt_money(mkad_surcharge)})" if mkad_surcharge else ""),
+        ))
+    else:
+        items.append(("МКАД", "внутри"))
+    if req.get("total_cost"):
+        items.append(("Стоимость", _fmt_money(req["total_cost"])))
+    # Дата/время замера (указывает менеджер при создании заявки) — показываем ВСЕГДА
+    # (вход. заявка + «Мои замеры»), user 29.06.
+    if req.get("scheduled_date"):
+        try:
+            d = date.fromisoformat(req["scheduled_date"])
+            items.append(("Дата", f"{_DOW[d.weekday()]} {d.strftime('%d.%m.%Y')}"))
+        except (ValueError, TypeError):
+            pass
+    if req.get("scheduled_time_interval"):
+        items.append(("Время", str(req["scheduled_time_interval"])))
+    if with_schedule:
+        if req.get("accept_comment"):
+            items.append(("Комментарий", html.quote(str(req["accept_comment"]))))
+    if req.get("description"):
+        items.append(("Описание", html.quote(str(req["description"]))))
+    items.append(("Источник", source_label))
+    items.append(("Статус", status_label))
+    items.append(("Создана", str(req.get("created_at") or "—")[:16]))
+    return format_card_section(
+        "📐", f"Заявка на замер #{req['id']}", items=items, compact=True,
+    )
+
+
+async def _render_my_objects(msg: Message, db: Database, user_id: int) -> None:
+    """Дашборд «Мои замеры» (эталон) — конверсия + кнопки подменю.
+    Общий для reply-входа и кнопки «⬅️ Назад»."""
+    conv = await db.get_zamery_conversion_stats(user_id)
+    items = [
+        ("Конверсия", f"{conv['conversion_pct']}%"),
+        ("Счетов", str(conv["total_with_invoice"])),
+        ("Замеров", str(conv["total_done"])),
+    ]
+    for r in conv["by_role"]:
+        items.append((_REQ_ROLE_SHORT.get(r.get("requester_role", ""), "?"), f"{r['pct']}%"))
+    text = format_card_section("📋", "Мои замеры", items=items)
+
+    active_reqs = await db.list_zamery_requests(assigned_to=user_id, status="in_progress", limit=50)
+    b = InlineKeyboardBuilder()
+    b.button(text=f"📐 Заявки на замер ({len(active_reqs)})", callback_data="zam_my:requests")
+    b.button(text="💰 Взаиморасчёты", callback_data="zam_my:settle")
+    b.adjust(1)
+    await msg.answer(text, reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data == "zam_my:settle")
+async def zamery_my_settlement(cb: CallbackQuery, db: Database) -> None:
+    """Замерщик: Взаиморасчёты — read-only витрина своего долга/платежей."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    uid = cb.from_user.id
+    summary = await db.get_zamery_settlement_summary(uid)
+    me = await db.get_user_optional(uid)
+    name = (me.full_name if me else None) or "Замерщик"
+    b = InlineKeyboardBuilder()
+    b.button(text="⬅️ Назад", callback_data="zam_my:back")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        format_zamery_settlement_card(summary, name), reply_markup=b.as_markup(),
+    )
 
 
 async def _render_payment_list(
@@ -887,84 +1012,48 @@ async def _render_payment_list(
     db: Database,
     user_id: int,
 ) -> None:
-    """Отрисовка «Оплата замеров» — карточки сразу + кнопки редактирования."""
-    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
-    unpaid = _get_unpaid_invoices(invoices)
-    paid_list = [
-        i for i in invoices
-        if i.get("zp_status") == "approved"
-        and i["status"] in (
-            InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
-            InvoiceStatus.CLOSING, InvoiceStatus.ENDED,
-        )
-    ]
+    """Отрисовка «Оплата замеров» — источник zamery_requests (ТЗ 06.07)."""
+    zamery = await db.list_zamery_for_payment(user_id)
     msg = target.message if isinstance(target, CallbackQuery) else target
 
-    if not unpaid and not paid_list:
-        await msg.answer("📭 Нет замеров для оплаты.")  # type: ignore[union-attr]
+    if not zamery:
+        await msg.answer("📭 Нет выполненных замеров для оплаты.")  # type: ignore[union-attr]
         return
 
-    # --- Статистика ---
-    not_requested = [i for i in unpaid if i.get("zp_status") == "not_requested"]
-    requested = [i for i in unpaid if i.get("zp_status") == "requested"]
+    to_pay = [z for z in zamery if _zam_pay_group(z) == "not_requested"]
+    on_review = [z for z in zamery if _zam_pay_group(z) == "requested"]
+    paid_list = [z for z in zamery if _zam_pay_group(z) == "paid"]
+    total_all = sum(z.get("total_cost") or 0 for z in zamery)
 
-    sum_not_req = sum(i.get("zp_zamery_total") or 0 for i in not_requested)
-    sum_requested = sum(i.get("zp_zamery_total") or 0 for i in requested)
-    sum_paid = sum(i.get("zp_zamery_total") or 0 for i in paid_list)
-    total_all = sum_not_req + sum_requested + sum_paid
+    # --- Шапка-сводка (эталон-v2: счётчики + Сумма в футере) ---
+    summary = format_card_section(
+        "💳", "Оплата замеров",
+        items=[
+            ("Всего", str(len(zamery))),
+            ("К оплате", str(len(to_pay))),
+            ("На проверке", str(len(on_review))),
+            ("Оплачено", str(len(paid_list))),
+        ],
+        footer=("Сумма", _fmt_money(total_all)),
+    )
+    await msg.answer(summary)  # type: ignore[union-attr]
 
-    total_count = len(unpaid) + len(paid_list)
-    header = f"💰 <b>Оплата замеров</b> · {total_count} шт."
-    if total_all:
-        header += f" · {int(total_all)}₽"
-    header += "\n"
-    parts = []
-    if not_requested:
-        s = f"❌ {len(not_requested)}"
-        if sum_not_req:
-            s += f" · {int(sum_not_req)}₽"
-        parts.append(s)
-    if requested:
-        s = f"⏳ {len(requested)}"
-        if sum_requested:
-            s += f" · {int(sum_requested)}₽"
-        parts.append(s)
-    if paid_list:
-        s = f"✅ {len(paid_list)}"
-        if sum_paid:
-            s += f" · {int(sum_paid)}₽"
-        parts.append(s)
-    if parts:
-        header += " | ".join(parts)
-    await msg.answer(header)  # type: ignore[union-attr]
+    # --- Карточки: каждый замер отдельным сообщением (заголовок = адрес) ---
+    for z in (to_pay + on_review + paid_list)[:30]:
+        grp = _zam_pay_group(z)
+        cost = z.get("total_cost")
+        items = [("Стоимость", _fmt_money(cost) if cost else "—")]
+        if grp == "paid" and z.get("paid_date"):
+            items.append(("Дата оплаты", str(z["paid_date"])))
+        items.append(("Статус", _ZAM_PAY_STATUS_LABEL.get(grp, "К оплате")))
+        card = format_card_section(_ZAM_PAY_STATUS_ICON.get(grp, "🟡"), _zam_ident(z), items=items)
+        await msg.answer(card)  # type: ignore[union-attr]
 
-    # --- Карточки: каждый замер отдельным сообщением ---
-    all_items = list(unpaid) + list(paid_list)
-    for inv in all_items[:30]:
-        zp = inv.get("zp_status", "not_requested")
-        cost = inv.get("zp_zamery_total")
-        addr = inv.get("object_address") or "—"
-        num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
-
-        icon = {"requested": "⏳", "approved": "✅"}.get(zp, "❌")
-        cost_str = f"<b>{int(cost)}₽</b>" if cost else "<i>не указана</i>"
-        card = f"{icon} <b>№{num}</b>\n📍 {addr}\n💵 Стоимость: {cost_str}"
-
-        b = InlineKeyboardBuilder()
-        if zp not in ("approved", "requested"):
-            b.button(text="✏️ Изменить стоимость", callback_data=f"zampay:view:{inv['id']}")
-        b.adjust(1)
-        await msg.answer(card, reply_markup=b.as_markup() if b.export() else None)  # type: ignore[union-attr]
-
-    # --- Кнопка «Отправить в оплату» ---
-    sendable = [
-        i for i in unpaid
-        if i.get("zp_zamery_total") and i.get("zp_zamery_total") > 0
-        and i.get("zp_status") == "not_requested"
-    ]
+    # --- Кнопка «Отправить в оплату» (только «К оплате» с ценой) ---
+    sendable = [z for z in to_pay if (z.get("total_cost") or 0) > 0]
     bottom_b = InlineKeyboardBuilder()
     if sendable:
-        total_send = int(sum(i["zp_zamery_total"] for i in sendable))
+        total_send = int(sum(z["total_cost"] for z in sendable))
         bottom_b.button(
             text=f"📤 Отправить в оплату · {len(sendable)} зам. · {total_send}₽",
             callback_data="zampay:send_batch",
@@ -992,124 +1081,45 @@ async def zamery_payment_back(cb: CallbackQuery, db: Database) -> None:
     await _render_payment_list(cb, db, cb.from_user.id)
 
 
-@router.callback_query(F.data.startswith("zampay:view:"))
-async def zamery_payment_card(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Карточка замера — нажатие сразу открывает ввод стоимости."""
-    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
-        return
-    await cb.answer()
-
-    try:
-        inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    except (ValueError, TypeError, IndexError):
-        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
-        return
-    inv = await db.get_invoice(inv_id)
-    if not inv:
-        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
-        return
-
-    zp = inv.get("zp_status", "not_requested")
-
-    # Если уже оплачен или на проверке — показать инфо, без редактирования
-    if zp in ("approved", "requested"):
-        zp_label = {"requested": "⏳ На проверке", "approved": "✅ Оплачена"}.get(zp, "")
-        cost = inv.get("zp_zamery_total")
-        cost_str = f"<b>{int(cost)}₽</b>" if cost else "<b>—</b>"
-        addr = inv.get("object_address", "—")
-        text = f"💰 №{inv['invoice_number']} · {addr}\n💵 {cost_str} · {zp_label}"
-        b = InlineKeyboardBuilder()
-        b.button(text="⬅️ Назад", callback_data="zampay:back")
-        b.adjust(1)
-        await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
-        return
-
-    # Сразу открываем редактирование стоимости
-    await state.clear()
-    await state.update_data(edit_cost_inv_id=inv_id)
-    await state.set_state(ZameryCostEditSG.enter_cost)
-
-    cost = inv.get("zp_zamery_total")
-    addr = inv.get("object_address") or "—"
-    hint = f"<b>{int(cost)}₽</b>" if cost else "<i>—</i>"
-
-    text = f"✏️ №{inv['invoice_number']} · {addr}\n💵 Сейчас: {hint}\n\nВведите новую стоимость (₽):"
-    b = InlineKeyboardBuilder()
-    b.button(text="⬅️ Отмена", callback_data="zampay:back")
-    b.adjust(1)
-    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
-
-
-@router.message(ZameryCostEditSG.enter_cost)
-async def zamery_edit_cost_value(message: Message, state: FSMContext, db: Database) -> None:
-    """Сохранить новую стоимость и вернуться к списку."""
-    text = (message.text or "").strip().replace(",", ".")
-    try:
-        cost = float(text)
-        if cost <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("⚠️ Введите число > 0:")
-        return
-
-    data = await state.get_data()
-    inv_id = data.get("edit_cost_inv_id")
-    if not inv_id:
-        await message.answer("❌ Ошибка состояния. Попробуйте снова.")
-        await state.clear()
-        return
-    await db.update_invoice(
-        inv_id,
-        zp_zamery_total=cost,
-        zp_zamery_details_json=json.dumps([{"description": "Замер", "cost": cost, "count": 1}]),
-    )
-    await state.clear()
-
-    inv = await db.get_invoice(inv_id)
-    await message.answer(
-        f"✅ №{inv['invoice_number'] if inv else inv_id} — <b>{int(cost)}₽</b>"
-    )
-    # Вернуть обновлённый список с пересчитанными итогами
-    uid = message.from_user.id  # type: ignore[union-attr]
-    await _render_payment_list(message, db, uid)
-
-
 # --- Пакетная отправка в оплату ГД ---
 
 @router.callback_query(F.data == "zampay:send_batch")
 async def zamery_send_batch(
     cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
 ) -> None:
-    """Отправить все неоплаченные замеры с ценой → задача ГД."""
+    """Отправить все неоплаченные замеры «К оплате» с ценой → превью."""
     if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
         return
     await cb.answer()
     user_id = cb.from_user.id
 
-    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
-    unpaid = _get_unpaid_invoices(invoices)
+    zamery = await db.list_zamery_for_payment(user_id)
     sendable = [
-        i for i in unpaid
-        if i.get("zp_zamery_total") and i.get("zp_zamery_total") > 0
-        and i.get("zp_status") == "not_requested"
+        z for z in zamery
+        if _zam_pay_group(z) == "not_requested" and (z.get("total_cost") or 0) > 0
     ]
 
     if not sendable:
         await cb.message.answer("⚠️ Нет замеров для отправки.")  # type: ignore[union-attr]
         return
 
-    # Показать итоговый расчёт карточкой
-    total = sum(i["zp_zamery_total"] for i in sendable)
-
-    text = f"📋 <b>Расчёт · {len(sendable)} зам. · {int(total)}₽</b>\n\n"
-    for idx, inv in enumerate(sendable, 1):
-        addr = (inv.get("object_address") or "—")[:25]
-        text += f"{idx}. №{inv['invoice_number']} · {addr} · {int(inv['zp_zamery_total'])}₽\n"
-    text += "\nОтправить в оплату ГД?"
+    # Показать итоговый расчёт карточкой. Число СЛЕВА (моноширинно от фикс. старта),
+    # адрес — в конце строки: при переменной кириллице колонка сумм не съезжает
+    # ([[feedback_card_telegram_pre_alignment]]).
+    total = sum(z["total_cost"] for z in sendable)
+    indent = "   "
+    rows = [
+        f"{indent}{_fmt_money(z['total_cost']):>7}  {_zam_ident(z)}"
+        for z in sendable
+    ]
+    body = "\n".join(
+        rows + [indent + "━" * 14, f"{indent}Итого {_fmt_money(total)}"]
+    )
+    text = f"📤 <b>Отправить в оплату</b>\n<pre>{body}</pre>\n\nОтправить ГД?"
 
     b = InlineKeyboardBuilder()
     b.button(
-        text=f"✅ Отправить · {len(sendable)} зам. · {int(total)}₽",
+        text=f"✅ Отправить · {len(sendable)} зам. · {_fmt_money(total)} ₽",
         callback_data="zampay:confirm_batch",
     )
     b.button(text="⬅️ Назад", callback_data="zampay:back")
@@ -1118,39 +1128,38 @@ async def zamery_send_batch(
 
 
 @router.callback_query(F.data == "zampay:confirm_batch")
+@money_confirm_guard
 async def zamery_confirm_batch(
     cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
 ) -> None:
-    """Подтверждение → создать задачу ГД, обновить статусы."""
+    """Подтверждение → создать задачу ГД (флоу как ЗП РП), пометить requested."""
     if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
         return
     await cb.answer()
     user_id = cb.from_user.id
 
-    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
-    unpaid = _get_unpaid_invoices(invoices)
+    zamery = await db.list_zamery_for_payment(user_id)
     sendable = [
-        i for i in unpaid
-        if i.get("zp_zamery_total") and i.get("zp_zamery_total") > 0
-        and i.get("zp_status") == "not_requested"
+        z for z in zamery
+        if _zam_pay_group(z) == "not_requested" and (z.get("total_cost") or 0) > 0
     ]
     if not sendable:
         await cb.message.answer("⚠️ Нет замеров для отправки.")  # type: ignore[union-attr]
         return
 
-    total = sum(i["zp_zamery_total"] for i in sendable)
-    inv_ids = [i["id"] for i in sendable]
+    total = sum(z["total_cost"] for z in sendable)
+    zam_ids = [z["id"] for z in sendable]
 
-    # Обновить статусы → requested
-    for inv in sendable:
-        await db.set_invoice_zp_status(inv["id"], "requested")
-
-    # Создать задачу для ГД
+    # Создать задачу для ГД. resolve ДО смены статусов — если ГД не найден, не оставим
+    # замеры «повисшими» в requested.
     from ..enums import TaskType
     gd_id = await resolve_default_assignee(db, config, Role.GD)
     if not gd_id:
         await cb.message.answer("⚠️ ГД не найден.")  # type: ignore[union-attr]
         return
+
+    # Пометить замеры → requested («На проверке»)
+    await db.set_zamery_pay_status(zam_ids, "requested", user_id)
 
     initiator = await get_initiator_label(db, user_id)
     task = await db.create_task(
@@ -1161,26 +1170,29 @@ async def zamery_confirm_batch(
         assigned_to=int(gd_id),
         due_at_iso=None,
         payload={
-            "invoice_ids": inv_ids,
+            "zam_ids": zam_ids,
             "total": total,
             "count": len(sendable),
-            "zamery_user_id": user_id,
+            "surveyor_id": user_id,
         },
     )
 
-    # Уведомить ГД
-    lines = []
-    for inv in sendable:
-        lines.append(f"• №{inv['invoice_number']} — {int(inv['zp_zamery_total'])}₽")
+    # Уведомить ГД (эталон: число слева / адрес справа, [[feedback_card_telegram_pre_alignment]]).
+    # Кнопки = флоу выплаты ЗП замерщика (ZamZpPayCb → тумблер-выбор → платёж в леджер).
+    indent = "   "
+    rows = [
+        f"{indent}{_fmt_money(z['total_cost']):>7}  {_zam_ident(z)}"
+        for z in sendable
+    ]
+    body = "\n".join(rows + [indent + "━" * 14, f"{indent}Итого {_fmt_money(total)}"])
     gd_text = (
-        f"💰 <b>ЗП Замерщика</b>\n"
-        f"👤 От: {initiator}\n\n"
-        + "\n".join(lines) + "\n\n"
-        f"💵 <b>Итого: {int(total)}₽</b> ({len(sendable)} замеров)\n"
+        f"💰 <b>ЗП Замерщика — {html.quote(initiator)}</b>\n"
+        f"<pre>{body}</pre>\n"
+        f"({len(sendable)} зам.)"
     )
     b = InlineKeyboardBuilder()
-    b.button(text="✅ ЗП ОК", callback_data=f"zampay_gd:ok:{task['id']}")
-    b.button(text="❌ Отклонить", callback_data=f"zampay_gd:no:{task['id']}")
+    b.button(text="✅ Выплатить", callback_data=ZamZpPayCb(task_id=task["id"]).pack())
+    b.button(text="❌ Отклонить", callback_data=ZamZpRejectCb(task_id=task["id"]).pack())
     b.adjust(2)
     await notifier.safe_send(int(gd_id), gd_text, reply_markup=b.as_markup())
     await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
@@ -1191,104 +1203,9 @@ async def zamery_confirm_batch(
     )
 
 
-# --- ГД: одобрение / отклонение пакетной ЗП замерщика ---
-
-@router.callback_query(F.data.startswith("zampay_gd:ok:"))
-async def zamery_batch_gd_approve(
-    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
-) -> None:
-    """ГД: одобрить пакетную ЗП замерщика."""
-    from .auth import require_role_callback as _rrc
-    if not await _rrc(cb, db, roles=[Role.GD]):
-        return
-    await cb.answer("✅ ЗП ОК")
-
-    try:
-        task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    except (ValueError, TypeError, IndexError):
-        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
-        return
-    task = await db.get_task(task_id)
-    if not task:
-        await cb.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
-        return
-
-    from ..utils import try_json_loads
-    payload = try_json_loads(task.get("payload_json")) or {}
-    inv_ids = payload.get("invoice_ids", [])
-    zamery_uid = payload.get("zamery_user_id")
-    total = payload.get("total", 0)
-
-    # Одобрить все
-    for inv_id in inv_ids:
-        await db.set_invoice_zp_status(inv_id, "approved")
-
-    # Закрыть задачу
-    await db.update_task_status(task_id, TaskStatus.DONE)
-
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ ЗП замерщика одобрена: {int(total)}₽ ({len(inv_ids)} замеров)"
-    )
-
-    # Обновить клавиатуру ГД (badge «Оплата поставщику»)
-    await refresh_recipient_keyboard(notifier, db, config, cb.from_user.id)
-
-    # Уведомить замерщика
-    if zamery_uid:
-        await notifier.safe_send(
-            int(zamery_uid),
-            f"✅ <b>ЗП одобрена!</b>\n\n"
-            f"💵 Сумма: {int(total)}₽ ({len(inv_ids)} замеров)",
-        )
-        await refresh_recipient_keyboard(notifier, db, config, int(zamery_uid))
-
-
-@router.callback_query(F.data.startswith("zampay_gd:no:"))
-async def zamery_batch_gd_reject(
-    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
-) -> None:
-    """ГД: отклонить пакетную ЗП замерщика."""
-    from .auth import require_role_callback as _rrc
-    if not await _rrc(cb, db, roles=[Role.GD]):
-        return
-    await cb.answer("❌ Отклонено")
-
-    try:
-        task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    except (ValueError, TypeError, IndexError):
-        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
-        return
-    task = await db.get_task(task_id)
-    if not task:
-        await cb.message.answer("❌ Задача не найдена.")  # type: ignore[union-attr]
-        return
-
-    from ..utils import try_json_loads
-    payload = try_json_loads(task.get("payload_json")) or {}
-    inv_ids = payload.get("invoice_ids", [])
-    zamery_uid = payload.get("zamery_user_id")
-
-    # Вернуть статусы
-    for inv_id in inv_ids:
-        await db.set_invoice_zp_status(inv_id, "not_requested")
-
-    # Закрыть задачу
-    await db.update_task_status(task_id, TaskStatus.REJECTED)
-
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"❌ ЗП замерщика отклонена ({len(inv_ids)} замеров)"
-    )
-
-    # Обновить клавиатуру ГД
-    await refresh_recipient_keyboard(notifier, db, config, cb.from_user.id)
-
-    if zamery_uid:
-        await notifier.safe_send(
-            int(zamery_uid),
-            "❌ <b>ЗП отклонена</b>\n\n"
-            "Свяжитесь с ГД для уточнения.",
-        )
-        await refresh_recipient_keyboard(notifier, db, config, int(zamery_uid))
+# ГД-сторона выплаты ЗП замерщика (одобрение/отклонение пакета) перенесена в
+# handlers/gd.py — флоу ZamZp* (тумблер-выбор замеров → платёж в леджер +
+# mark_zamery_paid), объединён с взаиморасчётами по образцу ЗП РП (ТЗ 06.07).
 
 
 # =====================================================================
@@ -1328,6 +1245,20 @@ _RU_MONTH_NAMES = [
 ]
 
 
+def _split_blackouts(blackouts: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
+    """(off_dates, busy_dates) по полю kind: 'busy' = «День занят» (закрыт для новых
+    замеров, но взятые остаются), иначе — выходной (день полностью недоступен)."""
+    off: set[str] = set()
+    busy: set[str] = set()
+    for bl in blackouts:
+        d = bl["blackout_date"]
+        if (bl.get("kind") or "off") == "busy":
+            busy.add(d)
+        else:
+            off.add(d)
+    return off, busy
+
+
 async def _get_monthly_stats(
     db: Database, uid: int, target_date: date,
 ) -> dict[str, int]:
@@ -1339,7 +1270,8 @@ async def _get_monthly_stats(
         last_day = target_date.replace(month=target_date.month + 1, day=1) - timedelta(days=1)
     zamery = await db.list_zamery_for_schedule(uid, first_day.isoformat(), last_day.isoformat())
     blackouts = await db.list_zamery_blackout_dates(uid, first_day.isoformat(), last_day.isoformat())
-    return {"zamery": len(zamery), "blackouts": len(blackouts)}
+    off, busy = _split_blackouts(blackouts)
+    return {"zamery": len(zamery), "blackouts": len(off), "busy": len(busy)}
 
 
 async def _render_schedule_main(
@@ -1373,13 +1305,15 @@ async def _render_schedule_main(
 
     # --- Карточка статистики ---
     text = f"📅 <b>График замеров</b> · {_RU_MONTH_NAMES[cur_d.month]} {cur_d.year}\n"
-    text += f"📐 {cur_s['zamery']} замеров · 🚫 {cur_s['blackouts']} выходных\n\n"
+    text += f"📐 {cur_s['zamery']} замеров · 🚫 {cur_s['blackouts']} вых · 🔒 {cur_s.get('busy', 0)} занят\n\n"
     for d, s in months_stats:
         is_cur = d.month == today.month and d.year == today.year
         icon = "▶️" if is_cur else "▫️"
         text += f"{icon} {_RU_MONTH_NAMES[d.month]}: <b>{s['zamery']}</b>"
         if s["blackouts"]:
             text += f" · 🚫{s['blackouts']}"
+        if s.get("busy"):
+            text += f" · 🔒{s['busy']}"
         text += "\n"
     text += "\n"
 
@@ -1400,13 +1334,15 @@ async def _render_schedule_main(
             label = f"📍 {label}"
 
         cnt = len(zamery)
-        bl = len(blackouts)
+        off_w, busy_w = _split_blackouts(blackouts)
         badge = ""
         if cnt > 0:
             badge += f" · 📐{cnt}"
-        if bl > 0:
-            badge += f" · 🚫{bl}"
-        if cnt == 0 and bl == 0:
+        if off_w:
+            badge += f" · 🚫{len(off_w)}"
+        if busy_w:
+            badge += f" · 🔒{len(busy_w)}"
+        if cnt == 0 and not off_w and not busy_w:
             badge = " · свободна"
 
         b.button(
@@ -1415,6 +1351,7 @@ async def _render_schedule_main(
         )
 
     b.button(text="🚫 Добавить выходной", callback_data="zamsched:blackout:add")
+    b.button(text="🔒 День занят", callback_data="zamsched:busy:add")
     b.button(text="🔄 Обновить", callback_data="zamsched:refresh")
     b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
@@ -1451,7 +1388,8 @@ async def _render_schedule_week(
         d = z["scheduled_date"]
         zam_by_date.setdefault(d, []).append(z)
 
-    blackout_set = {bl["blackout_date"] for bl in blackouts}
+    off_set, busy_set = _split_blackouts(blackouts)
+    block_set = off_set | busy_set  # дни, закрытые для НОВЫХ замеров (вых + занят)
     blackout_map = {bl["blackout_date"]: bl for bl in blackouts}
 
     text = f"📅 <b>{_format_date_short(mon)} — {_format_date_short(sun)}</b>\n\n"
@@ -1462,10 +1400,17 @@ async def _render_schedule_week(
         wd = _RU_WEEKDAYS[day.weekday()]
         day_label = f"{day.day} {_RU_MONTHS[day.month]} ({wd})"
 
-        if ds in blackout_set:
+        if ds in off_set:
             bl = blackout_map.get(ds)
             cmt = f" ({bl['comment']})" if bl and bl.get("comment") else ""
             text += f"🚫 <b>{day_label}</b> — выходной{cmt}\n"
+        elif ds in busy_set:
+            text += f"🔒 <b>{day_label}</b> — занят (закрыт для новых)\n"
+            for z in zam_by_date.get(ds, []):
+                interval = z.get("scheduled_time_interval") or ""
+                mgr = z.get("manager_name") or "—"
+                addr = z.get("address") or "—"
+                text += f"  ⏰ {interval} · 👤 {mgr} · 📍 {addr}\n"
         elif ds in zam_by_date:
             day_zamery = zam_by_date[ds]
             text += f"📐 <b>{day_label}</b> · {len(day_zamery)} замер(ов)\n"
@@ -1484,7 +1429,7 @@ async def _render_schedule_week(
     for i in range(7):
         day = mon + timedelta(days=i)
         ds = day.isoformat()
-        if day >= today and ds not in blackout_set and ds not in zam_by_date:
+        if day >= today and ds not in block_set and ds not in zam_by_date:
             wd = _RU_WEEKDAYS[day.weekday()]
             b.button(
                 text=f"🟢 {day.day} {_RU_MONTHS[day.month]} ({wd}) — записать",
@@ -1493,7 +1438,7 @@ async def _render_schedule_week(
     for i in range(7):
         day = mon + timedelta(days=i)
         ds = day.isoformat()
-        if day >= today and ds not in blackout_set and ds in zam_by_date:
+        if day >= today and ds not in block_set and ds in zam_by_date:
             wd = _RU_WEEKDAYS[day.weekday()]
             b.button(
                 text=f"📐 {day.day} {_RU_MONTHS[day.month]} ({wd}) — доп. замер",
@@ -1505,10 +1450,15 @@ async def _render_schedule_week(
     if week_offset < 8:
         b.button(text="След. неделя ➡️", callback_data=f"zamsched:week:{week_offset + 1}")
     b.button(text="🚫 Добавить выходной", callback_data="zamsched:blackout:add")
+    b.button(text="🔒 День занят", callback_data="zamsched:busy:add")
     for bl in blackouts:
         bd = date.fromisoformat(bl["blackout_date"])
+        if (bl.get("kind") or "off") == "busy":
+            rm_text = f"🔓 Убрать занят {bd.day} {_RU_MONTHS[bd.month]}"
+        else:
+            rm_text = f"❌ Убрать выходной {bd.day} {_RU_MONTHS[bd.month]}"
         b.button(
-            text=f"❌ Убрать выходной {bd.day} {_RU_MONTHS[bd.month]}",
+            text=rm_text,
             callback_data=f"zamsched:blackout:rm:{bl['id']}:{week_offset}",
         )
     b.button(text="⬅️ К списку недель", callback_data="zamsched:main")
@@ -1843,10 +1793,9 @@ async def _finalize_schedule_book(
     user = await db.get_user_optional(uid)
     requester_role = resolve_active_menu_role(uid, user.role if user else None) or "zamery"
 
-    # Cost calculation
-    base_cost = 2500
-    mkad_surcharge = int(mkad_km * 30) if mkad_km else 0
-    total_cost = base_cost + mkad_surcharge
+    # Cost calculation — единый тариф из config (общий хелпер с manager_new)
+    from ..config import compute_zamery_cost
+    base_cost, mkad_surcharge, total_cost = compute_zamery_cost(mkad_km)
 
     # Create zamery request
     zam_req_id = await db.create_zamery_request(
@@ -1958,16 +1907,16 @@ async def _finalize_schedule_book(
 
 # --- Blackout: добавить ---
 
-@router.callback_query(F.data == "zamsched:blackout:add")
-async def zamery_blackout_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Start blackout date input."""
-    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
-        return
-    await cb.answer()
+async def _render_day_mark_picker(
+    cb: CallbackQuery, state: FSMContext, kind: str,
+) -> None:
+    """Пикер даты для отметки дня (kind='off' выходной / 'busy' день занят).
+    Сохраняет kind в state для ручного ввода и формирует pick-кнопки нужного типа."""
     await state.clear()
     await state.set_state(ZameryBlackoutSG.pick_dates)
+    await state.update_data(bo_kind=kind)
 
-    # Show next 14 days as inline buttons for quick pick
+    pick_prefix = "zamsched:busy:pick" if kind == "busy" else "zamsched:blackout:pick"
     today = date.today()
     b = InlineKeyboardBuilder()
     for i in range(1, 15):
@@ -1975,48 +1924,83 @@ async def zamery_blackout_start(cb: CallbackQuery, state: FSMContext, db: Databa
         wd = _RU_WEEKDAYS[d.weekday()]
         b.button(
             text=f"{d.day} {_RU_MONTHS[d.month]} ({wd})",
-            callback_data=f"zamsched:blackout:pick:{d.isoformat()}",
+            callback_data=f"{pick_prefix}:{d.isoformat()}",
         )
     b.button(text="⬅️ Назад", callback_data="zamsched:blackout:cancel")
     b.adjust(2, 2, 2, 2, 2, 2, 2, 1)
 
+    title = (
+        "🔒 <b>День занят</b>\n\nДень закроется для НОВЫХ замеров (взятые останутся).\n"
+        if kind == "busy"
+        else "🚫 <b>Добавить выходной</b>\n\n"
+    )
     await cb.message.answer(  # type: ignore[union-attr]
-        "🚫 <b>Добавить выходной</b>\n\n"
-        "Выберите дату или введите вручную (ДД.ММ.ГГГГ):",
+        title + "Выберите дату или введите вручную (ДД.ММ.ГГГГ):",
         reply_markup=b.as_markup(),
     )
 
 
-@router.callback_query(F.data.startswith("zamsched:blackout:pick:"))
-async def zamery_blackout_pick(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Quick-pick a blackout date from inline buttons."""
+@router.callback_query(F.data == "zamsched:blackout:add")
+async def zamery_blackout_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Start blackout (выходной) date input."""
     if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
         return
     await cb.answer()
+    await _render_day_mark_picker(cb, state, "off")
 
-    ds = cb.data.split(":")[-1]  # type: ignore[union-attr]
+
+@router.callback_query(F.data == "zamsched:busy:add")
+async def zamery_busy_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Start «день занят» date input."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    await _render_day_mark_picker(cb, state, "busy")
+
+
+async def _finalize_day_mark(
+    cb: CallbackQuery, state: FSMContext, db: Database, ds: str, kind: str,
+) -> None:
+    """Сохранить отметку дня (kind) по выбранной дате и вернуться к графику."""
     uid = cb.from_user.id
-
     try:
         d = date.fromisoformat(ds)
     except ValueError:
         await cb.message.answer("❌ Некорректная дата.")  # type: ignore[union-attr]
         return
 
-    await db.add_zamery_blackout_date(uid, ds)
+    await db.add_zamery_blackout_date(uid, ds, kind=kind)
     await state.clear()
 
     wd = _RU_WEEKDAYS[d.weekday()]
+    label = "День занят" if kind == "busy" else "Выходной"
     await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ Выходной добавлен: <b>{d.day} {_RU_MONTHS[d.month]} ({wd})</b>"
+        f"✅ {label} добавлен: <b>{d.day} {_RU_MONTHS[d.month]} ({wd})</b>"
     )
-    # Refresh main schedule
     await _render_schedule_main(cb, db, uid, edit_existing=False)
+
+
+@router.callback_query(F.data.startswith("zamsched:blackout:pick:"))
+async def zamery_blackout_pick(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Quick-pick a выходной date from inline buttons."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    await _finalize_day_mark(cb, state, db, cb.data.split(":")[-1], "off")  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.startswith("zamsched:busy:pick:"))
+async def zamery_busy_pick(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Quick-pick a «день занят» date from inline buttons."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    await _finalize_day_mark(cb, state, db, cb.data.split(":")[-1], "busy")  # type: ignore[union-attr]
 
 
 @router.message(ZameryBlackoutSG.pick_dates)
 async def zamery_blackout_manual(message: Message, state: FSMContext, db: Database) -> None:
-    """Manual date entry for blackout (DD.MM.YYYY)."""
+    """Manual date entry for выходной/день занят (DD.MM.YYYY). Тип берётся из state."""
     uid = message.from_user.id  # type: ignore[union-attr]
     text = (message.text or "").strip()
 
@@ -2031,12 +2015,15 @@ async def zamery_blackout_manual(message: Message, state: FSMContext, db: Databa
         await message.answer("⚠️ Дата должна быть в будущем.")
         return
 
-    await db.add_zamery_blackout_date(uid, d.isoformat())
+    data = await state.get_data()
+    kind = "busy" if data.get("bo_kind") == "busy" else "off"
+    await db.add_zamery_blackout_date(uid, d.isoformat(), kind=kind)
     await state.clear()
 
     wd = _RU_WEEKDAYS[d.weekday()]
+    label = "День занят" if kind == "busy" else "Выходной"
     await message.answer(
-        f"✅ Выходной добавлен: <b>{d.day} {_RU_MONTHS[d.month]} ({wd})</b>"
+        f"✅ {label} добавлен: <b>{d.day} {_RU_MONTHS[d.month]} ({wd})</b>"
     )
     await _render_schedule_main(message, db, uid, edit_existing=False)
 
@@ -2070,7 +2057,7 @@ async def zamery_blackout_remove(cb: CallbackQuery, db: Database) -> None:
 
     await db.remove_zamery_blackout_date(bl_id)
 
-    await cb.message.answer("✅ Выходной удалён.")  # type: ignore[union-attr]
+    await cb.message.answer("✅ Отметка дня снята.")  # type: ignore[union-attr]
 
     await _render_schedule_week(cb, db, cb.from_user.id, week_offset, edit_existing=False)
 
@@ -2106,11 +2093,12 @@ async def zamery_zp_start(
         address=inv.get("object_address", "-"),
     )
 
+    from ..config import ZAMERY_BASE_COST
     await cb.message.answer(  # type: ignore[union-attr]
         f"💰 <b>Расчёт ЗП — Счёт №{inv['invoice_number']}</b>\n\n"
         f"📍 Адрес: {inv.get('object_address', '-')}\n\n"
         "Введите <b>стоимость замера</b> (число, ₽):\n"
-        "По умолчанию: <b>2500₽</b>\n"
+        f"По умолчанию: <b>{ZAMERY_BASE_COST}₽</b>\n"
         "Для отмены: <code>/cancel</code>",
     )
 
@@ -2218,14 +2206,16 @@ async def zamery_zp_confirm_count(
     # Отправляем ГД
     gd_id = await resolve_default_assignee(db, config, Role.GD)
     initiator = await get_initiator_label(db, message.from_user.id)
-    summary = (
-        f"💰 <b>Расчёт ЗП замерщика</b>\n"
-        f"👤 От: {initiator}\n\n"
-        f"📄 Счёт №: <code>{invoice_number}</code>\n"
-        f"📍 Адрес: {address}\n\n"
-        f"Замеров: <b>{count}</b>\n"
-        f"Цена за замер: <b>{cost:,.0f}₽</b>\n"
-        f"<b>Итого: {total:,.0f}₽</b>"
+    summary = format_card_section(
+        "💰", f"Расчёт ЗП — {html.quote(initiator)}",
+        items=[
+            ("Счёт", html.quote(str(invoice_number))),
+            ("Адрес", html.quote(str(address))),
+            ("Замеров", str(count)),
+            ("Цена за замер", _fmt_money(cost)),
+        ],
+        footer=("Итого", _fmt_money(total)),
+        compact=True,
     )
 
     if gd_id:
@@ -2288,20 +2278,18 @@ async def zamery_zp_custom(
         )
         await db.set_invoice_zp_status(invoice_id, "requested")
 
-        # Формируем карточку для ГД
-        lines = []
-        for i, e in enumerate(entries, 1):
-            lines.append(f"  {i}. {e['description']} — {e['cost']:,.0f}₽")
-        details_text = "\n".join(lines)
-
+        # Карточка для ГД (эталон: число слева / описание справа)
         initiator = await get_initiator_label(db, message.from_user.id)
+        indent = "   "
+        rows = [
+            f"{indent}{_fmt_money(e['cost']):>7}  {html.quote(str(e['description']))}"
+            for e in entries
+        ]
+        body = "\n".join(rows + [indent + "━" * 14, f"{indent}Итого {_fmt_money(total)}"])
         summary = (
-            f"💰 <b>Расчёт ЗП замерщика</b>\n"
-            f"👤 От: {initiator}\n\n"
-            f"📄 Счёт №: <code>{invoice_number}</code>\n"
-            f"📍 Адрес: {address}\n\n"
-            f"Замеры:\n{details_text}\n\n"
-            f"<b>Итого: {total:,.0f}₽</b>"
+            f"💰 <b>Расчёт ЗП — {html.quote(initiator)}</b>\n"
+            f"Счёт {html.quote(str(invoice_number))} · {html.quote(str(address))}\n"
+            f"<pre>{body}</pre>"
         )
 
         gd_id = await resolve_default_assignee(db, config, Role.GD)
@@ -2371,6 +2359,7 @@ async def zamery_zp_custom(
 # =====================================================================
 
 @router.callback_query(F.data.startswith("zamzp_approve:"))
+@money_confirm_guard
 async def zamery_zp_approve(
     cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
 ) -> None:

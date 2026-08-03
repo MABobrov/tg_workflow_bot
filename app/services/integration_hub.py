@@ -78,6 +78,19 @@ class IntegrationHub:
         """Re-export one invoice row to the Invoices sheet."""
         await self.push("invoice_row_upsert", {"invoice_id": invoice_id})
 
+    async def sync_advances_journal(self) -> None:
+        """ТЗ 2026-05-19 блок C: пересобрать лист «Авансы монтажников».
+
+        Безопасно: ошибки логируются, исключения не пробрасываются — критичные
+        бизнес-flows не должны падать из-за sheets.
+        """
+        if not self.sheets:
+            return
+        try:
+            await self.sheets.sync_advances_journal_sheet(self.db)
+        except Exception:
+            log.warning("sync_advances_journal failed", exc_info=True)
+
     async def maybe_create_lead(self, project_id: int) -> None:
         if not self.amocrm:
             return
@@ -138,13 +151,35 @@ class IntegrationHub:
                         except Exception:
                             log.debug("Failed to get edo_stats for invoice %s", inv_id, exc_info=True)
                             inv["_edo_stats"] = {}
+                        try:
+                            inv["_installer_id"] = await self.db.get_installer_id_for_invoice(inv_id)
+                        except Exception:
+                            log.debug("Failed to get installer_id for invoice %s", inv_id, exc_info=True)
+                            inv["_installer_id"] = None
+                        if inv.get("is_credit"):
+                            try:
+                                inv["_credit_expenses"] = await self.db.get_credit_expenses_summary(inv_id)
+                            except Exception:
+                                inv["_credit_expenses"] = {}
+                            try:
+                                inv["_credit_carry_in"] = await self.db.get_credit_carry_in(inv_id)
+                            except Exception:
+                                inv["_credit_carry_in"] = 0.0
                         cost = None
                         if not inv.get("parent_invoice_id"):
                             try:
                                 cost = await self.db.get_full_invoice_cost_card(inv_id)
                             except Exception:
                                 log.debug("Failed to get cost_card for invoice %s", inv_id, exc_info=True)
-                        await self.sheets.upsert_invoice(inv, manager_label=manager_label, cost=cost)
+                        # ТЗ 2026-05-19 блок C: Invoices DB-DF — авансы монтажника.
+                        advance = None
+                        try:
+                            advance = await self.db.get_invoice_advance_metrics(inv_id)
+                        except Exception:
+                            log.debug("Failed to get advance_metrics for invoice %s", inv_id, exc_info=True)
+                        await self.sheets.upsert_invoice(
+                            inv, manager_label=manager_label, cost=cost, advance=advance,
+                        )
                         log.info("Synced invoice row #%s (%s) to Invoices sheet", inv_id, inv.get("invoice_number"))
                 elif ev.kind == "amocrm_create_lead" and self.amocrm:
                     pid = int(ev.payload["project_id"])

@@ -321,6 +321,28 @@ async def urgent_gd_finalize(
 
 
 # ===========================================================================
+# "📞 Связь с ГД" — единая кнопка монтажника (поведение = «Не срочно ГД»)
+# ===========================================================================
+
+@router.message(F.text == "📞 Связь с ГД")
+async def start_gd_contact(message: Message, state: FSMContext, db: Database) -> None:
+    """Монтажник: единая «Связь с ГД». Переиспользует поток NOT_URGENT_GD
+    (задача ГД, дедлайн 7 дней, без рассылки в рабочий чат), но с нейтральными
+    формулировками «Связь с ГД» вместо «Не срочно ГД»."""
+    if not await require_role_message(message, db, roles=ALLOWED_ROLES):
+        return
+    await state.clear()
+    await state.update_data(gd_contact=True)
+    await _show_invoice_picker_or_skip(
+        message, state, db,
+        title="📞 <b>Связь с ГД</b>",
+        step_label="Шаг 1/2",
+        inv_prefix="noturggd_inv",
+        desc_state=NotUrgentGDSG.description.state,
+    )
+
+
+# ===========================================================================
 # "📩 Не срочно ГД" — задача с пониженным приоритетом
 # ===========================================================================
 
@@ -346,6 +368,8 @@ async def not_urgent_gd_pick_invoice(cb: CallbackQuery, state: FSMContext, db: D
     linked = None if val == "skip" else int(val)
     await state.update_data(linked_invoice_id=linked)
     await state.set_state(NotUrgentGDSG.description)
+    data = await state.get_data()
+    title = "📞 <b>Связь с ГД</b>" if data.get("gd_contact") else "📩 <b>Не срочно ГД</b>"
 
     inv_label = ""
     if linked:
@@ -354,7 +378,7 @@ async def not_urgent_gd_pick_invoice(cb: CallbackQuery, state: FSMContext, db: D
             inv_label = f"\n📋 Счёт: №{inv.get('invoice_number', '?')}"
 
     await cb.message.answer(  # type: ignore[union-attr]
-        f"📩 <b>Не срочно ГД</b>{inv_label}\n"
+        f"{title}{inv_label}\n"
         "Опишите задачу / вопрос для ГД.\n"
         "Для отмены: <code>/cancel</code>."
     )
@@ -492,8 +516,13 @@ async def not_urgent_gd_finalize(
     await integrations.sync_task(task, project_code="")
 
     role, isolated_role = await _current_menu(db, u.id)
+    confirm_text = (
+        "✅ Сообщение отправлено ГД."
+        if data.get("gd_contact")
+        else "✅ Задача отправлена ГД (не срочно)."
+    )
     await cb.message.answer(  # type: ignore[union-attr]
-        "✅ Задача отправлена ГД (не срочно).",
+        confirm_text,
         reply_markup=private_only_reply_markup(
             cb.message,
             main_menu(

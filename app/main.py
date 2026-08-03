@@ -19,6 +19,7 @@ from .integrations.amocrm import AmoCRMService, AmoConfig
 from .integrations.sheets import GoogleSheetsService, SheetsConfig
 from .integrations.minio_storage import MinioConfig, MinioStorage
 from .middlewares.keep_menu import KeepMenuMiddleware
+from .middlewares.quiet_hours import QuietHoursMiddleware
 from .middlewares.update_logger import UpdateLoggingMiddleware
 from .middlewares.usage_audit import UsageAuditMiddleware
 from .services.assignment import get_work_chat_id
@@ -26,7 +27,11 @@ from .services.integration_hub import IntegrationHub
 from .services.notifier import Notifier
 from .services.daily_sync import daily_sync_loop
 from .services.lead_poller import lead_poller_loop
-from .services.reminders import acceptance_reminders_loop, reminders_loop
+from .services.reminders import (
+    acceptance_reminders_loop,
+    installer_acceptance_reminders_loop,
+    reminders_loop,
+)
 from .services.sheet_commands import process_sheet_webhook
 from .services.sheets_sync import import_from_source_sheet
 
@@ -36,6 +41,7 @@ from .handlers import (
     chat_proxy,
     common,
     driver,
+    fallback,
     gd,
     group_guard,
     installer_new,
@@ -123,6 +129,10 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         session=_session,
     )
+    # «Тихие часы»: пуши без звука 22:00–09:00 МСК. Session-middleware ловит
+    # ЛЮБУЮ отправку (через Notifier и прямые bot.send_*), см.
+    # middlewares/quiet_hours.py.
+    bot.session.middleware(QuietHoursMiddleware())
     notifier = Notifier(
         bot,
         work_chat_id=work_chat_id,
@@ -193,6 +203,50 @@ async def main() -> None:
     integrations = IntegrationHub(db=db, sheets=sheets_service, amocrm=amocrm_service)
     await integrations.start()
 
+    # Virtual Manager (Claude Haiku 4.5 first-line agent for amoCRM Chat).
+    # Requires amoCRM enabled (uses its OAuth client to update leads / add notes)
+    # plus an Anthropic API key. Chat-channel credentials are checked at send time.
+    # NOTE: anthropic SDK is imported lazily so the bot still boots if VM is disabled
+    # and the SDK isn't installed locally.
+    virtual_manager = None  # type: ignore[var-annotated]
+    if config.virtual_manager_enabled:
+        if not config.anthropic_api_key:
+            log.warning(
+                "VIRTUAL_MANAGER_ENABLED=true but ANTHROPIC_API_KEY is missing — disabled."
+            )
+        elif amocrm_service is None:
+            log.warning(
+                "VIRTUAL_MANAGER_ENABLED=true but amoCRM is not enabled — disabled. "
+                "Virtual manager needs the amoCRM OAuth client to update leads."
+            )
+        else:
+            try:
+                from .integrations.anthropic_client import AnthropicClient
+                from .services.conversation_store import ConversationStore
+                from .services.virtual_manager import VirtualManager
+            except ImportError as exc:
+                log.error(
+                    "VIRTUAL_MANAGER_ENABLED=true but anthropic SDK not installed: %s. "
+                    "Run `pip install -r requirements.txt` to enable.", exc,
+                )
+            else:
+                anthropic_client = AnthropicClient(
+                    api_key=config.anthropic_api_key,
+                    model=config.claude_model,
+                    max_tokens=config.vm_max_tokens,
+                )
+                virtual_manager = VirtualManager(
+                    cfg=config,
+                    amocrm=amocrm_service,
+                    anthropic_client=anthropic_client,
+                    store=ConversationStore(db),
+                    notifier=notifier,
+                )
+                log.info(
+                    "Virtual manager enabled (model=%s, debounce=%ds, history=%d)",
+                    config.claude_model, config.vm_debounce_seconds, config.vm_history_limit,
+                )
+
     storage = MinioStorage(MinioConfig(
         enabled=config.minio_enabled,
         endpoint=config.minio_endpoint or "",
@@ -239,6 +293,11 @@ async def main() -> None:
 
     dp.include_router(tasks.router)
 
+    # Self-healing fallback — ПОСЛЕДНИМ: ловит осиротевшие меню-кнопки без
+    # состояния (после рестарта бота in-memory FSM обнуляется) и возвращает в
+    # корневое меню вместо тишины. См. handlers/fallback.py.
+    dp.include_router(fallback.router)
+
     # -- Background tasks & webhook server --
     # Keep references to all background tasks for proper cleanup.
     background_tasks: list[asyncio.Task] = []
@@ -261,17 +320,32 @@ async def main() -> None:
         reminder_task.add_done_callback(_task_exception_cb)
         background_tasks.append(reminder_task)
 
-    # 15-min acceptance reminders + 2h post-accept reminder
+    # 15-min acceptance reminders + 2h post-accept reminder (все роли кроме installer)
     acceptance_task: asyncio.Task | None = asyncio.create_task(
-        acceptance_reminders_loop(db=db, notifier=notifier, interval_seconds=60),
+        acceptance_reminders_loop(db=db, notifier=notifier, timezone_name=config.timezone, interval_seconds=60),
         name="acceptance_reminders_loop",
     )
     acceptance_task.add_done_callback(_task_exception_cb)
     background_tasks.append(acceptance_task)
 
-    # NOTE: Startup sheets sync removed — sync only via "Синхронизация данных" button
+    # Installer-only: aggressive cadence (10 min / 60 min) + MSK quiet hours
+    installer_acceptance_task: asyncio.Task | None = asyncio.create_task(
+        installer_acceptance_reminders_loop(
+            db=db,
+            notifier=notifier,
+            timezone_name=config.timezone,
+            not_accepted_interval_min=config.installer_remind_interval_min,
+            post_accept_interval_min=config.installer_post_accept_interval_min,
+            quiet_start_hour=config.installer_quiet_start_hour,
+            quiet_end_hour=config.installer_quiet_end_hour,
+            interval_seconds=60,
+        ),
+        name="installer_acceptance_reminders_loop",
+    )
+    installer_acceptance_task.add_done_callback(_task_exception_cb)
+    background_tasks.append(installer_acceptance_task)
 
-    # Daily auto-sync at 09:00 MSK (keyboards, deadlines, debts — NO Sheets import/export)
+    # Daily auto-sync at 09:00 MSK: ОП import (with credit auto-close), Sheets export, keyboards, deadlines, debts
     daily_sync_task: asyncio.Task | None = asyncio.create_task(
         daily_sync_loop(
             db=db,
@@ -288,21 +362,85 @@ async def main() -> None:
 
     lead_poller_task: asyncio.Task | None = None
     if config.amocrm_enabled and amocrm_service is not None:
+        # Since webhook deploy 2026-05-25 poller is a fallback (interval relaxed 30→300s).
         lead_poller_task = asyncio.create_task(
             lead_poller_loop(
                 db=db,
                 amocrm=amocrm_service,
                 notifier=notifier,
-                interval_seconds=30,
+                interval_seconds=300,
             ),
             name="lead_poller_loop",
         )
         lead_poller_task.add_done_callback(_task_exception_cb)
         background_tasks.append(lead_poller_task)
 
-    # --- Sheets webhook server (aiohttp) ---
+    # Sheet «Leads» throttle: every 60s upserts changed leads if dirty flag is set
+    # by webhook handler or polling fallback. Decouples webhook latency from Sheets API.
+    sheet_throttle_task: asyncio.Task | None = None
+    if (
+        config.sheets_enabled
+        and sheets_service is not None
+        and config.amocrm_enabled
+    ):
+        from .services.sheet_throttle import sheet_throttle_loop
+        sheet_throttle_task = asyncio.create_task(
+            sheet_throttle_loop(
+                db=db,
+                sheets=sheets_service,
+                amocrm=amocrm_service,
+                amocrm_user_map=config.amocrm_user_map,
+            ),
+            name="sheet_throttle_loop",
+        )
+        sheet_throttle_task.add_done_callback(_task_exception_cb)
+        background_tasks.append(sheet_throttle_task)
+
+    # P4 watchdog heartbeat: пингует bot.get_me() каждые 30 сек (со своим
+    # таймаутом) и обновляет _polling_health. /health отдаёт 503 только при
+    # ДЛИТЕЛЬНОМ затыке (last_ok_ts старше _HEARTBEAT_STALE_SEC) И серии из
+    # _HEARTBEAT_FAIL_STREAK подряд неудачных get_me — иначе брифовые блипы WARP
+    # (DNS-флип / SOCKS upstream-timeout к Telegram) вызывали ложный restart
+    # контейнера внешним chain-watchdog. Hard-cap ловит смерть самого heartbeat-таска.
+    import time as _time_p4
+    _polling_health: dict[str, float] = {"last_ok_ts": _time_p4.monotonic(), "consec_fail": 0}
+    _HEARTBEAT_STALE_SEC = 300        # было 120: терпим несколько минут блипов WARP
+    _HEARTBEAT_FAIL_STREAK = 4        # + требуем 4 подряд неудачных get_me (30с×4 ≈ 2 мин)
+    _HEARTBEAT_HARD_STALE_SEC = 600   # hard-cap: 503 при 10-мин тишине даже если heartbeat-таск умер
+    _HEARTBEAT_GET_ME_TIMEOUT = 15    # свой таймаут get_me, чтобы зависший вызов не тянул окно
+
+    async def _heartbeat_loop() -> None:
+        while True:
+            try:
+                await asyncio.wait_for(bot.get_me(), timeout=_HEARTBEAT_GET_ME_TIMEOUT)
+                _polling_health["last_ok_ts"] = _time_p4.monotonic()
+                _polling_health["consec_fail"] = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _polling_health["consec_fail"] = _polling_health.get("consec_fail", 0) + 1
+                log.warning(
+                    "Polling heartbeat get_me failed (streak=%s)",
+                    _polling_health["consec_fail"],
+                )
+            await asyncio.sleep(30)
+
+    heartbeat_task: asyncio.Task = asyncio.create_task(
+        _heartbeat_loop(), name="polling_heartbeat_loop"
+    )
+    heartbeat_task.add_done_callback(_task_exception_cb)
+    background_tasks.append(heartbeat_task)
+
+    # --- HTTP webhook server (aiohttp) ---
+    # Hosts both the Sheets webhook and the amoCRM Chat webhook (if their
+    # respective credentials are configured). Started if at least one is enabled.
     webhook_runner: web.AppRunner | None = None
-    if config.sheets_webhook_secret:
+    _webapp_enabled = (
+        bool(config.sheets_webhook_secret)
+        or virtual_manager is not None
+        or bool(config.amocrm_leads_webhook_secret)
+    )
+    if _webapp_enabled:
         async def _handle_sheets_webhook(request: web.Request) -> web.Response:
             secret = request.headers.get("X-Webhook-Secret", "")
             if secret != config.sheets_webhook_secret:
@@ -326,6 +464,7 @@ async def main() -> None:
                         config=config,
                         notifier=notifier,
                         sheets_service=sheets_service,
+                        integrations=integrations,
                     )
                     log.info("Sheets webhook processed: %s", result)
                 except Exception:
@@ -341,12 +480,14 @@ async def main() -> None:
         _start_ts = _time.monotonic()
 
         async def _health(request: web.Request) -> web.Response:
-            """Health dashboard: DB, tasks queue, uptime."""
+            """Health dashboard: DB, tasks queue, uptime, polling heartbeat."""
             try:
                 uptime_sec = int(_time.monotonic() - _start_ts)
                 hours, remainder = divmod(uptime_sec, 3600)
                 minutes, seconds = divmod(remainder, 60)
                 uptime_str = f"{hours}h {minutes}m {seconds}s"
+
+                heartbeat_age = int(_time.monotonic() - _polling_health["last_ok_ts"])
 
                 # DB check
                 cur = await db.conn.execute("SELECT COUNT(*) FROM invoices")
@@ -358,7 +499,7 @@ async def main() -> None:
                 cur3 = await db.conn.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
                 user_count = (await cur3.fetchone())[0]
 
-                return web.json_response({
+                payload = {
                     "status": "ok",
                     "uptime": uptime_str,
                     "db": "connected",
@@ -366,21 +507,75 @@ async def main() -> None:
                     "active_tasks": active_tasks,
                     "active_users": user_count,
                     "sheets_enabled": config.sheets_enabled,
-                })
+                    "polling_heartbeat_age_sec": heartbeat_age,
+                }
+                consec_fail = int(_polling_health.get("consec_fail", 0))
+                payload["heartbeat_consec_fail"] = consec_fail
+                # 503 при ДЛИТЕЛЬНОМ затыке И серии подряд неудач (брифовые блипы WARP
+                # не роняют бота), ЛИБО при очень долгой тишине (hard-cap — на случай
+                # если сам heartbeat-таск умер и consec_fail перестал расти).
+                if (
+                    heartbeat_age > _HEARTBEAT_STALE_SEC
+                    and consec_fail >= _HEARTBEAT_FAIL_STREAK
+                ) or heartbeat_age > _HEARTBEAT_HARD_STALE_SEC:
+                    payload["status"] = "polling_stuck"
+                    return web.json_response(payload, status=503)
+                return web.json_response(payload)
             except Exception as exc:
                 return web.json_response(
                     {"status": "error", "detail": str(exc)}, status=500
                 )
 
         webapp = web.Application()
-        webapp.router.add_post("/webhooks/sheets", _handle_sheets_webhook)
+        if config.sheets_webhook_secret:
+            webapp.router.add_post("/webhooks/sheets", _handle_sheets_webhook)
         webapp.router.add_get("/health", _health)
+
+        if virtual_manager is not None and config.amocrm_chat_channel_secret:
+            from .handlers.amocrm_webhook import handle_amocrm_chat_webhook
+            _vm = virtual_manager
+            _vm_secret = config.amocrm_chat_channel_secret
+            async def _handle_vm_webhook(request: web.Request) -> web.Response:
+                return await handle_amocrm_chat_webhook(
+                    request,
+                    vm=_vm,
+                    channel_secret=_vm_secret,
+                    bg_tasks=_webhook_bg_tasks,
+                )
+            webapp.router.add_post("/webhooks/amocrm/chat", _handle_vm_webhook)
+            log.info("Virtual manager webhook registered at /webhooks/amocrm/chat")
+        elif virtual_manager is not None:
+            log.warning(
+                "Virtual manager active but AMOCRM_CHAT_CHANNEL_SECRET not set — "
+                "webhook endpoint NOT registered. Add the secret to enable inbound traffic."
+            )
+
+        if config.amocrm_leads_webhook_secret and amocrm_service is not None:
+            from .handlers.amocrm_leads_webhook import handle_amocrm_leads_webhook
+            _leads_secret = config.amocrm_leads_webhook_secret
+            _amocrm_for_leads = amocrm_service
+            async def _handle_leads_webhook(request: web.Request) -> web.Response:
+                return await handle_amocrm_leads_webhook(
+                    request,
+                    db=db,
+                    amocrm=_amocrm_for_leads,
+                    notifier=notifier,
+                    secret=_leads_secret,
+                    bg_tasks=_webhook_bg_tasks,
+                )
+            webapp.router.add_post("/webhooks/amocrm/leads", _handle_leads_webhook)
+            log.info("amoCRM leads webhook registered at /webhooks/amocrm/leads")
+        elif config.amocrm_leads_webhook_secret:
+            log.warning(
+                "AMOCRM_LEADS_WEBHOOK_SECRET set but amoCRM service inactive — "
+                "leads webhook endpoint NOT registered."
+            )
 
         webhook_runner = web.AppRunner(webapp)
         await webhook_runner.setup()
         site = web.TCPSite(webhook_runner, "0.0.0.0", config.sheets_webhook_port)
         await site.start()
-        log.info("Sheets webhook server started on port %d", config.sheets_webhook_port)
+        log.info("HTTP webhook server started on port %d", config.sheets_webhook_port)
 
     # NOTE: startup message in work chat removed — not needed in group chats
 
@@ -404,6 +599,8 @@ async def main() -> None:
                 log.error("Task %s terminated with error: %s", task.get_name(), result)
         if webhook_runner:
             await webhook_runner.cleanup()
+        if virtual_manager is not None:
+            await virtual_manager.shutdown()
         await integrations.stop()
         await db.close()
         await bot.session.close()

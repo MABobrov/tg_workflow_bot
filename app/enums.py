@@ -70,15 +70,24 @@ class TaskType(StrEnum):
     ZP_CALCULATION = "zp_calculation"      # расчёт ЗП
     LEAD_TO_PROJECT = "lead_to_project"    # лид в проект (РП → менеджер)
     INVOICE_END_REQUEST = "invoice_end"    # запрос "Счет End"
+    INVOICE_END_FIXUP = "invoice_end_fixup"  # устранить пункт после форс-закрытия счёта ГД (→ менеджеру)
     CHECK_KP = "check_kp"                 # проверить КП / Счет (менеджер → РП)
     # --- ЗП сотрудников ---
     ZP_MANAGER = "zp_manager"            # ЗП отд.продаж (менеджер → ГД)
+    RECALC_CONFIRM = "recalc_confirm"    # ТЗ 02.07 — ГД→менеджер: согласие с перерасчётом прибыли → аванс |CN|
     ZP_INSTALLER = "zp_installer"        # ЗП монтажника (монтажник → ГД)
+    ZP_RP = "zp_rp"                      # ЗП РП — 10% от прибыли счёта (РП → ГД)
     ZAMERY_REQUEST = "zamery_request"    # заявка на замер (менеджер → замерщик)
     ZP_ZAMERY_BATCH = "zp_zamery_batch"  # пакетный запрос ЗП замерщика → ГД
     RAZMERY_VERIFICATION = "razmery_verification"  # проверка размеров стекла
     SUPPLIER_INVOICE = "supplier_invoice"  # счёт от поставщика (РП → ГД)
     ACC_QUESTION = "acc_question"          # вопрос от бухгалтерии → инициатору
+    RP_SALARY = "rp_salary"                # B5 v2 TZ 27.05 — запрос оклада РП (РП → ГД, 60К/мес)
+    GD_DEPOSIT_REQUEST = "gd_deposit_request"  # ТЗ C 30.05 — ГД запросил сумму из депозита сотрудника (списание после подтверждения)
+    FINAL_PAYMENT_ETA = "final_payment_eta"  # ТЗ 14.06 — запрос/трекинг ориент. даты финального платежа по долгу (→ менеджеру)
+    INVOICE_END_READY = "invoice_end_ready"  # ТЗ 18.06 — счёт готов к закрытию (монтаж «Счёт ОК» + нет долга) → авто-напоминание менеджеру «Счет End»
+    INVOICE_DOCS_MISSING = "invoice_docs_missing"  # ТЗ 18.06 (B) — активный б/н счёт без первичных документов → задача менеджеру (created_by) + уведомл. бухгалтерии
+    SELF_REMINDER = "self_reminder"        # напоминалка «сам себе»: роль (менеджер) ставит себе задачу-напоминание с due_at
 
 
 class TaskStatus(StrEnum):

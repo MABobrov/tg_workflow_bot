@@ -14,5 +14,6 @@ COPY .env.example /app/.env.example
 COPY README.md /app/README.md
 
 ENV PYTHONUNBUFFERED=1
+ENV RES_OPTIONS=no-aaaa
 
 CMD ["python", "-m", "app.main"]

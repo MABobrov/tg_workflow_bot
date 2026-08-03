@@ -19,7 +19,7 @@ from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import DeliveryDoneSG
-from ..utils import answer_service, fmt_project_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
+from ..utils import answer_service, build_task_done_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
 from ._mirror import mirror_attachment
 from .auth import require_role_callback, require_role_message
 
@@ -150,13 +150,15 @@ async def delivery_done_finalize(
         )
 
     initiator = await get_initiator_label(db, u.id)
-    msg = (
-        "🚚 <b>Доставка выполнена</b>\n"
-        f"👤 От: {initiator}\n\n"
-        f"{fmt_project_card(project, config.timezone)}\n\n"
+    msg = build_task_done_card(
+        task,
+        project,
+        config.timezone,
+        emoji="🚚",
+        title="Доставка выполнена",
+        actor_label=initiator,
+        actor_field="От",
     )
-    if comment:
-        msg += f"📝 Комментарий: {comment}"
 
     if rp_id:
         await notifier.safe_send(int(rp_id), msg)

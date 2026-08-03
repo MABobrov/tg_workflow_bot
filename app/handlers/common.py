@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiogram import Router
@@ -24,6 +25,7 @@ from ..keyboards import (
 )
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_context import build_menu_context
+from ..services.notifier import Notifier
 from ..services.menu_scope import resolve_active_menu_role
 from ..services.sheets_sync import export_to_sheets, import_from_source_sheet
 from ..utils import answer_service, parse_roles, private_only_reply_markup, role_label
@@ -105,6 +107,19 @@ async def _show_main_menu(
     )
 
 
+async def _send_zamery_stats(message: Message, db: Database, for_user: int | None = None) -> None:
+    """Шлёт ОТДЕЛЬНЫМ сообщением «👔 Замеры по менеджерам» (2 мес.) следом за стартовой
+    картой РП/ГД/замерщика (owner 25.06). for_user=<id> — его замеры; None — агрегат
+    всех замерщиков. Тихо при пусто/ошибке — не роняет основной поток."""
+    try:
+        from ..zamery_start_card import build_zamery_manager_stats_card
+        txt = await build_zamery_manager_stats_card(db, for_user=for_user)
+        if txt:
+            await answer_service(message, txt, delay_seconds=0)
+    except Exception:
+        log.exception("zamery manager-stats followup failed")
+
+
 def _new_user_admin_kb(user_id: int) -> InlineKeyboardBuilder:
     b = InlineKeyboardBuilder()
     for role, label in (
@@ -181,16 +196,70 @@ def _role_guide(role: str | None) -> str:
     # Manager roles (new)
     manager_roles_in_user = roles & MANAGER_ROLES
     if manager_roles_in_user or Role.MANAGER in roles or show_all:
-        sections.append(
-            "\n<b>Ваши сценарии (Менеджер)</b>\n"
-            "• «📋 Проверить КП/Счет» — отправить КП на проверку РП, создать счёт в БД.\n"
-            "• «💼 Счет в Работу» — отправить счёт ГД на оплату.\n"
-            "• «🏁 Счет End» — инициировать закрытие счёта (проверка 4 условий).\n"
-            "• «📐 Замеры» — запрос замерщику.\n"
-            "• «📄 Бухгалтерия (ЭДО)» — запрос ЭДО в бухгалтерию.\n"
-            "• «📩 Не срочно ГД» — задача ГД (пониженный приоритет).\n"
-            "• Подменю «Ещё»: 💬 Менеджер (кред), 📑 Мои Счета, 🆘 Проблема/Вопрос, 🚨 Срочно ГД, 🔍 Поиск счёта.\n"
-        )
+        if show_all:
+            # Краткий обзор для сводной справки ГД/РП по всем ролям —
+            # детальная версия раздула бы сообщение за лимит Telegram 4096.
+            sections.append(
+                "\n<b>Ваши сценарии (Менеджер)</b>\n"
+                "• «Проверить КП / Счет» — КП на проверку РП + ответы РП.\n"
+                "• «Счет в Работу» — расчёт и отправка счёта ГД на оплату.\n"
+                "• «Счет End» — закрытие счёта (Счёт ОК / ЭДО / долгов нет).\n"
+                "• «Замеры» — заявки замерщику и его график.\n"
+                "• «Бухгалтерия (Док./ЭДО)» — запросы бухгалтеру.\n"
+                "• «Мои Счета», «Монтажная группа», «Чат с РП», «⏰ Напомнить».\n"
+                "• «Ещё»: 💰 Финансы (ЗП/аванс/депозит), 🏦 Кредит, 📞 Связь с ГД, "
+                "Поиск Счета, 📋 Все задачи, Справка.\n"
+            )
+        else:
+            # Детальная инструкция менеджеру (ТЗ 17.07): каждая кнопка +
+            # варианты сюжета, кратко и простым языком.
+            sections.append(
+                "\n<b>Ваши кнопки (Менеджер)</b>\n"
+                "\n<b>Главное меню</b>\n"
+                "• «Задачи / Лид в проект» — входящие задачи и лиды от РП; 🔴N — новые. "
+                "Нажмите задачу — откроется карточка с действиями.\n"
+                "• «Проверить КП / Счет» — отправить КП на проверку РП. Два пути: по своему "
+                "лиду (файлы → сумма → тип клиента → комментарий) или «Новый клиент» "
+                "(полная анкета: контрагент, адрес, сумма, тип оплаты, срок). Там же "
+                "«Ответы РП»: ⌛ ждёт / 📥 счёт выставлен / ✅ подтверждено.\n"
+                "• «Счет в Работу» — отправить счёт ГД на оплату: счёт из списка или номер "
+                "вручную → чей клиент (свой 50/50 или лид ГД 75/25) → срок в днях → 4 суммы "
+                "расчёта → сводка → документы (можно пропустить) → «Отправить ГД». "
+                "«В работу» счёт перейдёт после подтверждения ГД.\n"
+                "• «Счет End» — закрыть счёт: выберите из активных → бот покажет условия "
+                "(монтажник «Счёт ОК», закрывающие по ЭДО, долгов нет; у кредитных ЭДО не "
+                "требуется) → пояснение → решение ГД. Если ГД закрыл «с задачами» — "
+                "доделайте их, до этого ЗП по счёту заблокирована.\n"
+                "• «Замеры» — заявки на замер: список своих, «➕ Новая заявка» (адрес → "
+                "работы → контакт → км от МКАД → дата → м²; стоимость бот посчитает сам, "
+                "можно приложить фото) или «📅 График замерщика» — запись в свободный день.\n"
+                "• «Бухгалтерия (Док./ЭДО)» — запрос бухгалтеру: счёт по ЭДО / закрывающие / "
+                "УПД поставщика / другой вопрос; можно приложить файлы.\n"
+                "• «Монтажная группа» — переписка с монтажниками: с привязкой к счёту или "
+                "без; «Переписка» — история, «Написать» — текст/файл в рабочий чат.\n"
+                "• «Чат с РП» — то же самое, канал РП.\n"
+                "• «Мои Счета» — сводка и список ваших счетов; в карточке счёта — "
+                "«Счёт End», «Материалы», чат.\n"
+                "• «⏰ Напомнить» — самонапоминание: текст → когда (через 1/3 часа, сегодня "
+                "18:00, завтра 10:00 или своя дата). Отмена — в «📋 Все задачи».\n"
+                "• «Синхронизация данных» — обмен с Google-таблицей и ваша сводная карточка: "
+                "счета, финансы, задачи.\n"
+                "• «Отмена» или /cancel — сброс любого начатого ввода.\n"
+                "\n<b>Подменю «Еще»</b>\n"
+                "• «💰 Финансы» — ваши аванс и депозит. Внутри: «Запрос ЗП» (по счетам End, "
+                "доля считается сама; 🔒 — по счёту долг, ЗП пока нельзя), «Расход депозита», "
+                "«Наполнить ЗП из аванса», «Депо → Аванс», согласие с перерасчётом прибыли.\n"
+                "• «🏦 Кредит» — кредит-кошелёк: остаток и движения. «Расход кредита»: "
+                "с привязкой к счёту (ляжет в затраты счёта) или без (в баланс компании). "
+                "«Кредит-чат» — переписка с ГД.\n"
+                "• «📞 Связь с ГД» — несрочный вопрос ГД: можно привязать счёт и приложить "
+                "файлы.\n"
+                "• «Поиск Счета КВ / КИА / НПН» — любой счёт по номеру или части адреса → "
+                "карточка.\n"
+                "• «📋 Все задачи» — активные и завершённые задачи; здесь же отмена "
+                "напоминаний.\n"
+                "• «Справка» — эта инструкция.\n"
+            )
     if Role.RP in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (РП)</b>\n"
@@ -201,7 +270,8 @@ def _role_guide(role: str | None) -> str:
             "• «🆘 Проблема/Вопрос» — входящие от ГД, менеджеров, монтажников.\n"
             "• «👥 Команда» — подменю чатов с менеджерами и монтажом.\n"
             "• «📄 Бухгалтерия (ЭДО)» — запрос ЭДО.\n"
-            "• Подменю «Ещё»: 🎯 Лид в проект, 🚨 Срочно ГД, 🔍 Поиск счёта.\n"
+            "• «📞 Связь с ГД» — сообщение/вопрос ГД (не срочно).\n"
+            "• Подменю «Ещё»: 🎯 Лид в проект, 🔍 Поиск счёта.\n"
         )
     if Role.ACCOUNTING in roles or show_all:
         sections.append(
@@ -221,15 +291,19 @@ def _role_guide(role: str | None) -> str:
             "• «📌 Мои объекты» — список объектов и статусы ЗП.\n"
             "• «📝 Отчёт за день» — текстовое сообщение РП.\n"
             "• «🔨 В Работу» — принять задачу от РП.\n"
-            "• «📩 Не срочно ГД» / «🚨 Срочно ГД» — сообщения ГД.\n"
+            "• «📞 Связь с ГД» — сообщение/вопрос ГД.\n"
         )
     if Role.ZAMERY in roles or show_all:
         sections.append(
             "\n<b>Ваши сценарии (Замерщик)</b>\n"
-            "• «📋 Заявка на замер» — входящие заявки от Отд.Продаж и ГД.\n"
-            "• «📋 Мои замеры» — список замеров со статусом оплаты.\n"
+            "• «📋 Заявка на замер» — входящие заявки на замер от Отд.Продаж и ГД (🔴 — новые).\n"
+            "• «📋 Мои замеры» — список выполненных замеров со статусом оплаты.\n"
+            "• «📅 График замеров» — расписание на 5 недель: бронь слотов и выходные.\n"
+            "• «💰 Оплата замеров» — замеры по статусам «К оплате / На проверке / Оплачено»; отправка пакета ГД на выплату.\n"
             "• «🚨 Срочно ГД» — двустороннее сообщение с ГД.\n"
-            "• «💰 Оплата замеров» — расчёт ЗП за выполненные замеры.\n"
+            "• «🔄 Синхронизация данных» — обновить журнал замеров в Google‑таблице.\n"
+            "• «📋 Все задачи» — все ваши задачи (входящие и в работе).\n"
+            "• Иногда бот присылает карточку «Кто отправлял тебя на замер?» — нажмите менеджера (Кирилл / Паша / Илья) или «🤷 Не помню».\n"
         )
     if _has_gd_like_access(role) or show_all:
         sections.append(
@@ -303,6 +377,44 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
             main_menu(role, is_admin=is_admin, **menu_context),
         ),
     )
+
+    # Welcome-card для менеджеров (тот же формат что в /menu и после Sync).
+    active_role_post_start = resolve_active_menu_role(u.id, role) if role else None
+    if (active_role_post_start or role) in MANAGER_ROLES:
+        try:
+            metrics = await db.get_manager_dashboard_metrics(u.id)
+            from ..utils import format_manager_sync_card, with_manager_tasks_section
+            await answer_service(message, await with_manager_tasks_section(db, u.id, format_manager_sync_card(metrics)), delay_seconds=0)
+        except Exception:
+            log.exception("cmd_start: manager welcome-card failed")
+    elif (active_role_post_start or role) == Role.RP:
+        try:
+            from ..rp_start_card import build_rp_start_card_text
+            await answer_service(message, await build_rp_start_card_text(db, config, u.id), delay_seconds=0)
+        except Exception:
+            log.exception("cmd_start: rp welcome-card failed")
+        await _send_zamery_stats(message, db)
+    elif (active_role_post_start or role) == Role.INSTALLER:
+        try:
+            metrics = await db.get_installer_dashboard_metrics(u.id)
+            from ..utils import format_installer_sync_card
+            await answer_service(message, format_installer_sync_card(metrics), delay_seconds=0)
+        except Exception:
+            log.exception("cmd_start: installer welcome-card failed")
+    elif (active_role_post_start or role) == Role.ACCOUNTING:
+        try:
+            from .accounting_new import build_acc_start_card_text
+            await answer_service(message, await build_acc_start_card_text(db, u.id), delay_seconds=0)
+        except Exception:
+            log.exception("cmd_start: accounting welcome-card failed")
+    elif (active_role_post_start or role) == Role.ZAMERY:
+        try:
+            from ..zamery_start_card import build_zamery_start_card_text
+            await answer_service(message, await build_zamery_start_card_text(db, config, u.id), delay_seconds=0)
+        except Exception:
+            log.exception("cmd_start: zamery welcome-card failed")
+        await _send_zamery_stats(message, db, for_user=u.id)
+
     if existed is None and not role and not is_admin:
         await _notify_admins_new_user_without_role(message, config)
 
@@ -328,7 +440,95 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
         return
     user = await db.get_user_optional(u.id)
     role = user.role if user else None
-    if (message.text or "").strip() == "🔄 Обновить меню":
+    is_refresh = (message.text or "").strip() == "🔄 Обновить меню"
+
+    # Для менеджеров показываем welcome-card по образцу sync (без обращения к Sheets).
+    active_role = resolve_active_menu_role(u.id, role) if role else None
+    if (active_role or role) in MANAGER_ROLES:
+        try:
+            metrics = await db.get_manager_dashboard_metrics(u.id)
+            from ..utils import format_manager_sync_card, with_manager_tasks_section
+            text = await with_manager_tasks_section(db, u.id, format_manager_sync_card(metrics))
+            is_admin = u.id in (config.admin_ids or set())
+            menu_context = await _menu_context(db, u.id, active_role or role)
+            await answer_service(
+                message,
+                text,
+                delay_seconds=0,
+                reply_markup=private_only_reply_markup(
+                    message,
+                    main_menu(
+                        active_role or role,
+                        is_admin=is_admin,
+                        isolated_role=bool(active_role and active_role != role),
+                        **menu_context,
+                    ),
+                ),
+            )
+            return
+        except Exception:
+            log.exception("cmd_menu: manager welcome-card build failed, falling back")
+
+    if (active_role or role) == Role.INSTALLER:
+        try:
+            metrics = await db.get_installer_dashboard_metrics(u.id)
+            from ..utils import format_installer_sync_card
+            text = format_installer_sync_card(metrics)
+            is_admin = u.id in (config.admin_ids or set())
+            menu_context = await _menu_context(db, u.id, active_role or role)
+            await answer_service(
+                message,
+                text,
+                delay_seconds=0,
+                reply_markup=private_only_reply_markup(
+                    message,
+                    main_menu(active_role or role, is_admin=is_admin, **menu_context),
+                ),
+            )
+            return
+        except Exception:
+            log.exception("cmd_menu: installer welcome-card build failed, falling back")
+
+    if (active_role or role) == Role.ACCOUNTING:
+        try:
+            from .accounting_new import build_acc_start_card_text
+            text = await build_acc_start_card_text(db, u.id)
+            is_admin = u.id in (config.admin_ids or set())
+            menu_context = await _menu_context(db, u.id, active_role or role)
+            await answer_service(
+                message,
+                text,
+                delay_seconds=0,
+                reply_markup=private_only_reply_markup(
+                    message,
+                    main_menu(active_role or role, is_admin=is_admin, **menu_context),
+                ),
+            )
+            return
+        except Exception:
+            log.exception("cmd_menu: accounting welcome-card build failed, falling back")
+
+    if (active_role or role) == Role.ZAMERY:
+        try:
+            from ..zamery_start_card import build_zamery_start_card_text
+            text = await build_zamery_start_card_text(db, config, u.id)
+            is_admin = u.id in (config.admin_ids or set())
+            menu_context = await _menu_context(db, u.id, active_role or role)
+            await answer_service(
+                message,
+                text,
+                delay_seconds=0,
+                reply_markup=private_only_reply_markup(
+                    message,
+                    main_menu(active_role or role, is_admin=is_admin, **menu_context),
+                ),
+            )
+            await _send_zamery_stats(message, db, for_user=u.id)
+            return
+        except Exception:
+            log.exception("cmd_menu: zamery welcome-card build failed, falling back")
+
+    if is_refresh:
         await _show_main_menu(message, db, config, role=role, silent=True)
         return
     await _show_main_menu(message, db, config, role=role, silent=False)
@@ -420,12 +620,25 @@ async def back_to_home(message: Message, state: FSMContext, db: Database, config
     await _show_main_menu(message, db, config, role=user.role if user else None, silent=True)
 
 
-@router.message(lambda m: (m.text or "").strip() in {GD_BTN_MORE, MGR_BTN_MORE, RP_BTN_MORE, "Еще"})
+def _matches_more_button(text: str | None) -> bool:
+    """Match «📂 Ещё» (and variants) with optional 🔴N badge suffix."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    for base in (GD_BTN_MORE, MGR_BTN_MORE, RP_BTN_MORE, "Еще"):
+        if t == base or t.startswith(f"{base} "):
+            return True
+    return False
+
+
+@router.message(lambda m: _matches_more_button(m.text))
 async def menu_more_universal(message: Message, state: FSMContext, db: Database, config: Config) -> None:
     """Unified 'More/Ещё' handler — dispatches to correct submenu based on active role.
 
     GD_BTN_MORE == MGR_BTN_MORE == RP_BTN_MORE == "📂 Ещё", so a single handler
     is needed to avoid aiogram selecting whichever was registered first.
+
+    Кнопка может приходить с бейджем «📂 Ещё 🔴N» — matcher это учитывает.
     """
     await state.clear()
     if not await _guard_blocked_message(message, db):
@@ -439,14 +652,31 @@ async def menu_more_universal(message: Message, state: FSMContext, db: Database,
     if role in _GD_LIKE_ROLES:
         _is_adm = bool(u.id in (config.admin_ids or set()))
         _uc = await db.count_unread_by_channel(u.id)
+        _gd_ie = await db.count_gd_invoice_end_tasks(u.id)
+        _gd_tot = await db.count_gd_more_total_open_tasks(u.id)
+        _gd_cred = await db.count_credit_payment_requests_by_channel()
         await _answer_menu_silent(
             message,
-            gd_more_menu(is_admin=_is_adm, unread_channels=_uc),
+            gd_more_menu(
+                is_admin=_is_adm,
+                unread_channels=_uc,
+                gd_invoice_end_unread=_gd_ie,
+                gd_total_open_tasks=_gd_tot,
+                credit_channels=_gd_cred,
+            ),
         )
     elif role == Role.RP:
         await _answer_menu_silent(message, rp_more_menu())
     else:
-        await _answer_menu_silent(message, manager_more_menu())
+        # Финансы-рефактор 02.06: балансы аванс/депозит ушли в сводную карточку
+        # «💰 Финансы» (inline-действия), меню «Ещё» больше от них не зависит и
+        # показывается всегда (не подменяется submenu).
+        _mgr_cred = await db.count_credit_payment_requests_for_owner(u.id)
+        _mgr_recalc = await db.count_recalc_confirm_tasks(u.id)
+        await _answer_menu_silent(
+            message,
+            manager_more_menu(credit_count=_mgr_cred, recalc_count=_mgr_recalc),
+        )
 
 
 @router.message(lambda m: (m.text or "").strip() in {GD_BTN_BACK_HOME, MGR_BTN_BACK_HOME, RP_BTN_BACK_HOME, "Назад в Гл.меню"})
@@ -525,6 +755,7 @@ async def menu_help(message: Message, db: Database, config: Config) -> None:
     gd_ur = await db.count_gd_inbox_tasks(_uid_info) if _uid_info and has_gd_access else None
     gd_inv = await db.count_gd_invoice_tasks(_uid_info) if _uid_info and has_gd_access else None
     gd_ie = await db.count_gd_invoice_end_tasks(_uid_info) if _uid_info and has_gd_access else None
+    gd_tot = await db.count_gd_more_total_open_tasks(_uid_info) if _uid_info and has_gd_access else None
     _is_rp_info = _uid_info and (Role.RP in _parsed_info or Role.MANAGER_NPN in _parsed_info)
     rp_t_info = await db.count_rp_role_tasks(_uid_info) if _is_rp_info else 0
     rp_m_info = await db.count_rp_role_messages(_uid_info) if _is_rp_info else 0
@@ -540,6 +771,7 @@ async def menu_help(message: Message, db: Database, config: Config) -> None:
                 gd_inbox_unread=gd_ur,
                 gd_invoice_unread=gd_inv,
                 gd_invoice_end_unread=gd_ie,
+                gd_total_open_tasks=gd_tot,
                 isolated_role=isolated_role,
                 rp_tasks=rp_t_info,
                 rp_messages=rp_m_info,
@@ -601,19 +833,14 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
             await acc_inbox_tasks(message, db)
             return
     uid = message.from_user.id
+    # Req 34: исходящие не дублируются во входящие отправителя.
+    # «Не срочно ГД» и подобные кнопки отправляют задачу адресату; инициатор
+    # копию во входящие не получает. Здесь только входящие (assigned_to=uid).
     tasks_raw = await db.list_tasks_for_user(uid, limit=30)
-    # #35: Для менеджеров — показываем и исходящие (созданные) задачи
-    created = await db.list_tasks_created_by(uid, statuses=("open", "in_progress"), limit=15)
-    # Дедупликация
-    seen: set[int] = {int(t["id"]) for t in tasks_raw}
-    for ct in created:
-        if int(ct["id"]) not in seen:
-            tasks_raw.append(ct)
-            seen.add(int(ct["id"]))
     # Исключаем INVOICE_PAYMENT (только для ГД)
     # CHECK_KP исключаем только для менеджеров (они создают, а не принимают)
     from ..enums import TaskType
-    _excluded = {TaskType.INVOICE_PAYMENT}
+    _excluded = {TaskType.INVOICE_PAYMENT, TaskType.SELF_REMINDER}
     if _u and _u.role and ("manager" in (_u.role or "") or "rp" in (_u.role or "")):
         _excluded.add(TaskType.CHECK_KP)
         _excluded.add(TaskType.ORDER_MATERIALS)
@@ -624,12 +851,7 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
     if not tasks:
         await answer_service(message, "📥 Задач нет ✅", delay_seconds=60)
         return
-    incoming_count = sum(1 for t in tasks if int(t.get("assigned_to") or 0) == uid)
-    outgoing_count = len(tasks) - incoming_count
-    header = f"📥 <b>Задачи</b> ({len(tasks)})"
-    if outgoing_count:
-        header += f"\n📤 Исходящие: {outgoing_count} | 📥 Входящие: {incoming_count}"
-    header += "\n\nНажмите на задачу для просмотра:"
+    header = f"📥 <b>Задачи</b> ({len(tasks)})\n\nНажмите на задачу для просмотра:"
     await message.answer(
         header,
         reply_markup=tasks_kb(tasks, back_callback="nav:home"),
@@ -640,7 +862,13 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
 # ВСЕ ЗАДАЧИ (список для всех ролей)
 # =====================================================================
 
-@router.message(lambda m: (m.text or "").strip() == "📋 Все задачи")
+def _matches_all_tasks_button(text: str | None) -> bool:
+    """Match «📋 Все задачи» с опциональным «🔴N» бейджем."""
+    t = (text or "").strip()
+    return t == "📋 Все задачи" or t.startswith("📋 Все задачи ")
+
+
+@router.message(lambda m: _matches_all_tasks_button(m.text))
 async def all_tasks_list(message: Message, db: Database, config: Config) -> None:
     """Show all tasks (active + recent closed) for the current user."""
     if not message.from_user:
@@ -656,20 +884,51 @@ async def all_tasks_list(message: Message, db: Database, config: Config) -> None
     # Recent closed (done + rejected, last 10)
     closed = await db.list_tasks_for_user(uid, statuses=("done", "rejected"), limit=10)
 
+    # Для ГД исключаем типы покрытые отдельными кнопками главного меню
+    # (invoice_payment / payment_confirm / invoice_end / zp_installer)
+    # — чтобы «Все задачи» не дублировали их.
+    _user = await db.get_user_optional(uid)
+    _roles_str = (_user.role if _user else "") or ""
+    is_gd_like = "gd" in _roles_str or "td" in _roles_str
+    _gd_excluded_types = {"invoice_payment", "payment_confirm", "invoice_end", "zp_installer"}
+
+    def _gd_filter(t: dict) -> bool:
+        if not is_gd_like:
+            return True
+        # Скрываем только если задача назначена ГД (своя) и тип покрыт другой кнопкой.
+        # Свои исходящие задачи (created_by=uid) показываем всегда.
+        if int(t.get("assigned_to") or 0) != uid:
+            return True
+        return t.get("type") not in _gd_excluded_types
+
     active_tasks = []
     seen_ids: set[int] = set()
     for t in active:
-        if int(t["id"]) not in seen_ids:
+        if int(t["id"]) not in seen_ids and _gd_filter(t):
             active_tasks.append(t)
             seen_ids.add(int(t["id"]))
     for t in created:
-        if int(t["id"]) not in seen_ids:
+        if int(t["id"]) not in seen_ids and _gd_filter(t):
             active_tasks.append(t)
             seen_ids.add(int(t["id"]))
 
     closed_count = len(closed)
 
     if not active_tasks and not closed_count:
+        # ГД: даже без задач показываем вход в самонапоминалку («⏰ Поставить
+        # напоминание»), иначе точка входа пропадёт на пустом экране.
+        if is_gd_like:
+            from aiogram.utils.keyboard import InlineKeyboardBuilder
+            b = InlineKeyboardBuilder()
+            b.button(text="⏰ Поставить напоминание", callback_data="selfrem_new")
+            b.button(text="⬅️ Назад", callback_data="nav:home")
+            b.adjust(1)
+            await message.answer(
+                "📋 <b>Все задачи</b>\nАктивных задач нет.\n\n"
+                "Можно поставить себе напоминание:",
+                reply_markup=b.as_markup(),
+            )
+            return
         await answer_service(message, "📋 Задач нет.", delay_seconds=60)
         return
 
@@ -680,10 +939,15 @@ async def all_tasks_list(message: Message, db: Database, config: Config) -> None
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = tasks_kb(active_tasks, back_callback="nav:home", show_delete=can_delete)
-    # Добавляем кнопку "Завершённые" если есть
-    if closed_count:
+    # Доп. пункты под списком: «Завершённые» (всем при наличии) +
+    # «⏰ Поставить напоминание» — вход в самонапоминалку для ГД отдельным
+    # пунктом внутри «Все задачи» (у менеджера/РП вход — reply-кнопка в меню).
+    if closed_count or is_gd_like:
         b = InlineKeyboardBuilder(markup=kb.inline_keyboard)
-        b.button(text=f"📦 Завершённые ({closed_count})", callback_data="all_tasks:closed")
+        if closed_count:
+            b.button(text=f"📦 Завершённые ({closed_count})", callback_data="all_tasks:closed")
+        if is_gd_like:
+            b.button(text="⏰ Поставить напоминание", callback_data="selfrem_new")
         b.adjust(1)
         kb = b.as_markup()
 
@@ -725,7 +989,7 @@ async def all_tasks_closed(cb: CallbackQuery, db: Database, config: Config) -> N
     lambda m: (m.text or "").strip() in {MGR_BTN_SYNC, "🔄 Синхронизация данных"}
 )
 async def sync_data_non_gd(
-    message: Message, db: Database, config: Config, integrations: IntegrationHub,
+    message: Message, db: Database, config: Config, integrations: IntegrationHub, notifier: Notifier,
 ) -> None:
     """Sync data with Google Sheets for non-GD roles.
 
@@ -742,7 +1006,7 @@ async def sync_data_non_gd(
     if active_role in _GD_LIKE_ROLES:
         # Delegate to GD-specific sync handler
         from .gd import gd_sync_data
-        await gd_sync_data(message, db, config, integrations)
+        await gd_sync_data(message, db, config, integrations, notifier)
         return
     is_admin = message.from_user.id in (config.admin_ids or set())
     menu_context = await _menu_context(db, message.from_user.id, active_role or role)
@@ -763,7 +1027,11 @@ async def sync_data_non_gd(
         )
         return
 
-    await answer_service(message, "⏳ Запускаю синхронизацию данных с Google Sheets...")
+    # Typing-индикатор для всего флоу (как у ГД, без промежуточного сообщения).
+    try:
+        await message.bot.send_chat_action(message.chat.id, "typing")  # type: ignore[union-attr]
+    except Exception:
+        pass
 
     imported_ok = 0
     try:
@@ -785,6 +1053,158 @@ async def sync_data_non_gd(
     )
 
     menu_context = await _menu_context(db, message.from_user.id, active_role or role)
+
+    # Менеджеры (КВ / КИА / НПН) — карточка по образцу ГД sync_data_card_v2
+    if (active_role or role) in MANAGER_ROLES:
+        try:
+            metrics = await db.get_manager_dashboard_metrics(message.from_user.id)
+            from ..utils import format_manager_sync_card, with_manager_tasks_section
+            text = await with_manager_tasks_section(db, message.from_user.id, format_manager_sync_card(metrics))
+        except Exception:
+            log.exception("manager_sync: build dashboard card failed")
+            text = (
+                "✅ Синхронизация завершена.\n"
+                f"📥 Импорт из ОП: <b>{imported_ok}</b>\n"
+                f"Проектов: <b>{stats['projects']}</b>\n"
+                f"Задач: <b>{stats['tasks']}</b>\n"
+                f"Счетов: <b>{stats['invoices']}</b>"
+            )
+        await answer_service(
+            message,
+            text,
+            delay_seconds=0,
+            reply_markup=private_only_reply_markup(
+                message,
+                main_menu(
+                    active_role or role,
+                    is_admin=is_admin,
+                    isolated_role=bool(active_role and active_role != role),
+                    **menu_context,
+                ),
+            ),
+        )
+        return
+
+    # РП — полная стартовая карточка «Твоя Атмосфера» (как на /start; паритет с ГД,
+    # запрос user'а 31.05). Авто-рассылка 09:00 в daily_sync — 3-секционная отдельно.
+    if (active_role or role) == Role.RP:
+        try:
+            from ..rp_start_card import build_rp_start_card_text
+            text = await build_rp_start_card_text(db, config, message.from_user.id)
+        except Exception:
+            log.exception("rp_sync: build dashboard card failed")
+            text = (
+                "✅ Синхронизация завершена.\n"
+                f"📥 Импорт из ОП: <b>{imported_ok}</b>\n"
+                f"Проектов: <b>{stats['projects']}</b>\n"
+                f"Задач: <b>{stats['tasks']}</b>\n"
+                f"Счетов: <b>{stats['invoices']}</b>"
+            )
+        await answer_service(
+            message,
+            text,
+            delay_seconds=0,
+            reply_markup=private_only_reply_markup(
+                message,
+                main_menu(
+                    active_role or role,
+                    is_admin=is_admin,
+                    isolated_role=bool(active_role and active_role != role),
+                    **menu_context,
+                ),
+            ),
+        )
+        await _send_zamery_stats(message, db)
+        return
+
+    # Монтажник — карточка с Счёт End / В работе / ЗП помесячно / Баланс аванса.
+    # Источники строго по [[project_installer_sync_card_deploy_20260522]].
+    if (active_role or role) == Role.INSTALLER:
+        try:
+            metrics = await db.get_installer_dashboard_metrics(message.from_user.id)
+            from ..utils import format_installer_sync_card
+            text = format_installer_sync_card(metrics)
+        except Exception:
+            log.exception("installer_sync: build dashboard card failed")
+            text = (
+                "✅ Синхронизация завершена.\n"
+                f"📥 Импорт из ОП: <b>{imported_ok}</b>\n"
+                f"Проектов: <b>{stats['projects']}</b>\n"
+                f"Задач: <b>{stats['tasks']}</b>\n"
+                f"Счетов: <b>{stats['invoices']}</b>"
+            )
+        await answer_service(
+            message,
+            text,
+            delay_seconds=0,
+            reply_markup=private_only_reply_markup(
+                message,
+                main_menu(
+                    active_role or role,
+                    is_admin=is_admin,
+                    isolated_role=bool(active_role and active_role != role),
+                    **menu_context,
+                ),
+            ),
+        )
+        return
+
+    # Замерщик — карточка-календарь «График замеров» (2 месяца) + зеркало на лист
+    # leads (O:U, один месяц через month_marks). Статистика по менеджерам — отдельным
+    # сообщением следом.
+    if (active_role or role) == Role.ZAMERY:
+        try:
+            from ..zamery_start_card import month_marks, build_zamery_start_card_text
+            _y, _m, _busy, _off = await month_marks(db, message.from_user.id)
+            text = await build_zamery_start_card_text(db, config, message.from_user.id)
+        except Exception:
+            log.exception("zamery_sync: build calendar card failed")
+            _y = _m = None
+            _busy = _off = set()
+            text = (
+                "✅ Синхронизация завершена.\n"
+                f"📥 Импорт из ОП: <b>{imported_ok}</b>"
+            )
+        if _y is not None and integrations.sheets:
+            try:
+                await asyncio.to_thread(
+                    integrations.sheets.upsert_zamery_calendar_sync,
+                    _y, _m, _busy, _off,
+                )
+            except Exception:
+                log.exception("zamery_sync: write calendar to leads sheet failed")
+        # Журнал заявок замерщика на лист leads (W:AG) — ВЕСЬ журнал (все заявки).
+        # НЕ месячное окно: upsert_zamery_journal_sync перезаписывает блок целиком,
+        # поэтому узкое окно затирало бы исторические замеры прошлых месяцев.
+        if integrations.sheets:
+            try:
+                _d_from = "2000-01-01"
+                _d_to = "2100-12-31"
+                _journal = await db.list_zamery_journal(
+                    message.from_user.id, _d_from, _d_to,
+                )
+                await asyncio.to_thread(
+                    integrations.sheets.upsert_zamery_journal_sync, _journal,
+                )
+            except Exception:
+                log.exception("zamery_sync: write journal to leads sheet failed")
+        await answer_service(
+            message,
+            text,
+            delay_seconds=0,
+            reply_markup=private_only_reply_markup(
+                message,
+                main_menu(
+                    active_role or role,
+                    is_admin=is_admin,
+                    isolated_role=bool(active_role and active_role != role),
+                    **menu_context,
+                ),
+            ),
+        )
+        await _send_zamery_stats(message, db, for_user=message.from_user.id)
+        return
+
     await answer_service(
         message,
         "✅ Синхронизация завершена.\n"
@@ -792,7 +1212,7 @@ async def sync_data_non_gd(
         f"Проектов: <b>{stats['projects']}</b>\n"
         f"Задач: <b>{stats['tasks']}</b>\n"
         f"Счетов: <b>{stats['invoices']}</b>",
-        delay_seconds=300,
+        delay_seconds=0,
         reply_markup=private_only_reply_markup(
             message,
             main_menu(

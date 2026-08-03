@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..enums import Role
+from ..enums import MANAGER_ROLES, Role
 from ..keyboards import main_menu
 from ..utils import parse_roles
 
@@ -29,6 +29,7 @@ async def build_menu_context(
             "gd_invoice_unread": None,
             "gd_invoice_end_unread": None,
             "gd_supplier_pay_unread": None,
+            "gd_total_open_tasks": None,
             "rp_tasks": 0,
             "rp_messages": 0,
             "npn_tasks": 0,
@@ -46,6 +47,9 @@ async def build_menu_context(
         "gd_invoice_unread": await db.count_gd_invoice_tasks(user_id) if has_gd_access else None,
         "gd_invoice_end_unread": await db.count_gd_invoice_end_tasks(user_id) if has_gd_access else None,
         "gd_supplier_pay_unread": await db.count_gd_supplier_pay_tasks(user_id) if has_gd_access else None,
+        "gd_total_open_tasks": (
+            await db.count_gd_more_total_open_tasks(user_id) if has_gd_access else None
+        ),
         "rp_tasks": await db.count_rp_role_tasks(user_id) if is_rp else 0,
         "rp_messages": await db.count_rp_role_messages(user_id) if is_rp else 0,
         "npn_tasks": unread if Role.MANAGER_NPN in roles else 0,
@@ -57,6 +61,14 @@ async def build_menu_context(
         context["rp_ch_mgr_kv"] = await db.count_rp_channel_unread(user_id, "rp_to_manager_kv")
         context["rp_ch_mgr_kia"] = await db.count_rp_channel_unread(user_id, "rp_to_manager_kia")
         context["rp_ch_montazh"] = await db.count_rp_channel_unread(user_id, "montazh")
+        context["rp_invoice_paid"] = await db.count_rp_channel_unread(user_id, "rp_invoice_paid")
+    if Role.INSTALLER in roles:
+        context["inst_in_work"] = await db.count_installer_unconfirmed_invoices(user_id)
+    if (roles & MANAGER_ROLES) or Role.MANAGER in roles:
+        # ТЗ 18.06: бейдж 🔴 на «Счет End» — счета, готовые к закрытию.
+        context["mgr_invoice_end_ready"] = await db.count_invoices_ready_for_end(user_id)
+        # ТЗ 02.07: бейдж 🔴 на «Ещё» — открытые задачи «Перерасчёт → согласие».
+        context["mgr_recalc_confirm"] = await db.count_recalc_confirm_tasks(user_id)
     return context
 
 
