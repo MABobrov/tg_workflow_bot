@@ -1337,8 +1337,22 @@ class GoogleSheetsService:
             cells[69] = ""
 
         # BT — db-first: источник (materials_fact_op) перезаписывает лист (см. шапку выше).
+        # owner 2026-08-04: если ОП AM пуст, а монтажники дали «Счёт ОК» — подставляем ФАКТ
+        # из cost-card (metal + glass + extra_mat). И канон подстановки, и её приоритет взяты
+        # из db.py::get_full_invoice_cost_card (там ровно тот же fallback: ОП AM главнее,
+        # cost_* — только когда AM пуст), гейт — общий _fact_visible («Счёт ОК»/«Счёт End»/
+        # закрыт), тот же, что уже стоит у BG/Y/BL-BO. Зеркало ОП не искажаем: при
+        # заполненном AM ветка не срабатывает вовсе ([[feedback_op_mirror_no_mixing]]).
+        # Смысл правки: BL «Прибыль факт» эти материалы уже вычитала через cost-card, а BT
+        # показывала пусто — лист противоречил сам себе.
         _current_bt_str = (current_bt or "").strip()
         _materials_for_bt = float(invoice.get("materials_fact_op") or 0)
+        if not _materials_for_bt and _fact_visible:
+            _materials_for_bt = (
+                float(invoice.get("cost_metal") or 0)
+                + float(invoice.get("cost_glass") or 0)
+                + float(invoice.get("cost_extra_mat") or 0)
+            )
         if _materials_for_bt > 0:
             cells[71] = self._fmt_amount(_materials_for_bt)
         elif _current_bt_str:
