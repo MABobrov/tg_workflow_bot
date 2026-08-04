@@ -1188,8 +1188,28 @@ async def acc_question_attach(
     )
 
 
+# 🔴 Оба хендлера acc_q:* зарегистрированы БЕЗ StateFilter и безусловно чистили
+# состояние, а ключ `task_id` в него кладут ДВА разных потока: AccQuestionSG (:1132)
+# и EdoResponseSG (:1545). Бухгалтер, начавший ответ на ЭДО и нажавший старую
+# «❌ Отмена» от давнего вопроса, молча терял ЭДО-поток. Тот же класс, что закрывали
+# 03.08 в taskcomplete_finalize: обработчик обязан убедиться, что владеет состоянием,
+# которое разрушает. Гард стоит в ТЕЛЕ, а не в StateFilter, — catch-all для
+# неопознанных callback'ов в проекте нет, и фильтр оставил бы кнопку молча висеть.
+# Пустое состояние пропускаем: разрушать нечего, поведение остаётся прежним.
+def _acc_q_button_is_stale(current_state: str | None) -> bool:
+    """Кнопка вопроса пришла, когда человек находится в ЧУЖОМ потоке."""
+    return current_state is not None and current_state != AccQuestionSG.attachments.state
+
+
 @router.callback_query(F.data == "acc_q:cancel")
 async def acc_question_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    if _acc_q_button_is_stale(await state.get_state()):
+        await cb.answer(
+            "Эта кнопка — от другого вопроса (устаревшее сообщение). "
+            "Текущий поток не тронут.",
+            show_alert=True,
+        )
+        return
     await state.clear()
     await cb.answer("❌ Отменено")
     await cb.message.answer("Отменено.")  # type: ignore[union-attr]
@@ -1198,6 +1218,16 @@ async def acc_question_cancel(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "acc_q:send")
 async def acc_question_send(cb: CallbackQuery, state: FSMContext, db: Database, notifier: Notifier) -> None:
     """Создать задачу ACC_QUESTION для инициатора + отправить уведомление."""
+    # Тот же гард, что у acc_q:cancel (см. _acc_q_button_is_stale): здесь state.clear()
+    # стоял ВЫШЕ проверки данных, поэтому устаревшая кнопка «✅ Отправить» успевала
+    # снести чужой поток раньше, чем выяснялось, что отправлять нечего.
+    if _acc_q_button_is_stale(await state.get_state()):
+        await cb.answer(
+            "Эта кнопка — от другого вопроса (устаревшее сообщение). "
+            "Текущий поток не тронут.",
+            show_alert=True,
+        )
+        return
     data = await state.get_data()
     await state.clear()
     await cb.answer()

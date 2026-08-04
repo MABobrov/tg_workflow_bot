@@ -1660,7 +1660,12 @@ async def taskcomplete_finalize(
     target_user_id = data.get("target_user_id")
 
     # Save attachments to DB (for history)
-    attachments = data.get("attachments", []) if cb.data == "taskcomplete:send" else []
+    # ⚠️ Сохраняем ВСЕГДА, независимо от нажатой кнопки. taskcomplete_collect (см. ниже)
+    # заливает каждый файл в MinIO СРАЗУ при получении (mirror_attachment), то есть объект
+    # в хранилище уже создан; без строки в attachments указателя на него не остаётся
+    # нигде — файл теряется молча. «⏭ Закрыть без отправки» означает «не слать адресату»,
+    # а НЕ «удалить присланное». Отправка ниже закрыта своим условием.
+    attachments = data.get("attachments", [])
     for a in attachments:
         await db.add_attachment(
             task_id=int(task_id),
