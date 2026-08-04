@@ -151,12 +151,22 @@ class UsageAuditMiddleware(BaseMiddleware):
                 )
                 callback_data = (update_event.data or "").strip()
                 callback_kind = callback_data.split(":", 1)[0] if callback_data else ""
+                # owner 04.08: полный callback_data — в payload, entity_id остаётся
+                # ПРЕФИКСОМ. Разбор инцидента 03.08 (расход кошелька «Зп замерщик»)
+                # встал ровно здесь: в логе три подряд «cwspend» без данных, отличить
+                # `cwspend:confirm` от `cwspend:cat:*` нечем — форму сочли брошенной,
+                # хотя человек дошёл до конца и задача ГД была создана.
+                # Почему в payload, а НЕ в entity_id: по нему построен индекс
+                # idx_audit_entity (db.py:208) и группировка top_usage_entities
+                # (db.py:4735) — полные данные схлопнули бы каждую строку в свою
+                # группу. Телеметрию это не «пачкает»: callback_data генерирует сам
+                # бот, свободного текста пользователя в нём нет (ср. L141-143).
                 await db.audit(
                     actor_id=user_id,
                     action="callback",
                     entity="callback",
                     entity_id=callback_kind or _clip(callback_data),
-                    payload={"chat_id": chat_id},
+                    payload={"chat_id": chat_id, "data": _clip(callback_data, 128)},
                 )
         except Exception:
             # telemetry must not break business flow
