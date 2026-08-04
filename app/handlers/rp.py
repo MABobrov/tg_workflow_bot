@@ -39,7 +39,7 @@ from ..states import (
     TintingRequestSG,
 )
 from ..utils import fmt_project_card, format_rp_oklad_lines, get_initiator_label, parse_amount, parse_date, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
-from ._mirror import mirror_attachment
+from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
 
@@ -201,17 +201,13 @@ async def order_mat_attach(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"rp/{uid}")
     if att is None:
         await message.answer("Пришлите файл/фото или нажмите «✅ Создать заказ».")
         return
-    attachments.append(att)
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await message.answer(f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>.{suffix}")
+    await message.answer(f"📎 Принял. Сейчас файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "ordermat:create")
@@ -781,17 +777,13 @@ async def tinting_req_attach(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"rp/{uid}")
     if att is None:
         await message.answer("Пришлите файл/фото или нажмите «✅ Создать заявку».")
         return
-    attachments.append(att)
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await message.answer(f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "tintingreq:create")
@@ -1136,17 +1128,13 @@ async def invoice_attach(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments = data.get("attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"rp/{uid}")
     if att is None:
         await message.answer("Прикрепите файл/фото или нажмите кнопку.")
         return
-    attachments.append(att)
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await message.answer(f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await message.answer(f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "invoice_create:finalize")

@@ -43,7 +43,7 @@ from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..states import ChatProxySG, CreditPaymentExecuteSG, CreditPaymentReceiptSG, CreditTaskRejectSG, CreditTaskSG, CreditWalletSpendSG, GdTaskCreateSG, InvoicePaymentSG, ReplyToGDSG
 from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, credit_wallet_label, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_by_wallet_payment, utcnow, to_iso
-from ._mirror import mirror_attachment
+from ._mirror import collect_attachment, mirror_attachment
 
 log = logging.getLogger(__name__)
 
@@ -2544,10 +2544,11 @@ async def gd_task_create_attach(
     storage: MinioStorage | None = None,
 ) -> None:
     data = await state.get_data()
-    attachments = data.get("task_attachments", [])
 
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"gd_task/{uid}")
+    att, _att_count = await collect_attachment(
+        message, state, storage, prefix=f"gd_task/{uid}", key="task_attachments"
+    )
     if att is None:
         # 🔴 Сюда прилетало «20:00» и получало «Это не файл» (инцидент owner'а
         # 03.08, 15:09:37). Причина: после ввода даты шаг срока возвращает экран
@@ -2573,9 +2574,7 @@ async def gd_task_create_attach(
             "(<b>20:00</b>) — поставлю его в срок, либо нажмите «✅ Создать задачу».",
         )
         return
-    attachments.append(att)
-
-    await state.update_data(task_attachments=attachments)
+    # Список вложений уже записан collect_attachment под блокировкой.
     # Экран подтверждения пересобираем — кнопка «✅ Создать» должна быть под
     # последним сообщением, а не уехать вверх за принятыми файлами (owner 30.07).
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""

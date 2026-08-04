@@ -20,7 +20,7 @@ from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import DeliveryDoneSG
 from ..utils import answer_service, build_task_done_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
-from ._mirror import mirror_attachment
+from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -81,17 +81,13 @@ async def delivery_done_attach(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"driver/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"driver/{uid}")
     if att is None:
         await message.answer("Пришлите фото или нажмите «✅ Подтвердить доставку».")
         return
-    attachments.append(att)
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "deliverydone:create")

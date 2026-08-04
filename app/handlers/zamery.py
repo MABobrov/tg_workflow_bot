@@ -39,7 +39,7 @@ from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryQuickBookSG, ZameryZpSG
 from ..utils import answer_service, format_card_section, format_zamery_settlement_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
-from ._mirror import mirror_attachment
+from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
 
@@ -564,19 +564,15 @@ async def zamery_complete_file(
     storage: MinioStorage | None = None,
 ) -> None:
     """Приём файлов: фото, видео, документы."""
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("complete_attachments", [])
-
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"zamery/{uid}")
+    att, count = await collect_attachment(
+        message, state, storage, prefix=f"zamery/{uid}", key="complete_attachments"
+    )
     if att is None:
         await message.answer("Пришлите файл, фото или видео. Или нажмите «Далее».")
         return
-    attachments.append(att)
-
-    await state.update_data(complete_attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(ZameryCompleteSG.attachments, F.data == "zam_complete:next")
@@ -1734,19 +1730,16 @@ async def zamery_book_attachment(
     storage: MinioStorage | None = None,
 ) -> None:
     """Получен файл — сохраняем и ждём ещё."""
-    data = await state.get_data()
-    attachments = data.get("book_attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"zamery/{uid}")
-    if att is not None:
-        attachments.append(att)
-    await state.update_data(book_attachments=attachments)
+    att, count = await collect_attachment(
+        message, state, storage, prefix=f"zamery/{uid}", key="book_attachments"
+    )
     b = InlineKeyboardBuilder()
-    b.button(text=f"✅ Сохранить замер ({len(attachments)} вл.)", callback_data="zamsched:book:finalize")
+    b.button(text=f"✅ Сохранить замер ({count} вл.)", callback_data="zamsched:book:finalize")
     b.adjust(1)
     suffix = " (☁️ зеркало)" if att and att.get("minio_object_key") else ""
     await message.answer(
-        f"📎 Добавлено: {len(attachments)}.{suffix} Отправьте ещё или сохраните:",
+        f"📎 Добавлено: {count}.{suffix} Отправьте ещё или сохраните:",
         reply_markup=b.as_markup(),
     )
 

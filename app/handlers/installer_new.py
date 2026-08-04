@@ -58,7 +58,7 @@ from ..states import (
     InstallerZpSG,
 )
 from ..utils import answer_service, build_advance_history_card, build_deposit_history_card, build_installer_advance_card, build_installer_zp_invoiceok_card, build_task_done_card, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
-from ._mirror import mirror_attachment
+from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
 
@@ -257,17 +257,13 @@ async def order_mat_attachments(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"installer/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"installer/{uid}")
     if att is None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
-    attachments.append(att)
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "inst_order:create")
@@ -1108,17 +1104,15 @@ async def razmery_attach(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments = data.get("razmery_attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"installer/{uid}")
+    att, count = await collect_attachment(
+        message, state, storage, prefix=f"installer/{uid}", key="razmery_attachments"
+    )
     if att is None:
         await message.answer("Прикрепите файл/фото или нажмите кнопку.")
         return
-    attachments.append(att)
-    await state.update_data(razmery_attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "razmok_new:create")
@@ -1273,17 +1267,15 @@ async def razmery_result_attach(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments = data.get("razmery_result_attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"installer/{uid}")
+    att, count = await collect_attachment(
+        message, state, storage, prefix=f"installer/{uid}", key="razmery_result_attachments"
+    )
     if att is None:
         await message.answer("Прикрепите файл/фото или нажмите кнопку.")
         return
-    attachments.append(att)
-    await state.update_data(razmery_result_attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "razmok_inst:result_send")
@@ -2517,21 +2509,17 @@ async def zpadj_attachments(
     storage: MinioStorage | None = None,
 ) -> None:
     """Шаг 3: приём вложений."""
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"installer/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"installer/{uid}")
     if att is None:
         await message.answer("Пришлите фото/видео/документ или нажмите кнопку.")
         return
-    attachments.append(att)
-    await state.update_data(attachments=attachments)
 
     b = InlineKeyboardBuilder()
     b.button(text="⏩ Готово", callback_data="instzpadj:to_confirm")
     b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.", reply_markup=b.as_markup())
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.", reply_markup=b.as_markup())
 
 
 @router.callback_query(F.data == "instzpadj:editamt")
@@ -2807,17 +2795,13 @@ async def daily_report_attachments(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"installer/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"installer/{uid}")
     if att is None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
-    attachments.append(att)
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "inst_report:send")

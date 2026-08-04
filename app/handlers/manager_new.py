@@ -101,7 +101,7 @@ from ..states import (
     ZameryRequestSG,
 )
 from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, build_funds_card, build_invoice_section, close_condition_core_rows, compute_plan_profit, credit_wallet_label, fmt_money, format_card, format_card_section, format_invoice_card_standard, format_invoice_end_financials, format_manager_invoices_overview, format_manager_recalc_card, format_materials_list, get_initiator_label, manager_zp_net_payout, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads, credit_zp_montazh_unpaid
-from ._mirror import mirror_attachment
+from ._mirror import collect_attachment
 from .auth import RoleFilter, require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
 
@@ -584,15 +584,16 @@ async def check_kp_documents(
     storage: MinioStorage | None = None,
 ) -> None:
     data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("documents", [])
 
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
+    # ⚠️ Ключ состояния здесь `documents`, а не `attachments` — имя переменной обманчиво.
+    att, doc_count = await collect_attachment(
+        message, state, storage, prefix=f"manager/{uid}", key="documents"
+    )
     if att is None:
-        if not attachments:
+        if not doc_count:
             await message.answer("Пришлите файл или фото КП:")
             return
-        await state.update_data(documents=attachments)
         if data.get("flow_type") == "lead":
             await state.set_state(CheckKpSG.amount)
             await message.answer("Введите <b>сумму</b> из расчёта (число):")
@@ -600,13 +601,10 @@ async def check_kp_documents(
             await state.set_state(CheckKpSG.comment)
             await message.answer("Шаг 7/7: Добавьте <b>комментарий</b> (или отправьте «—» для пропуска):")
         return
-    attachments.append(att)
-
-    await state.update_data(documents=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
     await answer_service(
         message,
-        f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}\n"
+        f"📎 Принял. Файлов: <b>{doc_count}</b>.{suffix}\n"
         "Отправьте ещё файлы или напишите что-нибудь для перехода к следующему шагу.",
     )
 
@@ -1146,19 +1144,13 @@ async def invoice_start_attachments(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
-
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"manager/{uid}")
     if att is None:
         await message.answer("Пришлите файл/фото/видео или нажмите «✅ Отправить ГД».")
         return
-    attachments.append(att)
-
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data.in_({"inv_start:send", "inv_start:send_no_attach"}))
@@ -2530,19 +2522,13 @@ async def edo_attachments(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
-
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"manager/{uid}")
     if att is None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
-    attachments.append(att)
-
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "edo:create")
@@ -3847,17 +3833,13 @@ async def zamery_attachments(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"manager/{uid}")
     if att is None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
-    attachments.append(att)
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "zam:create")

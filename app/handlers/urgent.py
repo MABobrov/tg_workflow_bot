@@ -20,7 +20,7 @@ from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import NotUrgentGDSG, UrgentGDSG
 from ..utils import answer_service, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
-from ._mirror import mirror_attachment
+from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 
 log = logging.getLogger(__name__)
@@ -410,23 +410,23 @@ async def not_urgent_gd_attachments(
     storage: MinioStorage | None = None,
 ) -> None:
     data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
 
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"not_urgent/{uid}")
-    if att is not None:
-        attachments.append(att)
-    elif message.text and message.text.strip():
-        note = message.text.strip()
-        prev = data.get("description", "")
-        data["description"] = (prev + "\n" + note).strip() if prev else note
-    else:
-        await message.answer("Пришлите файл/фото или нажмите кнопку.")
-        return
+    # Список вложений пишет collect_attachment под блокировкой; здесь остаётся только
+    # description — иначе альбом затирает сам себя (см. _mirror.collect_attachment).
+    att, count = await collect_attachment(message, state, storage, prefix=f"not_urgent/{uid}")
+    if att is None:
+        if message.text and message.text.strip():
+            note = message.text.strip()
+            prev = data.get("description", "")
+            data["description"] = (prev + "\n" + note).strip() if prev else note
+        else:
+            await message.answer("Пришлите файл/фото или нажмите кнопку.")
+            return
 
-    await state.update_data(attachments=attachments, description=data.get("description", ""))
+    await state.update_data(description=data.get("description", ""))
     suffix = " (☁️ зеркало)" if att and att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "noturggd:create")

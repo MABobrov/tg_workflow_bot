@@ -40,7 +40,7 @@ from ..utils import (
     to_iso,
     utcnow,
 )
-from ._mirror import mirror_attachment
+from ._mirror import collect_attachment
 from .auth import require_role_message, require_role_callback
 
 log = logging.getLogger(__name__)
@@ -358,25 +358,23 @@ async def docs_collect_attachments(
     storage: MinioStorage | None = None,
 ) -> None:
     data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
 
     # Accept documents/photos with optional caption
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
-    if att is not None:
-        attachments.append(att)
-    elif message.text and message.text.strip() and message.text.strip() != "❌ Отмена":
-        # treat as additional note
-        note = message.text.strip()
-        prev = data.get("comment", "")
-        data["comment"] = (prev + "\n" + note).strip() if prev else note
-    else:
-        await message.answer("Пришлите файл/фото или нажмите «✅ Создать запрос».")
-        return
+    att, count = await collect_attachment(message, state, storage, prefix=f"manager/{uid}")
+    if att is None:
+        if message.text and message.text.strip() and message.text.strip() != "❌ Отмена":
+            # treat as additional note
+            note = message.text.strip()
+            prev = data.get("comment", "")
+            data["comment"] = (prev + "\n" + note).strip() if prev else note
+        else:
+            await message.answer("Пришлите файл/фото или нажмите «✅ Создать запрос».")
+            return
 
-    await state.update_data(attachments=attachments, comment=data.get("comment", ""))
+    await state.update_data(comment=data.get("comment", ""))
     suffix = " (☁️ зеркало)" if att and att.get("minio_object_key") else ""
-    await message.answer(f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>. Можно отправить ещё или нажать «✅ Создать запрос».{suffix}")
+    await message.answer(f"📎 Принял. Сейчас файлов: <b>{count}</b>. Можно отправить ещё или нажать «✅ Создать запрос».{suffix}")
 
 @router.callback_query(F.data == "docs:create")
 async def docs_finalize(
@@ -586,23 +584,21 @@ async def quote_collect_attachments(
     storage: MinioStorage | None = None,
 ) -> None:
     data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
 
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
-    if att is not None:
-        attachments.append(att)
-    elif message.text and message.text.strip() and message.text.strip() != "❌ Отмена":
-        note = message.text.strip()
-        prev = data.get("comment", "")
-        data["comment"] = (prev + "\n" + note).strip() if prev else note
-    else:
-        await message.answer("Пришлите файл/фото или нажмите «✅ Создать запрос КП».")
-        return
+    att, count = await collect_attachment(message, state, storage, prefix=f"manager/{uid}")
+    if att is None:
+        if message.text and message.text.strip() and message.text.strip() != "❌ Отмена":
+            note = message.text.strip()
+            prev = data.get("comment", "")
+            data["comment"] = (prev + "\n" + note).strip() if prev else note
+        else:
+            await message.answer("Пришлите файл/фото или нажмите «✅ Создать запрос КП».")
+            return
 
-    await state.update_data(attachments=attachments, comment=data.get("comment", ""))
+    await state.update_data(comment=data.get("comment", ""))
     suffix = " (☁️ зеркало)" if att and att.get("minio_object_key") else ""
-    await message.answer(f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>. Можно отправить ещё или нажать «✅ Создать запрос КП».{suffix}")
+    await message.answer(f"📎 Принял. Сейчас файлов: <b>{count}</b>. Можно отправить ещё или нажать «✅ Создать запрос КП».{suffix}")
 
 @router.callback_query(F.data == "quote:create")
 async def quote_finalize(
@@ -843,23 +839,21 @@ async def payment_collect_attachments(
     storage: MinioStorage | None = None,
 ) -> None:
     data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
 
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
-    if att is not None:
-        attachments.append(att)
-    elif message.text and message.text.strip() and message.text.strip() != "❌ Отмена":
-        note = message.text.strip()
-        prev = data.get("comment", "")
-        data["comment"] = (prev + "\n" + note).strip() if prev else note
-    else:
-        await message.answer("Пришлите файл/фото или нажмите «✅ Отправить на подтверждение».")
-        return
+    att, count = await collect_attachment(message, state, storage, prefix=f"manager/{uid}")
+    if att is None:
+        if message.text and message.text.strip() and message.text.strip() != "❌ Отмена":
+            note = message.text.strip()
+            prev = data.get("comment", "")
+            data["comment"] = (prev + "\n" + note).strip() if prev else note
+        else:
+            await message.answer("Пришлите файл/фото или нажмите «✅ Отправить на подтверждение».")
+            return
 
-    await state.update_data(attachments=attachments, comment=data.get("comment", ""))
+    await state.update_data(comment=data.get("comment", ""))
     suffix = " (☁️ зеркало)" if att and att.get("minio_object_key") else ""
-    await message.answer(f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>. Можно отправить ещё или нажать «✅ Отправить на подтверждение».{suffix}")
+    await message.answer(f"📎 Принял. Сейчас файлов: <b>{count}</b>. Можно отправить ещё или нажать «✅ Отправить на подтверждение».{suffix}")
 
 @router.callback_query(F.data == "pay:create")
 async def payment_finalize(
@@ -1061,23 +1055,21 @@ async def closing_collect_attachments(
     storage: MinioStorage | None = None,
 ) -> None:
     data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
 
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
-    if att is not None:
-        attachments.append(att)
-    elif message.text and message.text.strip() and message.text.strip() != "❌ Отмена":
-        note = message.text.strip()
-        prev = data.get("comment", "")
-        data["comment"] = (prev + "\n" + note).strip() if prev else note
-    else:
-        await message.answer("Пришлите файл/фото или нажмите «✅ Отправить в бухгалтерию».")
-        return
+    att, count = await collect_attachment(message, state, storage, prefix=f"manager/{uid}")
+    if att is None:
+        if message.text and message.text.strip() and message.text.strip() != "❌ Отмена":
+            note = message.text.strip()
+            prev = data.get("comment", "")
+            data["comment"] = (prev + "\n" + note).strip() if prev else note
+        else:
+            await message.answer("Пришлите файл/фото или нажмите «✅ Отправить в бухгалтерию».")
+            return
 
-    await state.update_data(attachments=attachments, comment=data.get("comment", ""))
+    await state.update_data(comment=data.get("comment", ""))
     suffix = " (☁️ зеркало)" if att and att.get("minio_object_key") else ""
-    await message.answer(f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>. Можно отправить ещё или нажать «✅ Отправить в бухгалтерию».{suffix}")
+    await message.answer(f"📎 Принял. Сейчас файлов: <b>{count}</b>. Можно отправить ещё или нажать «✅ Отправить в бухгалтерию».{suffix}")
 
 @router.callback_query(F.data == "closing:create")
 async def closing_finalize(
@@ -1408,19 +1400,13 @@ async def issue_collect_attachments(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
-
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"manager/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"manager/{uid}")
     if att is None:
         await message.answer("Пришлите фото/файл или нажмите «✅ Отправить».")
         return
-    attachments.append(att)
-
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await message.answer(f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>. Можно отправить ещё или нажать «✅ Отправить».{suffix}")
+    await message.answer(f"📎 Принял. Сейчас файлов: <b>{count}</b>. Можно отправить ещё или нажать «✅ Отправить».{suffix}")
 
 @router.callback_query(F.data == "issue:create")
 async def issue_finalize(

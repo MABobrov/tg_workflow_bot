@@ -95,7 +95,7 @@ from ..states import (
 )
 from ..utils import answer_service, build_invoice_section, close_condition_core_rows, fmt_money, format_invoice_card_standard, get_initiator_label, invoice_status_emoji, invoice_status_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
 from ..rp_start_card import _matrix, _street
-from ._mirror import mirror_attachment
+from ._mirror import collect_attachment
 from .installer_new import (
     _advance_cg_amount,
     _advance_raw_cur,
@@ -1819,24 +1819,19 @@ async def rp_montazh_attach_file(
     storage: MinioStorage | None = None,
 ) -> None:
     """Принять файл от РП."""
-    data = await state.get_data()
-    attachments: list[dict] = data.get("attachments", [])
-
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"rp/{uid}")
     if att is None:
         return
-    attachments.append(att)
-    await state.update_data(attachments=attachments)
 
     b = InlineKeyboardBuilder()
     b.button(
-        text=f"✅ Отправить монтажнику ({len(attachments)} вл.)",
+        text=f"✅ Отправить монтажнику ({count} вл.)",
         callback_data="rp_montazh:finish_attach",
     )
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
     await message.answer(
-        f"📎 Принял. Файлов: {len(attachments)}.{suffix} Отправьте ещё или нажмите кнопку.",
+        f"📎 Принял. Файлов: {count}.{suffix} Отправьте ещё или нажмите кнопку.",
         reply_markup=b.as_markup(),
     )
 
@@ -2500,17 +2495,15 @@ async def rp_razmery_form_attach(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments = data.get("rp_razmery_attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    att, count = await collect_attachment(
+        message, state, storage, prefix=f"rp/{uid}", key="rp_razmery_attachments"
+    )
     if att is None:
         await message.answer("Прикрепите файл/фото или нажмите кнопку.")
         return
-    attachments.append(att)
-    await state.update_data(rp_razmery_attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "razmok_rp:form_create")
@@ -3144,24 +3137,18 @@ async def rp_sinv_attach(
     storage: MinioStorage | None = None,
 ) -> None:
     """Получить файл(ы) от РП для отправки ГД."""
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
-
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"rp/{uid}")
     if att is None:
         await message.answer("📎 Прикрепите файл или фото. Для продолжения нажмите кнопку.")
         return
-    attachments.append(att)
-
-    await state.update_data(attachments=attachments)
 
     b = InlineKeyboardBuilder()
-    b.button(text=f"✅ Далее ({len(attachments)} файл.)", callback_data="rp_sinv:skip_attach")
+    b.button(text=f"✅ Далее ({count} файл.)", callback_data="rp_sinv:skip_attach")
     b.button(text="❌ Отмена", callback_data="rp_sinv:cancel")
     b.adjust(1)
     await message.answer(
-        f"📎 Принял. Файлов: <b>{len(attachments)}</b>.\n"
+        f"📎 Принял. Файлов: <b>{count}</b>.\n"
         "Прикрепите ещё или нажмите «Далее»:",
         reply_markup=b.as_markup(),
     )
@@ -4323,17 +4310,13 @@ async def lead_attachments(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"rp/{uid}")
     if att is None:
         await message.answer("Пришлите файл/фото или нажмите кнопку.")
         return
-    attachments.append(att)
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Файлов: <b>{count}</b>.{suffix}")
 
 
 @router.callback_query(F.data == "lead:create")
@@ -4823,30 +4806,24 @@ async def kp_review_documents(
     storage: MinioStorage | None = None,
 ) -> None:
     """Сбор документов для б/н ответа на КП."""
-    data = await state.get_data()
-    documents: list[dict[str, Any]] = data.get("documents", [])
-
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"rp/{uid}")
+    att, doc_count = await collect_attachment(
+        message, state, storage, prefix=f"rp/{uid}", key="documents"
+    )
     if att is None:
-        if documents:
+        if doc_count:
             # Текстовое сообщение = переход к номеру счёта
-            await state.update_data(documents=documents)
             await state.set_state(KpReviewSG.invoice_number)
             await message.answer("Введите <b>номер счёта</b>:")
             return
         await message.answer("Пришлите файл или фото:")
         return
-    documents.append(att)
-
-    await state.update_data(documents=documents)
-
     b = InlineKeyboardBuilder()
     b.button(text="✅ Далее (комментарий)", callback_data="kp_review:next")
     b.adjust(1)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
     await message.answer(
-        f"📎 Принял. Документов: <b>{len(documents)}</b>.{suffix}\n"
+        f"📎 Принял. Документов: <b>{doc_count}</b>.{suffix}\n"
         "Ещё файлы или нажмите «Далее».",
         reply_markup=b.as_markup(),
     )

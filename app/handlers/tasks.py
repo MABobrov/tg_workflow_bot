@@ -22,7 +22,7 @@ from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import CreditPaymentExecuteSG, DeliveryPaymentSG, InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCancelReasonSG, TaskCompleteSG
 from ..utils import answer_service, build_manager_task_open_card, build_rp_zp_family_open_card, build_task_done_card, enrich_task_invoice_label, fmt_task_card, format_invoice_end_financials, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
-from ._mirror import mirror_attachment
+from ._mirror import collect_attachment, mirror_attachment
 from .money_guard import money_confirm_guard
 
 log = logging.getLogger(__name__)
@@ -1605,17 +1605,13 @@ async def taskcomplete_collect(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
-    data = await state.get_data()
-    attachments: list[dict[str, Any]] = data.get("attachments", [])
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"tasks/{uid}")
+    att, count = await collect_attachment(message, state, storage, prefix=f"tasks/{uid}")
     if att is None:
         await message.answer("Пришлите файл/фото или нажмите кнопку «✅ Отправить и закрыть».")
         return
-    attachments.append(att)
-    await state.update_data(attachments=attachments)
     suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-    await answer_service(message, f"📎 Принял. Сейчас файлов: <b>{len(attachments)}</b>.{suffix}")
+    await answer_service(message, f"📎 Принял. Сейчас файлов: <b>{count}</b>.{suffix}")
 
 @router.callback_query(F.data.in_({"taskcomplete:send", "taskcomplete:skip"}))
 async def taskcomplete_finalize(
@@ -1747,15 +1743,14 @@ async def invoice_pp_collect(
 ) -> None:
     """Collect payment order attachments from GD."""
     data = await state.get_data()
-    pp_files: list[dict[str, Any]] = data.get("pp_files", [])
 
     uid = message.from_user.id if message.from_user else "anon"
-    att = await mirror_attachment(message, storage, prefix=f"tasks/{uid}")
+    att, pp_count = await collect_attachment(
+        message, state, storage, prefix=f"tasks/{uid}", key="pp_files"
+    )
     if att is not None:
-        pp_files.append(att)
-        await state.update_data(pp_files=pp_files)
         suffix = " (☁️ зеркало)" if att.get("minio_object_key") else ""
-        await answer_service(message, f"📎 Принял. Файлов: <b>{len(pp_files)}</b>.{suffix}")
+        await answer_service(message, f"📎 Принял. Файлов: <b>{pp_count}</b>.{suffix}")
     elif message.text:
         # Текстовый комментарий от ГД
         pp_comment = data.get("pp_comment", "")

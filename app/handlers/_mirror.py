@@ -11,9 +11,11 @@ the result still contains `file_type/file_id/file_unique_id/caption`
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional, TYPE_CHECKING
 
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 if TYPE_CHECKING:
@@ -96,3 +98,48 @@ async def mirror_attachment(
         "caption": message.caption,
         "minio_object_key": minio_object_key,
     }
+
+
+# Бот живёт в одном процессе и одном event loop, поэтому общей блокировки достаточно:
+# под ней выполняются только операции с памятью, а долгая заливка вынесена наружу.
+_STATE_LOCK = asyncio.Lock()
+
+
+async def collect_attachment(
+    message: Message,
+    state: FSMContext,
+    storage: "Optional[MinioStorage]",
+    prefix: str,
+    key: str = "attachments",
+) -> tuple[Optional[dict[str, Any]], int]:
+    """Зеркалит вложение и АТОМАРНО добавляет его в список в FSM-состоянии.
+
+    Зачем нужна. Телеграм-альбом приходит НЕСКОЛЬКИМИ апдейтами, и aiogram обрабатывает
+    их параллельными задачами. Наивная последовательность «get_data → await заливка →
+    append → update_data» читает состояние ДО долгой заливки, поэтому все сообщения
+    альбома видят один и тот же базовый список и перезаписывают друг друга — выживает
+    последнее. Доказано на боевых данных: 04.08 три документа по задаче #427 легли в
+    MinIO (15:12:24.387 / 24.688 / 25.039), а в `attachments` попала ОДНА строка, на
+    последний из них; два файла остались в хранилище без единого указателя.
+
+    Заливка идёт ВНЕ блокировки — файлы по-прежнему грузятся параллельно; под блокировкой
+    только чтение-изменение-запись состояния.
+
+    Args:
+        key: имя ключа в FSM-состоянии. У большинства потоков это `attachments`, но
+            встречаются свои — передавать явно, а не полагаться на имя переменной.
+
+    Returns:
+        `(att, count)` — метаданные вложения и число уже накопленных файлов.
+        `(None, count)`, если во вложении нечего брать: что ответить пользователю,
+        решает место вызова — тексты у потоков разные.
+    """
+    att = await mirror_attachment(message, storage, prefix=prefix)
+    async with _STATE_LOCK:
+        data = await state.get_data()
+        items = list(data.get(key) or [])
+        if att is None:
+            return None, len(items)
+        items.append(att)
+        await state.update_data(**{key: items})
+        return att, len(items)
