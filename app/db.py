@@ -5125,6 +5125,11 @@ class Database:
         Accepts either a dict payload or keyword arguments. Sheet-owned fields
         are synchronized bidirectionally: explicit ``None`` values clear the
         stored column, while bot-managed fields remain untouched.
+
+        Exception — *preserve-if-empty* fields (``_PRESERVE_IF_EMPTY`` below):
+        an empty value (``None``/``""``) never clears a non-empty stored value.
+        A real value **including a literal ``0``** still overwrites — that is
+        how «долг погашен» and «ЗП выплачена по ОП» keep working.
         """
         if data is None:
             payload: dict[str, Any] = {}
@@ -5214,17 +5219,31 @@ class Database:
             "rp_payout_op", "rp_payout_date_op",
         )
 
+        # Поля с ДЕНЕЖНОЙ побочкой — второй слой защиты (баг 9б, 05.08).
+        # Первый слой — парс-слой sheets.py::_parse_op_row: с фикса 27.07 пустая
+        # ячейка ключ вообще не кладёт. Слой ОДИН, и если он регрессирует снова,
+        # обнуление долга не просто теряет число: db.py:5290-5303 зовёт
+        # record_credit_debt_payment, тот пишет приход в credit_incomes и двигает
+        # маркер переноса кошелька — бот выдумывает деньги, которых не было.
+        # ⚠️ Литеральный 0 из ОП («долг погашен») — РЕАЛЬНОЕ значение и обязан
+        #    перезаписывать: именно так пришли все 6 исторических приходов.
+        #    Инцидент 273 000 (audit 8388) был как раз литеральным нулём из
+        #    съехавшей строки, а НЕ пустой ячейкой — эта ветка его бы не поймала.
+        _MONEY_PRESERVE = ("outstanding_debt",)
+
+        _PRESERVE_IF_EMPTY = _ZP_PAYOUT_PRESERVE + _MONEY_PRESERVE
+
         if existing:
             updates: dict[str, Any] = {"updated_at": now, "status": status}
             for field in sheet_fields:
                 if field in payload:
                     val = payload[field]
                     if (
-                        field in _ZP_PAYOUT_PRESERVE
+                        field in _PRESERVE_IF_EMPTY
                         and val in (None, "")
                         and existing.get(field) not in (None, "")
                     ):
-                        continue  # пустая ОП-ячейка не стирает заполненный AN/AO
+                        continue  # пустая ОП-ячейка не стирает заполненный AN/AO и долг
                     updates[field] = val
             if "created_by" in payload and payload.get("created_by") not in (None, ""):
                 updates["created_by"] = created_by
