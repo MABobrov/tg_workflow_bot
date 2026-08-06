@@ -505,8 +505,16 @@ async def _handle_field_change(
             actions.append(result)
 
     # --- Amount changed ---
+    # ⚠️ Гард ниже и ещё четыре таких же (долг, материалы, монтаж, срок) до 06.08
+    #    писались как `is not None` и пропускали ПУСТУЮ строку от GAS. Пустое здесь
+    #    не «очищает», а портит: "" уходит в числовую колонку, у долга рождает
+    #    фантомный приход, у срока роняет int(""). Этот путь идёт от вебхука, а не
+    #    через _parse_op_row, поэтому фикс 27.07 и _PRESERVE_IF_EMPTY (db.py) сюда
+    #    не достают ОБА. Замер 06.08: за 02.03–06.08 (8679 строк audit_log) ни одного
+    #    срабатывания — правка профилактическая. Литеральный 0 проходит по-прежнему
+    #    (0 == None и 0 == "" оба False).
     new_amount = changed.get("amount")
-    if new_amount is not None:
+    if new_amount not in (None, ""):
         old_amount = invoice.get("amount") or 0
         await db.update_invoice(int(invoice["id"]), amount=new_amount)
         result = await _field_amount_changed(
@@ -527,7 +535,7 @@ async def _handle_field_change(
 
     # --- Outstanding debt changed ---
     new_debt = changed.get("outstanding_debt")
-    if new_debt is not None:
+    if new_debt not in (None, ""):  # "" → 0.0 → фантомный приход на весь долг
         old_debt = invoice.get("outstanding_debt") or 0
         try:
             new_debt_val = float(str(new_debt).replace(",", ".").replace("\xa0", "").replace(" ", "") or 0)
@@ -549,7 +557,7 @@ async def _handle_field_change(
 
     # --- Materials fact (OP) changed ---
     new_mat_fact = changed.get("materials_fact_op")
-    if new_mat_fact is not None:
+    if new_mat_fact not in (None, ""):
         try:
             new_mat_val = float(str(new_mat_fact).replace(",", ".").replace("\xa0", "").replace(" ", "") or 0)
         except (TypeError, ValueError):
@@ -559,7 +567,7 @@ async def _handle_field_change(
 
     # --- Montazh fact (OP) changed ---
     new_mont_fact = changed.get("montazh_fact_op")
-    if new_mont_fact is not None:
+    if new_mont_fact not in (None, ""):
         try:
             new_mont_val = float(str(new_mont_fact).replace(",", ".").replace("\xa0", "").replace(" ", "") or 0)
         except (TypeError, ValueError):
@@ -569,7 +577,7 @@ async def _handle_field_change(
 
     # --- Deadline changed ---
     new_deadline = changed.get("deadline_days")
-    if new_deadline is not None:
+    if new_deadline not in (None, ""):  # "" → int("") → ValueError, падала вся задача
         await db.import_invoice_from_sheet({
             "invoice_number": inv_num,
             "deadline_days": int(new_deadline),
