@@ -2181,13 +2181,14 @@ def _gd_zp_request_card(
       • новая         = requested (zp_installer_amount, что запросил монтажник)
       • разница       = новая − изначальная (показывается, только если менялась)
       • менеджер      = _inst_card_header → КВ/КИА/НПН
-      • адрес (улица) = rp_start_card._street (как в keyboards.py/gd.py)
+      • адрес         = rp_start_card._addr_cell (как в td.py/gd.py): Москва →
+                        улица, НЕ Москва → город (owner 07.08, было _street)
 
     Кредит-пометка и строка «От: монтажник» сохранены как было — поведение не
     меняем (feedback_design_only_indicated_block).
     """
     import re as _re
-    from ..rp_start_card import _street
+    from ..rp_start_card import _addr_cell
 
     W = 27
 
@@ -2204,7 +2205,13 @@ def _gd_zp_request_card(
         return block
 
     mgr, _lead, _phone, num = _inst_card_header(inv)
-    street = _street(inv.get("object_address"), 22)
+    # Иногородний объект → в карточке ГОРОД, а не улица (owner 07.08): по
+    # 2671-1КИА стояло «Поливановская», и из карточки не было видно, что это
+    # Подольск, а не Москва. _addr_cell — готовое правило owner'а от 25.07
+    # (rp_start_card.py), там же и обоснование; Москва по-прежнему идёт улицей,
+    # поэтому вид московских карточек не меняется. Замер на 37 боевых адресах:
+    # 32 без изменений, 5 иногородних дают город.
+    street = _addr_cell(inv.get("object_address"), 22)
     est_val = _calc_est_montazh(inv)
 
     items: list[tuple[str, str]] = [
