@@ -23,7 +23,15 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
 from ..db import Database
-from ..enums import InvoiceStatus, MontazhStage, Role, TaskStatus, TaskType
+from ..enums import (
+    MATERIAL_TYPE_LABELS,
+    InvoiceStatus,
+    MaterialType,
+    MontazhStage,
+    Role,
+    TaskStatus,
+    TaskType,
+)
 from ..integrations.minio_storage import MinioStorage
 from ..keyboards import (
     INST_BTN_DAILY_REPORT,
@@ -2256,6 +2264,330 @@ def _gd_zp_request_card(
     if c and c != "—":
         tail += f"\n💬 {c}"
     return card + tail
+
+
+# Оплата каких затрат поднимает ЗП монтаж наёмникам (owner 07.08). Стекло и доп.
+# материалы — по ним ГД закрывает «Счёт на оплату», и это самый ранний надёжный
+# признак, что работы по объекту пошли. Металл/логистика/грузчики НЕ входят:
+# профиль заказывают задолго до монтажа (26225-1КИА оплачен 06.03 и монтаж по нему
+# так и не начинался).
+NAEM_ZP_TRIGGER_MATERIALS = frozenset({MaterialType.GLASS, MaterialType.EXTRA_MATERIALS})
+
+
+async def maybe_open_naem_zp_task_after_material_payment(
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+    *,
+    invoice_id: int,
+    material_type: str,
+    actor_id: int | None = None,
+) -> dict[str, Any]:
+    """ГД оплатил стекло/доп.материалы по НАЁМНОМУ счёту → задача ГД на ЗП монтаж.
+
+    Заказ owner'а 06.08. Дыра, которую закрывает: у наёмной группы задача ЗП
+    рождается ТОЛЬКО когда РП нажмёт «✅ Монтаж ОК» (rp_montazh_naem_ok). Не нажал —
+    деньги не висят нигде: на 07.08 так потерялись 24 000 по 2671-1КИА (Подольск),
+    где оплачены стекло 21.07 и доп.материалы 22.07 и 28.07.
+
+    Зеркало rp_montazh_naem_ok: тот же расчёт (Согласовано − выплаченное прошлым
+    группам), тот же тип задачи, те же кнопки. Отличия ровно два:
+      • карточка собирается ЭТАЛОНОМ (_gd_zp_request_card, тот же состав, что у
+        штатного монтажника) — заказ owner'а §1(3);
+      • requested_by проставляется РП ЯВНО. Актор здесь ГД, а
+        td._finalize_installer_zp_payment шлёт карточку «ЗП выплачена» именно на
+        zp_installer_requested_by — оставь пустым, и она не уйдёт никому и молча.
+
+    ⛔ installer_ok НЕ трогаем: работы ещё не приняты (материалы оплачивают ДО
+    монтажа), а гард видимости кнопки РП «Монтаж ОК» смотрит именно на него —
+    выставить его здесь значит убрать у РП кнопку до того, как он подтвердит работы.
+
+    Идемпотентность двойная: zp_installer_status обязан быть 'not_requested' И по
+    счёту не должно быть открытой ZP_INSTALLER. Одного статуса мало — по одному
+    счёту закрывается НЕСКОЛЬКО оплат материалов (у Подольска три), и без второй
+    проверки ГД получил бы три задачи на одну ЗП.
+
+    Возвращает {"created": bool, "reason": str | None, "task_id": int | None,
+                "amount": float}. Ошибок наружу не бросает — вызывающий финализирует
+    оплату, и падение этой ветки не должно её ломать.
+    """
+    res: dict[str, Any] = {
+        "created": False, "reason": None, "task_id": None, "amount": 0.0,
+    }
+    if str(material_type or "") not in NAEM_ZP_TRIGGER_MATERIALS:
+        res["reason"] = "material_not_trigger"
+        return res
+    try:
+        inv = await db.get_invoice(int(invoice_id))
+    except Exception:
+        log.warning("naem_zp_trigger: get_invoice failed inv=%s", invoice_id, exc_info=True)
+        res["reason"] = "invoice_read_failed"
+        return res
+    if not inv:
+        res["reason"] = "invoice_not_found"
+        return res
+    # Наёмная группа. edo_task_id=2 и montazh_agreed_amount выставляются ОДНИМ
+    # UPDATE в rp_new._finalize_naem → наёмного счёта без Согласованного не бывает,
+    # отдельной ветки на пустую сумму не нужно (owner 07.08).
+    if inv.get("edo_task_id") != 2:
+        res["reason"] = "not_naem"
+        return res
+    if inv.get("parent_invoice_id") is not None:
+        res["reason"] = "not_parent_invoice"
+        return res
+    if (inv.get("zp_installer_status") or "not_requested") != "not_requested":
+        res["reason"] = "zp_already_requested"
+        return res
+    try:
+        if await db.list_open_tasks_by_invoice(int(invoice_id), TaskType.ZP_INSTALLER):
+            res["reason"] = "open_task_exists"
+            return res
+    except Exception:
+        log.warning("naem_zp_trigger: dedup check failed inv=%s", invoice_id, exc_info=True)
+        res["reason"] = "dedup_check_failed"
+        return res
+
+    agreed = float(inv.get("montazh_agreed_amount") or 0)
+    paid_prev = float(inv.get("montazh_paid_prev") or 0)
+    due = agreed - paid_prev
+    if due <= 0:
+        res["reason"] = "nothing_due"
+        return res
+    res["amount"] = due
+
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
+    if not gd_id:
+        res["reason"] = "no_gd"
+        return res
+    rp_id = await resolve_default_assignee(db, config, Role.RP)
+
+    await db.set_invoice_zp_installer_status(
+        int(invoice_id), "requested", amount=due,
+        requested_by=int(rp_id) if rp_id else None,
+    )
+    task = await db.create_task(
+        project_id=None,
+        type_=TaskType.ZP_INSTALLER,
+        status=TaskStatus.OPEN,
+        created_by=int(rp_id) if rp_id else int(gd_id),
+        assigned_to=int(gd_id),
+        due_at_iso=None,
+        payload={
+            "invoice_id": int(invoice_id),
+            "invoice_number": inv.get("invoice_number") or "—",
+            "amount": due,
+            "source": "auto_from_material_payment",
+            "material_type": str(material_type),
+            "paid_by": actor_id,
+        },
+    )
+    res["task_id"] = int(task["id"]) if task else None
+    try:
+        await integrations.sync_invoice_row(int(invoice_id))
+    except Exception:
+        log.debug("naem_zp_trigger: sync failed inv=%s", invoice_id, exc_info=True)
+
+    inv_after = await db.get_invoice(int(invoice_id)) or inv
+    card = _gd_zp_request_card(inv_after, due, agreed=agreed)
+    tail = "\n👤 Наёмная группа 2️⃣ — задача открыта автоматически"
+    tail += f"\n📦 Повод: оплачены {MATERIAL_TYPE_LABELS.get(str(material_type), material_type).lower()}"
+    if paid_prev > 0:
+        # Без этой строки сумма выглядит как ошибка: она МЕНЬШЕ Согласованного.
+        tail += (
+            f"\n🔗 Согласовано {agreed:,.0f}₽, "
+            f"выплачено прошлой группе {paid_prev:,.0f}₽"
+        )
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
+    b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
+    b.adjust(2)
+    await notifier.safe_send(int(gd_id), card + tail, reply_markup=b.as_markup())
+    await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+
+    try:
+        await db.audit(
+            actor_id=actor_id,
+            action="naem_zp_task_auto_opened",
+            entity="invoice",
+            entity_id=str(invoice_id),
+            payload={
+                "amount": due, "agreed": agreed, "paid_prev": paid_prev,
+                "material_type": str(material_type), "task_id": res["task_id"],
+                "requested_by": rp_id, "gd_id": gd_id,
+            },
+        )
+    except Exception:
+        log.debug("naem_zp_trigger: audit failed inv=%s", invoice_id, exc_info=True)
+
+    res["created"] = True
+    return res
+
+
+async def maybe_ask_naem_montazh_full_payment(
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    *,
+    invoice_id: int,
+    material_type: str,
+    amount: float | None = None,
+    actor_id: int | None = None,
+) -> bool:
+    """ГД внёс затрату на МОНТАЖ по наёмному счёту → «Это вся сумма или будет доплата?»
+
+    Заказ owner'а 06.08 §1(2). Точку спрашивания owner выбрал явно — при вводе
+    затрат на монтаж, а не на кнопках задачи ЗП.
+
+    Вопрос задаётся ОТДЕЛЬНЫМ сообщением с инлайн-кнопками, а не шагом FSM. Причина
+    практическая: путей ввода затрат на монтаж пять (задача «Счёт на оплату», б/н
+    расход ГД, два входа кредит-кошелька и отложенная кредит-заявка), они живут в
+    четырёх модулях и имеют РАЗНЫЕ состояния. Шаг FSM пришлось бы вшивать в каждый
+    и в каждом же не сломать существующие ветки; одно сообщение после записи
+    затраты одинаково работает во всех пяти.
+
+    Возвращает True, если вопрос отправлен.
+    """
+    if str(material_type or "") != MaterialType.MONTAZH:
+        return False
+    try:
+        inv = await db.get_invoice(int(invoice_id))
+    except Exception:
+        log.warning("naem_full_ask: get_invoice failed inv=%s", invoice_id, exc_info=True)
+        return False
+    if not inv or inv.get("edo_task_id") != 2:
+        return False
+    if (inv.get("montazh_stage") or "") == MontazhStage.INVOICE_END:
+        return False  # уже закрыт — спрашивать нечего
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
+    if not gd_id:
+        return False
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Это вся сумма", callback_data=f"naemzp:full:{invoice_id}")
+    b.button(text="➕ Будет доплата", callback_data=f"naemzp:more:{invoice_id}")
+    b.adjust(1)
+    _amt = f"\n💵 Внесено: <b>{float(amount or 0):,.0f}₽</b>" if amount else ""
+    await notifier.safe_send(
+        int(gd_id),
+        f"🧾 <b>Затраты на монтаж — наёмная гр. 2️⃣</b>\n"
+        f"🔢 Счёт: №{inv.get('invoice_number') or '—'}\n"
+        f"📍 {inv.get('object_address') or '—'}{_amt}\n\n"
+        f"Это вся сумма или будет доплата?",
+        reply_markup=b.as_markup(),
+    )
+    return True
+
+
+@router.callback_query(F.data.regexp(r"^naemzp:(full|more):\d+$"))
+async def naem_montazh_full_payment_answer(
+    cb: CallbackQuery, db: Database, config: Config,
+    integrations: IntegrationHub, notifier: Notifier,
+) -> None:
+    """Ответ ГД на «вся сумма или доплата» по затратам монтажа наёмной группы.
+
+    «Вся» → счёт переводится в «Счёт End (монтаж)». ⛔ Через
+    db._auto_invoice_end_after_zp_payment этот переход НЕ идёт: там жёсткий гард
+    stage == 'invoice_ok', а наёмный счёт на момент ввода затрат стоит в 'assigned'.
+    Гард той функции НЕ трогаем — он защищает три других пути выплаты.
+
+    «Доплата» → ничего не меняем, только фиксируем ответ в audit_log: счёт остаётся
+    открытым, ГД довнесёт остаток позже.
+    """
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
+        return
+    _, _action, _sid = cb.data.split(":")  # type: ignore[union-attr]
+    invoice_id = int(_sid)
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.answer("❌ Счёт не найден.", show_alert=True)
+        return
+    if inv.get("edo_task_id") != 2:
+        await cb.answer("⚠️ Это не наёмный счёт.", show_alert=True)
+        return
+
+    if _action == "more":
+        await cb.answer("Принято: ожидается доплата.")
+        try:
+            await cb.message.edit_text(  # type: ignore[union-attr]
+                f"➕ <b>Затраты на монтаж</b> — счёт №{inv.get('invoice_number') or '—'}\n"
+                f"Ожидается доплата, счёт остаётся открытым."
+            )
+        except Exception:
+            pass
+    else:
+        _stage = inv.get("montazh_stage") or ""
+        if _stage == MontazhStage.INVOICE_END:
+            await cb.answer("✅ Счёт уже в этапе «Счёт End».", show_alert=True)
+            return
+        await db.update_montazh_stage(invoice_id, MontazhStage.INVOICE_END)
+        try:
+            inv_after = await db.get_invoice(invoice_id)
+            if inv_after:
+                await integrations.sync_invoice_status(
+                    inv_after["invoice_number"], inv_after.get("status", ""),
+                    MontazhStage.INVOICE_END,
+                )
+            await integrations.sync_invoice_row(invoice_id)
+        except Exception:
+            log.warning("naem_full: sync failed inv=%s", invoice_id, exc_info=True)
+        await cb.answer("✅ Счёт переведён в «Счёт End».")
+        try:
+            await cb.message.edit_text(  # type: ignore[union-attr]
+                f"✅ <b>Затраты на монтаж — вся сумма</b>\n"
+                f"Счёт №{inv.get('invoice_number') or '—'} переведён в этап "
+                f"«Счёт End (монтаж)»."
+            )
+        except Exception:
+            pass
+
+    try:
+        await db.audit(
+            actor_id=cb.from_user.id,
+            action="naem_montazh_full_payment_answer",
+            entity="invoice",
+            entity_id=str(invoice_id),
+            payload={
+                "answer": "full" if _action == "full" else "more",
+                "stage_before": inv.get("montazh_stage"),
+                "agreed": inv.get("montazh_agreed_amount"),
+                "cost_montazh": inv.get("cost_montazh"),
+            },
+        )
+    except Exception:
+        log.debug("naem_full: audit failed inv=%s", invoice_id, exc_info=True)
+
+
+async def on_invoice_cost_recorded(
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+    *,
+    invoice_id: int,
+    material_type: str,
+    amount: float | None = None,
+    actor_id: int | None = None,
+) -> dict[str, Any]:
+    """Единая точка «по счёту записана затрата» — общая для ВСЕХ путей ввода.
+
+    Разводит две ветки заказа owner'а 06.08:
+      • стекло/доп.материалы → поднять ГД задачу на ЗП монтаж наёмникам §1(1);
+      • монтаж               → спросить «вся сумма или доплата» §1(2).
+
+    Вызывается из четырёх мест (tasks._invoice_pp_finalize_core,
+    chat_proxy._finalize_credit_execution, chat_proxy._credit_spend_finalize,
+    gd.op_add_confirm) — они покрывают все пять пользовательских путей.
+    """
+    out = await maybe_open_naem_zp_task_after_material_payment(
+        db, config, notifier, integrations,
+        invoice_id=invoice_id, material_type=material_type, actor_id=actor_id,
+    )
+    out["asked_full_payment"] = await maybe_ask_naem_montazh_full_payment(
+        db, config, notifier,
+        invoice_id=invoice_id, material_type=material_type,
+        amount=amount, actor_id=actor_id,
+    )
+    return out
 
 
 def _apply_montazh_bonus(inv: dict, amount: float) -> int:

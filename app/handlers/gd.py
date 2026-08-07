@@ -2506,6 +2506,8 @@ async def op_add_confirm(
     state: FSMContext,
     db: Database,
     integrations: IntegrationHub,
+    config: Config,
+    notifier: Notifier,
 ) -> None:
     """Шаг 5: запись расхода.
 
@@ -2562,6 +2564,29 @@ async def op_add_confirm(
                 "source": "gd_op_add_bound",
             },
         )
+
+        # Стекло/доп.материалы по НАЁМНОМУ счёту → задача ГД на ЗП монтаж
+        # (owner 06.08). Отдельный try: расход уже записан, и сбой этой ветки
+        # не должен превращаться в ошибку записи расхода.
+        try:
+            from .installer_new import on_invoice_cost_recorded
+            _naem = await on_invoice_cost_recorded(
+                db, config, notifier, integrations,
+                invoice_id=int(bind_invoice_id),
+                material_type=cost_type,
+                amount=amount,
+                actor_id=cb.from_user.id,
+            )
+            if _naem.get("created"):
+                log.info(
+                    "naem_zp: задача ГД открыта по б/н расходу %s, счёт=%s сумма=%s",
+                    cost_type, bind_num, _naem.get("amount"),
+                )
+        except Exception:
+            log.warning(
+                "naem_zp: авто-задача ЗП не создана (gd bound inv=%s)",
+                bind_invoice_id, exc_info=True,
+            )
 
         await state.clear()
         try:

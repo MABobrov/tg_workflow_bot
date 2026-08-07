@@ -366,6 +366,14 @@ INVOICES_HEADER = [
     "Дата аванса мен.",       # 145 (EP) — дата зачёта аванса менеджера (авто)
     # — Финальный платёж (146) — ориент. дата фин. платежа по долгу, ТЗ 14.06 —
     "Ориент. дата фин.платежа",  # 146 (EQ) — planned_final_payment_date (вводит менеджер при долге)
+    # — Переплата ЗП менеджера, перенесённая в его авансовый кошелёк (147-148),
+    #   owner 07.08. Пара «сумма + дата» по образцу монтажных CG/CH. Прежде сумма
+    #   (zp_hold_advanced) жила ТОЛЬКО в БД и на листе не показывалась вовсе, а
+    #   EO/EP её не видят: свип пополняет кошелёк, но installer_advance_items с
+    #   привязкой к счёту не создаёт → get_manager_advance_for_invoice = 0.
+    #   Только материнские счета — оба канала переноса это уже гарантируют.
+    "Переплата в аванс",      # 147 (ER) — zp_hold_advanced (перенесено в кошелёк менеджера)
+    "Дата переплаты",         # 148 (ES) — zp_hold_advanced_at (дата последнего переноса)
 ]
 
 # Column indices the bot NEVER overwrites (manual-only + formula)
@@ -1427,6 +1435,22 @@ class GoogleSheetsService:
         # EQ «Ориент. дата фин.платежа» (cells[146]) — planned_final_payment_date,
         # ТЗ 14.06: дату вводит менеджер при долге по счёту; пусто, если не задана.
         cells[146] = self._fmt_sheet_date(invoice.get("planned_final_payment_date"))
+
+        # ER «Переплата в аванс» (147) / ES «Дата переплаты» (148) — owner 07.08.
+        # Пара по образцу CG/CH: сколько переплаты ЗП менеджера (|CN|) перенесено в
+        # его авансовый кошелёк и когда. ⚠️ Это НЕ дубль EO/EP: там зачтённый аванс,
+        # привязанный к счёту через installer_advance_items, а перенос переплаты
+        # items не создаёт — пополняется только кошелёк, поэтому EO/EP по таким
+        # счетам пустые (проверено на боевых: у всех счетов с непустым CN зачёт = 0).
+        # Пусто, если переноса не было. Оба канала переноса пишут только по
+        # материнским счетам (sweep — WHERE parent_invoice_id IS NULL; ручной —
+        # через list_invoices_under_recalc с тем же условием).
+        _hold_adv = float(invoice.get("zp_hold_advanced") or 0)
+        cells[147] = self._fmt_amount(_hold_adv) if _hold_adv > 0 else ""
+        cells[148] = (
+            self._fmt_sheet_date(invoice.get("zp_hold_advanced_at"))
+            if _hold_adv > 0 else ""
+        )
 
         # Платёжка ЗП даты
         _pay_sent = invoice.get("zp_installer_payment_sent_at")

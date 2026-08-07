@@ -1917,6 +1917,31 @@ async def _invoice_pp_finalize_core(
                     task_id, _parent_inv_id, exc_info=True,
                 )
 
+        # Оплачены стекло/доп.материалы по НАЁМНОМУ счёту → поднять ГД задачу на
+        # ЗП монтаж наёмникам (owner 06.08). Иначе она рождается только с кнопки РП
+        # «Монтаж ОК», и пока РП её не нажал, деньги не висят нигде.
+        # Отдельный try: сбой этой ветки НЕ должен ломать финализацию оплаты и
+        # уведомление РП — ровно как у авто-списания кошелька выше.
+        try:
+            from .installer_new import on_invoice_cost_recorded
+            _naem = await on_invoice_cost_recorded(
+                db, config, notifier, integrations,
+                invoice_id=int(_parent_inv_id),
+                material_type=_sp_mat_type,
+                amount=float(_sp_amount),
+                actor_id=u.id,
+            )
+            if _naem.get("created"):
+                log.info(
+                    "naem_zp: задача ГД открыта по оплате %s, счёт=%s сумма=%s",
+                    _sp_mat_type, _sp_inv_num, _naem.get("amount"),
+                )
+        except Exception:
+            log.warning(
+                "naem_zp: авто-задача ЗП не создана (task=%s, inv=%s)",
+                task_id, _parent_inv_id, exc_info=True,
+            )
+
     project = None
     if task.get("project_id"):
         try:

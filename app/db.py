@@ -910,6 +910,15 @@ class Database:
             # перестаёт вычитаться пер-счётно из net-ЗП (бланк платится полностью), а
             # переплата гасится распределением аванса по объектам (правила авансир-я).
             ("invoices", "zp_hold_advanced", "REAL"),
+            # Дата ПОСЛЕДНЕГО переноса переплаты по этому счёту (owner 07.08). Сумма
+            # (zp_hold_advanced) на листе не показывалась вовсе — пара «сумма + дата»
+            # заводится по образцу CG/CH «Аванс монтажника»/«Дата аванса». Пишется
+            # ОБОИМИ каналами переноса тем же `now`, что и сама сумма, одной
+            # транзакцией: sweep_manager_overpay_to_advance (авто) и
+            # create_recalc_advance_topup (ручной, «С перерасчётом согласен»).
+            # ⚠️ Дата ПОСЛЕДНЕГО, не первого: перенос идёт дельтами (|CN| −
+            # zp_hold_advanced), и при доросшем CN сумма пополняется повторно.
+            ("invoices", "zp_hold_advanced_at", "TEXT"),
             # --- MinIO mirror keys for attachments ---
             ("attachments", "minio_object_key", "TEXT"),
             ("chat_attachments", "minio_object_key", "TEXT"),
@@ -10720,8 +10729,10 @@ class Database:
                     await self.conn.execute(
                         "UPDATE invoices SET "
                         "zp_hold_advanced = COALESCE(zp_hold_advanced, 0) + ?, "
+                        "zp_hold_advanced_at = ?, "
                         "updated_at = ? WHERE id = ?",
-                        (round(float(i["delta"]), 2), now_iso, i["invoice_id"]),
+                        (round(float(i["delta"]), 2), now_iso, now_iso,
+                         i["invoice_id"]),
                     )
                 await self.conn.commit()
             except Exception:
@@ -10789,8 +10800,9 @@ class Database:
             await self.conn.execute(
                 "UPDATE invoices SET "
                 "zp_hold_advanced = COALESCE(zp_hold_advanced, 0) + ?, "
+                "zp_hold_advanced_at = ?, "
                 "updated_at = ? WHERE id = ?",
-                (round(float(amount), 2), now, invoice_id),
+                (round(float(amount), 2), now, now, invoice_id),
             )
             await self.conn.commit()
         except Exception:
@@ -10858,10 +10870,17 @@ class Database:
         try:
             for item in reverted:
                 await self.conn.execute(
+                    # Дату гасим ТОЛЬКО когда откат обнулил сумму: иначе на листе
+                    # осталась бы дата при пустой сумме. В одном UPDATE все SET
+                    # читают СТАРОЕ значение строки, поэтому CASE считает по
+                    # zp_hold_advanced ДО отката — как и нужно.
                     "UPDATE invoices SET "
                     "zp_hold_advanced = MAX(0, COALESCE(zp_hold_advanced, 0) - ?), "
+                    "zp_hold_advanced_at = CASE "
+                    "  WHEN MAX(0, COALESCE(zp_hold_advanced, 0) - ?) <= 0 THEN NULL "
+                    "  ELSE zp_hold_advanced_at END, "
                     "updated_at = ? WHERE id = ?",
-                    (item["amount"], now, item["invoice_id"]),
+                    (item["amount"], item["amount"], now, item["invoice_id"]),
                 )
             await self.conn.commit()
         except Exception:

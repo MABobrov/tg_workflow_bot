@@ -1269,16 +1269,28 @@ async def _finalize_installer_zp_payment(
     amt = float(inv.get("zp_installer_amount") or 0)
     requested_by = inv.get("zp_installer_requested_by")
     if requested_by:
-        b = InlineKeyboardBuilder()
-        b.button(text="✅ ЗП получено", callback_data=f"instzp_done:{invoice_id}")
+        # Наёмная группа (edo_task_id=2): адресат карточки — РП, а денег он не
+        # получает, их получают наёмники. Кнопка «✅ ЗП получено» просила бы его
+        # подтвердить получение того, чего он не получал → у наёмных карточка
+        # ЧИСТО ИНФОРМАЦИОННАЯ (owner 07.08). У штатного монтажника адресат сам
+        # получатель — там кнопка остаётся, поведение прежнее.
+        _is_naem = inv.get("edo_task_id") == 2
         _head = "💰 <b>Платёжка по ЗП</b>" if file_id else "💰 <b>ЗП выплачена</b>"
+        if _is_naem:
+            _kb = None
+            _foot = "Наёмная группа 2️⃣ — выплата проведена."
+        else:
+            _b = InlineKeyboardBuilder()
+            _b.button(text="✅ ЗП получено", callback_data=f"instzp_done:{invoice_id}")
+            _kb = _b.as_markup()
+            _foot = "Подтвердите получение ЗП."
         await notifier.safe_send(
             int(requested_by),
             f"{_head}\n\n"
             f"Счёт №: <code>{inv['invoice_number']}</code>\n"
             f"Сумма: {amt:,.0f}₽\n\n"
-            f"Подтвердите получение ЗП.",
-            reply_markup=b.as_markup(),
+            f"{_foot}",
+            reply_markup=_kb,
         )
         if file_id and file_type:
             await notifier.safe_send_media(int(requested_by), file_type, file_id)

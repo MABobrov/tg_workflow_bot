@@ -1436,6 +1436,30 @@ async def _finalize_credit_execution(
                 "credit_exec: installer-zp anti-double hook failed tid=%s", tid, exc_info=True
             )
 
+    # Кредитная ветка того же триггера, что в tasks._invoice_pp_finalize_core:
+    # оплачены стекло/доп.материалы по НАЁМНОМУ счёту → задача ГД на ЗП монтаж
+    # (owner 06.08). Ставится РЯДОМ с montazh-хуком выше, а не внутри него: тот
+    # ловит cost_type='montazh' (выплата самой ЗП), этот — материалы.
+    if p.get("cost_type") and p.get("invoice_id"):
+        try:
+            from .installer_new import on_invoice_cost_recorded
+            _naem = await on_invoice_cost_recorded(
+                db, config, notifier, integrations,
+                invoice_id=int(p["invoice_id"]),
+                material_type=str(p.get("cost_type") or ""),
+                amount=float(p.get("amount") or 0),
+                actor_id=actor_id,
+            )
+            if _naem.get("created"):
+                log.info(
+                    "naem_zp: задача ГД открыта по кредит-оплате %s, счёт=%s сумма=%s",
+                    p.get("cost_type"), p.get("invoice_number"), _naem.get("amount"),
+                )
+        except Exception:
+            log.warning(
+                "naem_zp: авто-задача ЗП не создана (credit tid=%s)", tid, exc_info=True
+            )
+
     try:
         await db.audit(
             actor_id=actor_id, action="credit_payment_executed",
@@ -1646,6 +1670,7 @@ async def credit_spend_gd_confirm(
 async def _credit_spend_finalize(
     cb: CallbackQuery, db: Database, notifier: Notifier, integrations: IntegrationHub,
     task: dict[str, Any], pp_files: list[dict[str, Any]], pp_comment: str,
+    config: Config | None = None,
 ) -> None:
     """Зафиксировать трату кредит-кошелька (apply_credit_wallet_spend) + сохранить
     вложения ГД + закрыть задачу. Идемпотентность: _CW_GD_INFLIGHT + CAS статуса
@@ -1753,6 +1778,31 @@ async def _credit_spend_finalize(
                 await notifier.safe_send(int(init_id), note)
             except Exception:
                 log.debug("cw_gd finalize: notify initiator failed", exc_info=True)
+
+        # Тот же триггер наёмной ЗП, что в _finalize_credit_execution: это ВТОРОЙ
+        # финализатор кредит-расхода (сюда приходят «💳 Расход кошелька» менеджера/
+        # РП после ✅ГД), и без хука здесь два пути ввода затрат из пяти остались бы
+        # без задачи. config приходит из DI вызывающих хендлеров; None — только у
+        # гипотетического старого вызова, тогда просто пропускаем.
+        if config is not None and p.get("cost_type") and p.get("invoice_id"):
+            try:
+                from .installer_new import on_invoice_cost_recorded
+                _naem = await on_invoice_cost_recorded(
+                    db, config, notifier, integrations,
+                    invoice_id=int(p["invoice_id"]),
+                    material_type=str(p.get("cost_type") or ""),
+                    amount=amount,
+                    actor_id=cb.from_user.id,
+                )
+                if _naem.get("created"):
+                    log.info(
+                        "naem_zp: задача ГД открыта по расходу кошелька %s, счёт=%s",
+                        p.get("cost_type"), p.get("invoice_number"),
+                    )
+            except Exception:
+                log.warning(
+                    "naem_zp: авто-задача ЗП не создана (cw_gd tid=%s)", tid, exc_info=True
+                )
     finally:
         _CW_GD_INFLIGHT.discard(key)
 
@@ -1760,7 +1810,7 @@ async def _credit_spend_finalize(
 @router.callback_query(F.data.startswith("cw_gd_send:"))
 async def credit_spend_gd_send(
     cb: CallbackQuery, state: FSMContext, db: Database, notifier: Notifier,
-    integrations: IntegrationHub,
+    integrations: IntegrationHub, config: Config,
 ) -> None:
     """ГД: «✅ Подтвердить» — зафиксировать расход с приложенными документами."""
     task = await _credit_task_guard(cb, db, allow=(TaskStatus.OPEN, TaskStatus.IN_PROGRESS))
@@ -1771,13 +1821,15 @@ async def credit_spend_gd_send(
     pp_files = data.get("pp_files", [])
     pp_comment = data.get("pp_comment", "")
     await state.clear()
-    await _credit_spend_finalize(cb, db, notifier, integrations, task, pp_files, pp_comment)
+    await _credit_spend_finalize(
+        cb, db, notifier, integrations, task, pp_files, pp_comment, config,
+    )
 
 
 @router.callback_query(F.data.startswith("cw_gd_skip:"))
 async def credit_spend_gd_skip(
     cb: CallbackQuery, state: FSMContext, db: Database, notifier: Notifier,
-    integrations: IntegrationHub,
+    integrations: IntegrationHub, config: Config,
 ) -> None:
     """ГД: «✅ Без вложения» — зафиксировать расход (документ опционален; уже
     приложенные файлы, если есть, всё равно сохраняем — не теряем)."""
@@ -1789,7 +1841,9 @@ async def credit_spend_gd_skip(
     pp_files = data.get("pp_files", [])
     pp_comment = data.get("pp_comment", "")
     await state.clear()
-    await _credit_spend_finalize(cb, db, notifier, integrations, task, pp_files, pp_comment)
+    await _credit_spend_finalize(
+        cb, db, notifier, integrations, task, pp_files, pp_comment, config,
+    )
 
 
 @router.callback_query(F.data.startswith("cw_gd_acancel:"))
