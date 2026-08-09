@@ -449,6 +449,32 @@ class GoogleSheetsService:
             return ""
         return str(amount)
 
+    def _fmt_an_payout(self, invoice: dict[str, Any], row: int) -> str:
+        """AN «Выпл.МенЗП» = значение + CN «Удержать из ЗП менеджера» (owner 08.08).
+
+        AN (39) — зеркало ОП AJ (`zp_manager_payout`), CN (91) — удержание по
+        перерасчёту прибыли (`zp_manager_hold`, хранится МИНУСОМ), пишется этой же
+        функцией на той же строке. Пока удержания нет — ячейка остаётся ровно
+        прежней; при непустом CN пишем формулу по образцу AE «Долг» (cells[30]),
+        чтобы ячейка пересчиталась сама, когда ОП изменит CN.
+
+        В БД правка не уходит: AN нет в карте `sheet_commands._handle_field_change`,
+        обратного пути с листа у этой ячейки не существует. Денежные фильтры
+        `COALESCE(zp_manager_payout,0)=0` читают поле БД, а не лист.
+        """
+        payout = invoice.get("zp_manager_payout")
+        try:
+            hold_val = float(invoice.get("zp_manager_hold") or 0)
+        except (TypeError, ValueError):
+            hold_val = 0.0
+        if not hold_val:
+            return self._fmt_amount(payout)
+        try:
+            payout_val = float(payout or 0)
+        except (TypeError, ValueError):
+            payout_val = 0.0
+        return f"={payout_val:.0f}+CN{row}"
+
     @staticmethod
     def _fmt_sheet_date(value: Any) -> str:
         """Format DB ISO date/datetime as =DATE() formula for Google Sheets.
@@ -869,7 +895,7 @@ class GoogleSheetsService:
                 else (invoice.get("zp_manager_request_text") or "")
             ),
             38: self._fmt_amount(invoice.get("agent_payout_op")),   # AM ← ОП AE
-            39: self._fmt_amount(invoice.get("zp_manager_payout")), # AN ← ОП AJ
+            39: self._fmt_an_payout(invoice, row),  # AN ← ОП AJ + CN (удержание)
             40: self._fmt_sheet_date(invoice.get("zp_manager_payout_date")),  # AO ← ОП AK
             42: self._fmt_amount(invoice.get("rp_request_op")),     # AQ Запрос РП ← ОП AU
             43: self._fmt_amount(invoice.get("rp_payout_op")),     # AR Выдано РП ← ОП AV
