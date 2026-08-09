@@ -348,7 +348,11 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_edo_req_status ON edo_requests(status);
             CREATE INDEX IF NOT EXISTS idx_edo_req_assigned ON edo_requests(assigned_to, status);
-            CREATE INDEX IF NOT EXISTS idx_edo_req_invoice ON edo_requests(invoice_id);
+            -- idx_edo_req_invoice перенесён ВНИЗ, к блоку индексов после миграций
+            -- (2026-08-10): колонка edo_requests.invoice_id заводится не здесь, а
+            -- в migration_columns, то есть ПОЗЖЕ этого executescript. На живой базе
+            -- колонка давно есть и всё работало, а создание базы с нуля падало на
+            -- этой строке — `no such column: invoice_id`, весь init_schema целиком.
 
             CREATE TABLE IF NOT EXISTS lead_tracking (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -516,7 +520,15 @@ class Database:
                 supplier TEXT,
                 task_id INTEGER,
                 created_by INTEGER,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                -- payment_date / payment_number: реквизиты платёжного поручения.
+                -- Бот их НЕ пишет (create_supplier_payment их не заполняет) — они
+                -- появились на проде разовыми backfill-скриптами по банк-выписке
+                -- и чат-истории (на 10.08.2026: 22 и 21 значение из 108 строк).
+                -- В схеме их не было вовсе, из-за чего чистая база расходилась с
+                -- боевой; отчёты, читающие эти колонки, падали бы с no such column.
+                payment_date TEXT,
+                payment_number TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_sp_parent ON supplier_payments(parent_invoice_id);
 
@@ -957,6 +969,14 @@ class Database:
             # формулы остатка вычли бы его ВТОРОЙ раз (недоплата новой группе).
             # Аванс текущей группы = get_installer_advance_for_invoice() − montazh_adv_prev.
             ("invoices", "montazh_adv_prev", "REAL NOT NULL DEFAULT 0"),
+            # --- Реквизиты ПП у платежей поставщикам (дрейф схемы, закрыт 2026-08-10) ---
+            # На проде колонки существуют с май-backfill'ов, а в CREATE TABLE их не
+            # было и миграции тоже — то есть на боевой базе они есть, а на любой
+            # созданной из кода не появились бы. Здесь строки нужны именно ради
+            # уже живой базы: на ней обе ветки — no-op (колонки на месте), а на
+            # чистой таблицу теперь создаёт сам CREATE TABLE выше.
+            ("supplier_payments", "payment_date", "TEXT"),
+            ("supplier_payments", "payment_number", "TEXT"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -1028,6 +1048,11 @@ class Database:
         )
         await self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_messages_invoice ON chat_messages(invoice_id)"
+        )
+        # edo_requests.invoice_id — такая же миграционная колонка, как две выше,
+        # поэтому и индекс по ней строится здесь, после ALTER TABLE (см. 2026-08-10).
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_edo_req_invoice ON edo_requests(invoice_id)"
         )
         await self.conn.commit()
 
