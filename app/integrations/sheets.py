@@ -1379,9 +1379,18 @@ class GoogleSheetsService:
         # заполненном AM ветка не срабатывает вовсе ([[feedback_op_mirror_no_mixing]]).
         # Смысл правки: BL «Прибыль факт» эти материалы уже вычитала через cost-card, а BT
         # показывала пусто — лист противоречил сам себе.
+        # owner 2026-08-10, триггер 4: закупка считается состоявшейся и без «Счёт ОК»,
+        # если траты (металл + стекло + доп. мат.) достигли >= 80% от Q «Расч.мат.»
+        # (estimated_materials). Порог НЕстрогий (>=) — в отличие от строгого 65% у
+        # CA «Расч.мат. ост.» (sheets.py:1184), там своя механика и её не трогаем.
+        # _fact_mat (1153-1157) — ровно те же три статьи, что подставляет ветка ниже;
+        # _est_mat (1149) — Q. Обе величины уже посчитаны выше в этой же функции.
+        # Приоритет ОП AM не меняется: при заполненном AM ветка не срабатывает вовсе
+        # ([[feedback_op_mirror_no_mixing]]).
         _current_bt_str = (current_bt or "").strip()
         _materials_for_bt = float(invoice.get("materials_fact_op") or 0)
-        if not _materials_for_bt and _fact_visible:
+        _mat_80_reached = _est_mat > 0 and _fact_mat >= 0.8 * _est_mat
+        if not _materials_for_bt and (_fact_visible or _mat_80_reached):
             _materials_for_bt = (
                 float(invoice.get("cost_metal") or 0)
                 + float(invoice.get("cost_glass") or 0)
