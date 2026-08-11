@@ -1667,7 +1667,20 @@ async def _finalize_zp_manager_pay(
     if status != "approved":
         await msg.answer(f"⚠️ ЗП по счёту №{inv['invoice_number']} не одобрена — выплата невозможна.")
         return
-    amt = float(inv.get("zp_manager_amount") or 0)
+    # AN ← AL «Запрос НОВЫЙ» после выплаты (owner 12.08). Приоритет 1:1 с тем, как
+    # AL показывается на листе (sheets.py, ключ 37): числовое zp_manager_request_amount
+    # (зеркало ОП AI), затем legacy-текст zp_manager_request_text. Прежний
+    # zp_manager_amount остаётся ПОСЛЕДНИМ fallback, а не источником: он пуст у 15
+    # счетов (все кредитные КВ 1–КВ 8, 2624/2625-1/2625-2/26226/26323/2642/26522) —
+    # по ним выплата записала бы в AN ноль, и «выплачено» не зафиксировалось бы.
+    # ⚠️ NBSP: legacy-текст лежит как "11\xa0220", а parse_amount срезает только
+    # обычный пробел — нормализуем здесь; общий хелпер не трогаем (у него другие
+    # потребители).
+    amt = float(inv.get("zp_manager_request_amount") or 0)
+    if not amt:
+        amt = parse_amount((inv.get("zp_manager_request_text") or "").replace("\xa0", " ")) or 0
+    if not amt:
+        amt = float(inv.get("zp_manager_amount") or 0)
     # 1. Фиксируем выплату: AN/AO прямым UPDATE. Статус остаётся approved —
     #    «выплачено» определяется по AN>0 (как AR у ЗП РП). Дата DD.MM.YYYY —
     #    формат 1:1 с зачётом аванса (apply_advance_offsets... step3).
