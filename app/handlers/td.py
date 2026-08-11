@@ -1896,9 +1896,14 @@ async def supplier_pay_pick_project(cb: CallbackQuery, callback_data: ProjectCb,
     project = await db.get_project(int(callback_data.project_id))
     await state.update_data(project_id=int(project["id"]))
 
-    # Show parent invoice picker
+    # Show parent invoice picker. include_credit=True (owner 10.08): ГД привязывает
+    # оплату поставщику и к кредитному счёту — кредит скрыт только от бухгалтерии
+    # ([[feedback_credit_filter_accounting_only]]).
+    # ⚠️ limit 15 → 30 обязателен вместе с флагом: выборка идёт «свежие первыми», и
+    # на боевых данных четыре кредитных счёта вытесняли из пикера ВОСЕМЬ обычных
+    # (замер 11.08). Тот же приём, что в gd.py:1180.
     from ..keyboards import invoice_select_kb
-    invoices = await db.list_invoices_for_selection(limit=15, only_regular=True)
+    invoices = await db.list_invoices_for_selection(limit=30, only_regular=True, include_credit=True)
     if invoices:
         await state.set_state(SupplierPaymentSG.parent_invoice)
         await cb.message.answer(  # type: ignore

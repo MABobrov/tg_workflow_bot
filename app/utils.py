@@ -1718,12 +1718,21 @@ def format_inwork_summary(invoices: list[dict[str, Any]]) -> str:
 
 
 def format_inwork_remaining(invoices: list[dict[str, Any]]) -> str:
-    """Карточка «Осталось закупить» — сумма остатков по портфелю (4 категории).
+    """Карточка «Осталось закупить» — сумма остатков по портфелю (3 категории).
     Используется в главном меню ГД → «📊 Счета в работе».
 
     Агрегирует _compute_remaining_to_buy по каждому счёту (с обнулениями
     «предстоящих затрат» и базой установки = сумма согласования), а не сырое
     план−факт — синхронизировано с листом/карточками 2026-06-16.
+
+    Разбивка задана owner'ом 11.08 через колонки листа, где CE — итог, а CA-CD —
+    четыре категории остатка (sheets.py:1211-1218):
+        Материал  = CE − CB − CC − CD = CA           (_rem_mat)
+        Установка = CE − CA − CC − CD = CB           (_rem_inst)
+        Услуги    = CE − CA − CB      = CC + CD      (_rem_load + _rem_log)
+    То есть грузчики и логистика сведены в одну строку «Услуги»; сами величины
+    и итог прежние, меняется только группировка показа. Счета берём ВСЕ, что
+    пришли в списке (включая кредитные) — «показывать все счета из CE».
     """
     cnt = len(invoices)
     rem_mat = rem_inst = rem_load = rem_log = 0.0
@@ -1735,7 +1744,8 @@ def format_inwork_remaining(invoices: list[dict[str, Any]]) -> str:
         rem_inst += r["rem_inst"] or 0
         rem_load += r["rem_load"] or 0
         rem_log += r["rem_log"] or 0
-    rem_total = rem_mat + rem_inst + rem_load + rem_log
+    rem_svc = rem_load + rem_log
+    rem_total = rem_mat + rem_inst + rem_svc
 
     def _fmt(v: float) -> str:
         sign = "+" if v >= 0 else "−"
@@ -1747,10 +1757,9 @@ def format_inwork_remaining(invoices: list[dict[str, Any]]) -> str:
         title="Осталось закупить",
         total=_fmt(rem_total),
         items=[
-            ("Материалы", _fmt(rem_mat)),
+            ("Материал", _fmt(rem_mat)),
             ("Установка", _fmt(rem_inst)),
-            ("Грузчики", _fmt(rem_load)),
-            ("Логистика", _fmt(rem_log)),
+            ("Услуги", _fmt(rem_svc)),
         ],
         footer=("Счетов в работе", str(cnt)),
         width=32,
@@ -5333,6 +5342,13 @@ def _task_payload_items(task: dict[str, Any]) -> list[tuple[str, str]]:
         payload_items.append(("Уточнение", html.quote(str(payload["details"]))))
     if payload.get("comment"):
         payload_items.append(("Комментарий", html.quote(str(payload["comment"]))))
+    # Назначение траты кредит-кошелька: у таких задач invoice_number пуст, и без
+    # этой строки карточка из списка показывала «Счёт на оплату / Сумма 20 000 ₽»
+    # и больше ничего — по задаче #426 полгода нельзя было понять, за что деньги.
+    # Пуш при создании подпись имел, терялась только карточка. Метка та же, что в
+    # соседних сборщиках (build_gd_task_open_card, build_manager_task_open_card).
+    if payload.get("purpose"):
+        payload_items.append(("Назначение", html.quote(str(payload["purpose"]))))
     # Привязка к счёту: человекочитаемо — «№ счёта» + «Объект» (адрес) выше,
     # обогащаются enrich_task_invoice_label. Сырой #id — только fallback, если
     # счёт не разрешился (ТЗ 17.06: «#48 ни о чём не говорит»).

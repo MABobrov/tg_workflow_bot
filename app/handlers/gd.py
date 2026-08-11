@@ -389,7 +389,9 @@ async def gd_invoices_work(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
 
-    invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
+    # include_credit=True (owner 10.08): ГД видит и кредитные счета — скрыты они
+    # только от бухгалтерии ([[feedback_credit_filter_accounting_only]]).
+    invoices = await db.list_invoices_in_work(limit=50, only_regular=True, include_credit=True)
 
     if not invoices:
         await answer_service(message, "✅ Нет счетов в работе.", delay_seconds=60)
@@ -445,7 +447,8 @@ async def gd_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer("🔄 Обновлено")
 
-    invoices = await db.list_invoices_in_work(limit=50, only_regular=True)
+    # include_credit=True — зеркало gd_invoices_work (owner 10.08).
+    invoices = await db.list_invoices_in_work(limit=50, only_regular=True, include_credit=True)
     if not invoices:
         await cb.message.answer("✅ Нет счетов в работе.")  # type: ignore[union-attr]
         return
@@ -627,8 +630,11 @@ async def gd_chat_rp(message: Message, state: FSMContext, db: Database) -> None:
     """#51: Чат с РП — с привязкой к счёту."""
     if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
-    # Invoice picker перед чатом
-    invoices = await db.list_invoices_in_work(limit=20, only_regular=True)
+    # Invoice picker перед чатом. include_credit=True: ГД видит кредит
+    # ([[feedback_credit_filter_accounting_only]] — он скрыт только от бухгалтерии),
+    # а без флага кредитные счета отсекались статус-фильтром, и привязать чат к ним
+    # было нельзя (owner 10.08).
+    invoices = await db.list_invoices_in_work(limit=20, only_regular=True, include_credit=True)
     if invoices:
         b = InlineKeyboardBuilder()
         for inv in invoices[:10]:

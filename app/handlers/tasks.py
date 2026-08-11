@@ -1874,46 +1874,21 @@ async def _invoice_pp_finalize_core(
         except Exception:
             log.warning("Failed to auto-create SUPPLIER_PAYMENT from task %s", task_id, exc_info=True)
 
-        # п.2 (10.06): авто-списание кредит-кошелька при оплате поставщику по
-        # КРЕДИТ-счёту. ГД уже подтвердил оплату на этом шаге → списываем сразу,
-        # без доп. гейта (решение user 10.06). Закрывает дыру, из-за которой КВ 8
-        # «потерял» 24 812,59 (оплаты наполняли cost_*/DU, но не трогали кошелёк).
-        # Отдельный try: сбой списания НЕ должен ломать финализацию/уведомление РП.
+        # Оплата ГД пишет ТОЛЬКО расход в себестоимость (supplier_payments + cost_*
+        # выше), кредит-кошелёк не трогает — owner 10.08, тот же принцип, что в
+        # ручном ГД-флоу td.py:2086. Списание кошелька легитимно лишь когда хозяин
+        # сам привязал трату к материнскому счёту и выбрал статью расхода; деньги
+        # из котла к этому моменту уже вышли «Снятием САБ», и прежнее авто-списание
+        # по признаку «счёт кредитный» вычитало их вторым разом (кошелёк КВ ушёл
+        # в −188 336). Синк строки обязателен: create_supplier_payment лист не
+        # трогает, и другого sync_invoice_row по родителю здесь нет — без него
+        # затраты DP–DV дожидались бы ночного daily_sync.
         if _sp_id is not None:
             try:
-                _parent_inv = await db.get_invoice(int(_parent_inv_id))
-                _pc_role = (_parent_inv or {}).get("creator_role") or ""
-                if (
-                    _parent_inv
-                    and int(_parent_inv.get("is_credit") or 0) == 1
-                    and _pc_role in ("manager_kv", "manager_kia", "manager_npn")
-                ):
-                    from ..utils import apply_credit_wallet_spend
-                    _cw_purpose = (
-                        f"Оплата поставщику (счёт {_sp_inv_num})"
-                        if _sp_inv_num else "Оплата поставщику"
-                    )
-                    if _sp_supplier:
-                        _cw_purpose += f" — {_sp_supplier}"
-                    await apply_credit_wallet_spend(
-                        db, integrations,
-                        wallet_role=_pc_role,
-                        amount=float(_sp_amount),
-                        mode="bound",
-                        purpose=_cw_purpose,
-                        entered_by=u.id,
-                        invoice_id=int(_parent_inv_id),
-                        cost_type=_sp_mat_type,
-                        invoice_number=_sp_inv_num,
-                        existing_supplier_payment_id=int(_sp_id),
-                    )
-                    log.info(
-                        "п.2 авто-списание кошелька %s: счёт=%s sp=%s сумма=%s",
-                        _pc_role, _sp_inv_num, _sp_id, _sp_amount,
-                    )
+                await integrations.sync_invoice_row(int(_parent_inv_id))
             except Exception:
                 log.warning(
-                    "п.2 авто-списание кошелька не удалось (task=%s, inv=%s)",
+                    "invoice_pp_finalize: row sync failed (task=%s, inv=%s)",
                     task_id, _parent_inv_id, exc_info=True,
                 )
 
@@ -2410,40 +2385,19 @@ async def delivery_payment_finalize(
                     "delivery_payment_finalize: create logistics supplier_payment "
                     "failed (task=%s inv=%s)", task_id, inv_id, exc_info=True,
                 )
-            # КРЕДИТ-счёт → списываем кредит-кошелёк (зеркало пикера, п.2 10.06),
-            # переиспользуя готовый sp_id (без дубля оплаты); иначе — просто
-            # пересинкаем строку счёта, чтобы cost_logistics дошёл до листа (DT).
+            # Пересинкать строку счёта, чтобы cost_logistics дошёл до листа (DT).
+            # Кредит-кошелёк здесь НЕ трогаем (owner 10.08): списание легитимно
+            # только когда хозяин кошелька сам привязал трату к материнскому счёту
+            # и выбрал статью расхода. Оплата ГД деньги из котла второй раз не
+            # выводит — они вышли раньше «Снятием САБ». Прежняя ветка списывала по
+            # признаку «счёт кредитный», не глядя, кто платит, и давала двойной счёт.
             if _sp_id is not None:
                 try:
-                    _inv = await db.get_invoice(int(inv_id))
-                    _role = (_inv or {}).get("creator_role") or ""
-                    if (
-                        _inv
-                        and int(_inv.get("is_credit") or 0) == 1
-                        and _role in ("manager_kv", "manager_kia", "manager_npn")
-                    ):
-                        from ..utils import apply_credit_wallet_spend
-                        await apply_credit_wallet_spend(
-                            db, integrations,
-                            wallet_role=_role,
-                            amount=float(amount),
-                            mode="bound",
-                            purpose=(
-                                f"Оплата доставки (счёт {inv_num})"
-                                if inv_num else "Оплата доставки"
-                            ),
-                            entered_by=u.id,
-                            invoice_id=int(inv_id),
-                            cost_type="logistics",
-                            invoice_number=inv_num,
-                            existing_supplier_payment_id=int(_sp_id),
-                        )
-                    else:
-                        await integrations.sync_invoice_row(int(inv_id))
+                    await integrations.sync_invoice_row(int(inv_id))
                 except Exception:
                     log.warning(
-                        "delivery_payment_finalize: credit debit / row sync "
-                        "failed (task=%s inv=%s)", task_id, inv_id, exc_info=True,
+                        "delivery_payment_finalize: row sync failed "
+                        "(task=%s inv=%s)", task_id, inv_id, exc_info=True,
                     )
 
     # Update task payload with payment info

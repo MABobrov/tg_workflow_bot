@@ -4632,108 +4632,56 @@ async def _cw_confirm_impl(
             await _send(int(rp_id))
 
     if is_own:
-        # --- Своя трата хозяина: гейт подтверждения ГД (п.5, 12.06). ---
-        # Запись расхода ОТКЛАДЫВАЕТСЯ до ✅ГД (cw_gd_ok в chat_proxy); по ❌ГД
-        # (cw_gd_no) — отмена, БД не трогаем. Механизм тот же, что у §C (чужой
-        # кошелёк), но подтверждающий = ГД. Fallback: если ГД не резолвится или
-        # инициатор сам ГД — гейт невозможен → пишем сразу (старое поведение),
-        # чтобы не блокировать трату.
-        if gd_id and int(gd_id) != u.id:
-            task_ok = False
-            tid = 0
-            try:
-                task = await db.create_task(
-                    project_id=None,
-                    type_=TaskType.INVOICE_PAYMENT,
-                    status=TaskStatus.OPEN,
-                    created_by=u.id,
-                    assigned_to=int(gd_id),
-                    due_at_iso=None,
-                    payload={
-                        "kind": "credit_spend_gd_confirm",
-                        "wallet_role": wallet_role,
-                        "amount": amount,
-                        "purpose": purpose,
-                        "invoice_number": inv_num,
-                        "mode": mode,
-                        "invoice_id": int(inv_id) if inv_id else None,
-                        "cost_type": cost_type,
-                        "initiator_id": u.id,
-                        "initiator_file_id": attach_file_id,
-                        "initiator_file_type": attach_file_type,
-                        "owner_spend": True,
-                        "applied": False,
-                    },
-                )
-                tid = int(task["id"])
-                b_gd = InlineKeyboardBuilder()
-                b_gd.button(text="✅ Подтвердить", callback_data=f"cw_gd_ok:{tid}")
-                b_gd.button(text="❌ Отклонить", callback_data=f"cw_gd_no:{tid}")
-                b_gd.adjust(1)
-                attach_line = "📎 <i>Вложение прикреплено</i>\n" if attach_file_id else ""
-                await notifier.safe_send(
-                    int(gd_id),
-                    f"{info}\n\n{attach_line}"
-                    "Подтвердите списание кредит-кошелька или отклоните.",
-                    reply_markup=b_gd.as_markup(),
-                )
-                if attach_file_id and attach_file_type:
-                    try:
-                        await notifier.safe_send_media(
-                            int(gd_id), attach_file_type, attach_file_id,
-                            caption="📎 Вложение к расходу кредита",
-                        )
-                    except Exception:
-                        log.debug("cw_confirm: forward attach to GD failed", exc_info=True)
-                task_ok = True
-            except Exception:
-                log.warning("cw_confirm: credit_spend_gd_confirm task failed", exc_info=True)
-
-            # РП — инфо-карточка (если не инициатор и не ГД), как прежний _notify_gd_rp.
-            if task_ok and rp_id and int(rp_id) != u.id and int(rp_id) != int(gd_id):
-                try:
-                    await notifier.safe_send(int(rp_id), info)
-                    if attach_file_id and attach_file_type:
-                        await notifier.safe_send_media(
-                            int(rp_id), attach_file_type, attach_file_id,
-                            caption="📎 Вложение к расходу кредита",
-                        )
-                except Exception:
-                    log.debug("cw_confirm: notify RP failed", exc_info=True)
-
+        # --- Своя трата хозяина: запись СРАЗУ, без гейта подтверждения ГД. ---
+        # Гейт (п.5, 12.06) снят owner'ом 10.08: списание кредит-кошелька легитимно
+        # ровно тогда, когда хозяин сам привязал трату к счёту и выбрал статью —
+        # спрашивать на это разрешение у ГД незачем, и это расходилось с правилом
+        # «запрос инициирует сама роль». ГД и РП получают инфо-карточку постфактум.
+        # Money-хендлер: любой сбой записи обязан быть виден человеку, иначе
+        # обёртка cw_confirm (try/finally, без except) оставит вечный спиннер.
+        try:
+            res = await apply_credit_wallet_spend(
+                db, integrations,
+                wallet_role=wallet_role, amount=amount, mode=mode or "",
+                purpose=purpose, entered_by=u.id,
+                invoice_id=int(inv_id) if inv_id else None,
+                cost_type=cost_type, invoice_number=inv_num,
+            )
+        except Exception:
+            log.exception("cw_confirm: apply_credit_wallet_spend failed (own spend)")
             await state.clear()
-            try:
-                await cb.message.edit_text(  # type: ignore[union-attr]
-                    format_card_section(
-                        "📨", f"Отправлено на подтверждение ГД — {wlabel}",
-                        [
-                            ("Привязка", bind_line),
-                            ("Назначение", _html.escape(purpose)),
-                        ],
-                        total=fmt_money(amount),
-                        footer=("Статус", "спишется после подтв. ГД"),
-                        width=38, compact=True,
-                    )
-                    if task_ok else
-                    "⚠️ Не удалось создать задачу подтверждения ГД — повторите позже.",
-                    reply_markup=None,
-                )
-            except Exception:
-                pass
-            await cb.answer("Отправлено ГД" if task_ok else "Ошибка")
+            await cb.answer("⚠️ Не удалось записать расход — повторите", show_alert=True)
             if cb.message:
                 await _cw_gd_restore_menu(cb.message, state, spender_role, gd_channel)  # type: ignore[arg-type]
             return
-
-        # --- Fallback: ГД не резолвится / инициатор сам ГД — запись СРАЗУ. ---
-        res = await apply_credit_wallet_spend(
-            db, integrations,
-            wallet_role=wallet_role, amount=amount, mode=mode or "",
-            purpose=purpose, entered_by=u.id,
-            invoice_id=int(inv_id) if inv_id else None,
-            cost_type=cost_type, invoice_number=inv_num,
-        )
         spend_id = res.get("spend_id")
+
+        # Триггер наёмной ЗП — раньше срабатывал ПОСЛЕ ✅ГД, в chat_proxy
+        # (_credit_spend_finalize). Со снятием гейта этот путь сюда больше не
+        # доходит, поэтому хук переносится вместе с ним: без него оплата стекла/
+        # допматов по наёмному счёту перестала бы поднимать ГД-задачу на ЗП монтаж,
+        # то есть один из пяти путей ввода затрат замолчал бы молча.
+        if cost_type and inv_id:
+            try:
+                from .installer_new import on_invoice_cost_recorded
+                _naem = await on_invoice_cost_recorded(
+                    db, config, notifier, integrations,
+                    invoice_id=int(inv_id),
+                    material_type=str(cost_type),
+                    amount=amount,
+                    actor_id=u.id,
+                )
+                if _naem.get("created"):
+                    log.info(
+                        "naem_zp: задача ГД открыта по расходу кошелька %s, счёт=%s",
+                        cost_type, inv_num,
+                    )
+            except Exception:
+                log.warning(
+                    "naem_zp: авто-задача ЗП не создана (cw own spend=%s)",
+                    spend_id, exc_info=True,
+                )
+
         await _notify_gd_rp()
         await state.clear()
         try:
