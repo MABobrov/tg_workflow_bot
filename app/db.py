@@ -57,14 +57,29 @@ def _compute_expense_total_new(row: dict[str, Any]) -> float:
 
 # ── РП оклад → аванс (A2): маркеры взаимоисключения «один оклад в месяц» ──
 RP_SALARY_MONTHLY = 66_000  # оклад РП/мес (синхронно td.py:42, rp.py RP_SALARY_MONTHLY_AMOUNT)
+# Вторая форма выплаты (owner 12.08): наличными платится ТЕЛО, без надбавки на налог —
+# самозанятый её платит только с безнала. Синхронно td.py RP_SALARY_MONTHLY_CASH.
+RP_SALARY_MONTHLY_CASH = 60_000
 RP_OKLAD_ADVANCE_DESC = "ЗП РП Нижельченко"  # op_company_entries.description (кол. E БК):
 #   маркер «оклад РП за месяц переведён в кошелёк аванса». ГД-выплата оклада пишет
 #   description LIKE 'Оклад РП%' — детекторы не пересекаются (префиксы «ЗП»/«Оклад»).
+
+# 🔴 Маркер «оклад за месяц уже выплачен». С 12.08 выплата идёт в ОДИН ИЗ ДВУХ каналов БК:
+# б/н → description (кол. E), наличными → description_credit (кол. J). Детектор обязан
+# смотреть ОБА: иначе выплата наличными месяц не закроет, гард gd_paid промолчит и оклад
+# можно будет получить второй раз. Используется в четырёх местах — get_rp_oklad_advance_status,
+# record_rp_salary_payment, credit_rp_oklad_to_advance, record_rp_oklad_received.
+# ⛔ Сумму `to_advance` этот маркер НЕ трогает: она считается по SUM(cashless_amount)
+# с description = RP_OKLAD_ADVANCE_DESC — другой канал (РП сам переводит оклад в кошелёк),
+# кред-выплата туда попадать не должна.
+_OKLAD_PAID_WHERE = "(description LIKE 'Оклад РП%' OR description_credit LIKE 'Оклад РП%')"
 
 # ── Зачёт выданного аванса РП в оклад (ТЗ owner 31.07) ──
 # Аванс лежит в кошельке «телом» (выдан из кред-кошелька, без надбавки), а оклад идёт
 # б/н самозанятому и уже содержит +10% (66 000 = 60 000 + 10%). Чтобы вычитать одно из
 # другого, тело аванса приводим к тому же виду: 30 000 → 33 000.
+# ⚠️ Приведение действует ТОЛЬКО для б/н. При выплате наличными (owner 12.08) и аванс,
+# и оклад — тело без налога, поэтому зачёт идёт 1:1: 30 000 гасят ровно 30 000.
 RP_OKLAD_ADVANCE_GROSSUP = 1.1
 # request_type строки-гашения. Через installer_advance_items гасить НЕЛЬЗЯ: там
 # invoice_id NOT NULL REFERENCES invoices(id) при PRAGMA foreign_keys=ON, а у оклада
@@ -9963,14 +9978,15 @@ class Database:
         """Статус оклада РП за (year, month) — взаимоисключение «один оклад в месяц» (A2).
 
         Источник истины — op_company_entries (лист «Баланс компании» = её рендер):
-          gd_paid    — ГД уже выплатил оклад (description LIKE 'Оклад РП%');
+          gd_paid    — ГД уже выплатил оклад, В ЛЮБОЙ из двух форм (_OKLAD_PAID_WHERE:
+                       б/н пишет description, наличные — description_credit);
           to_advance — Σ уже переведённого в кошелёк аванса (description = RP_OKLAD_ADVANCE_DESC);
           remaining  — остаток к переводу (0 если gd_paid, иначе 66000 − to_advance).
         read-only.
         """
         cur = await self.conn.execute(
             "SELECT COUNT(*) FROM op_company_entries "
-            "WHERE year = ? AND month = ? AND description LIKE 'Оклад РП%'",
+            f"WHERE year = ? AND month = ? AND {_OKLAD_PAID_WHERE}",
             (int(year), int(month)),
         )
         gd_paid = int((await cur.fetchone())[0] or 0) > 0
@@ -9983,17 +9999,25 @@ class Database:
         remaining = 0.0 if gd_paid else max(0.0, float(RP_SALARY_MONTHLY) - to_advance)
         return {"gd_paid": gd_paid, "to_advance": to_advance, "remaining": remaining}
 
-    async def get_rp_oklad_advance_offset(self, rp_id: int) -> dict[str, float]:
+    async def get_rp_oklad_advance_offset(
+        self, rp_id: int, mode: str = "bn",
+    ) -> dict[str, float]:
         """Сколько выданного аванса РП зачитывается в оклад и что остаётся к выплате.
 
         ТЗ owner 31.07: «аванс РП должен автоматически вычитаться из оклада, и ГД должна
         приходить карточка задачи с суммой остатка». read-only, ничего не пишет.
 
+        mode (owner 12.08) — форма выплаты, её выбирает ГД на экране подтверждения:
+          'bn'   — б/н самозанятому, оклад 66 000 (= 60 000 + 10% на налог). Аванс лежит
+                   в кошельке ТЕЛОМ, поэтому перед вычетом приводится к тому же виду ×1,1.
+          'cash' — наличными, оклад 60 000. Налога нет ни у аванса, ни у оклада, поэтому
+                   зачёт идёт 1:1 без приведения: 30 000 аванса гасят ровно 30 000.
+
           raw    — свободный остаток кошелька РП (ТЕЛО аванса, wallet_role='rp');
-          gross  — он же в виде оклада: raw × 1,1 (оклад идёт б/н самозанятому);
-          deduct — сколько реально вычитаем из 66 000 (не больше самого оклада);
-          payout — к выплате = 66 000 − deduct;
-          body   — тело аванса, которое гасим в кошельке = deduct / 1,1;
+          gross  — он же в виде оклада: raw × 1,1 для 'bn', raw как есть для 'cash';
+          deduct — сколько реально вычитаем из оклада (не больше самого оклада);
+          payout — к выплате = оклад − deduct;
+          body   — тело аванса, которое гасим в кошельке (deduct / 1,1 для 'bn', deduct для 'cash');
           carry  — непогашенный хвост (gross − deduct), остаётся в кошельке на следующий месяц.
 
         ⚠️ Не путать с get_rp_oklad_advance_status: там `remaining` про ДРУГОЙ канал —
@@ -10002,42 +10026,60 @@ class Database:
         Кошелёк строго 'rp': менеджерский кошелёк Павла (manager_npn) к окладу РП
         отношения не имеет [[feedback_rp_npn_separate_wallets]].
         """
+        cash = (mode == "cash")
+        oklad = float(RP_SALARY_MONTHLY_CASH if cash else RP_SALARY_MONTHLY)
+        grossup = 1.0 if cash else RP_OKLAD_ADVANCE_GROSSUP
         raw = await self.get_advance_balance(int(rp_id), "rp")
-        gross = round(raw * RP_OKLAD_ADVANCE_GROSSUP, 2)
-        deduct = round(min(gross, float(RP_SALARY_MONTHLY)), 2)
+        gross = round(raw * grossup, 2)
+        deduct = round(min(gross, oklad), 2)
         return {
             "raw": raw,
             "gross": gross,
             "deduct": deduct,
-            "payout": round(float(RP_SALARY_MONTHLY) - deduct, 2),
-            "body": round(deduct / RP_OKLAD_ADVANCE_GROSSUP, 2),
+            "payout": round(oklad - deduct, 2),
+            "body": round(deduct / grossup, 2),
             "carry": round(gross - deduct, 2),
         }
 
     async def record_rp_salary_payment(
         self, rp_id: int, year: int, month: int, month_str: str,
-        date_display: str, rp_label: str, actor_id: int,
+        date_display: str, rp_label: str, actor_id: int, *, mode: str,
     ) -> dict[str, Any]:
         """ГД выплачивает оклад РП: запись в «Баланс компании» + гашение аванса — АТОМАРНО.
 
         До 31.07 хендлер писал в op_company_entries ровно 66 000 и про аванс не знал.
         Теперь в ОДНОЙ транзакции:
-          (1) op_company_entries(cashless_amount=payout, description='Оклад РП {name} {YYYY-MM}')
-              — форма description НЕ менялась, маркер «месяц закрыт» (LIKE 'Оклад РП%') цел;
+          (1) строка op_company_entries — В ОДИН ИЗ ДВУХ каналов, по выбору ГД (owner 12.08):
+                mode='bn'   → date_display + cashless_amount + description
+                              (лист «Баланс компании», левая половина: B «Дата», C «Сумма б/н»,
+                              E «Расходы б/н»);
+                mode='cash' → date_other_display + other_amount + description_credit
+                              (правая половина: H «Дата», I «Сумма», J «Расходы кред»).
+              Подпись 'Оклад РП {name} {YYYY-MM}' одна и та же в обоих случаях — маркер
+              «месяц закрыт» ищет её в ОБЕИХ колонках (_OKLAD_PAID_WHERE).
           (2) строка гашения кошелька installer_advance_requests(request_type='oklad_offset',
               wallet_role='rp', total_amount=ТЕЛО аванса) — только если аванс был.
 
-        В БК пишется ФАКТИЧЕСКИ выплаченное (payout), а не 66 000: выдача аванса уже прошла
-        расходом раньше (op_company_entries source='credit_wallet_spend'), и полная сумма
-        задвоила бы расход компании.
+        ⛔ mode='cash' кредит-кошелёк НЕ трогает (owner 12.08): наличные из котла выходят
+        «Снятием САБ» отдельно, и списание здесь посчитало бы их вторым разом — ровно тот
+        дефект, из-за которого кошелёк КВ ушёл в −188 336 (см. tasks.py:1877-1885).
+        `date_iso` заполняется в обоих режимах — по нему сортируется журнал.
+
+        В БК пишется ФАКТИЧЕСКИ выплаченное (payout), а не полный оклад: выдача аванса уже
+        прошла расходом раньше (op_company_entries source='credit_wallet_spend'), и полная
+        сумма задвоила бы расход компании.
 
         Внутри транзакции — повторная проверка gd_paid (анти-гонка\двойной клик), как в
         credit_rp_oklad_to_advance / record_rp_oklad_received. Она же единственный барьер
         идемпотентности: два оклада за месяц невозможны, значит и два гашения тоже.
         НЕ использует add_op_company_entry (тот коммитит сам — разрыв атомарности).
 
-        Возвращает {entry_id, offset_req_id, payout, deduct, body, raw, carry}. audit — после commit.
+        Возвращает {entry_id, offset_req_id, mode, oklad, payout, deduct, body, raw, carry}.
+        audit — после commit.
         """
+        if mode not in ("bn", "cash"):
+            raise ValueError(f"unknown payout mode: {mode!r}")
+        cash = (mode == "cash")
         now_iso = to_iso(utcnow())
         date_iso = datetime.strptime(date_display, "%d.%m.%Y").strftime("%Y-%m-%d")
         description = f"Оклад РП {rp_label} {month_str}"
@@ -10045,23 +10087,34 @@ class Database:
         try:
             cur = await self.conn.execute(
                 "SELECT COUNT(*) FROM op_company_entries "
-                "WHERE year = ? AND month = ? AND description LIKE 'Оклад РП%'",
+                f"WHERE year = ? AND month = ? AND {_OKLAD_PAID_WHERE}",
                 (int(year), int(month)),
             )
             if int((await cur.fetchone())[0] or 0) > 0:
                 raise OkladAlreadyPaidError()
             # Считаем ВНУТРИ транзакции: между показом карточки и кликом ГД аванс мог
             # измениться (новый топап от ГД / зачёт РП в ЗП по счёту).
-            calc = await self.get_rp_oklad_advance_offset(int(rp_id))
+            calc = await self.get_rp_oklad_advance_offset(int(rp_id), mode=mode)
             payout = float(calc["payout"])
             body = float(calc["body"])
-            cur = await self.conn.execute(
-                "INSERT INTO op_company_entries "
-                "(year, month, date_iso, date_display, cashless_amount, description, "
-                " source, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'manual_bot_entry', ?)",
-                (int(year), int(month), date_iso, date_display, payout, description, now_iso),
-            )
+            if cash:
+                cur = await self.conn.execute(
+                    "INSERT INTO op_company_entries "
+                    "(year, month, date_iso, date_other_display, other_amount, "
+                    " description_credit, source, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'manual_bot_entry', ?)",
+                    (int(year), int(month), date_iso, date_display, payout,
+                     description, now_iso),
+                )
+            else:
+                cur = await self.conn.execute(
+                    "INSERT INTO op_company_entries "
+                    "(year, month, date_iso, date_display, cashless_amount, description, "
+                    " source, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'manual_bot_entry', ?)",
+                    (int(year), int(month), date_iso, date_display, payout,
+                     description, now_iso),
+                )
             entry_id = int(cur.lastrowid)
             offset_req_id: int | None = None
             if body > 0:
@@ -10081,6 +10134,8 @@ class Database:
         result = {
             "entry_id": entry_id,
             "offset_req_id": offset_req_id,
+            "mode": mode,
+            "oklad": float(RP_SALARY_MONTHLY_CASH if cash else RP_SALARY_MONTHLY),
             "payout": payout,
             "deduct": float(calc["deduct"]),
             "body": body,
@@ -10125,7 +10180,7 @@ class Database:
             # повторная проверка взаимоисключения ВНУТРИ транзакции (race/double-click guard)
             cur = await self.conn.execute(
                 "SELECT COUNT(*) FROM op_company_entries "
-                "WHERE year = ? AND month = ? AND description LIKE 'Оклад РП%'",
+                f"WHERE year = ? AND month = ? AND {_OKLAD_PAID_WHERE}",
                 (int(year), int(month)),
             )
             if int((await cur.fetchone())[0] or 0) > 0:
@@ -10210,7 +10265,7 @@ class Database:
             # повторная проверка взаимоисключения ВНУТРИ транзакции (race/double-click guard)
             cur = await self.conn.execute(
                 "SELECT COUNT(*) FROM op_company_entries "
-                "WHERE year = ? AND month = ? AND description LIKE 'Оклад РП%'",
+                f"WHERE year = ? AND month = ? AND {_OKLAD_PAID_WHERE}",
                 (int(year), int(month)),
             )
             if int((await cur.fetchone())[0] or 0) > 0:

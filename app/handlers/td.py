@@ -41,6 +41,9 @@ GD_ACCESS_ROLES = [Role.GD, Role.TD]
 
 # B5 TZ v8: фиксированный месячный оклад РП. Изменяется только правкой кода.
 RP_SALARY_MONTHLY = 66_000
+# Вторая форма выплаты (owner 12.08): наличными платится тело, без надбавки на налог —
+# самозанятый её платит только с безнала. Синхронно db.RP_SALARY_MONTHLY_CASH.
+RP_SALARY_MONTHLY_CASH = 60_000
 
 
 def _fmt_rub_td(value: float | int | None) -> str:
@@ -636,6 +639,8 @@ async def gd_pay_other_zp(cb: CallbackQuery, db: Database) -> None:
         month = payload.get("month") or ""
         # На кнопке — сумма К ВЫПЛАТЕ (оклад минус зачтённый аванс, ТЗ owner 31.07),
         # считаем живьём: у задач до правки в payload аванса нет.
+        # ⚠️ Режим по умолчанию 'bn' (66 000) — на кнопке ПРЕДВАРИТЕЛЬНАЯ сумма: форму
+        # выплаты ГД выбирает уже на экране подтверждения, и там обе показаны рядом.
         try:
             _rp_id = int(payload.get("rp_id") or 0)
             if _rp_id:
@@ -2250,12 +2255,20 @@ async def supplier_pay_finalize(
 
 def _render_rp_salary_confirm(
     rp_id: int, rp_label: str, month_str: str, has_receipt: bool,
-    advance: dict[str, float] | None = None,
+    adv_bn: dict[str, float] | None = None,
+    adv_cash: dict[str, float] | None = None,
 ) -> tuple[str, Any]:
     """Экран подтверждения выплаты оклада РП (платёжка опциональна).
 
-    advance — db.get_rp_oklad_advance_offset: выданный аванс зачитывается в оклад, ГД
-    видит остаток к выплате (ТЗ owner 31.07). Аванса нет → экран как был.
+    С 12.08 (owner) экран показывает ОБЕ формы выплаты и спрашивает КАЖДЫЙ раз:
+      💳 б/н самозанятому — 66 000 ₽, аванс зачитывается приведённым ×1,1;
+      💵 наличными        — 60 000 ₽, аванс зачитывается 1:1 (налога нет ни там, ни там).
+    Обе пишутся в «Баланс компании», но в РАЗНЫЕ половины листа: б/н в C/E «Сумма б/н» /
+    «Расходы б/н», наличные в I/J «Сумма» / «Расходы кред» (db.record_rp_salary_payment).
+
+    adv_bn / adv_cash — db.get_rp_oklad_advance_offset(mode='bn'|'cash'): выданный аванс
+    зачитывается в оклад, ГД видит остаток к выплате (ТЗ owner 31.07). Аванса нет → у
+    каждого варианта одна строка суммы [[feedback_card_compact_means_height]].
     """
     receipt_line = "  Платёжка: <b>прикреплена</b>\n" if has_receipt else ""
     tail = (
@@ -2263,34 +2276,44 @@ def _render_rp_salary_confirm(
         if has_receipt
         else "запись в «Баланс компании», РП получит уведомление."
     )
-    adv = float((advance or {}).get("deduct") or 0)
-    if adv > 0:
-        sum_block = (
-            f"  Оклад: <b>{_fmt_rub_td(RP_SALARY_MONTHLY)} ₽</b>\n"
-            f"  Аванс зачтён: <b>−{_fmt_rub_td(adv)} ₽</b>\n"
-            f"  К выплате: <b>{_fmt_rub_td((advance or {}).get('payout'))} ₽</b>\n"
+
+    def _block(title: str, oklad: float, calc: dict[str, float] | None) -> str:
+        deduct = float((calc or {}).get("deduct") or 0)
+        if deduct <= 0:
+            return f"  {title}: <b>{_fmt_rub_td(oklad)} ₽</b>\n"
+        return (
+            f"  {title}\n"
+            f"     Оклад: {_fmt_rub_td(oklad)} ₽\n"
+            f"     Аванс зачтён: −{_fmt_rub_td(deduct)} ₽\n"
+            f"     К выплате: <b>{_fmt_rub_td((calc or {}).get('payout'))} ₽</b>\n"
         )
-    else:
-        sum_block = f"  Сумма: <b>{_fmt_rub_td(RP_SALARY_MONTHLY)} ₽</b>\n"
+
+    def _btn_sum(oklad: float, calc: dict[str, float] | None) -> float:
+        payout = (calc or {}).get("payout")
+        return float(oklad if payout is None else payout)
+
+    pay_bn = _btn_sum(RP_SALARY_MONTHLY, adv_bn)
+    pay_cash = _btn_sum(RP_SALARY_MONTHLY_CASH, adv_cash)
+
     text = (
         f"💼 <b>Выплата оклада РП</b>\n\n"
         f"  Сотрудник: <b>{html.escape(rp_label)}</b>\n"
-        f"{sum_block}"
         f"  Месяц: <b>{month_str}</b>\n"
         f"{receipt_line}\n"
-        f"После подтверждения: {tail}"
+        f"{_block('💳 Б/н (самозанятый)', RP_SALARY_MONTHLY, adv_bn)}"
+        f"{_block('💵 Наличными', RP_SALARY_MONTHLY_CASH, adv_cash)}"
+        f"\nВыберите форму выплаты. После подтверждения: {tail}"
     )
     b = InlineKeyboardBuilder()
-    if has_receipt:
-        b.button(
-            text="✅ Записать в БК и отправить РП",
-            callback_data=RpSalaryCb(rp_id=rp_id, action="confirm").pack(),
-        )
-    else:
-        b.button(
-            text="✅ Выплатить без платёжки",
-            callback_data=RpSalaryCb(rp_id=rp_id, action="confirm").pack(),
-        )
+    b.button(
+        text=f"💳 Б/н — {_fmt_rub_td(pay_bn)} ₽",
+        callback_data=RpSalaryCb(rp_id=rp_id, action="pay_bn").pack(),
+    )
+    b.button(
+        text=f"💵 Наличные — {_fmt_rub_td(pay_cash)} ₽",
+        callback_data=RpSalaryCb(rp_id=rp_id, action="pay_cash").pack(),
+    )
+    if not has_receipt:
         b.button(
             text="📎 С платёжкой",
             callback_data=RpSalaryCb(rp_id=rp_id, action="attach").pack(),
@@ -2298,6 +2321,14 @@ def _render_rp_salary_confirm(
     b.button(text="❌ Отмена", callback_data=f"rp_salary_cancel:{rp_id}")
     b.adjust(1)
     return text, b.as_markup()
+
+
+async def _rp_salary_advances(db: Database, rp_id: int) -> tuple[dict, dict]:
+    """Зачёт аванса РП в обеих формах выплаты — для экрана подтверждения."""
+    return (
+        await db.get_rp_oklad_advance_offset(rp_id, mode="bn"),
+        await db.get_rp_oklad_advance_offset(rp_id, mode="cash"),
+    )
 
 
 @router.callback_query(RpSalaryCb.filter(F.action == "start"))
@@ -2337,9 +2368,10 @@ async def rp_salary_start(
         receipt_file_id=None,
         receipt_file_type=None,
     )
-    advance = await db.get_rp_oklad_advance_offset(callback_data.rp_id)
+    adv_bn, adv_cash = await _rp_salary_advances(db, callback_data.rp_id)
     text, kb = _render_rp_salary_confirm(
-        callback_data.rp_id, rp_label, month_str, has_receipt=False, advance=advance,
+        callback_data.rp_id, rp_label, month_str, has_receipt=False,
+        adv_bn=adv_bn, adv_cash=adv_cash,
     )
     await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
     await cb.answer()
@@ -2371,9 +2403,11 @@ async def rp_salary_receipt(message: Message, state: FSMContext, db: Database) -
     month_str = data.get("month") or ""
     await state.update_data(receipt_file_id=file_id, receipt_file_type=file_type)
     await state.set_state(RpSalaryPaySG.confirm)
-    advance = await db.get_rp_oklad_advance_offset(rp_id) if rp_id else None
+    adv_bn, adv_cash = (
+        await _rp_salary_advances(db, rp_id) if rp_id else (None, None)
+    )
     text, kb = _render_rp_salary_confirm(
-        rp_id, rp_label, month_str, has_receipt=True, advance=advance,
+        rp_id, rp_label, month_str, has_receipt=True, adv_bn=adv_bn, adv_cash=adv_cash,
     )
     await message.answer(text, reply_markup=kb)
 
@@ -2408,7 +2442,27 @@ async def rp_salary_attach(
         )
 
 
-@router.callback_query(RpSalaryCb.filter(F.action == "confirm"), RpSalaryPaySG.confirm)
+@router.callback_query(RpSalaryCb.filter(F.action == "confirm"))
+async def rp_salary_confirm_stale(cb: CallbackQuery) -> None:
+    """Кнопка подтверждения из сообщений ДО 12.08 — отбить, а не платить молча.
+
+    Раньше подтверждение было одно и всегда означало б/н 66 000. Теперь форму выбирает ГД
+    (owner 12.08: спрашивать каждый раз), и тихая оплата по старой кнопке провела бы
+    выплату мимо этого выбора. Регистрируется БЕЗ StateFilter намеренно: у таких кнопок
+    состояния уже нет, а catch-all для нераспознанных callback'ов в проекте отсутствует —
+    с фильтром кнопка просто висела бы без ответа [[feedback_fsm_old_buttons_trap]].
+    Фильтры не пересекаются с рабочим хендлером ниже (`pay_bn`/`pay_cash`).
+    """
+    await cb.answer(
+        "Форму выплаты теперь выбирают на экране: б/н или наличными. "
+        "Откройте задачу заново — «💰 Прочие ЗП» или «📥 Входящие для ГД».",
+        show_alert=True,
+    )
+
+
+@router.callback_query(
+    RpSalaryCb.filter(F.action.in_({"pay_bn", "pay_cash"})), RpSalaryPaySG.confirm,
+)
 @money_confirm_guard
 async def rp_salary_confirm(
     cb: CallbackQuery,
@@ -2418,9 +2472,17 @@ async def rp_salary_confirm(
     integrations: IntegrationHub,
     notifier: Notifier,
 ) -> None:
-    """B5 final: INSERT op_company_entries + sync БК + audit + notify РП с платёжкой."""
+    """B5 final: INSERT op_company_entries + sync БК + audit + notify РП с платёжкой.
+
+    Форму выплаты выбирает ГД прямо здесь (owner 12.08):
+      pay_bn   → 66 000 б/н самозанятому, левая половина «Баланса компании» (C/E);
+      pay_cash → 60 000 наличными,        правая половина (I/J «Сумма» / «Расходы кред»).
+    Зачёт выданного аванса считается по той же форме: ×1,1 для б/н, 1:1 для наличных.
+    """
     if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
+    mode = "cash" if callback_data.action == "pay_cash" else "bn"
+    mode_label = "наличными" if mode == "cash" else "б/н"
     data = await state.get_data()
     rp_id = int(data.get("rp_id") or callback_data.rp_id)
     rp_label = data.get("rp_label") or "РП"
@@ -2468,9 +2530,10 @@ async def rp_salary_confirm(
         await state.clear()
         return
     # 1. Запись в «Баланс компании» + гашение зачтённого аванса — ОДНОЙ транзакцией
-    #    (ТЗ owner 31.07). В БК уходит ФАКТИЧЕСКИ выплаченное (66 000 − аванс×1,1), а не
-    #    полный оклад: выдача аванса уже прошла расходом раньше (credit_wallet_spend),
+    #    (ТЗ owner 31.07). В БК уходит ФАКТИЧЕСКИ выплаченное (оклад − зачтённый аванс), а
+    #    не полный оклад: выдача аванса уже прошла расходом раньше (credit_wallet_spend),
     #    и полная сумма задвоила бы расход компании. Величина считается ВНУТРИ транзакции.
+    #    Канал БК (б/н или кред) и правило зачёта задаёт mode — выбор ГД на экране выше.
     #    date_iso внутри = реальная дата платёжки (B5 v2 TZ 28.05): year/month — период ЗП
     #    (следующий месяц), а платёжка сегодняшняя.
     try:
@@ -2482,6 +2545,7 @@ async def rp_salary_confirm(
             date_display=date_display,
             rp_label=rp_label,
             actor_id=cb.from_user.id,
+            mode=mode,
         )
     except OkladAlreadyPaidError:
         await cb.answer(
@@ -2497,6 +2561,7 @@ async def rp_salary_confirm(
     entry_id = int(paid["entry_id"])
     amount = float(paid["payout"])
     adv_deduct = float(paid["deduct"])
+    oklad_full = float(paid["oklad"])
     # 2. sync лист «Баланс компании»
     sync_note = ""
     if integrations.sheets:
@@ -2521,7 +2586,10 @@ async def rp_salary_confirm(
                 "receipt_file_type": receipt_file_type,
                 # Зачёт аванса (31.07): amount здесь = ФАКТИЧЕСКИ выплаченное, поэтому
                 # оклад и вычет пишем явно, иначе по аудиту не восстановить.
-                "oklad_full": float(RP_SALARY_MONTHLY),
+                # mode (12.08) — форма выплаты; от неё зависят и оклад, и правило зачёта,
+                # так что без неё цифры в аудите не сходятся.
+                "mode": mode,
+                "oklad_full": oklad_full,
                 "advance_offset": adv_deduct,
                 "advance_carry": float(paid["carry"]),
             },
@@ -2533,10 +2601,11 @@ async def rp_salary_confirm(
         f"<pre>✅ <b>Оклад РП выплачен</b>\n"
         f"   Месяц                 {month_str}\n"
         f"   Дата                  {date_display}\n"
+        f"   Форма                 {mode_label}\n"
         f"   ━━━━━━━━━━━━━━━━\n"
         + "\n".join(format_rp_oklad_lines(
             {"deduct": adv_deduct, "payout": amount, "carry": float(paid["carry"])},
-            float(RP_SALARY_MONTHLY),
+            oklad_full,
         ))
         + "</pre>"
     )
@@ -2571,6 +2640,7 @@ async def rp_salary_confirm(
         await cb.message.edit_text(  # type: ignore[union-attr]
             f"✅ <b>Оклад выплачен</b> (запись #{entry_id})\n\n"
             f"  Сотрудник: <b>{html.escape(rp_label)}</b>\n"
+            f"  Форма: <b>{mode_label}</b>\n"
             f"  Сумма: <b>{_fmt_rub_td(amount)} ₽</b>\n"
             f"  Месяц: <b>{month_str}</b>\n"
             f"{receipt_card_line}"
@@ -2658,9 +2728,9 @@ async def rp_salary_task_open(
         receipt_file_id=None,
         receipt_file_type=None,
     )
-    advance = await db.get_rp_oklad_advance_offset(rp_id)
+    adv_bn, adv_cash = await _rp_salary_advances(db, rp_id)
     text, kb = _render_rp_salary_confirm(
-        rp_id, rp_label, month_str, has_receipt=False, advance=advance,
+        rp_id, rp_label, month_str, has_receipt=False, adv_bn=adv_bn, adv_cash=adv_cash,
     )
     await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
     await cb.answer()
