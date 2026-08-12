@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 IGOR = 1072734744          # 1-я монтажная группа (Игорь Быканов)
 INDENT = "   "
 OKLAD_MONTHLY = 66_000     # оклад РП +10% = «Сумма б/н» (C) строки «ЗП РП Нижельченко» БК
+# Вторая форма выплаты (owner 12.08): наличными — тело без надбавки на налог, ложится в
+# «Сумма» (I) / «Расходы кред» (J). Синхронно db/td RP_SALARY_MONTHLY_CASH.
+OKLAD_MONTHLY_CASH = 60_000
 
 MONTHS_NOM = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
               "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
@@ -441,6 +444,45 @@ async def _oklad_paid_months(config) -> dict[int, float]:
         return _OKLAD_CACHE.get("months") or {}
 
 
+async def _oklad_bot_months(db, year: int) -> dict[int, float]:
+    """{month_num: сумма оклада} за месяцы, где оклад РП провёл САМ БОТ.
+
+    Зачем отдельно от _oklad_paid_months: тот читает журнал ОФИСА («Импорт ОП» BH-BQ),
+    а строки бота туда не попадают ВООБЩЕ — op_company_entries сливается только в рендер
+    листа «Баланс компании» (sheets.sync_balance_company_sheet), обратно в «Импорт ОП»
+    не возвращается. Плюс офис подписывает строку «Нижельченко», а бот пишет
+    rp_label = «Павел Инфоперегородки» — это ОДИН человек с двумя ролями (rp и manager_npn),
+    owner 12.08. Из-за обоих расхождений колонка «Оклад» молчала и про безнал тоже.
+
+    Матч по имени здесь не нужен: маркеры 'Оклад РП%' (выплата ГД / факт получения) и
+    'ЗП РП%' (перевод оклада в кошелёк аванса) кроме оклада РП никому не принадлежат.
+    Смотрим ОБЕ колонки подписи: б/н пишет description (E), наличные — description_credit (J).
+
+    Сумму показываем ФИКСИРОВАННУЮ по форме выплаты (66 000 б/н, 60 000 наличными), а не
+    фактическую строку: в БК лежит выплаченное за вычетом зачтённого аванса, и разнобой в
+    колонке «Оклад» owner уже отклонял. Только чтение [[feedback_card_display_only]].
+    """
+    try:
+        cur = await db.conn.execute(
+            "SELECT month, "
+            "  MAX(CASE WHEN description_credit LIKE 'Оклад РП%' "
+            "            OR description_credit LIKE 'ЗП РП%' THEN 1 ELSE 0 END) AS is_cash "
+            "FROM op_company_entries WHERE year = ? AND ("
+            "     description LIKE 'Оклад РП%' OR description_credit LIKE 'Оклад РП%' "
+            "  OR description LIKE 'ЗП РП%'    OR description_credit LIKE 'ЗП РП%') "
+            "GROUP BY month",
+            (int(year),),
+        )
+        rows = await cur.fetchall()
+    except Exception:
+        logger.exception("RP card: чтение оклада из op_company_entries упало")
+        return {}
+    return {
+        int(r[0]): float(OKLAD_MONTHLY_CASH if int(r[1] or 0) else OKLAD_MONTHLY)
+        for r in rows if r and r[0]
+    }
+
+
 async def _block_profit(db, config, uid):
     m = await db.get_rp_dashboard_metrics(uid)
     rpm = m.get("rp_monthly") or {}
@@ -452,12 +494,18 @@ async def _block_profit(db, config, uid):
     active = sorted(active, reverse=True)         # текущий/новые сверху, Январь снизу
     to_pay = await _rp_to_pay_monthly(db, year)   # AP где AR=0, по receipt_date месяцу
     oklad_paid = await _oklad_paid_months(config)  # месяцы со строкой «ЗП РП Нижельченко»
+    oklad_bot = await _oklad_bot_months(db, year)  # то же, но из выплат САМОГО бота
     # Шапка столбцов (Мес-колонка без заголовка).
     body = [_profit_row("", "Оклад", "10% РП", "К выпл.")]
     for mo in active:
-        # Оклад: есть строка «ЗП РП Нижельченко» за месяц → 66 000 (=C, оклад +10%);
-        # иначе пусто. Сумму показываем фикс 66 000 (как договорено, без разнобоя).
-        okl_cell = _money(OKLAD_MONTHLY) if mo in oklad_paid else ""
+        # Оклад: есть строка за месяц → фикс. сумма по форме выплаты; иначе пусто.
+        # Два источника: журнал офиса (oklad_paid, всегда б/н 66 000) и выплаты самого
+        # бота (oklad_bot, знает про наличные 60 000). Бот приоритетнее — он источник
+        # истины по своим записям [[feedback_db_is_source_of_truth]].
+        if mo in oklad_bot:
+            okl_cell = _money(oklad_bot[mo])
+        else:
+            okl_cell = _money(OKLAD_MONTHLY) if mo in oklad_paid else ""
         pay = float(to_pay.get(mo) or 0)
         pay_cell = _money(pay) if pay > 0 else ""
         body.append(_profit_row(mn[mo - 1], okl_cell, _money(rpm.get(mo)), pay_cell))
