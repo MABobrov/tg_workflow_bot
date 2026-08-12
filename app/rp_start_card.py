@@ -454,24 +454,33 @@ async def _oklad_bot_months(db, year: int) -> dict[int, float]:
     rp_label = «Павел Инфоперегородки» — это ОДИН человек с двумя ролями (rp и manager_npn),
     owner 12.08. Из-за обоих расхождений колонка «Оклад» молчала и про безнал тоже.
 
-    Матч по имени здесь не нужен: маркеры 'Оклад РП%' (выплата ГД / факт получения) и
-    'ЗП РП%' (перевод оклада в кошелёк аванса) кроме оклада РП никому не принадлежат.
-    Смотрим ОБЕ колонки подписи: б/н пишет description (E), наличные — description_credit (J).
+    Матч по имени не нужен, но и префикс 'ЗП РП%' брать НЕЛЬЗЯ (owner 12.08): «ЗП РП» —
+    это название ДЕСЯТИ ПРОЦЕНТОВ прибыли («ЗП РП 10%», callbacks.py RpZpPayCb/RpZpPaySelCb),
+    а не оклада. Строки «Баланс компании» ГД пишет свободным текстом (gd.py:2640) и уже
+    пишет в таком стиле — на проде лежат 'ЗП Директор', 'ЗП Замерщик', 'ЗП Авитолог',
+    'ЗП Ген.Дир'; первое же 'ЗП РП 10%' зажгло бы в колонке «Оклад» фиктивные 66 000.
+    Поэтому маркер «оклад переведён в кошелёк аванса» берём ТОЧНЫМ равенством по константе
+    RP_OKLAD_ADVANCE_DESC ('ЗП РП Нижельченко') — ровно как канон db.py, где расчёт
+    to_advance сверяет её через `=`, а не LIKE. 'Оклад РП%' остаётся префиксом: это подпись
+    самого бота (f'Оклад РП {rp_label} {YYYY-MM}'), канон _OKLAD_PAID_WHERE.
+
+    Наличные ищем только у 'Оклад РП%': перевод в кошелёк аванса всегда безналичный —
+    db.py пишет его в description/cashless_amount (E/C), в кред-колонку он не попадает.
 
     Сумму показываем ФИКСИРОВАННУЮ по форме выплаты (66 000 б/н, 60 000 наличными), а не
     фактическую строку: в БК лежит выплаченное за вычетом зачтённого аванса, и разнобой в
     колонке «Оклад» owner уже отклонял. Только чтение [[feedback_card_display_only]].
     """
+    from .db import RP_OKLAD_ADVANCE_DESC  # 'ЗП РП Нижельченко' — точное равенство, не LIKE
     try:
         cur = await db.conn.execute(
             "SELECT month, "
-            "  MAX(CASE WHEN description_credit LIKE 'Оклад РП%' "
-            "            OR description_credit LIKE 'ЗП РП%' THEN 1 ELSE 0 END) AS is_cash "
+            "  MAX(CASE WHEN description_credit LIKE 'Оклад РП%' THEN 1 ELSE 0 END) AS is_cash "
             "FROM op_company_entries WHERE year = ? AND ("
             "     description LIKE 'Оклад РП%' OR description_credit LIKE 'Оклад РП%' "
-            "  OR description LIKE 'ЗП РП%'    OR description_credit LIKE 'ЗП РП%') "
+            "  OR description = ?) "
             "GROUP BY month",
-            (int(year),),
+            (int(year), RP_OKLAD_ADVANCE_DESC),
         )
         rows = await cur.fetchall()
     except Exception:
