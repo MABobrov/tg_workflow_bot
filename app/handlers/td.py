@@ -1580,6 +1580,41 @@ async def gd_zp_manager_approve(
     await refresh_recipient_keyboard(notifier, db, config, cb.from_user.id)
 
 
+def _zp_manager_pay_amount(inv: dict[str, Any]) -> float:
+    """Сумма выплаты ЗП менеджера — ЕДИНЫЙ источник для экрана и для записи.
+
+    Приоритет 1:1 с тем, как AL показывается на листе (sheets.py, ключ 37):
+    числовое zp_manager_request_amount (зеркало ОП AI «Запрос НОВЫЙ») → legacy-текст
+    zp_manager_request_text → прежний zp_manager_amount последним fallback.
+
+    🔴 Отбор СТРОГО `> 0`, а не «непусто» — ровно как на листе (sheets.py:868 с его
+    явным `> 0`). Прежняя редакция проверяла `if not amt` и пропускала ОТРИЦАТЕЛЬНУЮ
+    AL: у КВ 10 (AL = −1 000, legacy 11 000) карточка и экран подтверждения печатали
+    11 000₽, а запись уходила −1 000, и ГД с менеджером получали «сумма: -1 000₽».
+    Путь был живой: кнопку «💳 Выплатить» рисует условие `paid <= 0` (:1503), а
+    −1 000 его проходит, поэтому и гард «уже выплачена» (`payout > 0`) не срабатывал —
+    выплату можно было провести повторно.
+
+    ⚠️ zp_manager_amount пуст у 15 счетов (все кредитные КВ 1–КВ 8, 2624/2625-1/
+    2625-2/26226/26323/2642/26522) — поэтому он именно последний fallback, а не
+    источник: иначе выплата по ним записала бы в AN ноль.
+    ⚠️ NBSP: legacy-текст лежит как "11\xa0220", а parse_amount срезает только обычный
+    пробел — нормализуем здесь; общий хелпер не трогаем (у него другие потребители).
+    """
+    try:
+        amt = float(inv.get("zp_manager_request_amount") or 0)
+    except (TypeError, ValueError):
+        amt = 0.0
+    if amt <= 0:
+        amt = parse_amount((inv.get("zp_manager_request_text") or "").replace("\xa0", " ")) or 0.0
+    if amt <= 0:
+        try:
+            amt = float(inv.get("zp_manager_amount") or 0)
+        except (TypeError, ValueError):
+            amt = 0.0
+    return float(amt)
+
+
 @router.callback_query(F.data.startswith("gdzp_mgr:pay:"))
 async def gd_zp_manager_pay(
     cb: CallbackQuery, state: FSMContext, db: Database,
@@ -1607,7 +1642,15 @@ async def gd_zp_manager_pay(
             f"⚠️ Сначала одобрите ЗП по счёту №{inv['invoice_number']} («✅ ЗП ОК»)."
         )
         return
-    amt = float(inv.get("zp_manager_amount") or 0)
+    # Тот же резолвер, что и в _finalize_zp_manager_pay — экран обязан показывать
+    # РОВНО ту сумму, которая будет записана (см. докстринг _zp_manager_pay_amount).
+    amt = _zp_manager_pay_amount(inv)
+    if amt <= 0:
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"⚠️ По счёту №{inv['invoice_number']} сумма к выплате не положительна "
+            f"({amt:,.0f}₽). Выплата невозможна — поправьте «Запрос НОВЫЙ» в ОП."
+        )
+        return
     # Аванс, уже выданный этому менеджеру и привязанный к ЭТОМУ счёту (open+closed).
     # ГД показываем НЕТТО к переводу, чтобы не задвоить: полная ЗП = аванс (выдан
     # ранее) + остаток наличными. Display-only: деньги-логику не трогаем —
@@ -1667,20 +1710,19 @@ async def _finalize_zp_manager_pay(
     if status != "approved":
         await msg.answer(f"⚠️ ЗП по счёту №{inv['invoice_number']} не одобрена — выплата невозможна.")
         return
-    # AN ← AL «Запрос НОВЫЙ» после выплаты (owner 12.08). Приоритет 1:1 с тем, как
-    # AL показывается на листе (sheets.py, ключ 37): числовое zp_manager_request_amount
-    # (зеркало ОП AI), затем legacy-текст zp_manager_request_text. Прежний
-    # zp_manager_amount остаётся ПОСЛЕДНИМ fallback, а не источником: он пуст у 15
-    # счетов (все кредитные КВ 1–КВ 8, 2624/2625-1/2625-2/26226/26323/2642/26522) —
-    # по ним выплата записала бы в AN ноль, и «выплачено» не зафиксировалось бы.
-    # ⚠️ NBSP: legacy-текст лежит как "11\xa0220", а parse_amount срезает только
-    # обычный пробел — нормализуем здесь; общий хелпер не трогаем (у него другие
-    # потребители).
-    amt = float(inv.get("zp_manager_request_amount") or 0)
-    if not amt:
-        amt = parse_amount((inv.get("zp_manager_request_text") or "").replace("\xa0", " ")) or 0
-    if not amt:
-        amt = float(inv.get("zp_manager_amount") or 0)
+    # AN ← AL «Запрос НОВЫЙ» после выплаты (owner 12.08) — единый резолвер, тот же,
+    # что кормит экран подтверждения (см. докстринг _zp_manager_pay_amount).
+    amt = _zp_manager_pay_amount(inv)
+    # 🔴 Неположительную сумму НЕ записываем: гард «уже выплачена» смотрит `payout > 0`,
+    # поэтому ноль/минус в AN не зафиксировал бы выплату и кнопка появилась бы снова —
+    # выплату можно было бы провести повторно, а ГД и менеджер получили бы
+    # «сумма: -1 000₽». Ровно случай КВ 10 до этой правки.
+    if amt <= 0:
+        await msg.answer(
+            f"⚠️ По счёту №{inv['invoice_number']} сумма к выплате не положительна "
+            f"({amt:,.0f}₽). Выплата не записана — поправьте «Запрос НОВЫЙ» в ОП."
+        )
+        return
     # 1. Фиксируем выплату: AN/AO прямым UPDATE. Статус остаётся approved —
     #    «выплачено» определяется по AN>0 (как AR у ЗП РП). Дата DD.MM.YYYY —
     #    формат 1:1 с зачётом аванса (apply_advance_offsets... step3).

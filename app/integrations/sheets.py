@@ -833,6 +833,27 @@ class GoogleSheetsService:
             _az_montazh = "В работе"
         else:
             _az_montazh = _MONTAZH_STAGE_LABELS.get(_mz_stage, _mz_stage)
+        # AN «Выпл.МенЗП» (36→39) показывается ТОЛЬКО после события выплаты — заказ
+        # owner'а 11.08 дословно: «в колонку an переносить данные из al только после
+        # выплаты зп менеджер или при использование переплаты в авансовом кошельке в счет
+        # закрытых счетов зп менеджер… an — показывает фактическую зп менеджер с учетом
+        # вычеты переплаты, ТОЛЬКО в случае выплаты». До события ячейка ПУСТА.
+        # Зачем: деплой zprecalc 12.08 сделал только сторону записи (td.py при выплате
+        # берёт сумму из AL), а показ остался безусловным зеркалом zp_manager_payout —
+        # и в AN висели числа импорта ОП по 24 счетам без выплаты, включая перерасчётные
+        # минусы (26525-1КВ −45 000 при ПУСТОЙ дате и zp_manager_status='not_requested').
+        # Признаки — 1:1 с двумя событиями, названными owner'ом:
+        #   выплата ЗП менеджера         → zp_manager_payout_date (AO) непуста;
+        #   погашение авансового баланса → zp_hold_advanced (ER) ≠ 0.
+        # ⚠️ Само zp_manager_payout признаком быть НЕ может: в него пишет И бот
+        # (_finalize_zp_manager_pay), И импорт ОП AJ (карта «Импорт ОП», индекс 35) —
+        # по значению источник неразличим. Бот выплатил ЗП менеджера 1 раз за всю
+        # историю (2654-1НПН 15 510 от 13.07), остальные 24 значения — из ОП.
+        try:
+            _er_hold = float(invoice.get("zp_hold_advanced") or 0)
+        except (TypeError, ValueError):
+            _er_hold = 0.0
+        _an_payout_done = bool(str(invoice.get("zp_manager_payout_date") or "").strip()) or bool(_er_hold)
         cells: dict[int, Any] = {
             0: row - 1,   # № п/п — сквозная нумерация
             1: _role_label,  # Роль
@@ -869,7 +890,11 @@ class GoogleSheetsService:
                 else (invoice.get("zp_manager_request_text") or "")
             ),
             38: self._fmt_amount(invoice.get("agent_payout_op")),   # AM ← ОП AE
-            39: self._fmt_amount(invoice.get("zp_manager_payout")),  # AN ← ОП AJ
+            # AN ← ОП AJ, но ТОЛЬКО после события выплаты (см. _an_payout_done выше).
+            39: (
+                self._fmt_amount(invoice.get("zp_manager_payout"))
+                if _an_payout_done else ""
+            ),
             40: self._fmt_sheet_date(invoice.get("zp_manager_payout_date")),  # AO ← ОП AK
             42: self._fmt_amount(invoice.get("rp_request_op")),     # AQ Запрос РП ← ОП AU
             43: self._fmt_amount(invoice.get("rp_payout_op")),     # AR Выдано РП ← ОП AV
