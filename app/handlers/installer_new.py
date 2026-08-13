@@ -2306,9 +2306,18 @@ async def maybe_open_naem_zp_task_after_material_payment(
         td._finalize_installer_zp_payment шлёт карточку «ЗП выплачена» именно на
         zp_installer_requested_by — оставь пустым, и она не уйдёт никому и молча.
 
-    ⛔ installer_ok НЕ трогаем: работы ещё не приняты (материалы оплачивают ДО
-    монтажа), а гард видимости кнопки РП «Монтаж ОК» смотрит именно на него —
-    выставить его здесь значит убрать у РП кнопку до того, как он подтвердит работы.
+    ✅ installer_ok + стадия «Счёт ОК» ставятся ЗДЕСЬ (owner 13.08) — отмена прежнего
+    решения 07.08 «не трогаем». Причина отмены: авто-ЗП ставит zp_installer_status=
+    'requested', а гард кнопки РП «✅ Монтаж ОК» (rp_new.py:2210) пропускает только
+    'not_requested' — единственный сеттер installer_ok становился недостижим НАВСЕГДА,
+    счёт запирался на installer_ok=0, и штатного «Счет End» по нему было уже не
+    получить (2671-1КИА висел так с 07.08: ЗП выплачена, стадия assigned).
+    Кнопка РП после этого не «пропадает», а отвечает «✅ Монтаж уже подтверждён»
+    (rp_new.py:2207) — путь РП схлопывается в авто-путь, а не ломается.
+    ⚠️ Побочка на листе, проверенная замером: у наёмных AZ «Этап монтажа» считается
+    как edo_task_id==2 AND installer_ok → «Счет End» (sheets.py:830), а AZ с 13.08 —
+    триггер автодаты N. Здесь это безвредно: у обоих затронутых счетов цепочка
+    AD→AS→AO пуста, писать нечего. Заодно открывается гейт _fact_visible (BG/Y/BL-BO).
 
     Идемпотентность двойная: zp_installer_status обязан быть 'not_requested' И по
     счёту не должно быть открытой ZP_INSTALLER. Одного статуса мало — по одному
@@ -2321,6 +2330,7 @@ async def maybe_open_naem_zp_task_after_material_payment(
     """
     res: dict[str, Any] = {
         "created": False, "reason": None, "task_id": None, "amount": 0.0,
+        "work_confirmed": False,
     }
     if str(material_type or "") not in NAEM_ZP_TRIGGER_MATERIALS:
         res["reason"] = "material_not_trigger"
@@ -2369,6 +2379,25 @@ async def maybe_open_naem_zp_task_after_material_payment(
         return res
     rp_id = await resolve_default_assignee(db, config, Role.RP)
 
+    # 1) Готовность монтажа — зеркало rp_montazh_naem_ok: installer_ok + «Счёт ОК».
+    #    Порядок тот же, что у РП: сначала готовность, затем деньги. Стадию двигаем
+    #    ТОЛЬКО вперёд — update_montazh_stage (db.py:3537) пишет что дали, без проверки,
+    #    и на invoice_end откатил бы счёт назад. Ошибку глушим: контракт функции —
+    #    не ронять финализацию оплаты, ради которой её и вызвали.
+    try:
+        if not inv.get("installer_ok"):
+            await db.set_invoice_installer_ok(int(invoice_id), True)
+        if str(inv.get("montazh_stage") or "") not in (
+            MontazhStage.INVOICE_OK, MontazhStage.INVOICE_END,
+        ):
+            await db.update_montazh_stage(int(invoice_id), MontazhStage.INVOICE_OK)
+        res["work_confirmed"] = True
+    except Exception:
+        log.warning(
+            "naem_zp_trigger: installer_ok/stage failed inv=%s", invoice_id, exc_info=True,
+        )
+
+    # 2) Запрос ЗП монтажника к ГД
     await db.set_invoice_zp_installer_status(
         int(invoice_id), "requested", amount=due,
         requested_by=int(rp_id) if rp_id else None,
@@ -2422,6 +2451,11 @@ async def maybe_open_naem_zp_task_after_material_payment(
                 "amount": due, "agreed": agreed, "paid_prev": paid_prev,
                 "material_type": str(material_type), "task_id": res["task_id"],
                 "requested_by": rp_id, "gd_id": gd_id,
+                # Готовность (owner 13.08) — чтобы разбор инцидента видел, из какого
+                # состояния счёт был закрыт автоматически.
+                "work_confirmed": res["work_confirmed"],
+                "installer_ok_before": bool(inv.get("installer_ok")),
+                "stage_before": inv.get("montazh_stage"),
             },
         )
     except Exception:
