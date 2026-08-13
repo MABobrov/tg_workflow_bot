@@ -1890,10 +1890,24 @@ async def gd_sync_data(
 
 async def _send_manager_recalc_cards(message: Message, db: Database) -> int:
     """Отправить ГД карточки «Перерасчёт прибыли» по всем счетам под механизмом
-    (CN≠0 И долг=0). Возвращает число отправленных. Display-only, деньги не трогает.
+    (ЗП менеджера выплачена И BM < 0, долг погашен). Возвращает число отправленных.
+    Display-only, деньги не трогает.
 
     ТЗ 02.07: на каждой карточке — inline «📨 Отправить менеджеру» (→ recalc_send).
-    Если задача по счёту уже открыта — кнопка не показывается (ждём согласия)."""
+    Кнопка НЕ показывается в двух случаях:
+      • по счёту уже есть задача recalc_confirm (open или done) — ждём согласия
+        либо оно уже получено;
+      • остаток переплаты исчерпан (|CN| − ER ≤ 0) — всё уже на балансе аванса,
+        отправлять менеджеру нечего.
+
+    🔴 Второе условие обязательно с 13.08, когда выборка перешла на признак
+    «ЗП выплачена + BM < 0» и перестала сама отсеивать отработанные счета. Без
+    него ГД слал бы задачу по уже закрытой переплате: у КВ 9 и КВ 10 перенос
+    сделал АВТО-СВИП (audit manager_overpay_to_advance 16.07 и 27.07), задач
+    recalc_confirm по ним нет, поэтому дедуп по задачам их не ловит. Деньги
+    защищены и на следующем шаге — recalc_agree считает остаток сам и при нуле
+    отвечает «уже учтён» (фикс 30.07), — но гонять человека по пустой задаче
+    незачем."""
     ids = await db.list_invoices_under_recalc()
     for inv_id in ids:
         inv = await db.get_invoice(inv_id)
@@ -1901,8 +1915,24 @@ async def _send_manager_recalc_cards(message: Message, db: Database) -> int:
             continue
         card = format_manager_recalc_card(inv)
         markup = None
+        remainder = round(
+            abs(float(inv.get("zp_manager_hold") or 0))
+            - float(inv.get("zp_hold_advanced") or 0), 2
+        )
         if await db.invoice_recalc_already_sent(inv_id):
             card += "\n<i>📨 Уже отправлено менеджеру.</i>"
+        elif remainder <= 0.009:
+            adv = float(inv.get("zp_hold_advanced") or 0)
+            if adv > 0:
+                card += (
+                    "\n<i>✅ Переплата уже перенесена в авансовый кошелёк "
+                    f"({adv:,.0f} ₽).</i>".replace(",", " ")
+                )
+            else:
+                card += (
+                    "\n<i>ℹ️ Сумма удержания (CN) по счёту не заполнена — "
+                    "переносить нечего.</i>"
+                )
         else:
             b = InlineKeyboardBuilder()
             b.button(text="📨 Отправить менеджеру", callback_data=f"recalc_send:{inv_id}")
@@ -1923,7 +1953,8 @@ async def gd_manager_recalc(message: Message, db: Database) -> None:
     if n == 0:
         await message.answer(
             "✅ Нет счетов под перерасчётом ЗП менеджера.\n"
-            "<i>Условие: заполнена переплата (CN) и долг по счёту погашен.</i>"
+            "<i>Условие: ЗП менеджера выплачена, прибыль факт оказалась ниже "
+            "расчётной (BM) и долг по счёту погашен.</i>"
         )
 
 

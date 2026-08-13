@@ -3279,31 +3279,56 @@ class Database:
     async def list_invoices_under_recalc(
         self, marker: str | None = None, created_by: int | None = None
     ) -> list[int]:
-        """ID счетов под механизмом перерасчёта ЗП менеджера (owner 2026-06-23).
+        """ID счетов под механизмом перерасчёта ЗП менеджера.
 
-        Условие: есть переплата (zp_manager_hold/CN != 0) И долг погашен
-        (outstanding_debt == 0 — финальный платёж сделан). Пока по материнскому
-        счёту есть долг — НЕ входит в механизм. Родительские счета, не rejected.
-        Для карточки «Перерасчёт прибыли» (кнопка ГД + авто после синка).
+        Признак входа (owner 13.08): **ЗП менеджера уже выплачена И BM < 0**, то
+        есть фактическая прибыль оказалась хуже расчётной уже ПОСЛЕ того, как ЗП
+        была выплачена — тогда переплата и уходит на баланс авансового кошелька
+        (ER, `zp_hold_advanced`).
 
-        Фикс 30.07 (двойное начисление): счёт выпадает из списка, как только вся
-        переплата перенесена в аванс (|CN| − zp_hold_advanced ≤ 0). Раньше условия
-        на zp_hold_advanced не было → отработанный свипом счёт продолжал висеть в
-        карточке ГД, и связка «Отправить менеджеру» → «Согласен» начисляла аванс
-        ВТОРОЙ раз (достижимо было по КВ 9 и КВ 10). Ручное обнуление CF в «Импорт
-        ОП» больше не единственный способ снять счёт с механизма.
+        «ЗП выплачена» — тем же правилом, что гейт колонки AN (деплой anpaid
+        12.08): `zp_manager_payout_date` непуста ЛИБО `zp_hold_advanced` != 0.
+        ⚠️ Само `zp_manager_payout` признаком быть НЕ может: в него пишет и бот,
+        и импорт ОП AJ — по значению источник неразличим.
+
+        Гейт долга сохранён (owner 23.06): счёт входит в механизм ТОЛЬКО при
+        `outstanding_debt == 0`. Родительские счета, не rejected.
+
+        🔴 Прежний признак (`zp_manager_hold`/CN != 0 И |CN| − ER > 0.009) СНЯТ.
+        Он опирался на ручную офисную колонку CF «Импорт ОП» и выключал счёт
+        сразу после переноса — на 13.08 выборка отдавала НОЛЬ счетов, и кнопка ГД
+        «📊 Перерасчёт прибыли» отвечала «нет счетов под перерасчётом», хотя
+        перерасчёт по данным был у шести.
+
+        ⚠️ Сумма переплаты по-прежнему берётся из |CN| (канал recalc_agree →
+        create_recalc_advance_topup, owner 02–03.07). Из BM её вывести НЕЛЬЗЯ:
+        отношение |CN|/|BM| на боевых счетах скачет 10–51 %, постоянного
+        коэффициента нет. BM — ПРИЗНАК входа, а не величина.
+
+        🔴 Защита от повторного начисления НЕ ослаблена, хотя фильтр по остатку
+        ушёл отсюда: `recalc_agree` считает остаток `|CN| − zp_hold_advanced` сам
+        и при нуле отвечает «уже учтён», не начисляя (фикс 30.07). Карточка ГД
+        дополнительно не показывает кнопку «Отправить менеджеру», когда остаток
+        исчерпан. То есть видимость и деньги разведены намеренно.
+
+        ⚠️ BM требует cost-card, поэтому SQL отбирает только дешёвых кандидатов, а
+        решение принимает `utils.compute_profit_recalc` — тот же хелпер, которым
+        колонку BM считает лист. Дублировать условие в SQL нельзя: прибыль факт
+        живёт в cost-card, а не в колонке invoices.
 
         marker/created_by (owner 2026-06-23) — опц. скоуп под «Мои Счета» менеджера:
         marker → invoice_number LIKE '%marker%' (КВ/КИА/НПН, зеркало list_invoices),
         created_by → автор счёта. Оба None → все счета (поведение ГД неизменно).
         """
+        from .utils import compute_profit_recalc
+
         clauses = [
-            "COALESCE(zp_manager_hold, 0) != 0",
             "ABS(COALESCE(outstanding_debt, 0)) < 1",
             "parent_invoice_id IS NULL",
             "COALESCE(status, '') != 'rejected'",
-            # Остаток ещё не перенесённой переплаты (зеркало дельты в свипе).
-            "ABS(COALESCE(zp_manager_hold, 0)) - COALESCE(zp_hold_advanced, 0) > 0.009",
+            # Событие выплаты ЗП менеджера — зеркало _an_payout_done (sheets.py).
+            "(TRIM(COALESCE(zp_manager_payout_date, '')) != ''"
+            " OR COALESCE(zp_hold_advanced, 0) != 0)",
         ]
         params: list[Any] = []
         if marker is not None:
@@ -3313,10 +3338,23 @@ class Database:
             clauses.append("created_by = ?")
             params.append(created_by)
         cur = await self.conn.execute(
-            "SELECT id FROM invoices WHERE " + " AND ".join(clauses) + " ORDER BY id",
+            "SELECT * FROM invoices WHERE " + " AND ".join(clauses) + " ORDER BY id",
             tuple(params),
         )
-        return [int(r["id"]) for r in await cur.fetchall()]
+        out: list[int] = []
+        for r in await cur.fetchall():
+            inv = dict(r)
+            inv_id = int(inv["id"])
+            try:
+                cost = await self.get_full_invoice_cost_card(inv_id)
+            except Exception:
+                # Счёт без считаемой cost-card в механизм не попадает — молча
+                # пропускаем, ронять экран ГД из-за одного счёта нельзя.
+                log.debug("list_invoices_under_recalc: cost_card failed inv=%s", inv_id)
+                continue
+            if compute_profit_recalc(inv, cost) < 0:
+                out.append(inv_id)
+        return out
 
     async def list_invoices_for_installer(self, user_id: int) -> list[dict[str, Any]]:
         """Активные счета монтажника, у которых ЗП-installer ещё не выплачена.

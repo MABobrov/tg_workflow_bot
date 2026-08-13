@@ -3641,6 +3641,56 @@ def compute_plan_profit(
     }
 
 
+def compute_profit_recalc(inv: dict[str, Any], cost: dict[str, Any] | None) -> float:
+    """BM «Перерасчёт прибыли» = прибыль ФАКТ − прибыль РАСЧЁТНАЯ (из ОП). owner 13.08.
+
+    ЕДИНАЯ реализация для двух потребителей, чтобы они не разъехались:
+      • лист Invoices, колонка BM (`sheets.py`, блок BL-BO) и производные от неё
+        гейты AK «Перерасчет» / AL «Запрос НОВЫЙ»;
+      • выборка счетов под механизмом перерасчёта (`db.list_invoices_under_recalc`).
+
+    Возвращает ОТРИЦАТЕЛЬНОЕ число, когда факт хуже плана, и 0.0 во всех остальных
+    случаях. Ветка «BM > 0» недостижима by design: значение пишется только при
+    `profit_op > fact_margin`.
+
+    Условия — 1:1 с листом:
+      • нужна cost-card: без неё BM/BL/Y/BN/BO не считаются вовсе (`if _c:`).
+        ⚠️ Замерщик, забывший передать cost-card, получит 0.0 по ВСЕМ счетам и
+        решит, что перерасчёта нет нигде — ровно эта ошибка дала ложный вывод
+        13.08 «BM пуста у всех 39»;
+      • гейт видимости факта: статус `ended` (или кредитный, добравшийся до
+        `montazh_stage='invoice_end'`), либо стадия `invoice_ok`/`invoice_end`;
+      • нулевая фактическая прибыль перерасчётом не считается (на листе BL/BM
+        в этом случае пустые).
+
+    ⚠️ Округление до рубля намеренное и обязательное: лист печатает значение через
+    `_fmt_amount` («%.0f»), поэтому разница меньше рубля превращается в «−0», а
+    owner 12.08 решил ноль перерасчётом НЕ считать (26423-1КИА: план 16 767 ==
+    факт 16 767). Без округления гейт зажёгся бы на копеечной разнице.
+    """
+    if not cost:
+        return 0.0
+    credit_fully_closed = bool(inv.get("is_credit")) and (
+        inv.get("montazh_stage") == "invoice_end"
+    )
+    status_ended = inv.get("status") == "ended" or credit_fully_closed
+    stage = inv.get("montazh_stage", "") or ""
+    if not (status_ended or stage in ("invoice_ok", "invoice_end")):
+        return 0.0
+    fact_margin = cost.get("margin", 0) or 0
+    if not fact_margin:
+        return 0.0
+    profit_op = float(inv.get("profit_calc_op") or 0)
+    if inv.get("is_credit") and not profit_op:
+        # Кредитные: расчётная прибыль приходит из ОП в другом поле (зеркало
+        # sheets.py cells[62] = BK).
+        profit_op = float(inv.get("profit_tax") or 0)
+    if not (profit_op and profit_op > fact_margin):
+        return 0.0
+    value = float(f"{float(fact_margin) - profit_op:.0f}")
+    return value if value else 0.0
+
+
 def manager_zp_net_payout(inv: dict[str, Any]) -> float:
     """ЗП менеджера К ВЫПЛАТЕ с учётом удержания (переплаты CN/zp_manager_hold).
 

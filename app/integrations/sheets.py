@@ -13,6 +13,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 from ..utils import (
+    compute_profit_recalc,
     encode_sa_json,
     format_date_iso,
     format_dt_iso,
@@ -1150,12 +1151,14 @@ class GoogleSheetsService:
         # ⚠️ Проверка ЧИСЛОВАЯ, а не «непустая строка»: при разнице меньше рубля
         # _fmt_amount округляет BM в "-0" — строка непустая, а перерасчёта нет
         # (26423-1КИА 12.08: план 16 767 == факт 16 767). Owner 12.08: ноль
-        # перерасчётом не считать. float("-0") == -0.0 → falsy; "" и None → 0.0.
-        _bm_raw = cells.get(64) or ""
-        try:
-            _bm_val = float(_bm_raw)
-        except (TypeError, ValueError):
-            _bm_val = 0.0
+        # перерасчётом не считать.
+        # 🔑 Значение берём из ОБЩЕГО хелпера, а не разбором собственной ячейки:
+        # ту же величину считает выборка db.list_invoices_under_recalc, и две
+        # копии условия неминуемо разъехались бы. Результат тождественен прежнему
+        # float(cells[64]) во всех ветках, включая пустую cost-card и закрытый
+        # гейт _fact_visible — ячейка при этом пишется КАК И РАНЬШЕ, её текст
+        # правка не меняет.
+        _bm_val = compute_profit_recalc(invoice, _c)
         if _bm_val:
             cells[36] = "Перерасчет"
 
