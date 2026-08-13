@@ -180,6 +180,23 @@ class IntegrationHub:
                         await self.sheets.upsert_invoice(
                             inv, manager_label=manager_label, cost=cost, advance=advance,
                         )
+                        # owner 13.08: AZ = «Счет End» → фиксируем N «Дата Факт».
+                        # Метку кладёт _invoice_cells ПОСЛЕ BS-override, поэтому
+                        # ловятся все четыре ветки, включая display-only.
+                        if inv.get("_az_label") == "Счет End":
+                            try:
+                                _fd = await self.db.fill_fact_date_on_invoice_end(inv_id, inv)
+                                if _fd:
+                                    # Второй экспорт — чтобы N появилась сразу, а не ждала
+                                    # следующего синка. Зацикливания нет: дата уже непуста,
+                                    # helper вернёт None.
+                                    await self.sheets.upsert_invoice(
+                                        inv, manager_label=manager_label, cost=cost, advance=advance,
+                                    )
+                            except Exception:
+                                log.warning(
+                                    "fact_date autofill failed for invoice %s", inv_id, exc_info=True,
+                                )
                         log.info("Synced invoice row #%s (%s) to Invoices sheet", inv_id, inv.get("invoice_number"))
                 elif ev.kind == "amocrm_create_lead" and self.amocrm:
                     pid = int(ev.payload["project_id"])

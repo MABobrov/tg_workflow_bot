@@ -285,6 +285,25 @@ async def export_to_sheets(
 
         invoice_count = await sheets.upsert_invoices_bulk(invoice_items)
 
+        # owner 13.08: AZ = «Счет End» → фиксируем N «Дата Факт». Метку кладёт
+        # _invoice_cells внутрь самого словаря счёта, поэтому после bulk-экспорта
+        # она уже есть у каждого элемента. Дата пишется в БД; на лист попадёт
+        # следующим синком либо точечным sync_invoice_row — здесь второй полный
+        # экспорт не гоняем, он дорогой.
+        _fd_filled = 0
+        for invoice, _ml, _c in invoice_items:
+            if invoice.get("_az_label") != "Счет End":
+                continue
+            try:
+                if await db.fill_fact_date_on_invoice_end(int(invoice["id"]), invoice):
+                    _fd_filled += 1
+            except Exception:
+                log.warning(
+                    "fact_date autofill failed for invoice %s", invoice.get("id"), exc_info=True,
+                )
+        if _fd_filled:
+            log.info("Дата Факт автозаполнена у %s счетов (полный синк)", _fd_filled)
+
     # --- Leads (amoCRM) ---
     # Webhook keeps DB live; full daily-sync just mirrors visible leads to Sheet.
     # Filter: год=2026 (бот живёт с янв 2026), все воронки, exclude status=143 (закрыт-не-реализован).

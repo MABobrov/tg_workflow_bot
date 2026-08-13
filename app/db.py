@@ -6186,6 +6186,86 @@ class Database:
             return "по счёту есть незакрытые задачи «Счёт-END»"
         return None
 
+    # --- owner 13.08: N «Дата Факт» по статусу «Счет End» (AZ) ---
+    #
+    # Своей даты у события «Счет End» нет — при простановке статуса монтажниками
+    # дата нигде не пишется. Owner 13.08 задал альтернативу: брать её из трёх
+    # колонок по цепочке «первая непустая». Все три — зеркала «Импорт ОП».
+    _FACT_DATE_CHAIN = (
+        ("final_surcharge_date",     "AD"),   # дата финального платежа  ← ОП AA
+        ("rp_payout_date_op",        "AS"),   # дата выдачи ЗП РП        ← ОП AX
+        ("zp_manager_payout_date",   "AO"),   # дата выдачи ЗП менеджер  ← ОП AK
+    )
+
+    @staticmethod
+    def _norm_fact_date(raw: Any) -> str | None:
+        """Привести дату цепочки к ISO `YYYY-MM-DD`.
+
+        🔴 Звенья лежат в РАЗНЫХ форматах (замер на проде 13.08):
+        `final_surcharge_date` и `zp_manager_payout_date` — ISO (`2026-07-04`),
+        а `rp_payout_date_op` — DD.MM.YYYY (`07.07.2026`). Писать не-ISO в
+        `actual_completion_date` нельзя: `list_invoices_deadline_near` сравнивает
+        через `date(substr(...,1,10))`, и на «07.07.2026» это вернёт NULL.
+        """
+        s = str(raw or "").strip()
+        if not s:
+            return None
+        if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+            return s[:10]
+        head = s[:10].replace("/", ".")
+        parts = head.split(".")
+        if len(parts) == 3 and len(parts[2]) == 4 and parts[0].isdigit() and parts[1].isdigit():
+            return f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+        return None
+
+    async def fill_fact_date_on_invoice_end(
+        self, invoice_id: int, invoice: dict[str, Any],
+    ) -> str | None:
+        """Проставить `actual_completion_date` по цепочке дат. Идемпотентно.
+
+        Вызывается, когда AZ показывает «Счет End» (метку кладёт
+        `sheets._invoice_cells` в `invoice["_az_label"]`). Возвращает
+        записанную ISO-дату либо None, если писать было нечего.
+
+        Гард `actual_completion_date IS NULL` — как в `installer_new.py:627`:
+        уже проставленную дату (в т.ч. руками из «Импорт ОП») не перетираем.
+        """
+        if str(invoice.get("actual_completion_date") or "").strip():
+            return None
+        picked: str | None = None
+        src = ""
+        for field, col in self._FACT_DATE_CHAIN:
+            picked = self._norm_fact_date(invoice.get(field))
+            if picked:
+                src = col
+                break
+        if not picked:
+            return None
+        cur = await self.conn.execute(
+            "UPDATE invoices SET actual_completion_date = ? "
+            "WHERE id = ? AND (actual_completion_date IS NULL "
+            "                  OR TRIM(actual_completion_date) = '')",
+            (picked, invoice_id),
+        )
+        await self.conn.commit()
+        if not cur.rowcount:
+            return None
+        invoice["actual_completion_date"] = picked
+        try:
+            await self.audit(
+                actor_id=None,
+                action="fact_date_autofill",
+                entity="invoice",
+                entity_id=str(invoice_id),
+                payload={"date": picked, "source_col": src},
+            )
+        except Exception:
+            log.debug("fact_date_autofill: audit failed for %s", invoice_id, exc_info=True)
+        log.info(
+            "Дата Факт автозаполнена: invoice=%s date=%s (из %s)", invoice_id, picked, src,
+        )
+        return picked
+
     async def set_final_payment_eta(self, invoice_id: int, date_iso: str) -> None:
         """Менеджер указал ориент. дату фин. платежа → дата + state='planned'."""
         await self.conn.execute(
