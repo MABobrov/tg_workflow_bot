@@ -946,6 +946,16 @@ class Database:
             # ⚠️ Дата ПОСЛЕДНЕГО, не первого: перенос идёт дельтами (|CN| −
             # zp_hold_advanced), и при доросшем CN сумма пополняется повторно.
             ("invoices", "zp_hold_advanced_at", "TEXT"),
+            # zp_hold_confirmed_at — дата СОГЛАСИЯ менеджера на вычет переплаты
+            # (owner 13.08). В отличие от zp_hold_advanced_at выше, пишется ТОЛЬКО
+            # ручным каналом create_recalc_advance_topup («✅ С перерасчётом
+            # согласен»); авто-свип sweep_manager_overpay_to_advance её не трогает.
+            # Ровно она печатается в ES (148) — see sheets.py. Разделены потому,
+            # что ES показывала даты свипа как согласия: на 13.08 таких счетов было
+            # пять, задач recalc_confirm по ним ноль.
+            # Бэкфилла нет намеренно: согласий в прошлом не было, пустая колонка —
+            # это правда о данных, а не потеря.
+            ("invoices", "zp_hold_confirmed_at", "TEXT"),
             # --- MinIO mirror keys for attachments ---
             ("attachments", "minio_object_key", "TEXT"),
             ("chat_attachments", "minio_object_key", "TEXT"),
@@ -10995,12 +11005,17 @@ class Database:
                  now, now, gd_id, now, gd_id, wallet_role),
             )
             req_id = int(cur.lastrowid)
+            # zp_hold_confirmed_at пишется ТОЛЬКО здесь — это и есть момент
+            # согласия менеджера, который owner 13.08 велел показывать в ES.
+            # В sweep_manager_overpay_to_advance колонки нет намеренно: свип
+            # переносит переплату без участия менеджера.
             await self.conn.execute(
                 "UPDATE invoices SET "
                 "zp_hold_advanced = COALESCE(zp_hold_advanced, 0) + ?, "
                 "zp_hold_advanced_at = ?, "
+                "zp_hold_confirmed_at = ?, "
                 "updated_at = ? WHERE id = ?",
-                (round(float(amount), 2), now, now, invoice_id),
+                (round(float(amount), 2), now, now, now, invoice_id),
             )
             await self.conn.commit()
         except Exception:
@@ -11077,8 +11092,15 @@ class Database:
                     "zp_hold_advanced_at = CASE "
                     "  WHEN MAX(0, COALESCE(zp_hold_advanced, 0) - ?) <= 0 THEN NULL "
                     "  ELSE zp_hold_advanced_at END, "
+                    # Дата согласия гасится тем же условием и в том же UPDATE:
+                    # откат до нуля означает, что согласия больше нет, и ES обязана
+                    # погаснуть вместе с ER.
+                    "zp_hold_confirmed_at = CASE "
+                    "  WHEN MAX(0, COALESCE(zp_hold_advanced, 0) - ?) <= 0 THEN NULL "
+                    "  ELSE zp_hold_confirmed_at END, "
                     "updated_at = ? WHERE id = ?",
-                    (item["amount"], item["amount"], now, item["invoice_id"]),
+                    (item["amount"], item["amount"], item["amount"], now,
+                     item["invoice_id"]),
                 )
             await self.conn.commit()
         except Exception:
