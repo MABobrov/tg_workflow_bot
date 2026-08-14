@@ -890,6 +890,34 @@ def task_actions_kb(
         b.adjust(1)
         return b.as_markup()
 
+    # Напоминание «счёт готов к закрытию» (owner 14.08). До этой правки ветки здесь
+    # не было ВООБЩЕ — тип проваливался в generic-блок ниже, и «✅ Завершить» гасил
+    # напоминание, НЕ запустив флоу «Счет End». Цена не в самой задаче: запрос
+    # INVOICE_END_REQUEST так и не создавался, ГД о счёте не узнавал, и в его меню
+    # «🏁 Счёт END» оставался ноль задач — подтвердить закрытие было нечем.
+    # Стрельнуло на боевых данных ДВА раза из двух: 2671-1КИА (задача 454, закрыта
+    # generic'ом 14.08 08:21:45, счёт открыт) и 26623-1КВ (задача 375 от 17.07;
+    # счёт с тех пор висит, напоминания к нему больше не приходили). Тот же класс,
+    # что RECALC_CONFIRM 30.07, RP_SALARY/ZP_RP 02.08 и GD_DEPOSIT_REQUEST 03.08.
+    # Кнопка — зеркало пуш-карточки (utils.prompt_invoice_end_ready): invend:view.
+    if ttype == TaskType.INVOICE_END_READY and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+        _ir = try_json_loads(task.get("payload_json"))
+        _ir_inv = (_ir or {}).get("invoice_id") if isinstance(_ir, dict) else None
+        try:
+            _ir_inv = int(_ir_inv) if _ir_inv is not None else None
+        except (TypeError, ValueError):
+            _ir_inv = None
+        b = InlineKeyboardBuilder()
+        if _ir_inv:
+            b.button(text="🏁 Закрыть счёт", callback_data=f"invend:view:{_ir_inv}")
+        # Снять напоминание — законный выход, если закрывать счёт пока рано. cancel
+        # ведёт в REJECTED и денег не двигает, самого счёта не касается; пока счёт
+        # остаётся готовым к закрытию, daily_sync напоминание пересоздаст — это и
+        # есть смысл напоминалки, а не побочка.
+        b.button(text="🚫 Снять напоминание", callback_data=TaskCb(task_id=tid, action="cancel").pack())
+        b.adjust(1)
+        return b.as_markup()
+
     # Менеджер (ТЗ 23.06): единая кнопка «Принято» = принять + взять в работу +
     # уведомить постановщика за один тап (action=accept_take). Прочие роли —
     # прежние «Принято» (accept) + «Взять в работу» (take).

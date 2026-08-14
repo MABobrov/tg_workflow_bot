@@ -65,6 +65,12 @@ async def gd_invoice_end_combined(message: Message, db: Database) -> None:
     tasks_pc = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.PAYMENT_CONFIRM)
     tasks_ie = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.INVOICE_END_REQUEST)
     n_tasks = len(tasks_pc) + len(tasks_ie)
+    # owner 14.08: собственный вход ГД в закрытие счёта. До этой правки все три
+    # кнопки решения ГД (invend_final:check/end/force) жили ТОЛЬКО на пуш-карточке
+    # запроса от менеджера, а «✅ ОК (Счёт End)» — только на карточке задачи
+    # INVOICE_END_REQUEST. Нет запроса → у ГД нет ни одного способа подтвердить
+    # статус, даже когда счёт очевидно готов (2671-1КИА, 26623-1КВ).
+    n_pending = len(await db.list_invoices_pending_end())
 
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     rows: list[list[InlineKeyboardButton]] = []
@@ -75,6 +81,10 @@ async def gd_invoice_end_combined(message: Message, db: Database) -> None:
     rows.append([InlineKeyboardButton(
         text=f"📋 Задачи Счёт End: {n_tasks}",
         callback_data="gd_end:tasks",
+    )])
+    rows.append([InlineKeyboardButton(
+        text=f"🏁 Закрыть счёт: {n_pending}",
+        callback_data="invend_pick:list",
     )])
     rows.append([InlineKeyboardButton(text="📊 Статистика по лидам", callback_data="gd_lead_stats")])
     rows.append([InlineKeyboardButton(text="🔀 Расхождения РП", callback_data="gd_discrepancy")])
@@ -97,9 +107,11 @@ async def _render_invoice_end_menu(cb: CallbackQuery, db: Database) -> None:
     tasks_pc = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.PAYMENT_CONFIRM)
     tasks_ie = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.INVOICE_END_REQUEST)
     n_tasks = len(tasks_pc) + len(tasks_ie)
+    n_pending = len(await db.list_invoices_pending_end())  # см. gd_invoice_end_combined
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text=f"📊 Счета end: {n_ended}", callback_data="gd_end:stats")],
         [InlineKeyboardButton(text=f"📋 Задачи Счёт End: {n_tasks}", callback_data="gd_end:tasks")],
+        [InlineKeyboardButton(text=f"🏁 Закрыть счёт: {n_pending}", callback_data="invend_pick:list")],
         [InlineKeyboardButton(text="📊 Статистика по лидам", callback_data="gd_lead_stats")],
         [InlineKeyboardButton(text="🔀 Расхождения РП", callback_data="gd_discrepancy")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="gd_end:close")],

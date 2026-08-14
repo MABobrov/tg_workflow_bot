@@ -165,6 +165,18 @@ MONTAZH_STAGE_ORDER = [
     MontazhStage.INVOICE_END,
 ]
 
+# Стадии, при которых материнский счёт считается «готовым к закрытию» (Счет End).
+# INVOICE_END добавлен 14.08: стадия может стоять БЕЗ status='ended' — полу-состояние,
+# в котором счёт выпадал и из бейджа менеджера (count_invoices_ready_for_end), и из
+# авто-напоминаний (prompt_invoice_end_ready), и потому висел молча — 26623-1КВ с 17.07.
+# Единственный источник правды для db / utils / daily_sync: три копии литерала
+# 'invoice_ok' разъехались бы, и напоминание начало бы флапать (создаётся одним
+# проходом — гасится подчисткой другого).
+INVOICE_END_READY_STAGES: tuple[str, ...] = (
+    MontazhStage.INVOICE_OK,
+    MontazhStage.INVOICE_END,
+)
+
 
 class EdoRequestType(StrEnum):
     """Типы запросов ЭДО к бухгалтерии."""

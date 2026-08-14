@@ -1931,6 +1931,63 @@ async def invoice_docs_finalize(cb: CallbackQuery, db: Database, notifier: Notif
     )
 
 
+async def _build_invoice_end_cards(
+    db: Database,
+    inv: dict[str, Any],
+    invoice_id: int,
+    initiator: str,
+    comment: str,
+) -> tuple[str, str]:
+    """Карточки «Счёт End» → (для РП, для ГД). Единый рендер (owner 14.08).
+
+    Им пользуются оба входа: запрос менеджера (invoice_end_comment) и
+    самостоятельное закрытие ГД (invend_pick). Две копии разъехались бы и
+    нарушили эталон карточек ([[feedback_card_template_standard]]) — вынесено
+    без изменения содержимого, вывод для менеджерского пути обязан остаться
+    байт в байт прежним (проверяется функтестом).
+
+    Разница между карточками ровно одна: у ГД есть финблок (себестоимость /
+    прибыль расч+факт / ЗП менеджера), РП его НЕ видит.
+    """
+    import html as _html
+
+    conditions = await db.check_close_conditions(invoice_id)
+
+    # Условия (эталон <pre>): у кредитных строка ЭДО опущена, нумерация сквозная.
+    cond_rows = close_condition_core_rows(inv, conditions)
+    cond_rows.append(("✅" if comment else "☐", "Пояснения"))
+    cond_lines = [f"{i}. {mark} {label}" for i, (mark, label) in enumerate(cond_rows, 1)]
+    cond_section = "<b>✅  Условия</b>\n<pre>" + "\n".join(f"   {ln}" for ln in cond_lines) + "</pre>"
+
+    # Шапка карточки (От/Адрес/Сумма — контент сохранён, без добавления полей).
+    head_section = format_card_section(
+        "🏁", f"Счёт End: №{inv['invoice_number']}",
+        [
+            ("От", initiator),
+            ("Адрес", _html.escape(str(inv.get("object_address") or "—"))),
+            ("Сумма", fmt_money(inv.get("amount") or 0)),
+        ],
+        width=44, compact=True,
+    )
+
+    # PART B (ТЗ 19.06): справочный финблок (Себест/Прибыль расч+факт, ЗП менеджера
+    # + ставка) — display-only из get_plan_fact_card, эталон-секция. Только ГД; РП его
+    # НЕ видит (прибыль/себестоимость скрыты от РП, как в format_plan_fact_card role='rp').
+    pf = await db.get_plan_fact_card(invoice_id)
+    fin_section = format_invoice_end_financials(inv, pf)  # эталон-секция <pre> или ""
+
+    docs = _invoice_docs_lines(inv)
+    docs_section = (
+        "<b>📄  Документы</b>\n<pre>" + "\n".join(f"   {ln}" for ln in docs) + "</pre>"
+        if docs else ""
+    )
+    comment_tail = f"\n\n💬 Пояснение: {_html.escape(comment)}" if comment else ""
+
+    msg = format_card([head_section, cond_section, docs_section]) + comment_tail  # → РП (без финблока)
+    gd_msg = format_card([head_section, fin_section, cond_section, docs_section]) + comment_tail  # → ГД
+    return msg, gd_msg
+
+
 @router.message(InvoiceEndSG.comment)
 async def invoice_end_comment(
     message: Message,
@@ -1991,43 +2048,8 @@ async def invoice_end_comment(
     await db.update_invoice_status(invoice_id, InvoiceStatus.CLOSING)
     await integrations.sync_invoice_status(inv["invoice_number"], InvoiceStatus.CLOSING)
 
-    import html as _html
-
     initiator = await get_initiator_label(db, message.from_user.id)
-    conditions = await db.check_close_conditions(invoice_id)
-
-    # Условия (эталон <pre>): у кредитных строка ЭДО опущена, нумерация сквозная.
-    cond_rows = close_condition_core_rows(inv, conditions)
-    cond_rows.append(("✅" if comment else "☐", "Пояснения"))
-    cond_lines = [f"{i}. {mark} {label}" for i, (mark, label) in enumerate(cond_rows, 1)]
-    cond_section = "<b>✅  Условия</b>\n<pre>" + "\n".join(f"   {ln}" for ln in cond_lines) + "</pre>"
-
-    # Шапка карточки (От/Адрес/Сумма — контент сохранён, без добавления полей).
-    head_section = format_card_section(
-        "🏁", f"Счёт End: №{inv['invoice_number']}",
-        [
-            ("От", initiator),
-            ("Адрес", _html.escape(str(inv.get("object_address") or "—"))),
-            ("Сумма", fmt_money(inv.get("amount") or 0)),
-        ],
-        width=44, compact=True,
-    )
-
-    # PART B (ТЗ 19.06): справочный финблок (Себест/Прибыль расч+факт, ЗП менеджера
-    # + ставка) — display-only из get_plan_fact_card, эталон-секция. Только ГД; РП его
-    # НЕ видит (прибыль/себестоимость скрыты от РП, как в format_plan_fact_card role='rp').
-    pf = await db.get_plan_fact_card(invoice_id)
-    fin_section = format_invoice_end_financials(inv, pf)  # эталон-секция <pre> или ""
-
-    docs = _invoice_docs_lines(inv)
-    docs_section = (
-        "<b>📄  Документы</b>\n<pre>" + "\n".join(f"   {ln}" for ln in docs) + "</pre>"
-        if docs else ""
-    )
-    comment_tail = f"\n\n💬 Пояснение: {_html.escape(comment)}" if comment else ""
-
-    msg = format_card([head_section, cond_section, docs_section]) + comment_tail  # → РП (без финблока)
-    gd_msg = format_card([head_section, fin_section, cond_section, docs_section]) + comment_tail  # → ГД
+    msg, gd_msg = await _build_invoice_end_cards(db, inv, invoice_id, initiator, comment)
 
     # Notify GD
     if gd_id:
@@ -2061,6 +2083,82 @@ async def invoice_end_comment(
 
 
 # --- GD callbacks for Invoice End ---
+
+# ГД закрывает счёт сам (owner 14.08).
+#
+# До этой правки у ГД не было НИ ОДНОГО самостоятельного входа: кнопки решения
+# (invend_final:*) приходили только на пуш-карточке запроса менеджера, а
+# «✅ ОК (Счёт End)» — только на карточке задачи INVOICE_END_REQUEST. Не отправил
+# менеджер запрос (или погасил своё напоминание generic-кнопкой «✅ Завершить» —
+# см. ветку INVOICE_END_READY в keyboards.py) → счёт зависал молча, и подтвердить
+# его статус ГД было нечем. Боевые случаи: 2671-1КИА и 26623-1КВ.
+#
+# 🔑 Новой бизнес-логики здесь НЕТ. Пикер отдаёт ту же карточку (_build_invoice_end_cards)
+# и те же три кнопки invend_final:check/end/force — значит все гейты остаются на месте:
+# кредит с невыплаченной ЗП монтаж, идемпотентность по status='ended', запрет штатного
+# «Счет End» при невыполненных условиях и fixup-задачи менеджеру при форс-закрытии.
+
+@router.callback_query(F.data == "invend_pick:list")
+async def invoice_end_gd_pick_list(cb: CallbackQuery, db: Database) -> None:
+    """Список счетов, ожидающих закрытия, — вход ГД в «Счет End»."""
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
+        return
+    await cb.answer()
+    invoices = await db.list_invoices_pending_end()
+    if not invoices:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "✅ Нет счетов, ожидающих закрытия.\n\n"
+            "Сюда попадают материнские счета, у которых монтаж дошёл до «Счет ОК» "
+            "или «Счет End», а статус ещё не закрыт."
+        )
+        return
+    b = InlineKeyboardBuilder()
+    for inv in invoices:
+        conds = await db.check_close_conditions(int(inv["id"]))
+        # ⚠️ — есть невыполненные условия: штатное «Счет End» по такому счёту
+        # откажет, закрыть можно только «⚠️ Закрыть с задачами». zp_approved в
+        # набор НЕ входит намеренно: условие витринное и закрытие не блокирует
+        # (approved не стоит ни у одного счёта за всю историю).
+        _ok = all(conds.get(k) for k in ("installer_ok", "edo_signed", "no_debts"))
+        b.button(
+            text=f"{'✅' if _ok else '⚠️'} №{inv.get('invoice_number')} — {fmt_money(inv.get('amount') or 0)}",
+            callback_data=f"invend_pick:inv:{int(inv['id'])}",
+        )
+    b.button(text="◀️ Назад", callback_data="gd_end:menu")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"🏁 <b>Закрыть счёт</b>\n\nОжидают закрытия: <b>{len(invoices)}</b>\n"
+        "⚠️ — есть невыполненные условия (только «Закрыть с задачами»).",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("invend_pick:inv:"))
+async def invoice_end_gd_pick_invoice(cb: CallbackQuery, db: Database) -> None:
+    """Карточка выбранного счёта + те же кнопки решения, что в запросе менеджера."""
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
+        return
+    await cb.answer()
+    try:
+        invoice_id = int((cb.data or "").rsplit(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    # Пояснения от менеджера в этом входе нет — карточка строится с пустым
+    # комментарием, строка «Пояснения» в условиях остаётся «☐», как и должна.
+    initiator = await get_initiator_label(db, cb.from_user.id)
+    _msg, gd_msg = await _build_invoice_end_cards(db, inv, invoice_id, initiator, "")
+    b = InlineKeyboardBuilder()
+    b.button(text="📌 На проверке", callback_data=f"invend_final:check:{invoice_id}")
+    b.button(text="🏁 Счет End", callback_data=f"invend_final:end:{invoice_id}")
+    b.button(text="⚠️ Закрыть с задачами", callback_data=f"invend_final:force:{invoice_id}")
+    b.button(text="◀️ Назад", callback_data="invend_pick:list")
+    b.adjust(1)
+    await cb.message.answer(gd_msg, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
 
 @router.callback_query(F.data.startswith("invend_gd:"))
 async def invoice_end_gd_debt_response(

@@ -274,6 +274,23 @@ _DONE_BLOCKED_PAYOUT_TYPES: dict[str, str] = {
     ),
 }
 
+# Не-денежные типы, где generic «✅ Завершить» тоже рвёт цепочку (owner 14.08).
+# Отдельная константа, а не ключ в _DONE_BLOCKED_PAYOUT_TYPES: там речь про
+# невыполненную ВЫПЛАТУ, здесь денег нет вовсе — рвётся рабочий маршрут.
+# INVOICE_END_READY: напоминание менеджеру «счёт готов к закрытию». Закрытое
+# generic'ом, оно гасит бейдж и НЕ создаёт запрос ГД (INVOICE_END_REQUEST) —
+# счёт зависает молча, а у ГД в «🏁 Счёт END» нет задачи, которую можно
+# подтвердить. Боевые случаи: 2671-1КИА (задача 454, 14.08) и 26623-1КВ
+# (задача 375, 17.07) — оба счёта не закрыты до сих пор. Backstop к ветке
+# keyboards.py: кнопка из СТАРОГО сообщения доходит до хендлера и после правки.
+_DONE_BLOCKED_FLOW_TYPES: dict[str, str] = {
+    TaskType.INVOICE_END_READY: (
+        "Это напоминание, а не задача. Нажмите «🏁 Закрыть счёт» — иначе запрос "
+        "на «Счет End» не уйдёт ГД и счёт останется открытым. Если закрывать пока "
+        "рано — «🚫 Снять напоминание». Откройте задачу заново из списка задач."
+    ),
+}
+
 # Типы, для которых ветка `done` легитимно уводит в сбор вложений (TaskCompleteSG,
 # см. ниже по файлу). Список ЗАКРЫТЫЙ и нужен как гард в taskcomplete_finalize:
 # 🔴 тот хендлер зарегистрирован БЕЗ StateFilter и берёт task_id из данных FSM.
@@ -1521,6 +1538,12 @@ async def task_actions_part2(
         _payout_only_alert = _DONE_BLOCKED_PAYOUT_TYPES.get(task.get("type"))
         if _payout_only_alert:
             await cb.answer(_payout_only_alert, show_alert=True)
+            return
+        # Не-денежные типы, где generic «Завершить» рвёт рабочую цепочку (14.08).
+        # Стоит там же: после проверки статуса, до любой записи.
+        _flow_only_alert = _DONE_BLOCKED_FLOW_TYPES.get(task.get("type"))
+        if _flow_only_alert:
+            await cb.answer(_flow_only_alert, show_alert=True)
             return
         # For request/closing tasks we can optionally collect and send attachments to manager
         _docs_reply = (

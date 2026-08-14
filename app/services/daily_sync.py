@@ -609,7 +609,7 @@ async def catch_up_invoice_end_ready(
     """
     import json as _json
     from ..utils import prompt_invoice_end_ready
-    from ..enums import TaskType, TaskStatus
+    from ..enums import INVOICE_END_READY_STAGES, TaskType, TaskStatus
 
     created = 0
     # (1) создать для готовых без задачи
@@ -647,7 +647,10 @@ async def catch_up_invoice_end_ready(
             inv
             and inv.get("parent_invoice_id") is None
             and (inv.get("status") or "") in ("in_progress", "paid", "credit")
-            and (inv.get("montazh_stage") or "") == "invoice_ok"
+            # 14.08: тот же набор стадий, что у создающего прохода
+            # (prompt_invoice_end_ready / list_invoices_ready_for_end). Разойдись
+            # они — напоминание флапало бы: (1) создаёт, (2) тут же гасит.
+            and (inv.get("montazh_stage") or "") in INVOICE_END_READY_STAGES
             and float(inv.get("outstanding_debt") or 0) <= 0
         )
         if not ready:

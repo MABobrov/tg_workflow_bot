@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 import aiosqlite
 
-from .enums import InvoiceStatus, Role
+from .enums import INVOICE_END_READY_STAGES, InvoiceStatus, Role
 from .utils import (
     ZP_FACT_STATUSES,
     compute_plan_profit,
@@ -6100,15 +6100,21 @@ class Database:
         """ТЗ 18.06: число материнских счетов менеджера, готовых к закрытию
         (монтаж «Счёт ОК» + долга нет + статус активный) — для бейджа 🔴 на
         кнопке «Счет End». Совпадает со списком в start_invoice_end (created_by
-        + status in_progress/paid) + доп. условия монтаж/долг."""
+        + status in_progress/paid) + доп. условия монтаж/долг.
+
+        14.08: стадия берётся из INVOICE_END_READY_STAGES, а не строго 'invoice_ok'.
+        Счёт со стадией 'invoice_end' и активным статусом — полу-состояние: в бейдж
+        он не попадал, напоминаний не получал и висел молча (26623-1КВ с 17.07)."""
+        _stages = tuple(str(s) for s in INVOICE_END_READY_STAGES)
+        _ph = ",".join("?" * len(_stages))
         cur = await self.conn.execute(
             "SELECT COUNT(*) AS c FROM invoices "
             "WHERE parent_invoice_id IS NULL "
             "AND created_by = ? "
             "AND status IN ('in_progress', 'paid', 'credit') "
-            "AND montazh_stage = 'invoice_ok' "
+            f"AND montazh_stage IN ({_ph}) "
             "AND COALESCE(outstanding_debt, 0) <= 0",
-            (manager_id,),
+            (manager_id, *_stages),
         )
         row = await cur.fetchone()
         return int((dict(row).get("c") if row else 0) or 0)
@@ -6165,14 +6171,44 @@ class Database:
     async def list_invoices_ready_for_end(self) -> list[dict[str, Any]]:
         """ТЗ 18.06: все материнские счета (любых менеджеров), готовые к закрытию
         — монтаж «Счёт ОК» + долга нет + статус активный. Догоняющий проход
-        daily_sync создаёт напоминание (дедуп — invoice_end_prompt_blocked)."""
+        daily_sync создаёт напоминание (дедуп — invoice_end_prompt_blocked).
+
+        14.08: стадия из INVOICE_END_READY_STAGES (см. count_invoices_ready_for_end)."""
+        _stages = tuple(str(s) for s in INVOICE_END_READY_STAGES)
+        _ph = ",".join("?" * len(_stages))
         cur = await self.conn.execute(
             "SELECT * FROM invoices "
             "WHERE parent_invoice_id IS NULL "
             "AND status IN ('in_progress', 'paid', 'credit') "
-            "AND montazh_stage = 'invoice_ok' "
+            f"AND montazh_stage IN ({_ph}) "
             "AND COALESCE(outstanding_debt, 0) <= 0 "
-            "ORDER BY id ASC"
+            "ORDER BY id ASC",
+            _stages,
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def list_invoices_pending_end(self, limit: int = 30) -> list[dict[str, Any]]:
+        """Счета для самостоятельного закрытия ГД (owner 14.08).
+
+        Материнские счета в активном статусе, у которых монтаж дошёл до «Счет ОК»
+        или «Счет End», но status ещё не 'ended'. Долг НЕ фильтруется намеренно:
+        решение принимает ГД на карточке — штатное «🏁 Счет End» само откажет при
+        невыполненных условиях, а «⚠️ Закрыть с задачами» существует ровно для
+        случая с непогашенным долгом. Кредитные включены ([[feedback_credit_filter_accounting_only]]):
+        их отсекает только бухгалтерия, а гейт «ЗП монтаж не выплачена» стоит
+        отдельно в invend_final.
+
+        Свежие — первыми: у ГД это разовая ручная операция по «зависшему» счёту.
+        """
+        _stages = tuple(str(s) for s in INVOICE_END_READY_STAGES)
+        _ph = ",".join("?" * len(_stages))
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices "
+            "WHERE parent_invoice_id IS NULL "
+            "AND status IN ('in_progress', 'paid', 'credit') "
+            f"AND montazh_stage IN ({_ph}) "
+            "ORDER BY id DESC LIMIT ?",
+            (*_stages, int(limit)),
         )
         return [dict(r) for r in await cur.fetchall()]
 

@@ -2355,7 +2355,11 @@ async def prompt_invoice_end_ready(
             return False  # только материнский счёт
         if (inv.get("status") or "") not in ("in_progress", "paid", "credit"):
             return False  # уже закрыт/отклонён/на проверке (credit = активный кред-счёт)
-        if (inv.get("montazh_stage") or "") != "invoice_ok":
+        # 14.08: стадия из общего INVOICE_END_READY_STAGES, а не строго 'invoice_ok'.
+        # Счёт со стадией 'invoice_end' при активном статусе — полу-состояние: он
+        # переставал получать напоминания и висел молча (26623-1КВ с 17.07).
+        from .enums import INVOICE_END_READY_STAGES
+        if (inv.get("montazh_stage") or "") not in INVOICE_END_READY_STAGES:
             return False  # монтажник ещё не нажал «Счёт ОК»
         if float(inv.get("outstanding_debt") or 0) > 0:
             return False  # есть долг — рано закрывать
