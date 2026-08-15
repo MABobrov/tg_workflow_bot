@@ -243,26 +243,35 @@ async def gd_inbox_all(message: Message, db: Database, config: Config, notifier:
 # ---------------------------------------------------------------------------
 
 async def _build_gd_invoices_view(db: Database, user_id: int):
-    """Сводная карточка + клавиатура для ГД-списка «Счета на оплату».
+    """Экран ГД «Счета на оплату»: общая карточка + разделы по категориям.
 
-    Карточка в принятом дизайне (моноширинный <pre>-блок). Каждая задача
-    invoice_payment = блок из 3 строк (user 26.06 — было одной строкой
-    «иконка · улица · менеджер», без «за что»/«от кого»/номера счёта):
-        {иконка} {Категория}                {сумма}
-        №{номер счёта} · {улица}
+    Owner 14.08: раньше всё шло одной кучей — сводная карточка со всеми оплатами
+    подряд и под ней кнопки всех задач вперемешку. Теперь список сообщений:
+        [0]   общая карточка — сколько всего за металл, стекло и т.д. + «Итого»;
+        [1..] по разделу на категорию (порядок CATS): карточка с расписанными
+              оплатами раздела и «Итого» раздела, ниже — кнопки задач ЭТОГО
+              раздела.
+    Возвращает [(text, markup | None), ...]; пустой список → счетов нет.
+
+    Внутри раздела строка категории из блока убрана — она уехала в заголовок
+    сообщения, и повторять её у каждой оплаты значило бы гнать шум. Блок стал
+    двухстрочным, сумма переехала в первую строку:
+        №{номер счёта} · {улица}              {сумма}
         от: {инициатор} ({роль}) · мен. {КВ/КИА/НПН}
-    Внизу — «Итого» (сумма). Кнопки — те же
-    задачи INVOICE_PAYMENT, в подписи иконка/улица/сумма. Кнопка «Обновить»
-    убрана (user 26.06 — плодила копии; список и так пересобирает reply-кнопка
-    «Счета на Оплату»). Возвращает (card_text | None, markup | None).
 
-    Только отображение. Источники: payload задачи (amount, material_type,
-    invoice_number) + object_address счёта по invoice_id + инициатор
-    (created_by/creator_role). Категорию/иконку даёт _mt_to_cat/CATS
-    (🔩 металл/🔷 стекло/💪 грузчики/🚚 логистика/🧱 доп.мат/🧾 доп.усл),
-    адрес — _addr_cell (единое правило карточек ГД, owner 30.07: Москва →
-    улица, НЕ Москва → город; был _street, город терялся),
-    выравнивание — vw (эмодзи ≈ 2 колонки).
+    Только отображение, боевых данных не пишет
+    ([[feedback_card_display_only_no_data_writes]]). Источники прежние: payload
+    задачи (amount, material_type, invoice_number) + object_address счёта по
+    invoice_id + инициатор (created_by/creator_role). Категорию/иконку даёт
+    _mt_to_cat/CATS (🔩 металл/🔷 стекло/💪 грузчики/🚚 логистика/🧱 доп.мат/
+    🧾 доп.усл), адрес — _addr_cell (единое правило карточек ГД, owner 30.07:
+    Москва → улица, НЕ Москва → город), выравнивание — vw (эмодзи ≈ 2 колонки).
+
+    ⚠️ Ширина колонки считается ОДНА на все карточки: они уходят РАЗНЫМИ
+    сообщениями, и посчитай каждую по себе — столбцы сумм разъехались бы по
+    экрану сверху вниз.
+    ⚠️ «⬅️ Назад» — только на ПОСЛЕДНЕМ сообщении, иначе кнопка задублируется
+    в каждом разделе.
     """
     from ..rp_start_card import _addr_cell, _mt_to_cat, CATS, vw
 
@@ -273,7 +282,7 @@ async def _build_gd_invoices_view(db: Database, user_id: int):
         limit=100,
     )
     if not tasks:
-        return None, None
+        return []
 
     icon_by_cat = {k: ic for (k, ic, *_rest) in CATS}
     title_by_cat = {k: ttl for (k, _ic, _fld, ttl) in CATS}
@@ -293,67 +302,104 @@ async def _build_gd_invoices_view(db: Database, user_id: int):
         return f"{name} ({lbl})" if lbl else name
 
     INDENT = "   "
-    blocks: list[list[tuple[str, str]]] = []  # блок = [(label, value)]; value="" → строка без right-align
-    total = 0.0
-    b = InlineKeyboardBuilder()
+
+    # --- разложить задачи по категориям --------------------------------------
+    items_by_cat: dict[str, list[dict]] = {}
     for t in tasks:
         payload = try_json_loads(t.get("payload_json") or "{}")
-        inv_num = payload.get("invoice_number") or f"#{t['id']}"
+        inv_num = str(payload.get("invoice_number") or f"#{t['id']}")
         amount = float(payload.get("amount") or 0)
-        total += amount
         cat = _mt_to_cat(payload.get("material_type") or "")
-        icon = icon_by_cat.get(cat, "🧱")
-        cat_title = title_by_cat.get(cat, "Прочее")
         inv_id = payload.get("invoice_id") or payload.get("parent_invoice_id")
         addr = ""
         if inv_id:
             inv = await db.get_invoice(int(inv_id))
             addr = (inv or {}).get("object_address") or ""
         street = _addr_cell(addr, 14) if addr else "—"
-        mgr = "КИА" if "КИА" in inv_num else ("НПН" if "НПН" in inv_num else "КВ")
-        who = await _creator(t)
-        amt_s = _money(amount)
-        blocks.append([
-            (f"{icon} {cat_title}", amt_s),
-            (f"№{html.escape(str(inv_num))} · {html.escape(street)}", ""),
-            (f"от: {who} · мен. {mgr}", ""),
-        ])
-        b.button(
-            text=f"{icon} {street if addr else inv_num} · {amt_s}"[:60],
-            callback_data=TaskCb(task_id=int(t["id"]), action="open").pack(),
-        )
-    b.button(text="⬅️ Назад", callback_data="nav:home")
-    b.adjust(1)
+        items_by_cat.setdefault(cat, []).append({
+            "task_id": int(t["id"]),
+            "inv_num": inv_num,
+            "amount": amount,
+            "street": street,
+            "has_addr": bool(addr),
+            "mgr": "КИА" if "КИА" in inv_num else ("НПН" if "НПН" in inv_num else "КВ"),
+            "who": await _creator(t),
+        })
 
-    foot = [("Итого", _money(total))]
+    # Порядок разделов — как в CATS, а не как пришли задачи.
+    cats = [k for (k, *_rest) in CATS if k in items_by_cat]
+    cat_total = {k: sum(i["amount"] for i in items_by_cat[k]) for k in cats}
 
-    # Динамическая ширина: max визуальная по всем right-align (label+value, +1 зазор)
-    # и левым (value="") строкам — чтобы суммы и footer сходились в один столбец.
+    # --- строки: общая карточка ----------------------------------------------
+    sum_rows = [
+        (f"{icon_by_cat.get(k, '🧱')} {title_by_cat.get(k, 'Прочее')}", _money(cat_total[k]))
+        for k in cats
+    ]
+    sum_foot = [("Итого", _money(sum(cat_total.values())))]
+
+    # --- строки: разделы ------------------------------------------------------
+    # блок = [(label, value)]; value="" → строка без right-align
+    sec_blocks: dict[str, list[list[tuple[str, str]]]] = {}
+    for k in cats:
+        blocks: list[list[tuple[str, str]]] = []
+        for i in items_by_cat[k]:
+            blocks.append([
+                (f"№{html.escape(i['inv_num'])} · {html.escape(i['street'])}", _money(i["amount"])),
+                (f"от: {i['who']} · мен. {i['mgr']}", ""),
+            ])
+        sec_blocks[k] = blocks
+
+    # Динамическая ширина: max визуальная по всем right-align (label+value, +1
+    # зазор) и левым (value="") строкам — ОДНА на все сообщения экрана.
     raw: list[int] = []
-    for blk in blocks:
-        for lbl, val in blk:
-            raw.append(vw(INDENT) + vw(lbl) + (1 + vw(val) if val else 0))
-    for lbl, val in foot:
+    for lbl, val in sum_rows + sum_foot:
         raw.append(vw(INDENT) + vw(lbl) + 1 + vw(val))
+    for k in cats:
+        for blk in sec_blocks[k]:
+            for lbl, val in blk:
+                raw.append(vw(INDENT) + vw(lbl) + (1 + vw(val) if val else 0))
+        raw.append(vw(INDENT) + vw("Итого") + 1 + vw(_money(cat_total[k])))
     width = max(raw) if raw else 30
 
     def _rline(lbl: str, val: str) -> str:
         pad = max(1, width - vw(INDENT) - vw(lbl) - vw(val))
         return f"{INDENT}{lbl}{' ' * pad}{val}"
 
-    body_lines: list[str] = []
-    for i, blk in enumerate(blocks):
-        if i:
-            body_lines.append("")  # пустая строка-разделитель между блоками
-        for lbl, val in blk:
-            body_lines.append(_rline(lbl, val) if val else f"{INDENT}{lbl}")
-    body_lines.append(INDENT + "━" * max(3, width - vw(INDENT)))
-    for lbl, val in foot:
-        body_lines.append(_rline(lbl, val))
+    def _rule() -> str:
+        return INDENT + "━" * max(3, width - vw(INDENT))
 
-    body = "\n".join(body_lines)
-    card = f"<b>💰  Счета на оплату</b>\n<pre>{body}</pre>"
-    return card, b
+    out: list[tuple[str, InlineKeyboardBuilder | None]] = []
+
+    head_lines = [_rline(lbl, val) for lbl, val in sum_rows]
+    head_lines.append(_rule())
+    head_lines += [_rline(lbl, val) for lbl, val in sum_foot]
+    out.append(("<b>💰  Счета на оплату</b>\n<pre>" + "\n".join(head_lines) + "</pre>", None))
+
+    for idx, k in enumerate(cats):
+        icon = icon_by_cat.get(k, "🧱")
+        body_lines: list[str] = []
+        for j, blk in enumerate(sec_blocks[k]):
+            if j:
+                body_lines.append("")  # пустая строка-разделитель между блоками
+            for lbl, val in blk:
+                body_lines.append(_rline(lbl, val) if val else f"{INDENT}{lbl}")
+        body_lines.append(_rule())
+        body_lines.append(_rline("Итого", _money(cat_total[k])))
+
+        b = InlineKeyboardBuilder()
+        for i in items_by_cat[k]:
+            b.button(
+                text=f"{icon} {i['street'] if i['has_addr'] else i['inv_num']} · {_money(i['amount'])}"[:60],
+                callback_data=TaskCb(task_id=i["task_id"], action="open").pack(),
+            )
+        if idx == len(cats) - 1:
+            b.button(text="⬅️ Назад", callback_data="nav:home")
+        b.adjust(1)
+
+        title = f"<b>{icon} {title_by_cat.get(k, 'Прочее')}</b>"
+        out.append((title + "\n<pre>" + "\n".join(body_lines) + "</pre>", b))
+
+    return out
 
 
 @router.message(F.text.startswith(GD_BTN_INVOICES))
@@ -365,9 +411,9 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
     is_admin = user_id in (config.admin_ids or set())
 
-    card, markup = await _build_gd_invoices_view(db, user_id)
+    msgs = await _build_gd_invoices_view(db, user_id)
 
-    if card is None:
+    if not msgs:
         await answer_service(
             message,
             "✅ Нет счетов на оплату.",
@@ -376,7 +422,10 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
         )
         return
 
-    await message.answer(card, reply_markup=markup.as_markup())
+    # Общая карточка идёт без клавиатуры, разделы — со своими кнопками;
+    # «⬅️ Назад» приклеена к последнему сообщению внутри сборщика.
+    for text, markup in msgs:
+        await message.answer(text, reply_markup=markup.as_markup() if markup else None)
 
 
 # ---------------------------------------------------------------------------
