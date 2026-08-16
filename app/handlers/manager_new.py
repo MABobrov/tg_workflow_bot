@@ -2113,6 +2113,8 @@ async def invoice_end_gd_pick_list(cb: CallbackQuery, db: Database) -> None:
         )
         return
     b = InlineKeyboardBuilder()
+    rows: list[tuple[str, str]] = []
+    total = 0.0
     for inv in invoices:
         conds = await db.check_close_conditions(int(inv["id"]))
         # ⚠️ — есть невыполненные условия: штатное «Счет End» по такому счёту
@@ -2120,15 +2122,32 @@ async def invoice_end_gd_pick_list(cb: CallbackQuery, db: Database) -> None:
         # набор НЕ входит намеренно: условие витринное и закрытие не блокирует
         # (approved не стоит ни у одного счёта за всю историю).
         _ok = all(conds.get(k) for k in ("installer_ok", "edo_signed", "no_debts"))
+        # 🔴, а НЕ ⚠️: эталон карточек прямо задаёт 🔴 префиксом проблемной строки,
+        # и — важнее — format_card_section считает отступ через len(), а не vw().
+        # У «⚠️» внутри variation selector U+FE0F, поэтому len() на 1 больше, чем
+        # у «✅» при той же визуальной ширине → колонка сумм разъезжалась. Общий
+        # хелпер под vw() не переписываем: это сдвинуло бы КАЖДУЮ карточку бота.
+        mark = "✅" if _ok else "🔴"
+        amt = float(inv.get("amount") or 0)
+        total += amt
+        rows.append((f"{mark} №{inv.get('invoice_number')}", fmt_money(amt)))
         b.button(
-            text=f"{'✅' if _ok else '⚠️'} №{inv.get('invoice_number')} — {fmt_money(inv.get('amount') or 0)}",
+            text=f"{mark} №{inv.get('invoice_number')} — {fmt_money(amt)}",
             callback_data=f"invend_pick:inv:{int(inv['id'])}",
         )
-    b.button(text="◀️ Назад", callback_data="gd_end:menu")
+    b.button(text="⬅️ Назад", callback_data="gd_end:menu")
     b.adjust(1)
+    # Эталон карточек ([[feedback_card_template_standard]]): шапка
+    # «{emoji} <b>Название</b>» + тело <pre> с моноширинным выравниванием и
+    # «Итого» под линией ━. Прежний вид («Ожидают закрытия: <b>N</b>» плоским
+    # текстом) — признак anti-pattern: лейбл со значением без <pre>.
+    # Легенда ⚠️ идёт строкой ПОСЛЕ карточки, как comment_tail у карточки «Счёт End».
+    card = format_card_section(
+        "🏁", "Закрыть счёт", rows,
+        footer=("Итого", fmt_money(total)), width=38,
+    )
     await cb.message.answer(  # type: ignore[union-attr]
-        f"🏁 <b>Закрыть счёт</b>\n\nОжидают закрытия: <b>{len(invoices)}</b>\n"
-        "⚠️ — есть невыполненные условия (только «Закрыть с задачами»).",
+        card + "\n\n🔴 — есть невыполненные условия (только «⚠️ Закрыть с задачами»).",
         reply_markup=b.as_markup(),
     )
 
@@ -2155,7 +2174,7 @@ async def invoice_end_gd_pick_invoice(cb: CallbackQuery, db: Database) -> None:
     b.button(text="📌 На проверке", callback_data=f"invend_final:check:{invoice_id}")
     b.button(text="🏁 Счет End", callback_data=f"invend_final:end:{invoice_id}")
     b.button(text="⚠️ Закрыть с задачами", callback_data=f"invend_final:force:{invoice_id}")
-    b.button(text="◀️ Назад", callback_data="invend_pick:list")
+    b.button(text="⬅️ Назад", callback_data="invend_pick:list")
     b.adjust(1)
     await cb.message.answer(gd_msg, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
