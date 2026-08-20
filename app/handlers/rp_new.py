@@ -255,15 +255,37 @@ async def rp_invoice_view(cb: CallbackQuery, db: Database) -> None:
 #
 # Callbacks:
 #   rp_inv_pay:create — начать создание счёта на оплату (→ InvoiceCreateSG)
-#   rp_inv_pay:refresh — обновить список
+#   rp_inv_pay:refresh[:1|0] — обновить список (хвост = состояние папки;
+#                              голый вариант = старые кнопки, папка свёрнута)
+#   rp_inv_pay:sent:1|0 — развернуть/свернуть папку «Отправлено в оплату»
 # =====================================================================
+
+
+def _sent_folder_btn(b: InlineKeyboardBuilder, count: int, expanded: bool) -> None:
+    """Кнопка-вход в папку «Отправлено в оплату» (owner 18.08: «не нашёл папку»).
+
+    Состояние разворота — в callback_data, а НЕ в FSM: кнопка из СТАРОГО
+    сообщения обязана оставаться рабочей [[feedback_fsm_old_buttons_trap]].
+    При нуле счетов кнопки нет вовсе — пустая папка не нужна.
+    """
+    if count <= 0:
+        return
+    if expanded:
+        b.button(text=f"🔼 Свернуть отправленное ({count})", callback_data="rp_inv_pay:sent:0")
+    else:
+        b.button(text=f"💰 Отправлено в оплату: {count}", callback_data="rp_inv_pay:sent:1")
 
 
 def _invoices_pay_kb(
     invoices: list[dict[str, Any]],
+    sent_count: int = 0,
+    sent_expanded: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Inline-кнопки для «Счета на оплату»: список + кнопка создания."""
+    """Inline-кнопки для «Счета на оплату»: папка + список + кнопка создания."""
     b = InlineKeyboardBuilder()
+    # Папка ПЕРВОЙ кнопкой: ниже может быть до 90 кнопок счетов (три статуса
+    # по limit=30), и вход в папку утонул бы под ними — ровно та жалоба owner'а.
+    _sent_folder_btn(b, sent_count, sent_expanded)
     for inv in invoices:
         status_emoji = invoice_status_emoji(inv.get("status"))
         try:
@@ -273,13 +295,52 @@ def _invoices_pay_kb(
         text = f"{status_emoji} №{inv.get('invoice_number', '?')} — {amount_str}"
         b.button(text=text[:60], callback_data=f"rp_work:view:{inv['id']}")
     b.button(text="➕ Создать счёт на оплату", callback_data="rp_inv_pay:create")
-    b.button(text="🔄 Обновить", callback_data="rp_inv_pay:refresh")
+    b.button(text="🔄 Обновить", callback_data=f"rp_inv_pay:refresh:{1 if sent_expanded else 0}")
     b.button(text="⬅️ Назад", callback_data="nav:home")
     b.adjust(1)
     return b.as_markup()
 
 
-async def _build_rp_sent_invoices_card(db: Database, user_id: int) -> str | None:
+async def _rp_sent_invoice_tasks(db: Database, user_id: int) -> list[dict[str, Any]]:
+    """Активные счета ПОСТАВЩИКУ, отправленные этим РП на оплату ГД.
+
+    🔴 Фильтр по `payload_json["kind"]` обязателен — `TaskType.INVOICE_PAYMENT`
+    ПЕРЕГРУЖЕН. Под ним живут три разных потока, и различает их только `kind`
+    (канон и предупреждение — `keyboards.py:813-834`):
+
+        kind отсутствует        → счёт поставщику (rp.py:1181, rp_new.py:3326)
+        credit_payment_request  → кредит-заявка (chat_proxy.py:893,
+                                  manager_new.py:4832) → `_finalize_credit_execution`
+        credit_spend_gd_confirm → трата хозяина кошелька (manager_new.py:7515)
+
+    Выборка идёт по СОЗДАТЕЛЮ, а Павел числится сразу двумя ролями
+    (`users.role='rp,manager_npn'`, единственный многоролевой в базе) — поэтому
+    без фильтра в папку РП попадало то, что он создал в кредит-меню менеджера:
+    на 19.08 там висела кредит-заявка #303. owner 19.08 — прятать.
+
+    ⚠️ Фильтр нужен НЕ только показу. Кнопка снятия без него сняла бы
+    кредит-заявку мимо кредит-флоу: теряется `cost_type` и задваивается ЗП
+    монтажника (`keyboards.py:813-817`).
+    """
+    tasks = await db.list_tasks_by_creator_and_type(
+        created_by=user_id,
+        type_filter=TaskType.INVOICE_PAYMENT,
+        statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
+        limit=100,
+    )
+    out: list[dict[str, Any]] = []
+    for t in tasks:
+        payload = try_json_loads(t.get("payload_json") or "{}") or {}
+        if isinstance(payload, dict) and payload.get("kind"):
+            continue  # кредит-флоу — не счёт поставщику
+        out.append(t)
+    return out
+
+
+async def _build_rp_sent_invoices_card(
+    db: Database,
+    tasks: list[dict[str, Any]],
+) -> str | None:
     """Карточка «Отправлено в оплату» для РП — что он уже отправил ГД и статус.
 
     Зеркало ГД-карточки (`_build_gd_invoices_view` в gd.py): те же задачи
@@ -295,10 +356,17 @@ async def _build_rp_sent_invoices_card(db: Database, user_id: int) -> str | None
     он сам, поэтому на её месте статус задачи. Формулировки — существующий
     generic `task_status_label` (Новая / В работе), user 15.07. Внизу «Итого».
 
+    ⚠️ `tasks` принимает УЖЕ ОТФИЛЬТРОВАННЫЙ список — только из
+    `_rp_sent_invoice_tasks`. Сама выборку не делает намеренно: свой запрос
+    здесь вернул бы и кредит-заявки, то есть починку 19.08 пришлось бы делать
+    дважды. Свёрнутая папка эту функцию не зовёт вовсе, отсюда и экономия на
+    `get_invoice` за адресом.
+
     Только активные OPEN+IN_PROGRESS — как у ГД (user 15.07). Display-only:
     кнопок на задачи НЕТ — они назначены ГД, а `_can_manage_task` (tasks.py)
     пропускает только assigned_to/админа, так что у РП «✅ Принять» падала бы
-    в «Эта задача назначена другому человеку».
+    в «Эта задача назначена другому человеку». Кнопка снятия — отдельным
+    путём и отдельным деплоем (owner 19.08, вариант B), общий гард не трогаем.
     [[feedback_card_display_only_no_data_writes]] [[feedback_card_template_standard]]
     """
     import html
@@ -306,14 +374,16 @@ async def _build_rp_sent_invoices_card(db: Database, user_id: int) -> str | None
     from ..rp_start_card import CATS, _mt_to_cat, vw
     from ..utils import task_status_label
 
-    tasks = await db.list_tasks_by_creator_and_type(
-        created_by=user_id,
-        type_filter=TaskType.INVOICE_PAYMENT,
-        statuses=[TaskStatus.OPEN, TaskStatus.IN_PROGRESS],
-        limit=100,
-    )
     if not tasks:
         return None
+
+    # Потолок показа. Блок = 3 строки (~46 знаков), сообщение Telegram — 4096
+    # символов на ВСЁ, включая шапку дашборда. Выборка идёт с limit=100, и без
+    # потолка на трёх десятках счетов сообщение перестало бы отправляться
+    # целиком: _answer_or_edit (:170) глотает падение edit_text и пробует
+    # answer(), который упрётся в тот же лимит — экран «Счета на оплату» лёг бы
+    # весь. Сейчас активных 15, запас четырёхкратный.
+    _MAX_BLOCKS = 20
 
     icon_by_cat = {k: ic for (k, ic, *_rest) in CATS}
     title_by_cat = {k: ttl for (k, _ic, _fld, ttl) in CATS}
@@ -329,6 +399,8 @@ async def _build_rp_sent_invoices_card(db: Database, user_id: int) -> str | None
         inv_num = payload.get("invoice_number") or f"#{t['id']}"
         amount = float(payload.get("amount") or 0)
         total += amount
+        if len(blocks) >= _MAX_BLOCKS:
+            continue  # деньги в «Итого» уже посчитаны, блок не рисуем
         cat = _mt_to_cat(payload.get("material_type") or "")
         icon = icon_by_cat.get(cat, "🧱")
         cat_title = title_by_cat.get(cat, "Прочее")
@@ -367,6 +439,10 @@ async def _build_rp_sent_invoices_card(db: Database, user_id: int) -> str | None
             body_lines.append("")  # пустая строка-разделитель между блоками
         for lbl, val in blk:
             body_lines.append(_rline(lbl, val) if val else f"{INDENT}{lbl}")
+    _hidden = len(tasks) - len(blocks)
+    if _hidden > 0:
+        body_lines.append("")
+        body_lines.append(f"{INDENT}…и ещё {_hidden} — в «Итого» они учтены")
     body_lines.append(INDENT + "━" * max(3, width - vw(INDENT)))
     for lbl, val in foot:
         body_lines.append(_rline(lbl, val))
@@ -378,24 +454,35 @@ async def _build_rp_sent_invoices_card(db: Database, user_id: int) -> str | None
 async def _show_invoices_pay_dashboard(
     target: Message | CallbackQuery,
     db: Database,
+    *,
+    show_sent: bool = False,
 ) -> None:
     pending = await db.list_invoices(status=InvoiceStatus.PENDING_PAYMENT, limit=30)
     in_progress = await db.list_invoices(status=InvoiceStatus.IN_PROGRESS, limit=30)
     credit = await db.list_invoices(status=InvoiceStatus.CREDIT, limit=30)
     all_inv = list(pending) + list(in_progress) + list(credit)
 
-    # Карточка «Отправлено в оплату» (ТЗ 15.07) — в ТЕЛЕ этого же сообщения,
-    # а НЕ отдельным: на «🔄 Обновить» _answer_or_edit редактирует сообщение
-    # in-place, и второе сообщение плодило бы копию при каждом обновлении
-    # (та же грабля, из-за которой у ГД убрали «Обновить» 26.06).
+    # Папка «Отправлено в оплату» (ТЗ 15.07; вход кнопкой — owner 18.08).
+    # В ТЕЛЕ этого же сообщения, а НЕ отдельным: и «🔄 Обновить», и разворот
+    # идут через _answer_or_edit, который правит сообщение in-place — отдельное
+    # сообщение плодило бы копию на каждом нажатии (та же грабля, из-за которой
+    # у ГД убрали «Обновить» 26.06).
+    # СВЁРНУТА по умолчанию: при 15 счетах развёрнутый блок — полсотни строк, в
+    # которых тонул сам список счетов; owner 18.08 «папку не нашёл» именно из-за
+    # этого. Свёрнутая ветка ещё и не ходит в get_invoice за адресом на КАЖДУЮ
+    # задачу (было 15 лишних запросов на каждую отрисовку дашборда).
     _uid = target.from_user.id if target.from_user else None
-    _sent = await _build_rp_sent_invoices_card(db, int(_uid)) if _uid else None
-    _sent_block = f"\n\n{_sent}" if _sent else ""
+    _sent_tasks = await _rp_sent_invoice_tasks(db, int(_uid)) if _uid else []
+    _sent_block = ""
+    if show_sent and _sent_tasks:
+        _sent = await _build_rp_sent_invoices_card(db, _sent_tasks)
+        _sent_block = f"\n\n{_sent}" if _sent else ""
 
     if not all_inv:
         b = InlineKeyboardBuilder()
+        _sent_folder_btn(b, len(_sent_tasks), show_sent)
         b.button(text="➕ Создать счёт на оплату", callback_data="rp_inv_pay:create")
-        b.button(text="🔄 Обновить", callback_data="rp_inv_pay:refresh")
+        b.button(text="🔄 Обновить", callback_data=f"rp_inv_pay:refresh:{1 if show_sent else 0}")
         b.button(text="⬅️ Назад", callback_data="nav:home")
         b.adjust(1)
         await _answer_or_edit(
@@ -422,7 +509,7 @@ async def _show_invoices_pay_dashboard(
         f"{' | '.join(header_parts)}"
         f"{_sent_block}\n\n"
         "Нажмите для просмотра или создайте новый:",
-        reply_markup=_invoices_pay_kb(all_inv),
+        reply_markup=_invoices_pay_kb(all_inv, len(_sent_tasks), show_sent),
     )
 
 
@@ -435,14 +522,46 @@ async def rp_invoices_pay(message: Message, state: FSMContext, db: Database) -> 
     await _show_invoices_pay_dashboard(message, db)
 
 
-@router.callback_query(F.data == "rp_inv_pay:refresh")
+def _sent_flag(data: str | None) -> bool:
+    """Хвостовой флаг «папка развёрнута» из callback_data (`…:1` / `…:0`).
+
+    Отсутствие хвоста = свёрнуто. Это и есть совместимость со СТАРЫМИ кнопками:
+    до этой правки «Обновить» ходила голым `rp_inv_pay:refresh`, и она обязана
+    остаться рабочей [[feedback_fsm_old_buttons_trap]].
+    """
+    return (data or "").rsplit(":", 1)[-1] == "1"
+
+
+@router.callback_query(F.data.startswith("rp_inv_pay:refresh"))
 async def rp_invoices_pay_refresh(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Обновить список «Счета на оплату»."""
+    """Обновить список «Счета на оплату», сохранив состояние папки.
+
+    Флаг едет в callback_data, потому что иначе «Обновить» схлопывала бы
+    только что открытую папку — то есть ломала бы ровно то, ради чего её
+    открывали.
+    """
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer("🔄 Обновлено")
     await state.clear()
-    await _show_invoices_pay_dashboard(cb, db)
+    await _show_invoices_pay_dashboard(cb, db, show_sent=_sent_flag(cb.data))
+
+
+@router.callback_query(F.data.startswith("rp_inv_pay:sent:"))
+async def rp_invoices_pay_sent_toggle(cb: CallbackQuery, db: Database) -> None:
+    """Развернуть/свернуть папку «Отправлено в оплату» в ТОМ ЖЕ сообщении.
+
+    Только показ, боевых данных не пишет [[feedback_card_display_only_no_data_writes]].
+
+    ⚠️ FSM здесь НЕ чистится намеренно, в отличие от соседней «Обновить»:
+    состояние разворота живёт в callback_data, а чужой поток рвать незачем —
+    ровно на этом обожглись 04.08, когда `acc_q:cancel` безусловным
+    `state.clear()` убивал начатый ответ по ЭДО.
+    """
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    await _show_invoices_pay_dashboard(cb, db, show_sent=_sent_flag(cb.data))
 
 
 @router.callback_query(F.data == "rp_inv_pay:create")
