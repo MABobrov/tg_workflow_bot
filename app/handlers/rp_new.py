@@ -86,6 +86,7 @@ from ..states import (
     KpReviewSG,
     LeadToProjectSG,
     ManagerChatProxySG,
+    RpInvCancelSG,
     RpMontazhAssignSG,
     RpMontazhNaemSG,
     RpMontazhRegroupSG,
@@ -258,34 +259,71 @@ async def rp_invoice_view(cb: CallbackQuery, db: Database) -> None:
 #   rp_inv_pay:refresh[:1|0] — обновить список (хвост = состояние папки;
 #                              голый вариант = старые кнопки, папка свёрнута)
 #   rp_inv_pay:sent:1|0 — развернуть/свернуть папку «Отправлено в оплату»
+#   rp_inv_pay:cancel:<task_id> — снять свой счёт с ГД (→ RpInvCancelSG.reason)
 # =====================================================================
 
 
-def _sent_folder_btn(b: InlineKeyboardBuilder, count: int, expanded: bool) -> None:
-    """Кнопка-вход в папку «Отправлено в оплату» (owner 18.08: «не нашёл папку»).
+# Потолок показа папки «Отправлено в оплату» — ОДИН на карточку и на кнопки.
+# Модульная константа, а не локальная в карточке: разъедься эти два числа, и
+# кнопки отмены перестанут соответствовать блокам — РП снимал бы не тот счёт.
+_SENT_MAX_BLOCKS = 20
+
+
+def _sent_money(n: float) -> str:
+    """Единый формат суммы для карточки папки и для меток кнопок отмены."""
+    try:
+        return f"{float(n):,.0f}₽".replace(",", " ")
+    except (TypeError, ValueError):
+        return f"{n}₽"
+
+
+def _sent_folder_btn(
+    b: InlineKeyboardBuilder,
+    tasks: list[dict[str, Any]],
+    expanded: bool,
+) -> None:
+    """Кнопка-вход в папку «Отправлено в оплату» + кнопки отмены в развёрнутой.
 
     Состояние разворота — в callback_data, а НЕ в FSM: кнопка из СТАРОГО
     сообщения обязана оставаться рабочей [[feedback_fsm_old_buttons_trap]].
     При нуле счетов кнопки нет вовсе — пустая папка не нужна.
+
+    ⚠️ Кнопки отмены живут ЗДЕСЬ, а не у вызывающего, намеренно: дашборд рисуется
+    в ДВУХ ветках (`all_inv` пуст и не пуст), и разложи мы их по местам вызова —
+    пункт появлялся бы через раз. Ровно эту грабельку ловили на `invendgd`
+    (td.py: меню «Счёт END» рисуется двумя функциями, одну легко пропустить).
+
+    Порядок и потолок — те же, что у блоков карточки (`_SENT_MAX_BLOCKS`):
+    иначе кнопка не соответствовала бы блоку, на который смотрит человек.
+    `tasks` обязан приходить из `_rp_sent_invoice_tasks` — кредит-заявки там уже
+    отфильтрованы, и кнопка снятия на них не появится.
     """
+    count = len(tasks)
     if count <= 0:
         return
     if expanded:
         b.button(text=f"🔼 Свернуть отправленное ({count})", callback_data="rp_inv_pay:sent:0")
     else:
         b.button(text=f"💰 Отправлено в оплату: {count}", callback_data="rp_inv_pay:sent:1")
+        return
+
+    for t in tasks[:_SENT_MAX_BLOCKS]:
+        payload = try_json_loads(t.get("payload_json") or "{}") or {}
+        inv_num = payload.get("invoice_number") or f"#{t['id']}"
+        label = f"✖️ №{inv_num} · {_sent_money(payload.get('amount') or 0)}"
+        b.button(text=label[:60], callback_data=f"rp_inv_pay:cancel:{int(t['id'])}")
 
 
 def _invoices_pay_kb(
     invoices: list[dict[str, Any]],
-    sent_count: int = 0,
+    sent_tasks: list[dict[str, Any]] | None = None,
     sent_expanded: bool = False,
 ) -> InlineKeyboardMarkup:
     """Inline-кнопки для «Счета на оплату»: папка + список + кнопка создания."""
     b = InlineKeyboardBuilder()
     # Папка ПЕРВОЙ кнопкой: ниже может быть до 90 кнопок счетов (три статуса
     # по limit=30), и вход в папку утонул бы под ними — ровно та жалоба owner'а.
-    _sent_folder_btn(b, sent_count, sent_expanded)
+    _sent_folder_btn(b, sent_tasks or [], sent_expanded)
     for inv in invoices:
         status_emoji = invoice_status_emoji(inv.get("status"))
         try:
@@ -362,11 +400,14 @@ async def _build_rp_sent_invoices_card(
     дважды. Свёрнутая папка эту функцию не зовёт вовсе, отсюда и экономия на
     `get_invoice` за адресом.
 
-    Только активные OPEN+IN_PROGRESS — как у ГД (user 15.07). Display-only:
-    кнопок на задачи НЕТ — они назначены ГД, а `_can_manage_task` (tasks.py)
-    пропускает только assigned_to/админа, так что у РП «✅ Принять» падала бы
-    в «Эта задача назначена другому человеку». Кнопка снятия — отдельным
-    путём и отдельным деплоем (owner 19.08, вариант B), общий гард не трогаем.
+    Только активные OPEN+IN_PROGRESS — как у ГД (user 15.07). Сама карточка
+    display-only и боевых данных не пишет; generic-кнопок задач у неё НЕТ —
+    задачи назначены ГД, а `_can_manage_task` (tasks.py) пускает только
+    assigned_to/админа, так что «✅ Принять» у РП падала бы в «Эта задача
+    назначена другому человеку».
+    ⚠️ Кнопки «✖️ снять» с 20.08 всё же есть, но живут ОТДЕЛЬНО — в
+    `_sent_folder_btn`, своим путём `rp_inv_pay:cancel:*` (owner 19.08,
+    вариант B), общий гард не тронут. Здесь по-прежнему только текст.
     [[feedback_card_display_only_no_data_writes]] [[feedback_card_template_standard]]
     """
     import html
@@ -377,19 +418,20 @@ async def _build_rp_sent_invoices_card(
     if not tasks:
         return None
 
-    # Потолок показа. Блок = 3 строки (~46 знаков), сообщение Telegram — 4096
-    # символов на ВСЁ, включая шапку дашборда. Выборка идёт с limit=100, и без
-    # потолка на трёх десятках счетов сообщение перестало бы отправляться
-    # целиком: _answer_or_edit (:170) глотает падение edit_text и пробует
-    # answer(), который упрётся в тот же лимит — экран «Счета на оплату» лёг бы
-    # весь. Сейчас активных 15, запас четырёхкратный.
-    _MAX_BLOCKS = 20
+    # Потолок показа — модульный `_SENT_MAX_BLOCKS`. Блок = 3 строки (~46 знаков),
+    # сообщение Telegram — 4096 символов на ВСЁ, включая шапку дашборда. Выборка
+    # идёт с limit=100, и без потолка на трёх десятках счетов сообщение перестало
+    # бы отправляться целиком: _answer_or_edit (:170) глотает падение edit_text и
+    # пробует answer(), который упрётся в тот же лимит — экран «Счета на оплату»
+    # лёг бы весь. Сейчас активных 15, запас четырёхкратный.
+    # ⚠️ То же число режет и кнопки отмены (`_sent_folder_btn`) — они обязаны
+    # соответствовать блокам один в один, поэтому константа общая, не локальная.
+    _MAX_BLOCKS = _SENT_MAX_BLOCKS
 
     icon_by_cat = {k: ic for (k, ic, *_rest) in CATS}
     title_by_cat = {k: ttl for (k, _ic, _fld, ttl) in CATS}
 
-    def _money(n: float) -> str:
-        return f"{float(n):,.0f}₽".replace(",", " ")
+    _money = _sent_money
 
     INDENT = "   "
     blocks: list[list[tuple[str, str]]] = []  # блок = [(label, value)]; value="" → без right-align
@@ -480,7 +522,7 @@ async def _show_invoices_pay_dashboard(
 
     if not all_inv:
         b = InlineKeyboardBuilder()
-        _sent_folder_btn(b, len(_sent_tasks), show_sent)
+        _sent_folder_btn(b, _sent_tasks, show_sent)
         b.button(text="➕ Создать счёт на оплату", callback_data="rp_inv_pay:create")
         b.button(text="🔄 Обновить", callback_data=f"rp_inv_pay:refresh:{1 if show_sent else 0}")
         b.button(text="⬅️ Назад", callback_data="nav:home")
@@ -509,7 +551,7 @@ async def _show_invoices_pay_dashboard(
         f"{' | '.join(header_parts)}"
         f"{_sent_block}\n\n"
         "Нажмите для просмотра или создайте новый:",
-        reply_markup=_invoices_pay_kb(all_inv, len(_sent_tasks), show_sent),
+        reply_markup=_invoices_pay_kb(all_inv, _sent_tasks, show_sent),
     )
 
 
@@ -562,6 +604,193 @@ async def rp_invoices_pay_sent_toggle(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
     await _show_invoices_pay_dashboard(cb, db, show_sent=_sent_flag(cb.data))
+
+
+async def _rp_cancel_reject_text(db: Database, task_id: int, user_id: int) -> str:
+    """Точная причина отказа в снятии — текст для алерта.
+
+    Молчать на отказе нельзя: catch-all для callback'ов в проекте нет, и без
+    ответа кнопка повиснет спиннером [[feedback_fsm_old_buttons_trap]]. Запрос
+    в БД здесь идёт ТОЛЬКО на пути отказа — успешный путь его не платит.
+    """
+    try:
+        raw = await db.get_task(task_id)
+    except KeyError:
+        return "Задача не найдена."
+    if (raw.get("type") or "") != TaskType.INVOICE_PAYMENT:
+        return "Это не счёт на оплату."
+    payload = try_json_loads(raw.get("payload_json") or "{}") or {}
+    if isinstance(payload, dict) and payload.get("kind"):
+        # Кредит-заявка / трата хозяина кошелька: снимаются кредит-флоу, иначе
+        # теряется cost_type и задваивается ЗП монтажника (keyboards.py:813-834).
+        return "Эта заявка снимается через кредит-флоу, а не отсюда."
+    try:
+        if int(raw.get("created_by") or 0) != user_id:
+            return "Снять можно только свой счёт."
+    except (TypeError, ValueError):
+        return "Снять можно только свой счёт."
+    if (raw.get("status") or "") not in (TaskStatus.OPEN, TaskStatus.IN_PROGRESS):
+        return "Задача уже закрыта или обработана."
+    return "Счёт недоступен для снятия."
+
+
+@router.callback_query(F.data.startswith("rp_inv_pay:cancel:"))
+async def rp_invoices_pay_cancel_start(
+    cb: CallbackQuery, state: FSMContext, db: Database,
+) -> None:
+    """РП снимает свой счёт на оплату с ГД — шаг 1: спросить причину.
+
+    owner 20.08: «это он отправляет счета в оплату для ГД и ему нужна кнопка
+    отмены этой задачи; соответственно у ГД эта отменённая задача тоже должна
+    сняться, автоматически прийти информационное сообщение с причиной».
+
+    🔑 Причину спрашиваем ВСЕГДА — без развилки по `accepted_at` и без поблажки
+    админам. Иначе третий пункт требования невыполним: причины просто не будет.
+    Штатная ветка (`tasks.py:609`) спрашивает её лишь при `accepted_at`, а он у
+    задач `invoice_payment` пуст У ВСЕХ — и у 15 активных, и у 10 последних
+    закрытых (замер на боевой 20.08). Копия штатного условия не сработала бы ни
+    разу. ⚠️ И Павел, и ГД оба входят в `ADMIN_IDS` — поблажка админам обошла бы
+    шаг причины ровно у того человека, ради которого он и заводится.
+
+    ⛔ Общий гард `_can_manage_task` (tasks.py:34) и обе его точки вызова
+    (:414, :820) НЕ трогаем — решение owner'а 19.08, вариант B: свой путь.
+    """
+    import html
+
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    uid = cb.from_user.id if cb.from_user else None
+    if uid is None:
+        await cb.answer("Не удалось определить пользователя.", show_alert=True)
+        return
+    try:
+        task_id = int((cb.data or "").rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await cb.answer("Не удалось разобрать кнопку.", show_alert=True)
+        return
+
+    # Гард — членство в СВОЕЙ выборке. Тогда «тип», «kind пуст», «мой» и
+    # «активна» выполняются по построению и ровно тем же источником, которым
+    # нарисован показ; фильтр kind не приходится дублировать вторым местом.
+    task = next(
+        (t for t in await _rp_sent_invoice_tasks(db, int(uid)) if int(t["id"]) == task_id),
+        None,
+    )
+    if task is None:
+        await cb.answer(await _rp_cancel_reject_text(db, task_id, int(uid)), show_alert=True)
+        return
+
+    payload = try_json_loads(task.get("payload_json") or "{}") or {}
+    inv_num = payload.get("invoice_number") or f"#{task_id}"
+    money = _sent_money(payload.get("amount") or 0)
+
+    await cb.answer()
+    await state.clear()
+    await state.set_state(RpInvCancelSG.reason)
+    # Свой ключ, а НЕ общий `cancel_task_id` из TaskCancelReasonSG: под одним
+    # ключом уже жили два разных потока, и на этом обожглись 04.08 (acc_q:*
+    # безусловным state.clear() убивал начатый ответ по ЭДО).
+    await state.update_data(rp_cancel_task_id=task_id)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✖️ Снять счёт №{html.escape(str(inv_num))} на {money} с ГД.\n\n"
+        "Укажите <b>причину</b> — она уйдёт ГД:",
+    )
+
+
+@router.message(RpInvCancelSG.reason)
+async def rp_invoices_pay_cancel_reason(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    notifier: Notifier,
+    integrations: IntegrationHub,
+) -> None:
+    """РП снимает свой счёт — шаг 2: причина → запись → уведомление ГД."""
+    import html
+
+    if not await require_role_message(message, db, roles=[Role.RP]):
+        return
+    reason = (message.text or "").strip()
+    if len(reason) < 3:
+        # Валидация как у штатной ветки (tasks.py:710-712) — state не рвём.
+        await message.answer("Укажите причину отмены (минимум 3 символа):")
+        return
+
+    data = await state.get_data()
+    task_id = data.get("rp_cancel_task_id")
+    uid = message.from_user.id if message.from_user else None
+    if not isinstance(task_id, int) or task_id <= 0 or uid is None:
+        await state.clear()
+        await message.answer("❌ Счёт не найден — начните снятие заново.")
+        return
+
+    # Перепроверка ПЕРЕД записью: между нажатием кнопки и вводом причины ГД мог
+    # задачу забрать или закрыть, а FSM об этом не знает.
+    task = next(
+        (t for t in await _rp_sent_invoice_tasks(db, int(uid)) if int(t["id"]) == task_id),
+        None,
+    )
+    if task is None:
+        await state.clear()
+        await message.answer(f"❌ {await _rp_cancel_reject_text(db, task_id, int(uid))}")
+        await _show_invoices_pay_dashboard(message, db, show_sent=True)
+        return
+
+    # Атомарно и ровно как штатное снятие: статус именно `rejected`
+    # (tasks.py:621 — расходиться нельзя), expected_statuses отбивает гонку.
+    updated = await db.update_task_status(
+        task_id, TaskStatus.REJECTED,
+        expected_statuses=(TaskStatus.OPEN, TaskStatus.IN_PROGRESS),
+    )
+    if updated is None:
+        await state.clear()
+        await message.answer("❌ Задача уже была обработана.")
+        await _show_invoices_pay_dashboard(message, db, show_sent=True)
+        return
+
+    await state.clear()
+
+    # 🔴 sync_task зовём ЯВНО. Штатный `task_cancel_with_reason`
+    # (tasks.py:699-796) его НЕ делает: `integrations` там принят параметром
+    # (:706) и в теле не используется НИ РАЗУ — то есть снятие С ПРИЧИНОЙ задачу
+    # не синкает, а снятие без причины (:627) синкает. Наследовать этот дефект
+    # своим путём незачем; чинить общий код — отдельный вопрос owner'у.
+    project_code = ""
+    if updated.get("project_id"):
+        try:
+            project_code = (await db.get_project(int(updated["project_id"]))).get("code") or ""
+        except (KeyError, TypeError, ValueError):
+            project_code = ""
+    await integrations.sync_task(updated, project_code=project_code)
+
+    payload = try_json_loads(updated.get("payload_json") or "{}") or {}
+    inv_num = html.escape(str(payload.get("invoice_number") or f"#{task_id}"))
+    money = _sent_money(payload.get("amount") or 0)
+    initiator = html.escape(await get_initiator_label(db, int(uid)))
+    reason_safe = html.escape(reason)
+
+    # Уведомление ГД — пункт (3) требования owner'а. Экранируем: parse_mode у
+    # бота HTML, а причина — свободный текст человека. safe_send умеет откатиться
+    # в plain text, но тогда ГД увидит сырую разметку вместо текста.
+    gd_id = updated.get("assigned_to")
+    if gd_id:
+        try:
+            await notifier.safe_send(
+                int(gd_id),
+                "🚫 Счёт снят автором\n"
+                f"📋 Счёт на оплату №{inv_num}\n"
+                f"💰 {money}\n"
+                f"👤 {initiator}\n"
+                f"📝 Причина: {reason_safe}",
+            )
+        except (TypeError, ValueError):
+            log.warning("rp inv cancel: bad assigned_to on task %s", task_id)
+
+    await message.answer(f"🚫 Счёт №{inv_num} снят с ГД.\n📝 Причина: {reason_safe}")
+    # Дашборд — НОВЫМ сообщением: причина пришла message'ем, прежнее сообщение
+    # дашборда отсюда не отредактировать. Осознанное отступление от «не плодить
+    # сообщения» — то правило было про «🔄 Обновить», который ходит callback'ом.
+    await _show_invoices_pay_dashboard(message, db, show_sent=True)
 
 
 @router.callback_query(F.data == "rp_inv_pay:create")

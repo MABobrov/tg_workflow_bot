@@ -636,6 +636,18 @@ class RpSupplierInvoiceSG(StatesGroup):
     comment = State()            # комментарий
 
 
+class RpInvCancelSG(StatesGroup):
+    """РП: снять свой счёт на оплату с ГД — ввод причины (owner 20.08).
+
+    ⚠️ СВОЙ state, а НЕ общий `TaskCancelReasonSG` — причина техническая, не
+    вкусовая: `tasks.py:699` это `@router.message(TaskCancelReasonSG.reason)`,
+    и переиспользуй мы тот же state, чужой хендлер перехватил бы ввод и завершил
+    отмену по-своему — без `sync_task` (его там нет вовсе) и с главным меню
+    вместо дашборда «Счета на оплату».
+    """
+    reason = State()             # текст причины (уходит ГД)
+
+
 class RpMontazhAssignSG(StatesGroup):
     """РП: назначить счёт монтажнику с вложениями."""
     attachments = State()        # сбор файлов (photo/document/video/text)
