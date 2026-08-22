@@ -1573,36 +1573,22 @@ async def _show_invoice_end_conditions(
     elif closing_h:
         text += f"\n📁 Оригиналы закрывающих: у {'ГД' if closing_h == 'gd' else 'менеджера'}"
 
-    # If conditions 1+2 met -> auto-ask GD about debts
-    if (
+    # Вопрос ГД «Счёт оплачен 100%?» больше НЕ уходит отдельным сообщением
+    # (owner 22.08: «объедини в одну»). Здесь только считаем, нужен ли он, и
+    # кладём флаг в состояние — кнопки ✅Да/❌Нет отрисует invoice_end_comment
+    # на ЕДИНОЙ карточке ГД.
+    #
+    # 🔑 Считать надо ИМЕННО здесь: ниже по потоку invoice_end_comment переводит
+    # счёт в CLOSING, и проверка status != CLOSING перестала бы срабатывать.
+    ask_gd_debt = bool(
         inv.get("status") != InvoiceStatus.CLOSING
         and conditions["installer_ok"]
         and conditions["edo_signed"]
         and not conditions["no_debts"]
-    ):
-        gd_id = await resolve_default_assignee(db, config, Role.GD)
-        if gd_id:
-            b = InlineKeyboardBuilder()
-            b.button(text="✅ Да, оплачен 100%", callback_data=f"invend_gd:yes:{invoice_id}")
-            b.button(text="❌ Нет, есть долг", callback_data=f"invend_gd:no:{invoice_id}")
-            b.adjust(1)
-            initiator = await get_initiator_label(db, cb.from_user.id)
-            is_credit = bool(inv.get("is_credit"))
-            pay_label = "🏦 Кред" if is_credit else "💳 б/н"
-            client = inv.get("client_name") or "—"
-            gd_card = (
-                f"❓ <b>Счёт End: №{inv['invoice_number']} — оплачен 100%?</b>\n"
-                f"👤 От: {initiator}\n\n"
-                f"📍 Адрес: {inv.get('object_address', '-')}\n"
-                f"💰 Сумма: {float(inv.get('amount', 0)):,.0f}₽\n"
-                f"💳 Тип: {pay_label}\n"
-                f"🏢 Клиент: {client}\n\n"
-                f"<b>Статус:</b>\n"
-                f"  ⏳ Менеджер инициировал «Счет End»\n"
-                f"  ⏳ Ожидается подтверждение оплаты"
-            )
-            await notifier.safe_send(int(gd_id), gd_card, reply_markup=b.as_markup())
-            text += "\n\n⏳ Запрос отправлен ГД: «Счёт оплачен 100%?»"
+    )
+    await state.update_data(ask_gd_debt=ask_gd_debt)
+    if ask_gd_debt:
+        text += "\n\n⏳ Вопрос «Счёт оплачен 100%?» уйдёт ГД вместе с карточкой."
 
     text += "\n\nНапишите <b>пояснение</b> (или «—» для пропуска):"
 
@@ -1931,6 +1917,81 @@ async def invoice_docs_finalize(cb: CallbackQuery, db: Database, notifier: Notif
     )
 
 
+def _card_num(v: Any) -> str:
+    """Число для эталон-ячейки: без ₽, минус — U+2212.
+
+    ₽ не моноширинный в Telegram <pre> и ломает правое выравнивание чисел
+    ([[feedback_card_telegram_pre_alignment]]).
+    """
+    try:
+        return f"{float(v or 0):,.0f}".replace(",", " ").replace("-", "\u2212")
+    except (ValueError, TypeError):
+        return "—"
+
+
+def _invoice_end_fin_rows(pf: dict[str, Any]) -> list[tuple[str, str]]:
+    """Финблок «Счёт End» строками эталона (owner 22.08).
+
+    Те же величины, что у utils.format_invoice_end_financials, но каждая —
+    своей строкой, числа справа, ₽ из ячеек убран. Прежняя вёрстка шла через
+    format_card_section(compact=True), а в ветке compact параметр width НЕ
+    применяется вовсе (utils.py:3941-3948) — строка вида
+    «Себест-ть: расч N / факт N₽» переваливала за 44 знака и переносилась на
+    телефоне. Ровно на это жаловался owner: «строки переносятся».
+
+    ⚠️ Копия расчёта здесь СОЗНАТЕЛЬНАЯ и ВРЕМЕННАЯ. Общий рендер живёт в
+    utils.format_invoice_end_financials, но utils.py сейчас держит
+    непродеплоенный патч «детектор зеркала ОП» и катить его нельзя
+    ([[feedback_undeployed_patch_survives_resync]]). Свести обратно в utils.py
+    сразу после деплоя детектора — тогда тот же вид получит и карточка задачи
+    (tasks.py:364), которая пока остаётся в старой вёрстке.
+
+    Пустой список — расчётных данных нет, показывать нечего.
+    """
+    if not pf.get("has_estimated"):
+        return []
+
+    est_total = pf.get("estimated_total_cost", 0) or 0
+    fact_total = pf.get("actual_total_cost", 0) or 0
+    est_profit = pf.get("estimated_profit", 0) or 0
+    fact_profit = pf.get("actual_profit", 0) or 0
+    manager_zp = pf.get("manager_zp", 0) or 0
+    client_source = pf.get("client_source", "own")
+
+    # Гейт «факт готов» — зеркало _has_key_facts из format_plan_fact_card: факт
+    # показываем только при наличии факт-материалов И факт-установки, иначе «—»
+    # (частичные данные на этапе закрытия вводят в заблуждение). Копия 1:1.
+    cost = pf.get("cost_card", {}) or {}
+    _sp_svc = 0.0
+    for _sp in cost.get("supplier_payments_list", []) or []:
+        if _sp.get("material_type") in ("service", "montazh", "extra_svc"):
+            _sp_svc += _sp.get("amount", 0) or 0
+    fact_mat = cost.get("mat_and_suppliers", cost.get("materials_combined", 0)) or 0
+    fact_inst = max(
+        cost.get("montazh_combined", float(cost.get("zp_installer", 0) or 0)) or 0,
+        _sp_svc,
+    )
+    has_fact = bool(fact_mat) and bool(fact_inst)
+
+    rows: list[tuple[str, str]] = [
+        ("Себест-ть расч", _card_num(est_total)),
+        ("Себест-ть факт", _card_num(fact_total) if has_fact else "—"),
+        ("Прибыль расч", _card_num(est_profit)),
+        ("Прибыль факт", _card_num(fact_profit) if has_fact else "—"),
+    ]
+    # При расч. прибыли ≤ 0 распределять нечего (зеркало format_plan_fact_card,
+    # который скрывает блок распределения при est_profit ≤ 0) — отрицательную
+    # «зарплату» не показываем.
+    if est_profit and float(est_profit) > 0:
+        rows.append(("ЗП менеджера расч", _card_num(manager_zp)))
+        rows.append(
+            ("Ставка", "📋 лид ГД 25%" if client_source == "gd_lead" else "👤 свой 50%")
+        )
+    else:
+        rows.append(("ЗП менеджера расч", "—"))
+    return rows
+
+
 async def _build_invoice_end_cards(
     db: Database,
     inv: dict[str, Any],
@@ -1942,12 +2003,17 @@ async def _build_invoice_end_cards(
 
     Им пользуются оба входа: запрос менеджера (invoice_end_comment) и
     самостоятельное закрытие ГД (invend_pick). Две копии разъехались бы и
-    нарушили эталон карточек ([[feedback_card_template_standard]]) — вынесено
-    без изменения содержимого, вывод для менеджерского пути обязан остаться
-    байт в байт прежним (проверяется функтестом).
+    нарушили эталон карточек ([[feedback_card_template_standard]]).
 
-    Разница между карточками ровно одна: у ГД есть финблок (себестоимость /
-    прибыль расч+факт / ЗП менеджера), РП его НЕ видит.
+    Разница между карточками (owner 22.08):
+      • РП — шапка От/Адрес/Сумма + Условия + Документы. Финблок РП НЕ видит
+        (прибыль и себестоимость от него скрыты, как в format_plan_fact_card
+        role='rp'). Вывод обязан остаться БАЙТ В БАЙТ прежним — проверяется
+        стендом; поэтому шапка РП намеренно оставлена в прежнем compact-виде.
+      • ГД — своя шапка по эталону (числа справа, ₽ убран) плюс три поля:
+        Клиент, Тип оплаты и Долг. Первые два приехали из отдельного
+        сообщения-вопроса «оплачен 100%?», которое больше не шлётся; третье
+        прямо относится к тому же вопросу и раньше не показывалось нигде.
     """
     import html as _html
 
@@ -1959,22 +2025,40 @@ async def _build_invoice_end_cards(
     cond_lines = [f"{i}. {mark} {label}" for i, (mark, label) in enumerate(cond_rows, 1)]
     cond_section = "<b>✅  Условия</b>\n<pre>" + "\n".join(f"   {ln}" for ln in cond_lines) + "</pre>"
 
-    # Шапка карточки (От/Адрес/Сумма — контент сохранён, без добавления полей).
-    head_section = format_card_section(
+    _addr = _html.escape(str(inv.get("object_address") or "—"))
+
+    # Шапка РП — НЕ ТРОГАТЬ: контент и вёрстка прежние (байт в байт).
+    head_rp = format_card_section(
         "🏁", f"Счёт End: №{inv['invoice_number']}",
         [
             ("От", initiator),
-            ("Адрес", _html.escape(str(inv.get("object_address") or "—"))),
+            ("Адрес", _addr),
             ("Сумма", fmt_money(inv.get("amount") or 0)),
         ],
         width=44, compact=True,
     )
 
-    # PART B (ТЗ 19.06): справочный финблок (Себест/Прибыль расч+факт, ЗП менеджера
-    # + ставка) — display-only из get_plan_fact_card, эталон-секция. Только ГД; РП его
-    # НЕ видит (прибыль/себестоимость скрыты от РП, как в format_plan_fact_card role='rp').
+    # Шапка ГД — эталон: ширина 32, числа справа, ₽ из ячеек убран.
+    head_gd = format_card_section(
+        "🏁", f"Счёт End: №{inv['invoice_number']}",
+        [
+            ("От", initiator),
+            ("Клиент", _html.escape(str(inv.get("client_name") or "—"))),
+            ("Адрес", _addr),
+            ("Тип", "🏦 Кред" if inv.get("is_credit") else "💳 б/н"),
+            ("Сумма", _card_num(inv.get("amount"))),
+            ("Долг", _card_num(inv.get("outstanding_debt"))),
+        ],
+        width=32,
+    )
+
+    # PART B (ТЗ 19.06): справочный финблок — display-only, ТОЛЬКО ГД.
     pf = await db.get_plan_fact_card(invoice_id)
-    fin_section = format_invoice_end_financials(inv, pf)  # эталон-секция <pre> или ""
+    fin_rows = _invoice_end_fin_rows(pf)
+    fin_section = (
+        format_card_section("📊", "Финансы (справочно)", fin_rows, width=32)
+        if fin_rows else ""
+    )
 
     docs = _invoice_docs_lines(inv)
     docs_section = (
@@ -1983,8 +2067,8 @@ async def _build_invoice_end_cards(
     )
     comment_tail = f"\n\n💬 Пояснение: {_html.escape(comment)}" if comment else ""
 
-    msg = format_card([head_section, cond_section, docs_section]) + comment_tail  # → РП (без финблока)
-    gd_msg = format_card([head_section, fin_section, cond_section, docs_section]) + comment_tail  # → ГД
+    msg = format_card([head_rp, cond_section, docs_section]) + comment_tail  # → РП (без финблока)
+    gd_msg = format_card([head_gd, fin_section, cond_section, docs_section]) + comment_tail  # → ГД
     return msg, gd_msg
 
 
@@ -2005,6 +2089,9 @@ async def invoice_end_comment(
 
     data = await state.get_data()
     invoice_id = data["invoice_id"]
+    # Нужен ли ГД вопрос «оплачен 100%?» — посчитан в _show_invoice_end_conditions
+    # ДО перевода счёта в CLOSING (иначе проверка перестала бы срабатывать).
+    ask_gd_debt = bool(data.get("ask_gd_debt"))
     inv = await db.get_invoice(invoice_id)
     if not inv:
         await message.answer("❌ Счёт не найден.")
@@ -2051,17 +2138,30 @@ async def invoice_end_comment(
     initiator = await get_initiator_label(db, message.from_user.id)
     msg, gd_msg = await _build_invoice_end_cards(db, inv, invoice_id, initiator, comment)
 
-    # Notify GD
+    # Notify GD — ОДНО сообщение (owner 22.08 живьём: «задача пришла тремя
+    # карточками — объедини в одну»). Раньше их было три: вопрос «оплачен 100%?»
+    # из _show_invoice_end_conditions, эта карточка и «📥 У вас N активных задач»
+    # от refresh_recipient_keyboard.
     if gd_id:
         b = InlineKeyboardBuilder()
+        # Кнопки вопроса про долг — только если он актуален (флаг посчитан ДО
+        # перевода счёта в CLOSING, см. _show_invoice_end_conditions).
+        # callback_data прежний, поэтому такие же кнопки на сообщениях,
+        # отправленных ДО деплоя, продолжают работать
+        # ([[feedback_fsm_old_buttons_trap]]).
+        if ask_gd_debt:
+            b.button(text="✅ Да, оплачен 100%", callback_data=f"invend_gd:yes:{invoice_id}")
+            b.button(text="❌ Нет, есть долг", callback_data=f"invend_gd:no:{invoice_id}")
         b.button(text="📌 На проверке", callback_data=f"invend_final:check:{invoice_id}")
         b.button(text="🏁 Счет End", callback_data=f"invend_final:end:{invoice_id}")
         b.button(text="⚠️ Закрыть с задачами", callback_data=f"invend_final:force:{invoice_id}")
         b.adjust(1)
         await notifier.safe_send(int(gd_id), gd_msg, reply_markup=b.as_markup())
-        await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+        # refresh_recipient_keyboard(ГД) НЕ зовём: это ОТДЕЛЬНОЕ сообщение, а
+        # инлайн-кнопки и reply-клавиатуру Telegram в одном не совмещает. Цена
+        # решения: бейдж 🔴N у ГД обновится при следующем касании меню.
 
-    # Notify RP
+    # Notify RP — не тронуто
     if rp_id:
         await notifier.safe_send(int(rp_id), msg)
         await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
