@@ -2222,25 +2222,16 @@ def _gd_zp_request_card(
 
     footer: tuple[str, str] | None = None
     total: str | None = None
-    # ТЗ owner 17.07: для б/н показать раздельно сумму, которую ввёл РП («Внёс РП»),
-    # и её же с автонадбавкой +10% («С надбавкой +10%»). База берётся из БД
-    # (montazh_base_amount), а не делится обратно из требуемой суммы, — деривация
-    # base=requested/1.1 теряет точность на округлении до 1000.
-    base_rp = float(inv.get("montazh_base_amount") or 0)
-    show_bonus = base_rp > 0 and not _is_credit(inv)
-    if show_bonus:
-        items.append(("Внёс РП", _f(base_rp)))
-        items.append(("С надбавкой +10%", _f(_apply_montazh_bonus(inv, base_rp))))
+    # Owner 22.08: надбавки +10% к сумме РП больше нет (снята в rp_new.py), поэтому
+    # прежняя разбивка «Внёс РП» / «С надбавкой +10%» печатала бы одно и то же число
+    # дважды — ГД видит ОДНУ сумму. Надбавка у МОНТАЖНИКА не тронута: она живёт в
+    # _calc_est_montazh и на эту карточку приходит через est_val.
     if advance_cg and advance_cg > 0:
         # Часть 2: заявка = ОСТАТОК после зачтённого аванса. Показываем
         # Согласовано + Аванс, итог = к выплате (остаток), без «Разница».
         items.append(("Согласовано", _f(agreed if agreed else est_val)))
         items.append(("Аванс", _f(advance_cg)))
         total = _f(requested)
-    elif show_bonus:
-        # Разбивка «Внёс РП»/«С надбавкой +10%» уже показывает требуемую сумму
-        # (к выплате = база+10%) — отдельный «Итого» дублировал бы её.
-        total = None
     else:
         changed = bool(est_val) and abs(float(requested) - float(est_val)) >= 1
         if changed:

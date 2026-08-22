@@ -100,7 +100,6 @@ from ._mirror import collect_attachment
 from .installer_new import (
     _advance_cg_amount,
     _advance_raw_cur,
-    _apply_montazh_bonus,
     _is_credit,
 )
 from .auth import RoleFilter, require_role_callback, require_role_message
@@ -1399,11 +1398,12 @@ async def rp_montazh_naem_amount(
         await message.answer("❌ Счёт не найден.")
         return
 
-    # ТЗ owner 17.07: РП больше НЕ спрашиваем «прибавить 10%?». Для б/н надбавка
-    # 10% начисляется АВТОМАТИЧЕСКИ (_apply_montazh_bonus), для кредита — сумма как
-    # введена. Базу (ввод РП до надбавки) храним для карточки ГД.
+    # Owner 22.08: надбавку +10% к сумме РП НЕ прибавляем — он вводит её уже с
+    # учётом. Сумма пишется КАК ВВЕДЕНА, без округления до тысячи (ровно так же,
+    # как до этой правки шёл кредит). Надбавка у МОНТАЖНИКА не тронута — она живёт
+    # в installer_new._calc_est_montazh, owner подтвердил её 22.08 по Лобне.
     await state.clear()
-    agreed = amount if _is_credit(inv) else _apply_montazh_bonus(inv, amount)
+    agreed = amount
     await _finalize_naem(
         db, integrations, invoice_id, agreed, message, base=amount,
         actor_id=message.from_user.id,
@@ -1429,7 +1429,9 @@ async def rp_montazh_naem_bonus(
     if not inv:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
-    agreed = _apply_montazh_bonus(inv, amount) if choice == "yes" else amount
+    # Owner 22.08: надбавки к сумме РП нет — старая кнопка «+10%? Да» (сообщения
+    # до 17.07) больше не может её начислить, обе ветки дают введённое число.
+    agreed = amount
     await _finalize_naem(
         db, integrations, invoice_id, agreed, cb.message,  # type: ignore[arg-type]
         actor_id=cb.from_user.id if cb.from_user else None,
@@ -1455,6 +1457,13 @@ async def _build_montazh_zp_card(
     отклонении ГД — РП получает карточку для повторного внесения суммы)."""
     inv = await db.get_invoice(invoice_id)
     if not inv:
+        return None
+    # Owner 22.08: сумму ЗП монтажа РП вводит ТОЛЬКО под наёмную группу (метка
+    # edo_task_id=2). Гард стоит в СБОРЩИКЕ, а не у вызывающих: карточку шлют три
+    # места (наёмная ветка, назначение штатному, отклонение ГД в td.py) — гейт в
+    # одной точке закрывает все, включая путь через td.py, который сейчас трогать
+    # нельзя (в нём лежит непродеплоенный патч детектора зеркала ОП).
+    if inv.get("edo_task_id") != 2:
         return None
     from ..utils import format_card_section
     from .installer_new import _calc_est_montazh  # lazy: circular import
@@ -1512,6 +1521,16 @@ async def rp_montazh_zp_edit(
     if not inv:
         await cb.answer("❌ Счёт не найден", show_alert=True)
         return
+    # Кнопка из старого сообщения живёт в чате вечно [[feedback_fsm_old_buttons_trap]]:
+    # по штатным счетам карточку больше не шлём, но выданные до 22.08 надо отбить —
+    # catch-all для callback-ов в проекте нет, молча висеть кнопка не должна.
+    if inv.get("edo_task_id") != 2:
+        await cb.answer(
+            "⚠️ Сумму ЗП монтажа вводит только наёмная монтажная группа. "
+            "По нашей группе сумму согласует монтажник.",
+            show_alert=True,
+        )
+        return
     if (inv.get("zp_installer_status") or "not_requested") in _ZP_EDIT_BLOCKED_STATUSES:
         await cb.answer(
             "⚠️ По счёту уже есть заявка ЗП (или она выплачена) — сумму менять поздно.",
@@ -1555,10 +1574,9 @@ async def rp_montazh_zp_amount(
         await message.answer("❌ Счёт не найден.")
         return
 
-    # ТЗ owner 17.07: без вопроса о 10%. Б/н — авто +10%, кредит — как введено.
-    # Базу (ввод РП до надбавки) храним для карточки ГД.
+    # Owner 22.08: надбавку +10% к сумме РП не прибавляем (см. rp_montazh_naem_amount).
     await state.clear()
-    x = amount if _is_credit(inv) else _apply_montazh_bonus(inv, amount)
+    x = amount
     await _finalize_zp_edit(
         db, integrations, invoice_id, x, message, message.from_user.id, base=amount,
     )
@@ -1583,7 +1601,7 @@ async def rp_montazh_zp_bonus(
     if not inv:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
-    x = _apply_montazh_bonus(inv, amount) if choice == "yes" else amount
+    x = amount  # owner 22.08: надбавку к сумме РП не прибавляем
     try:
         await cb.message.edit_reply_markup(reply_markup=None)  # одноразовость кнопки
     except Exception:
@@ -1609,6 +1627,12 @@ async def _finalize_zp_edit(
     # Гард повторной проверки: пока РП вводил сумму, заявка могла уйти в работу.
     if (inv.get("zp_installer_status") or "not_requested") in _ZP_EDIT_BLOCKED_STATUSES:
         await target_msg.answer("⚠️ По счёту уже есть заявка ЗП — сумма не записана.")
+        return
+    # Гонка: пока РП вводил сумму, счёт могли перевести на штатную группу.
+    if inv.get("edo_task_id") != 2:
+        await target_msg.answer(
+            "⚠️ Счёт не за наёмной монтажной группой — сумма не записана.",
+        )
         return
     dr = float(inv.get("cost_montazh") or 0)
     agreed = int(round(dr + x))
@@ -1891,9 +1915,8 @@ async def rp_montazh_regroup_amount(
         return
 
     await state.clear()
-    # ТЗ owner 17.07: без вопроса о 10%. Б/н — авто +10%, кредит — как введено.
-    # База (ввод РП до надбавки) прокидывается в merge/finalize для карточки ГД.
-    agreed = amount if _is_credit(inv) else _apply_montazh_bonus(inv, amount)
+    # Owner 22.08: надбавку +10% к сумме РП не прибавляем (см. rp_montazh_naem_amount).
+    agreed = amount
     if await _maybe_offer_merge(
         db, int(invoice_id), str(group), agreed, message, base=amount,
     ):
@@ -1937,7 +1960,7 @@ async def rp_montazh_regroup_bonus(
             await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
         except Exception:
             pass
-        agreed = _apply_montazh_bonus(inv, amount) if choice == "yes" else amount
+        agreed = amount  # owner 22.08: надбавку к сумме РП не прибавляем
         if await _maybe_offer_merge(db, invoice_id, group, agreed, cb.message):  # type: ignore[arg-type]
             return
         await _finalize_regroup(
@@ -2372,11 +2395,11 @@ async def _do_montazh_assign(
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ Счёт №{num} отправлен монтажнику @{installer_name}{att_note}",
     )
-    # ТЗ owner 16.07: после назначения — карточка «💰 ЗП монтаж» с кнопкой ввода суммы.
-    try:
-        await _send_montazh_zp_card(db, cb.message, invoice_id)  # type: ignore[arg-type]
-    except Exception:
-        log.warning("assign: montazh zp card failed inv=%s", invoice_id, exc_info=True)
+    # Owner 22.08: у штатной группы (Игорь) ввода суммы ЗП монтажа у РП нет и не
+    # было — её согласует сам монтажник авто-сметой. Карточка «💰 ЗП монтаж» здесь
+    # больше НЕ отправляется: редакция от 16.07 слала её после ЛЮБОГО назначения,
+    # и через неё 06.08 по счёту 26721-1НПН прошёл ввод РП мимо правила
+    # (audit_log 8786: введено 15 000, записано 17 000 с надбавкой).
 
 
 @router.callback_query(F.data == "rp_montazh:back_menu")
@@ -2614,16 +2637,9 @@ async def rp_montazh_naem_ok(
             f"выплачено прошлой группе {paid_prev:,.0f}₽"
             if paid_prev > 0 else " (согласованная)"
         )
-        # ТЗ owner 17.07: для б/н ГД видит раздельно сумму РП и сумму +10%.
-        # due = база×1.1 (к выплате новой группе), montazh_base_amount = ввод РП.
-        base_rp = float(inv.get("montazh_base_amount") or 0)
-        if not _is_credit(inv) and base_rp > 0:
-            money_block = (
-                f"💵 Внёс РП: <b>{base_rp:,.0f}₽</b>\n"
-                f"💵 С надбавкой +10%: <b>{due:,.0f}₽</b>{due_note}"
-            )
-        else:
-            money_block = f"💵 Сумма: <b>{due:,.0f}₽</b>{due_note}"
+        # Owner 22.08: надбавки к сумме РП больше нет, поэтому прежняя разбивка
+        # «Внёс РП» / «С надбавкой +10%» печатала бы одно и то же число дважды.
+        money_block = f"💵 Сумма: <b>{due:,.0f}₽</b>{due_note}"
         b = InlineKeyboardBuilder()
         b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
         b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
