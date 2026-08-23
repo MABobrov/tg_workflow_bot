@@ -2038,27 +2038,9 @@ async def _build_invoice_end_cards(
         width=44, compact=True,
     )
 
-    # Шапка ГД — эталон: ширина 32, числа справа, ₽ из ячеек убран.
-    head_gd = format_card_section(
-        "🏁", f"Счёт End: №{inv['invoice_number']}",
-        [
-            ("От", initiator),
-            ("Клиент", _html.escape(str(inv.get("client_name") or "—"))),
-            ("Адрес", _addr),
-            ("Тип", "🏦 Кред" if inv.get("is_credit") else "💳 б/н"),
-            ("Сумма", _card_num(inv.get("amount"))),
-            ("Долг", _card_num(inv.get("outstanding_debt"))),
-        ],
-        width=32,
-    )
-
     # PART B (ТЗ 19.06): справочный финблок — display-only, ТОЛЬКО ГД.
     pf = await db.get_plan_fact_card(invoice_id)
     fin_rows = _invoice_end_fin_rows(pf)
-    fin_section = (
-        format_card_section("📊", "Финансы (справочно)", fin_rows, width=32)
-        if fin_rows else ""
-    )
 
     docs = _invoice_docs_lines(inv)
     docs_section = (
@@ -2068,7 +2050,56 @@ async def _build_invoice_end_cards(
     comment_tail = f"\n\n💬 Пояснение: {_html.escape(comment)}" if comment else ""
 
     msg = format_card([head_rp, cond_section, docs_section]) + comment_tail  # → РП (без финблока)
-    gd_msg = format_card([head_gd, fin_section, cond_section, docs_section]) + comment_tail  # → ГД
+
+    # --- Карточка ГД: ОДИН блок (owner 23.08) --------------------------------
+    # Owner дословно: «объединение для роли ГД трёх блоков в один блок».
+    # Деплой `invendcard` 22.08 свёл три СООБЩЕНИЯ в одно, но ВНУТРИ сообщения
+    # осталось ЧЕТЫРЕ отдельных <pre>-конверта (шапка / Финансы / Условия /
+    # Документы) — требование выполнено не было. Теперь всё телo карточки —
+    # один <pre>, а группы внутри разделены словом-подзаголовком и пустой
+    # строкой: это тот же приём, который owner утвердил для карточки «Лиды»
+    # 28.05 («группировка строками-подзаголовками словами, БЕЗ линий-разделителей»
+    # — [[feedback_card_template_standard]]). Пояснение тоже уехало ВНУТРЬ блока,
+    # чтобы под карточкой не висел отдельный хвост текста.
+    #
+    # ⚠️ Ширину считаем по `vw`, а НЕ по len(): «💳», «🏦», «✅», «☐» занимают в
+    # Telegram две колонки, и len() уводил бы такие строки влево — та же грабля,
+    # на которой в `addrcard` 16.08 поехала строка с «⚠️».
+    # ⛔ Карточка РП (`msg`) выше НЕ ТРОГАЕТСЯ: её вывод обязан остаться байт в
+    # байт, это проверяется стендом.
+    from ..rp_start_card import vw as _vw
+
+    _GD_W = 34
+    _GD_IND = "   "
+
+    def _gd_row(label: str, value: str = "") -> str:
+        if not value:
+            return f"{_GD_IND}{label}"
+        pad = max(1, _GD_W - _vw(_GD_IND) - _vw(label) - _vw(value))
+        return f"{_GD_IND}{label}{' ' * pad}{value}"
+
+    gd_groups: list[list[str]] = [[
+        _gd_row("От", initiator),
+        _gd_row("Клиент", _html.escape(str(inv.get("client_name") or "—"))),
+        _gd_row("Адрес", _addr),
+        _gd_row("Тип", "🏦 Кред" if inv.get("is_credit") else "💳 б/н"),
+        _gd_row("Сумма", _card_num(inv.get("amount"))),
+        _gd_row("Долг", _card_num(inv.get("outstanding_debt"))),
+    ]]
+    if fin_rows:
+        gd_groups.append([_gd_row("📊 Финансы (справочно)")]
+                         + [_gd_row(lb, vl) for lb, vl in fin_rows])
+    gd_groups.append([_gd_row("✅ Условия")] + [f"{_GD_IND}{ln}" for ln in cond_lines])
+    if docs:
+        gd_groups.append([_gd_row("📄 Документы")] + [f"{_GD_IND}{ln}" for ln in docs])
+    if comment:
+        gd_groups.append([_gd_row("💬 Пояснение")] + [f"{_GD_IND}{_html.escape(comment)}"])
+
+    gd_msg = (
+        f"<b>🏁  Счёт End: №{inv['invoice_number']}</b>\n<pre>"
+        + "\n\n".join("\n".join(g) for g in gd_groups)
+        + "</pre>"
+    )
     return msg, gd_msg
 
 
