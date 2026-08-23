@@ -633,6 +633,112 @@ async def _rp_cancel_reject_text(db: Database, task_id: int, user_id: int) -> st
     return "Счёт недоступен для снятия."
 
 
+async def _rp_cancel_gd_card(db: Database, task: dict, reason: str) -> str:
+    """Карточка ГД «Счёт снят автором» — по эталону, ОДНИМ блоком.
+
+    Owner 23.08: прежний вид (плоский текст с эмодзи-метками `📋/💰/👤/📝`) —
+    это **anti-pattern B** из [[feedback_card_template_standard]], запрещённый
+    для всех ролей; заодно заказано добавить назначение (стекло/металл/…) и
+    адрес «принятого образца», и держать всё ОДНОЙ карточкой.
+
+    🔑 Источники и вид взяты 1:1 у экрана ГД «Счета на оплату»
+    (`gd._build_gd_invoices_view`, деплой `gdcats` 15.08): payload задачи
+    (`invoice_number`/`amount`/`material_type`), адрес счёта по
+    `invoice_id`/`parent_invoice_id`, категория — `_mt_to_cat`+`CATS`, адрес —
+    `_addr_cell` (Москва → улица, не Москва → город, owner 30.07), ширина —
+    `vw` (эмодзи ≈ 2 колонки). Один и тот же счёт обязан выглядеть одинаково
+    там и здесь, иначе ГД сверяет две разные витрины.
+
+    ⚠️ Экранируем ВЕСЬ текст блока разом и на СЫРОМ считаем ширину: `vw` по
+    экранированному дал бы `&amp;` пять колонок вместо одной.
+    Только показ, боевых данных не пишет
+    ([[feedback_card_display_only_no_data_writes]]).
+    """
+    import html as _html
+    import textwrap
+
+    from ..rp_start_card import CATS, _addr_cell, _mt_to_cat, vw
+
+    payload = try_json_loads(task.get("payload_json") or "{}") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    inv_num = str(payload.get("invoice_number") or f"#{task.get('id')}")
+    money = _sent_money(payload.get("amount") or 0)
+
+    cat = _mt_to_cat(payload.get("material_type") or "")
+    icon = next((ic for (k, ic, *_r) in CATS if k == cat), "🧱")
+    title = next((ttl for (k, _ic, _f, ttl) in CATS if k == cat), "Прочее")
+
+    inv_id = payload.get("invoice_id") or payload.get("parent_invoice_id")
+    addr = ""
+    if inv_id:
+        try:
+            addr = (await db.get_invoice(int(inv_id)) or {}).get("object_address") or ""
+        except (KeyError, TypeError, ValueError):
+            addr = ""
+    street = _addr_cell(addr, 14) if addr else "—"
+
+    # Инициатор — ПЕРВЫМ именем и ролью, как задумано на экране ГД «Счета на
+    # оплату» (`gd._build_gd_invoices_view::_creator`). Полное имя с @username,
+    # которое отдаёт `get_initiator_label`, уводит ширину карточки за 50 колонок
+    # и ломает её на телефоне — замерено стендом до правки (49 колонок в строке).
+    # Снявший и создатель — один человек: снять чужой счёт не даёт гард
+    # `_rp_sent_invoice_tasks` (выборка идёт по `created_by`).
+    #
+    # 🔴 Роль берём из `users.role`, а НЕ из `task["creator_role"]`, как сосед:
+    # такой колонки в таблице `tasks` НЕТ ВООБЩЕ (проверено на боевой —
+    # `no such column: creator_role`), поэтому у ГД роль не печаталась никогда.
+    # Повторять мёртвую ветку незачем. `parse_roles` берёт первую роль по
+    # бизнес-порядку — у Павла `role='rp,manager_npn'`, и это «РП».
+    role_lbl = {
+        "rp": "РП", "gd": "ГД", "td": "ТД",
+        "manager": "менеджер", "manager_kv": "менеджер",
+        "manager_kia": "менеджер", "manager_npn": "менеджер",
+    }
+    who = "—"
+    cid = task.get("created_by")
+    if cid:
+        try:
+            user = await db.get_user_optional(int(cid))
+        except (TypeError, ValueError):
+            user = None
+        name = (user.full_name.split()[0] if (user and user.full_name) else "") or f"#{cid}"
+        # ⚠️ При нескольких ролях берём ТУ, в которой человек выступает ЗДЕСЬ.
+        # `parse_roles` сортирует по бизнес-порядку и у Павла отдаёт
+        # ['manager_npn', 'rp'] — первый элемент дал бы «менеджер» на карточке
+        # счёта, поданного им как РП (замерено на боевой).
+        roles = parse_roles(getattr(user, "role", "") if user else "")
+        role = "rp" if "rp" in roles else (roles[0] if roles else "")
+        lbl = role_lbl.get(role, "")
+        who = f"{name} ({lbl})" if lbl else name
+
+    indent = "   "
+    head = f"№{inv_num} · {street}"
+    left = [f"{icon} {title}", f"👤 {who}"]
+
+    # Пол ширины 38, а не 34: денежная строка тут одна, и при 34 сумма упиралась
+    # в адрес через ОДИН пробел — правое выравнивание становилось фиктивным
+    # (замерено стендом). 38 даёт видимый зазор и на телефон помещается.
+    width = max(
+        [vw(indent) + vw(head) + 1 + vw(money)]
+        + [vw(indent) + vw(row) for row in left]
+        + [38]
+    )
+    pad = max(1, width - vw(indent) - vw(head) - vw(money))
+    lines = [f"{indent}{head}{' ' * pad}{money}"]
+    lines += [f"{indent}{row}" for row in left]
+
+    # Причина — свободный текст человека: переносим по ширине карточки, иначе
+    # <pre> уедет в горизонтальную прокрутку и на телефоне будет нечитаем.
+    # Слово «Причина» сохранено — оно было в прежнем тексте, утверждённом owner'ом
+    # 22.08, и убирать его никто не просил [[feedback_do_exactly_asked_no_own_initiative]].
+    chunks = textwrap.wrap(f"Причина: {reason}".strip(), max(20, width - vw(indent) - 3))
+    for i, chunk in enumerate(chunks or ["Причина: —"]):
+        lines.append(f"{indent}{'📝 ' if i == 0 else '   '}{chunk}")
+
+    return "<b>🚫  Счёт снят автором</b>\n<pre>" + _html.escape("\n".join(lines)) + "</pre>"
+
+
 @router.callback_query(F.data.startswith("rp_inv_pay:cancel:"))
 async def rp_invoices_pay_cancel_start(
     cb: CallbackQuery, state: FSMContext, db: Database,
@@ -764,23 +870,19 @@ async def rp_invoices_pay_cancel_reason(
 
     payload = try_json_loads(updated.get("payload_json") or "{}") or {}
     inv_num = html.escape(str(payload.get("invoice_number") or f"#{task_id}"))
-    money = _sent_money(payload.get("amount") or 0)
-    initiator = html.escape(await get_initiator_label(db, int(uid)))
     reason_safe = html.escape(reason)
 
-    # Уведомление ГД — пункт (3) требования owner'а. Экранируем: parse_mode у
-    # бота HTML, а причина — свободный текст человека. safe_send умеет откатиться
-    # в plain text, но тогда ГД увидит сырую разметку вместо текста.
+    # Уведомление ГД — пункт (3) требования owner'а: ОДНО сообщение и по эталону
+    # (owner 23.08, прежний плоский вид = anti-pattern B). Экранирование живёт
+    # внутри `_rp_cancel_gd_card`: parse_mode у бота HTML, а причина — свободный
+    # текст человека; safe_send умеет откатиться в plain text, но тогда ГД
+    # увидит сырую разметку вместо текста.
     gd_id = updated.get("assigned_to")
     if gd_id:
         try:
             await notifier.safe_send(
                 int(gd_id),
-                "🚫 Счёт снят автором\n"
-                f"📋 Счёт на оплату №{inv_num}\n"
-                f"💰 {money}\n"
-                f"👤 {initiator}\n"
-                f"📝 Причина: {reason_safe}",
+                await _rp_cancel_gd_card(db, updated, reason),
             )
         except (TypeError, ValueError):
             log.warning("rp inv cancel: bad assigned_to on task %s", task_id)
