@@ -1849,12 +1849,20 @@ async def rp_montazh_regroup_confirm(
 
 
 @router.callback_query(F.data.regexp(r"^rp_montazh:regrp_(igor|naem):\d+$"))
-async def rp_montazh_regroup_pick(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Новая группа выбрана → запрашиваем согласованную сумму ЗП монтажа.
+async def rp_montazh_regroup_pick(
+    cb: CallbackQuery, state: FSMContext, db: Database, integrations: IntegrationHub,
+) -> None:
+    """Новая группа выбрана → сумму ЗП монтажа спрашиваем ТОЛЬКО под наёмную.
 
-    Сумму спрашиваем для ОБЕИХ групп (ТЗ owner: «когда РП использует этот механизм —
-    запросить согласованную сумму»), в отличие от первичного назначения, где группа 1️⃣
-    сумму не вводит (её считает монтажник авто-сметой).
+    Owner 23.08: на НАШУ группу сумму называет сам монтажник — как при первичном
+    назначении, где группа 1️⃣ ввода не имеет вовсе. Прежняя редакция (ТЗ owner 15.07)
+    спрашивала для ОБЕИХ групп; после гейта 22.08 это стало единственным местом, где
+    РП мог ввести сумму мимо наёмников.
+
+    Выплаченное прошлой группе при этом НЕ теряется и НЕ спрашивается развилкой:
+    owner 23.08 — «сумма Игоря и сумма наёмников суммируется». Механика та же, что у
+    кнопки «🔗 Объединить»: выплаченное уходит в montazh_paid_prev, а монтажник своей
+    суммой его ДОПОЛНЯЕТ (installer_new.installer_price_confirm прибавляет paid_prev).
     """
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
@@ -1872,6 +1880,29 @@ async def rp_montazh_regroup_pick(cb: CallbackQuery, state: FSMContext, db: Data
     if not acked and await _regroup_warn_if_money(db, inv, cb.message):  # type: ignore[arg-type]
         return
     group = "igor" if kind == "regrp_igor" else "naem"
+    if group == "igor":
+        # Гард от двойного клика обязателен: ветка стала ПИШУЩЕЙ, а _finalize_regroup
+        # намеренно без идемпотентности — повторный клик переиграл бы смену группы.
+        key = (cb.from_user.id if cb.from_user else 0, invoice_id)
+        if key in _REGROUP_INFLIGHT:
+            await cb.answer("Уже обрабатываю, секунду…")
+            return
+        _REGROUP_INFLIGHT.add(key)
+        try:
+            # Пара гардов — 1:1 с _maybe_offer_merge, а не своя формула: зачтённый аванс
+            # выплатой НЕ считается (_montazh_payout_done), иначе аванс текущей группы
+            # попал бы в «Согласовано» вторым слагаемым и раздул бы его.
+            paid = 0.0
+            if _montazh_payout_done(inv):
+                paid, _adv = await _montazh_money_state(db, inv)
+            await state.clear()
+            await _finalize_regroup(
+                db, integrations, invoice_id, group, 0, cb.message,  # type: ignore[arg-type]
+                paid_prev=paid, base=0,
+            )
+        finally:
+            _REGROUP_INFLIGHT.discard(key)
+        return
     await state.set_state(RpMontazhRegroupSG.amount)
     await state.update_data(regroup_invoice_id=invoice_id, regroup_group=group)
     grp_name = "1️⃣ Наша монтажная группа" if group == "igor" else "2️⃣ Наёмная монтажная группа"
@@ -1915,6 +1946,22 @@ async def rp_montazh_regroup_amount(
         return
 
     await state.clear()
+    # Owner 23.08: под НАШУ группу сумму вводит монтажник, а не РП. Сюда можно попасть
+    # только из состояния, поставленного ДО деплоя (кнопка старого сообщения) —
+    # записывать ввод вопреки правилу нельзя [[feedback_fsm_old_buttons_trap]].
+    if str(group) == "igor":
+        paid = 0.0
+        if _montazh_payout_done(inv):
+            paid, _adv = await _montazh_money_state(db, inv)
+        await message.answer(
+            "ℹ️ Сумму ЗП монтажа для нашей монтажной группы называет сам монтажник — "
+            "ваш ввод не записан.",
+        )
+        await _finalize_regroup(
+            db, integrations, int(invoice_id), "igor", 0, message,
+            paid_prev=paid, base=0,
+        )
+        return
     # Owner 22.08: надбавку +10% к сумме РП не прибавляем (см. rp_montazh_naem_amount).
     agreed = amount
     if await _maybe_offer_merge(
@@ -2151,14 +2198,24 @@ async def _finalize_regroup(
         else "Когда монтаж выполнен — нажмите «✅ Монтаж ОК»."
     )
     zp_line = "🚫 Запрос ЗП у ГД снят — запросите заново после монтажа.\n" if zp_withdrawn else ""
-    money_lines = (
-        f"🔗 Платежи объединены: выплачено <b>{paid_prev:,.0f}₽</b> + новая "
-        f"<b>{agreed:,.0f}₽</b>\n"
-        f"💰 Согласовано по счёту: <b>{agreed_total:,.0f}₽</b>\n"
-        f"👉 Новой группе к выплате: <b>{agreed:,.0f}₽</b>\n"
-        if merged else
-        f"💰 Согласованная сумма ЗП монтажа: <b>{agreed_total:,.0f}₽</b>\n"
-    )
+    # Сумма РП есть только у наёмной ветки. Под нашу группу её называет монтажник,
+    # поэтому печатать «новая 0₽ / к выплате 0₽» нельзя — это читалось бы как обнуление.
+    if agreed <= 0:
+        money_lines = (
+            f"💰 Выплачено прошлой группе: <b>{paid_prev:,.0f}₽</b> — сохранено.\n"
+            f"👉 Сумму назовёт монтажник; бот прибавит выплаченное к ней.\n"
+            if merged else
+            "👉 Сумму ЗП монтажа назовёт монтажник при приёме счёта.\n"
+        )
+    else:
+        money_lines = (
+            f"🔗 Платежи объединены: выплачено <b>{paid_prev:,.0f}₽</b> + новая "
+            f"<b>{agreed:,.0f}₽</b>\n"
+            f"💰 Согласовано по счёту: <b>{agreed_total:,.0f}₽</b>\n"
+            f"👉 Новой группе к выплате: <b>{agreed:,.0f}₽</b>\n"
+            if merged else
+            f"💰 Согласованная сумма ЗП монтажа: <b>{agreed_total:,.0f}₽</b>\n"
+        )
     await target_msg.answer(
         f"✅ Счёт №{num} — монтажная группа изменена\n"
         f"👥 Группа: <b>{grp_txt}</b>\n"
