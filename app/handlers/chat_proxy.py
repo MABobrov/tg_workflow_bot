@@ -1304,8 +1304,6 @@ async def _finalize_credit_execution(
     Idempotency: атомарный CAS статуса в DONE «забирает» задачу — только один
     обработчик пишет расход. На ошибке записи статус откатывается в in_progress.
     """
-    from ..services.assignment import resolve_default_assignee
-
     try:
         task = await db.get_task(tid)
     except KeyError:
@@ -1501,13 +1499,11 @@ async def _finalize_credit_execution(
     cb_id = task.get("created_by")
     if cb_id:
         recipients.append(int(cb_id))
-    try:
-        gd_default = await resolve_default_assignee(db, config, Role.GD)
-        if gd_default and int(gd_default) not in recipients:
-            recipients.append(int(gd_default))
-    except Exception:
-        log.debug("credit_exec: resolve GD failed", exc_info=True)
-    # Исполнитель получает ту же карточку, что инициатор/ГД.
+    # Исполнитель получает ту же карточку, что инициатор. ГД сюда БОЛЬШЕ НЕ
+    # добавляется принудительно (owner 24.08): он уже видел эту трату карточкой
+    # "Расход кредита" при СОЗДАНИИ запроса (manager_new._notify_gd_rp), и вторая
+    # карточка с тем же Назначением/Суммой была для него дублем. Если ГД сам
+    # инициатор или исполнитель — он остаётся в списке как created_by/actor_id.
     if actor_id and int(actor_id) not in recipients:
         recipients.append(int(actor_id))
     ft = (file_info or {}).get("file_type")
