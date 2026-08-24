@@ -1929,15 +1929,34 @@ def _card_num(v: Any) -> str:
         return "—"
 
 
-def _invoice_end_fin_rows(pf: dict[str, Any]) -> list[tuple[str, str]]:
+def _card_pct(v: Any) -> str:
+    """Процент для карточки: одна цифра после запятой, минус — U+2212.
+
+    Формат взят у канонической карточки план/факт (utils.format_plan_fact_card,
+    строка «Рент-ть»: `{pct:>9.1f}%`), чтобы одна и та же величина в двух
+    витринах ГД выглядела одинаково.
+    """
+    try:
+        return f"{float(v or 0):.1f}%".replace("-", "\u2212")
+    except (ValueError, TypeError):
+        return "—"
+
+
+def _invoice_end_fin_rows(inv: dict[str, Any], pf: dict[str, Any]) -> list[tuple[str, str]]:
     """Финблок «Счёт End» строками эталона (owner 22.08).
 
-    Те же величины, что у utils.format_invoice_end_financials, но каждая —
-    своей строкой, числа справа, ₽ из ячеек убран. Прежняя вёрстка шла через
-    format_card_section(compact=True), а в ветке compact параметр width НЕ
-    применяется вовсе (utils.py:3941-3948) — строка вида
+    Каждая величина — своей строкой, числа справа, ₽ из ячеек убран. Прежняя
+    вёрстка шла через format_card_section(compact=True), а в ветке compact
+    параметр width НЕ применяется вовсе (utils.py:3941-3948) — строка вида
     «Себест-ть: расч N / факт N₽» переваливала за 44 знака и переносилась на
     телефоне. Ровно на это жаловался owner: «строки переносятся».
+
+    ⚠️ Состав ШИРЕ, чем у utils.format_invoice_end_financials (24.08): добавлены
+    НДС, рент-ть расч/факт, ЗП РП 10% и доля ГД, а ЗП менеджера переведена на AJ.
+    Это вторая половина того же требования owner 22.08 — «не хватает важной
+    информации» — и его же «данные поступают неправильно»; состав и источники
+    взяты у канонической карточки utils.format_plan_fact_card и у письменного
+    эталона [[feedback_card_calc_sources]], а не придуманы здесь.
 
     ⚠️ Копия расчёта здесь СОЗНАТЕЛЬНАЯ и ВРЕМЕННАЯ. Общий рендер живёт в
     utils.format_invoice_end_financials, но utils.py сейчас держит
@@ -1955,7 +1974,11 @@ def _invoice_end_fin_rows(pf: dict[str, Any]) -> list[tuple[str, str]]:
     fact_total = pf.get("actual_total_cost", 0) or 0
     est_profit = pf.get("estimated_profit", 0) or 0
     fact_profit = pf.get("actual_profit", 0) or 0
-    manager_zp = pf.get("manager_zp", 0) or 0
+    est_pct = pf.get("estimated_profitability", 0) or 0
+    fact_pct = pf.get("actual_profitability", 0) or 0
+    net_vat = pf.get("net_vat", 0) or 0
+    rp_zp = pf.get("rp_zp", 0) or 0
+    gd_profit = pf.get("gd_profit", 0) or 0
     client_source = pf.get("client_source", "own")
 
     # Гейт «факт готов» — зеркало _has_key_facts из format_plan_fact_card: факт
@@ -1973,22 +1996,51 @@ def _invoice_end_fin_rows(pf: dict[str, Any]) -> list[tuple[str, str]]:
     )
     has_fact = bool(fact_mat) and bool(fact_inst)
 
-    rows: list[tuple[str, str]] = [
-        ("Себест-ть расч", _card_num(est_total)),
-        ("Себест-ть факт", _card_num(fact_total) if has_fact else "—"),
-        ("Прибыль расч", _card_num(est_profit)),
-        ("Прибыль факт", _card_num(fact_profit) if has_fact else "—"),
-    ]
+    # 🔴 НДС строкой МЕЖДУ себестоимостью и прибылью — чтобы числа сходились
+    # НА ЭКРАНЕ. Это не изобретение: ровно так предписывает ТЗ 2026-05-19 A.6,
+    # уже реализованное в канонической карточке (utils.format_plan_fact_card,
+    # комментарий там дословно: «показываем НДС/Налог приб./НПН строками между
+    # Себест-ть и Прибыль — чтобы визуально Сумма − Себест-ть − НДС − Налог −
+    # НПН = Прибыль»). В карточку «Счёт End» это правило не доехало, и owner
+    # 22.08 жаловался: «в карточку финансы данные поступают неправильно».
+    # Замер 24.08 по боевым: у 24 счетов из 38 «Сумма − Себест-ть» не равнялась
+    # «Прибыли», и у ВСЕХ 24 разрыв в точности равен net_vat (до 359 754 ₽).
+    # ⛔ У кредитных НДС не считается и НЕ показывается (owner 28.05,
+    # [[feedback_card_calc_sources]]): замер подтвердил — у 14 кредитных
+    # net_vat = 0 и разрыва нет, набор строк у них не меняется.
+    rows: list[tuple[str, str]] = [("Себест-ть расч", _card_num(est_total))]
+    if not inv.get("is_credit") and abs(float(net_vat or 0)) > 0.5:
+        rows.append(("НДС расч", _card_num(net_vat)))
+    rows.append(("Прибыль расч", _card_num(est_profit)))
+    rows.append(("Рент-ть расч", _card_pct(est_pct)))
+    rows.append(("Себест-ть факт", _card_num(fact_total) if has_fact else "—"))
+    rows.append(("Прибыль факт", _card_num(fact_profit) if has_fact else "—"))
+    rows.append(("Рент-ть факт", _card_pct(fact_pct) if has_fact else "—"))
     # При расч. прибыли ≤ 0 распределять нечего (зеркало format_plan_fact_card,
     # который скрывает блок распределения при est_profit ≤ 0) — отрицательную
     # «зарплату» не показываем.
     if est_profit and float(est_profit) > 0:
-        rows.append(("ЗП менеджера расч", _card_num(manager_zp)))
+        # Распределение прибыли целиком, как в канонической карточке: без ЗП РП
+        # и доли ГД оно было показано на треть, а доля ГД — это собственные
+        # деньги того, кто на эту карточку смотрит и принимает решение.
+        rows.append(("ЗП РП 10%", _card_num(rp_zp)))
+        # 🔴 Источник ЗП менеджера — AJ через manager_zp_net_payout, а НЕ
+        # расчётный сплит pf["manager_zp"]. Owner 27.06 дословно: «Правильно: aj»
+        # ([[feedback_card_calc_sources]]: «ЗП менеджер | AJ»), и каноническая
+        # карточка уже читает AJ (utils.py, format_plan_fact_card). Карточка
+        # «Счёт End» единственная осталась на расчётном сплите: замер 24.08 —
+        # расхождение у 37 счетов из 38, суммарно 131 896 ₽ (до 25 483 ₽ на счёт).
+        rows.append(("ЗП менеджера", _card_num(manager_zp_net_payout(inv))))
+        rows.append(("Доля ГД", _card_num(gd_profit)))
+        # Соотношение — в виде 75/25 и 50/50, как задаёт письменный эталон
+        # источников (H: 1 = 50/50, 2 = 75/25) и как печатает соседняя карточка.
+        # Прежняя подпись «лид ГД 25%» показывала долю менеджера и расходилась
+        # с соседней витриной ГД по тому же счёту.
         rows.append(
-            ("Ставка", "📋 лид ГД 25%" if client_source == "gd_lead" else "👤 свой 50%")
+            ("Соотношение", "📋 Лид ГД 75/25" if client_source == "gd_lead" else "👤 Свой 50/50")
         )
     else:
-        rows.append(("ЗП менеджера расч", "—"))
+        rows.append(("ЗП менеджера", "—"))
     return rows
 
 
@@ -2040,7 +2092,7 @@ async def _build_invoice_end_cards(
 
     # PART B (ТЗ 19.06): справочный финблок — display-only, ТОЛЬКО ГД.
     pf = await db.get_plan_fact_card(invoice_id)
-    fin_rows = _invoice_end_fin_rows(pf)
+    fin_rows = _invoice_end_fin_rows(inv, pf)
 
     docs = _invoice_docs_lines(inv)
     docs_section = (
@@ -2067,21 +2119,65 @@ async def _build_invoice_end_cards(
     # на которой в `addrcard` 16.08 поехала строка с «⚠️».
     # ⛔ Карточка РП (`msg`) выше НЕ ТРОГАЕТСЯ: её вывод обязан остаться байт в
     # байт, это проверяется стендом.
-    from ..rp_start_card import vw as _vw
+    from ..rp_start_card import vw as _vw, _addr_cell as _gd_addr
 
     _GD_W = 34
     _GD_IND = "   "
 
     def _gd_row(label: str, value: str = "") -> str:
+        """Строка блока ГД: метка слева, значение справа по правому краю.
+
+        Ширина считается по СЫРОМУ тексту, а экранирование делается ОДИН раз для
+        всего блока (ниже). Раньше сюда приходил уже экранированный текст, и
+        «ООО "АКТИВО"» занимало 20 колонок вместо 12 (&quot; — шесть знаков
+        вместо одного): значение уезжало влево на 8 колонок, правое выравнивание
+        становилось фиктивным. Замер 24.08: задето 9 боевых счетов из 40 — ровно
+        те, у кого в названии клиента есть кавычки. Тот же приём уже применён в
+        карточке «Счёт снят автором» (rp_new._rp_cancel_gd_card, 23.08).
+        """
         if not value:
             return f"{_GD_IND}{label}"
         pad = max(1, _GD_W - _vw(_GD_IND) - _vw(label) - _vw(value))
         return f"{_GD_IND}{label}{' ' * pad}{value}"
 
+    def _gd_wrap(text: str) -> list[str]:
+        """Длинный свободный текст — переносом по ширине блока, по словам.
+
+        Жалоба owner 22.08 «строки переносятся» относилась ко ВСЕЙ карточке, а не
+        только к финблоку: пояснение и строки документов не ограничены ничем и на
+        телефоне рвались в произвольном месте. Перенос делаем сами.
+        """
+        words = str(text or "").split()
+        if not words:
+            return []
+        out: list[str] = []
+        cur = ""
+        limit = _GD_W - _vw(_GD_IND)
+        for w in words:
+            probe = f"{cur} {w}".strip()
+            if cur and _vw(probe) > limit:
+                out.append(f"{_GD_IND}{cur}")
+                cur = w
+            else:
+                cur = probe
+        if cur:
+            out.append(f"{_GD_IND}{cur}")
+        return out
+
+    # Адрес — «принятым образцом» _addr_cell (Москва → улица, иногородний →
+    # город), а не object_address целиком. Полный адрес давал строки до 65
+    # колонок при ширине блока 34 — это и есть незакрытая половина жалобы owner
+    # «строки переносятся». Замер 24.08: шире блока было 36 адресных строк,
+    # после правки — 0; задет был каждый из 40 боевых счетов.
+    # Образец не выдуман: ровно его owner потребовал 23.08 для соседней карточки
+    # ГД «Счёт снят автором», и его же печатает экран ГД «Счета на оплату»
+    # (gdcats 15.08) — один счёт обязан выглядеть в витринах ГД одинаково.
+    # Карточка РП (`msg`) выше НЕ ТРОГАЕТСЯ: её вывод обязан остаться байт в
+    # байт, это проверяется стендом.
     gd_groups: list[list[str]] = [[
         _gd_row("От", initiator),
-        _gd_row("Клиент", _html.escape(str(inv.get("client_name") or "—"))),
-        _gd_row("Адрес", _addr),
+        _gd_row("Клиент", str(inv.get("client_name") or "—")),
+        _gd_row("Адрес", _gd_addr(inv.get("object_address") or "—", 26)),
         _gd_row("Тип", "🏦 Кред" if inv.get("is_credit") else "💳 б/н"),
         _gd_row("Сумма", _card_num(inv.get("amount"))),
         _gd_row("Долг", _card_num(inv.get("outstanding_debt"))),
@@ -2091,13 +2187,17 @@ async def _build_invoice_end_cards(
                          + [_gd_row(lb, vl) for lb, vl in fin_rows])
     gd_groups.append([_gd_row("✅ Условия")] + [f"{_GD_IND}{ln}" for ln in cond_lines])
     if docs:
-        gd_groups.append([_gd_row("📄 Документы")] + [f"{_GD_IND}{ln}" for ln in docs])
+        _doc_lines: list[str] = []
+        for _dl in docs:
+            _doc_lines.extend(_gd_wrap(_dl))
+        gd_groups.append([_gd_row("📄 Документы")] + _doc_lines)
     if comment:
-        gd_groups.append([_gd_row("💬 Пояснение")] + [f"{_GD_IND}{_html.escape(comment)}"])
+        gd_groups.append([_gd_row("💬 Пояснение")] + _gd_wrap(comment))
 
+    # Экранируем ВЕСЬ блок разом — ширина выше посчитана по сырому тексту.
     gd_msg = (
-        f"<b>🏁  Счёт End: №{inv['invoice_number']}</b>\n<pre>"
-        + "\n\n".join("\n".join(g) for g in gd_groups)
+        f"<b>🏁  Счёт End: №{_html.escape(str(inv['invoice_number']))}</b>\n<pre>"
+        + _html.escape("\n\n".join("\n".join(g) for g in gd_groups))
         + "</pre>"
     )
     return msg, gd_msg
