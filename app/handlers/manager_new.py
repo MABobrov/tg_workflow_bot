@@ -2150,18 +2150,22 @@ async def _build_invoice_end_cards(
         words = str(text or "").split()
         if not words:
             return []
+        # Продолжение — с ВИСЯЧИМ отступом: без него перенос читается как
+        # отдельный пункт списка («📁 Оригиналы первичных: у» / «менеджера»).
+        hang = _GD_IND + "  "
         out: list[str] = []
         cur = ""
-        limit = _GD_W - _vw(_GD_IND)
+        ind = _GD_IND
         for w in words:
             probe = f"{cur} {w}".strip()
-            if cur and _vw(probe) > limit:
-                out.append(f"{_GD_IND}{cur}")
+            if cur and _vw(probe) > _GD_W - _vw(ind):
+                out.append(f"{ind}{cur}")
+                ind = hang
                 cur = w
             else:
                 cur = probe
         if cur:
-            out.append(f"{_GD_IND}{cur}")
+            out.append(f"{ind}{cur}")
         return out
 
     # Адрес — «принятым образцом» _addr_cell (Москва → улица, иногородний →
