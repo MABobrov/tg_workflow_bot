@@ -1837,6 +1837,94 @@ async def gd_purchases_detail(cb: CallbackQuery, db: Database) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Карточка «Копия таблицы» — статус еженедельной PDF-копии листов (owner 27.08)
+# ---------------------------------------------------------------------------
+# 🔑 Копию делает НЕ бот. Это задача планировщика Windows на машине owner'а
+# («Меню бота - PDF-копия таблицы», понедельник 10:00 МСК): она по ssh гоняет
+# выгрузку внутри контейнера и забирает три PDF к себе на диск. Бот об этом не
+# знает ничего — единственный мост — строка в audit_log, которую пишет
+# .backup_tools/mark_backup_done.py сразу после успешной выгрузки.
+#
+# Карточка эту строку только ЧИТАЕТ — боевых данных не пишет
+# (feedback_card_display_only_no_data_writes), поэтому денежный функтест не
+# требуется (прецеденты nowallet 11.08, gdcats 15.08, addrcard 16.08).
+
+_BACKUP_ACTION = "sheets_pdf_backup"
+_BACKUP_ENTITY = "backup"
+_BACKUP_DUE_HOUR_MSK = 10   # совпадает с триггером задачи планировщика
+
+
+async def _backup_status_card(db: Database, now: datetime | None = None) -> str | None:
+    """Секция «Копия таблицы» для стартового экрана ГД — ТОЛЬКО по понедельникам.
+
+    Любой другой день недели → None. Owner 27.08 дословно: «просто чтобы к
+    стартовым карточкам по понедельникам добавлялась карточка со статусом этой
+    задачи».
+
+    ⚠️ Эмодзи-статус стоит в ШАПКЕ секции, а не в значении строки:
+    format_card_section выравнивает по len(), а ✅/🔴/⏳ занимают в Telegram ДВЕ
+    колонки — значение с эмодзи уехало бы влево на символ (та же грабля, из-за
+    которой в addrcard 16.08 ⚠️ заменили на 🔴).
+
+    now — только для стенда (подставить понедельник); в проде не передаётся.
+    """
+    import json as _json
+    from zoneinfo import ZoneInfo as _zi
+
+    if now is None:
+        now = datetime.now(_zi("Europe/Moscow"))
+    if now.weekday() != 0:                      # 0 = понедельник
+        return None
+
+    try:
+        cur = await db.conn.execute(
+            "SELECT entity_id, payload_json, created_at FROM audit_log "
+            "WHERE entity = ? AND action = ? ORDER BY id DESC LIMIT 1",
+            (_BACKUP_ENTITY, _BACKUP_ACTION),
+        )
+        row = await cur.fetchone()
+    except Exception:
+        log.warning("gd_sync: backup status read failed", exc_info=True)
+        return None
+
+    last_dt = format_dt_iso(row["created_at"], "Europe/Moscow") if row else "—"
+    done_today = bool(row) and (row["entity_id"] or "") == now.strftime("%Y-%m-%d")
+
+    total: str | None = None
+    if done_today:
+        emoji = "✅"
+        try:
+            payload = _json.loads(row["payload_json"] or "{}")
+        except Exception:
+            payload = {}
+        n_files = int(payload.get("files") or 0)
+        total_kb = int(payload.get("total_kb") or 0)
+        items = [
+            ("Сделана", last_dt),
+            ("Листов", str(n_files) if n_files else "—"),
+        ]
+        if total_kb:
+            total = f"{total_kb / 1024:.1f} МБ" if total_kb >= 1024 else f"{total_kb} КБ"
+    elif now.hour < _BACKUP_DUE_HOUR_MSK:
+        # Понедельник до 10:00 — задача ещё не отработала, это не сбой.
+        emoji = "⏳"
+        items = [
+            ("Статус", "ожидается"),
+            ("Сегодня в", f"{_BACKUP_DUE_HOUR_MSK}:00"),
+            ("Прошлая", last_dt),
+        ]
+    else:
+        emoji = "🔴"
+        items = [
+            ("Статус", "копии нет"),
+            ("Ожидалась", f"сегодня {_BACKUP_DUE_HOUR_MSK}:00"),
+            ("Прошлая", last_dt),
+        ]
+
+    return format_card_section(emoji, "Копия таблицы", items=items, total=total)
+
+
+# ---------------------------------------------------------------------------
 # "Синхронизация данных" — Google Sheets resync from GD main menu
 # ---------------------------------------------------------------------------
 
@@ -1906,6 +1994,20 @@ async def gd_sync_data(
     # Карточка остаётся в чате permanent (без auto-delete) — Сергей жмёт sync
     # редко и должен видеть последнюю сводку при следующем заходе.
     await message.answer(text, reply_markup=markup)
+
+    # «Копия таблицы» — ТОЛЬКО по понедельникам (owner 27.08). Отдельным
+    # сообщением, а не секцией внутри карты, по двум причинам:
+    #   1) секции собирает utils.build_gd_sync_card_text, а в utils.py сейчас
+    #      лежит НЕпродеплоенный патч детектора зеркала ОП — файл трогать нельзя
+    #      (feedback_undeployed_patch_survives_resync);
+    #   2) стартовая карта ГД и без того близка к лимиту Telegram 4096.
+    # Сбой карточки не должен ронять синк — она информационная.
+    try:
+        _backup_card = await _backup_status_card(db)
+        if _backup_card:
+            await message.answer(_backup_card)
+    except Exception:
+        log.warning("gd_sync: backup status card failed", exc_info=True)
 
     # Статистика по менеджерам теперь ВНУТРИ стартовой карты (секцией между «Лиды» и
     # «Кредитный баланс», см. utils.build_gd_sync_card_text) — отдельное сообщение
