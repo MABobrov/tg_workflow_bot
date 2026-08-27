@@ -430,6 +430,34 @@ async def gd_supplier_pay_dashboard(message: Message, state: FSMContext, db: Dat
     await message.answer("\n".join(lines), reply_markup=b.as_markup())
 
 
+def _montazh_zp_amounts(inv: dict, adv_offset: float) -> tuple[float, float, float]:
+    """Арифметика «Монтаж ЗП»: (аванс CG, Согласовано, BJ-остаток «к выплате»).
+
+    🔑 Вынесено 27.08, когда под списком появилась ОБЩАЯ карточка. Формула
+    НЕ менялась — перенесена из `_montazh_zp_list_card` как есть. Смысл выноса:
+    итог внизу обязан быть колоночной суммой карточек сверху, а две копии
+    формулы BJ неминуемо разъехались бы — и ГД увидел бы, что низ не сходится
+    с тем, что он же читает поштучно.
+
+    Аванс монтажника — CG-конвенция: б/н ×1.10, кредит как есть.
+    BJ = Согласовано − Выплачено; для pending-запросов Выплачено = max(AN, аванс),
+    бот ещё не платил — совпадает с листом Invoices.BJ ([[feedback_bs_immutable]]).
+
+    ⚠️ Объединение платежей (owner 15.07): «Согласовано» включает ЗП, выплаченную
+    ПРОШЛЫМ монтажным группам. AN накапливает ВСЕ ноги, поэтому с `paid_prev` он
+    не суммируется, а конкурирует по максимуму — иначе старая нога вычлась бы
+    дважды. При `paid_prev = 0` формула ровно прежняя.
+    """
+    from .installer_new import _is_credit
+
+    adv_cg = adv_offset * 1.10 if (adv_offset > 0 and not _is_credit(inv)) else adv_offset
+    agreed = float(inv.get("montazh_agreed_amount") or 0)
+    an = float(inv.get("montazh_fact_op") or 0)
+    paid_prev = float(inv.get("montazh_paid_prev") or 0)
+    bj = max(0.0, agreed - max(an, paid_prev + adv_cg)) if agreed > 0 else 0.0
+    return adv_cg, agreed, bj
+
+
 def _montazh_zp_list_card(
     inv: dict, adv_offset: float = 0.0, adv_date: str | None = None,
 ) -> str:
@@ -455,7 +483,6 @@ def _montazh_zp_list_card(
       • к выплате (footer) = BJ-остаток = Согласовано − max(AN, аванс) (ТЗ user 08.06pm)
     """
     from ..rp_start_card import _addr_cell
-    from .installer_new import _is_credit
 
     def _f(n: Any) -> str:
         if n is None:
@@ -494,22 +521,11 @@ def _montazh_zp_list_card(
     num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
     street = _addr_cell(inv.get("object_address"), 22)
 
-    # Аванс монтажника (CG-конвенция: б/н ×1.10, кредит как есть) + к выплате = BJ-остаток.
-    # BJ = Согласовано − Выплачено; для pending-запросов Выплачено = max(AN, аванс)
-    # (бот ещё не платил) — совпадает с листом Invoices.BJ. [[feedback_bs_immutable]]
-    adv_cg = adv_offset * 1.10 if (adv_offset > 0 and not _is_credit(inv)) else adv_offset
-    _agreed = float(inv.get("montazh_agreed_amount") or 0)
-    _an = float(inv.get("montazh_fact_op") or 0)
-    # Объединение платежей (owner 15.07): Согласовано включает ЗП, выплаченную ПРОШЛЫМ
-    # монтажным группам. Без вычета footer показал бы «к выплате 220 000» рядом с заявкой
-    # на 130 000 — а под карточкой живёт «✏️ Изменить сумму», и ГД, сверяя одно с другим,
-    # переплатил бы в один тап. Форма — как в _montazh_money_state (rp_new.py): AN
-    # накапливает ВСЕ ноги, поэтому с paid_prev не суммируется, а конкурирует по максимуму
-    # (иначе старая нога вычлась бы дважды). paid_prev=0 → формула ровно прежняя.
-    _paid_prev = float(inv.get("montazh_paid_prev") or 0)
-    _bj = (
-        max(0.0, _agreed - max(_an, _paid_prev + adv_cg)) if _agreed > 0 else 0.0
-    )
+    # Аванс монтажника (CG-конвенция) и «к выплате» = BJ-остаток. Арифметика ОБЩАЯ
+    # с итоговой карточкой внизу списка — см. _montazh_zp_amounts. Без вычета
+    # paid_prev footer показал бы «к выплате 220 000» рядом с заявкой на 130 000, а
+    # под карточкой живёт «✏️ Изменить сумму» — ГД переплатил бы в один тап.
+    adv_cg, _agreed, _bj = _montazh_zp_amounts(inv, adv_offset)
     adv_str = f"{_f(adv_cg)} ({_fmt_dt(adv_date)})" if adv_offset > 0 else "—"
     bj_str = _f(_bj) if _agreed > 0 else "—"
 
@@ -536,6 +552,57 @@ def _montazh_zp_list_card(
         width=_w,
         compact=False,
         footer=("к выплате", bj_str),
+    )
+
+
+def _montazh_zp_total_card(rows: list[tuple[dict, float]]) -> str:
+    """ОБЩАЯ карточка по всем запросам «Монтаж ЗП» — идёт САМОЙ НИЖНЕЙ (owner 27.08).
+
+    Owner дословно: «чтобы при нажатии была общая карточка, а не только отдельная
+    по каждому объекту. Сделай её самой нижней, а наверху пусть будет по каждому
+    запросу отдельная карточка как сейчас».
+
+    🔑 Каждая денежная строка — колоночная СУММА карточек выше, посчитанная той же
+    `_montazh_zp_amounts`. Поэтому итог сходится с тем, что ГД читает поштучно;
+    вторая копия формулы дала бы расхождение низа со списком.
+
+    rows — [(inv, adv_offset)], ровно то, что ушло в карточки списка.
+    Только показ, боевых данных не пишет
+    ([[feedback_card_display_only_no_data_writes]]).
+    """
+    def _f(n: float) -> str:
+        return f"{n:,.0f}₽".replace(",", " ")
+
+    sum_agreed = sum_adv = sum_bj = 0.0
+    n_approved = 0
+    for inv, adv_offset in rows:
+        adv_cg, agreed, bj = _montazh_zp_amounts(inv, adv_offset)
+        sum_agreed += agreed
+        sum_adv += adv_cg
+        sum_bj += bj
+        if (inv.get("zp_installer_status") or "") == "approved":
+            n_approved += 1
+
+    n_req = len(rows)
+    items: list[tuple[str, str]] = [
+        ("Запросов", str(n_req)),
+        ("Ожидают решения", str(n_req - n_approved)),
+        ("Одобрено", str(n_approved)),
+        ("Согласовано", _f(sum_agreed)),
+        ("Аванс зачтён", _f(sum_adv)),
+    ]
+    # Ширина по тому же правилу, что и у карточек списка (динамическая, +1 на
+    # зазор у самой длинной строки) — иначе столбец сумм внизу не совпал бы
+    # со столбцом сумм выше: сообщения РАЗНЫЕ, и общего выравнивания у них нет.
+    _rows = items + [("к выплате", _f(sum_bj))]
+    _w = max(30, max(3 + len(lbl) + len(val) for lbl, val in _rows) + 1)
+    return format_card_section(
+        emoji="🧮",
+        title="Монтаж ЗП — итого",
+        items=items,
+        width=_w,
+        compact=False,
+        footer=("к выплате", _f(sum_bj)),
     )
 
 
@@ -571,6 +638,9 @@ async def gd_pay_montazh_zp(cb: CallbackQuery, db: Database) -> None:
     # Изменить. Обработчики gdzp_inst:ok|no|edit|pdf живы (td.py). Промежуточного
     # «Открыть» нет — действия доступны сразу (user 08.06 не хотел лишний шаг).
     # Аванс + дата зачёта — для строки «Аванс» и расчёта «к выплате» (BJ-остаток).
+    # Копим (счёт, аванс) для ОБЩЕЙ карточки внизу — считаем ровно из того же,
+    # что ушло в карточки списка, второй выборки в БД не делаем.
+    _total_rows: list[tuple[dict, float]] = []
     for inv in zp_installer:
         # Аванс ТЕКУЩЕЙ группы: аванс прошлой уже внутри montazh_paid_prev (объединение
         # платежей, owner 15.07) — иначе он вычелся бы дважды.
@@ -594,10 +664,20 @@ async def gd_pay_montazh_zp(cb: CallbackQuery, db: Database) -> None:
             ab.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
             ab.button(text="✏️ Изменить сумму", callback_data=f"gdzp_inst:edit:{invoice_id}")
             ab.adjust(2, 1)
+        _total_rows.append((inv, _adv))
         await cb.message.answer(  # type: ignore[union-attr]
             _montazh_zp_list_card(inv, _adv, _adv_dt),
             reply_markup=ab.as_markup(),
         )
+
+    # ОБЩАЯ карточка — САМОЙ НИЖНЕЙ (owner 27.08), после всех поштучных.
+    # Кнопок у неё нет: это витрина, а не действие. «⬅️ Назад» намеренно
+    # оставлена на заголовке сверху — переносить её owner не просил.
+    # ⚠️ Сбой итога не должен съедать уже показанный список.
+    try:
+        await cb.message.answer(_montazh_zp_total_card(_total_rows))  # type: ignore[union-attr]
+    except Exception:
+        log.warning("gd_pay_montazh_zp: итоговая карточка не построилась", exc_info=True)
 
 
 @router.callback_query(F.data == "gd_pay:folder:other_zp")
