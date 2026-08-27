@@ -1079,6 +1079,28 @@ class Database:
         await self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_edo_req_invoice ON edo_requests(invoice_id)"
         )
+
+        # --- Детектор «зеркало ОП врёт» (18.08) — снимок находок ---
+        # Хранит пары (счёт, поле), где в БД значение ЕСТЬ, а ячейка «Импорт ОП»
+        # ПУСТА. Такое само не рассосётся: с фикса 27.07 пустая ячейка поле не
+        # трогает вовсе, поэтому раз попавший в зеркало мусор живёт вечно
+        # (124 000 у 26721-1НПН дожили с 27.07 до 18.08 — три недели).
+        # Таблица — снимок, а не журнал: строка живёт, пока находка актуальна.
+        # `notified_at` нужен, чтобы ГД получал пуш ОДИН раз на новую пару,
+        # а не каждую ночь по кругу.
+        await self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS op_mirror_residue (
+                   invoice_id     INTEGER NOT NULL,
+                   invoice_number TEXT    NOT NULL,
+                   field          TEXT    NOT NULL,
+                   op_column      TEXT,
+                   db_value       TEXT,
+                   first_seen_at  TEXT    NOT NULL,
+                   last_seen_at   TEXT    NOT NULL,
+                   notified_at    TEXT,
+                   PRIMARY KEY (invoice_id, field)
+               )"""
+        )
         await self.conn.commit()
 
         # --- Auto-migration: TD -> GD (role merge) ---
@@ -8061,6 +8083,226 @@ class Database:
             "role_mismatch": role_mismatch,
             "unlinked": unlinked,
             "checked": len(leads),
+        }
+
+    # ==================== ДЕТЕКТОР «ЗЕРКАЛО ОП ВРЁТ» (18.08) ====================
+    #
+    # Задача owner'а 18.08. Первопричина системная: фикс 27.07
+    # (sheets.py::_parse_op_row) сделал пустую ячейку ОП безопасной — ключ просто
+    # не кладётся в апдейт. Это правильно, иначе возвращается затирание живых сумм
+    # (инцидент 510 000). Обратная сторона: раз попавший в зеркало мусор уже НЕ
+    # убрать очисткой ячейки — он живёт вечно. Отсюда детектор.
+    #
+    # ⛔ Авто-чистки здесь нет и быть не должно: три `loaders_fact_op` и
+    # `estimated_installation` у 26721-1НПН выглядят точно так же, но это РУЧНОЕ
+    # восстановление после инцидента 27.07 — снесёшь работу июльского ремонта
+    # ([[feedback_cleanup_certainty_before_delete]]). Детектор только показывает.
+    #
+    # Направление ровно одно — «в БД есть, в ОП пусто». Обратное («в ОП есть, в БД
+    # пусто») в детектор НЕ берём: замер 18.08 дал по нему 7 срабатываний, и все
+    # семь — свежие правки офиса после утреннего импорта (КВ 14: финальный платёж
+    # 111 000 от 18.08, налоги по обоим Лобня). Такой детектор орал бы после
+    # каждой правки листа и его перестали бы читать.
+
+    _OP_MIRROR_FIX_ACTIONS = ("invoice_field_datafix", "invoice_fields_restored")
+
+    @staticmethod
+    def _op_mirror_same_value(a: Any, b: Any) -> bool:
+        """Совпадают ли значение в БД и то, что поставил датафикс."""
+        a_empty = a is None or (isinstance(a, str) and not a.strip())
+        b_empty = b is None or (isinstance(b, str) and not b.strip())
+        if a_empty or b_empty:
+            return a_empty and b_empty
+        try:
+            return abs(float(a) - float(b)) < 0.005
+        except (TypeError, ValueError):
+            return str(a).strip() == str(b).strip()
+
+    async def _op_mirror_manual_fixes(self) -> dict[tuple[int, str], Any]:
+        """{(invoice_id, поле): значение, поставленное ПОСЛЕДНИМ ручным датафиксом}.
+
+        Формы payload'а у двух каналов РАЗНЫЕ (снято из боевой БД 18.08, не
+        придумано):
+          • invoice_field_datafix   — одно поле: {"field": ..., "old":…, "new":…}
+          • invoice_fields_restored — пачка:     {"fields": {поле: {"old","new"}}}
+        Ключ берём из `entity_id` (id счёта), а не из `invoice_number`: у одной
+        исторической строки (#8543) номера в payload нет вовсе.
+        """
+        q = ",".join("?" * len(self._OP_MIRROR_FIX_ACTIONS))
+        cur = await self.conn.execute(
+            f"SELECT id, entity_id, payload_json FROM audit_log "
+            f"WHERE action IN ({q}) ORDER BY id",
+            self._OP_MIRROR_FIX_ACTIONS,
+        )
+        fixes: dict[tuple[int, str], Any] = {}
+        for row in await cur.fetchall():
+            try:
+                inv_id = int(row["entity_id"])
+            except (TypeError, ValueError):
+                continue
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload.get("fields"), dict):
+                for field, change in payload["fields"].items():
+                    if isinstance(change, dict):
+                        fixes[(inv_id, str(field))] = change.get("new")
+            elif payload.get("field"):
+                fixes[(inv_id, str(payload["field"]))] = payload.get("new")
+        return fixes
+
+    async def refresh_op_mirror_residue(
+        self,
+        empty_by_invoice: dict[str, list[str]],
+        columns: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Пересчитать снимок находок детектора. Возвращает НОВЫЕ пары.
+
+        empty_by_invoice: {номер счёта: [поля, чья ячейка ОП пуста]} —
+            снимок `GoogleSheetsService.last_op_empty_fields` после чтения листа.
+            Счета, которых в ОП нет, сюда не попадают вовсе, и это правильно:
+            сравнивать не с чем.
+        columns: {поле → буква колонки ОП} для показа ГД.
+
+        Пишет ТОЛЬКО в свою таблицу `op_mirror_residue`; счетов не касается.
+        """
+        if not empty_by_invoice:
+            return {"new": [], "total": 0, "suppressed": 0, "checked": 0}
+
+        now = to_iso(utcnow())
+        columns = columns or {}
+        fixes = await self._op_mirror_manual_fixes()
+
+        found: dict[tuple[int, str], dict[str, Any]] = {}
+        # Счета, ДЕЙСТВИТЕЛЬНО сверенные в этом проходе. Нужны для DELETE ниже:
+        # строку можно убирать только про тот счёт, который мы сейчас смотрели.
+        checked_ids: set[int] = set()
+        suppressed = 0
+        for inv_num, empty_fields in empty_by_invoice.items():
+            if not empty_fields:
+                continue
+            inv = await self._get_invoice_for_sheet_import(inv_num)
+            if inv is None:
+                continue
+            inv_id = int(inv["id"])
+            checked_ids.add(inv_id)
+            for field in empty_fields:
+                if field not in inv:
+                    continue
+                val = inv[field]
+                # «Значение есть» — не NULL, не пустая строка и не числовой ноль.
+                # Ноль мусором не считаем: 0 в зеркале — законный результат.
+                if val is None:
+                    continue
+                if isinstance(val, str):
+                    if not val.strip():
+                        continue
+                else:
+                    try:
+                        if float(val) == 0.0:
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                # Глушение: пару уже правили руками, и значение с тех пор НЕ
+                # менялось → это осознанная правка, а не мусор. Ровно ради этого
+                # признака 18.08 дописана ретро-строка audit_log #9291.
+                # ⚠️ Сверяем ЗНАЧЕНИЕ, а не факт правки: если поверх легло что-то
+                # новое, находка обязана всплыть снова.
+                if (inv_id, field) in fixes and self._op_mirror_same_value(
+                    val, fixes[(inv_id, field)]
+                ):
+                    suppressed += 1
+                    continue
+                found[(inv_id, field)] = {
+                    "invoice_id": inv_id,
+                    "invoice_number": inv_num,
+                    "field": field,
+                    "op_column": columns.get(field, ""),
+                    "db_value": str(val),
+                }
+
+        cur = await self.conn.execute(
+            "SELECT invoice_id, field, notified_at FROM op_mirror_residue")
+        known = {(int(r["invoice_id"]), str(r["field"])): r["notified_at"]
+                 for r in await cur.fetchall()}
+
+        new_items: list[dict[str, Any]] = []
+        for key, item in found.items():
+            if key in known:
+                await self.conn.execute(
+                    "UPDATE op_mirror_residue SET last_seen_at = ?, db_value = ?, "
+                    "op_column = ? WHERE invoice_id = ? AND field = ?",
+                    (now, item["db_value"], item["op_column"], key[0], key[1]),
+                )
+                if known[key] is None:
+                    new_items.append(item)
+            else:
+                await self.conn.execute(
+                    "INSERT INTO op_mirror_residue(invoice_id, invoice_number, field, "
+                    "op_column, db_value, first_seen_at, last_seen_at, notified_at) "
+                    "VALUES (?,?,?,?,?,?,?,NULL)",
+                    (item["invoice_id"], item["invoice_number"], item["field"],
+                     item["op_column"], item["db_value"], now, now),
+                )
+                new_items.append(item)
+
+        # Находка исчезла (ячейку ОП заполнили или поле почистили) — строку
+        # убираем: таблица это снимок текущего состояния, а не история.
+        # ⚠️ ТОЛЬКО по счетам, сверенным в этом проходе. Иначе счёт, временно
+        # выпавший из чтения листа (обрезанный ответ API, строка правится прямо
+        # сейчас), терял строку вместе с `notified_at` — и, вернувшись,
+        # приходил к ГД как «новая находка» повторно. Ровно тот флап, от
+        # которого страховались метки «сообщили».
+        for key in known:
+            if key[0] in checked_ids and key not in found:
+                await self.conn.execute(
+                    "DELETE FROM op_mirror_residue WHERE invoice_id = ? AND field = ?",
+                    (key[0], key[1]),
+                )
+        await self.conn.commit()
+
+        # Отметка «когда детектор реально отработал». Без неё пустая карточка
+        # неотличима от «детектор не запускался»: строк нет — и времени нет.
+        await self.set_setting("op_mirror_checked_at", now)
+
+        return {
+            "new": new_items,
+            "total": len(found),
+            "suppressed": suppressed,
+            "checked": len(empty_by_invoice),
+        }
+
+    async def mark_op_mirror_notified(self, items: list[dict[str, Any]]) -> None:
+        """Пометить пары как «о них уже сообщили» — чтобы пуш не повторялся."""
+        if not items:
+            return
+        now = to_iso(utcnow())
+        for it in items:
+            await self.conn.execute(
+                "UPDATE op_mirror_residue SET notified_at = ? "
+                "WHERE invoice_id = ? AND field = ?",
+                (now, int(it["invoice_id"]), str(it["field"])),
+            )
+        await self.conn.commit()
+
+    async def get_op_mirror_residue(self) -> dict[str, Any]:
+        """Read-only снимок находок детектора для карточки ГД.
+
+        Отдаёт то, что посчитал последний импорт ОП, а не пересчитывает на месте:
+        пересчёт требует чтения листа Google, то есть лишнего запроса в момент
+        нажатия кнопки — и попадания под те самые 503, которых у нас ~0.2/час.
+        """
+        cur = await self.conn.execute(
+            "SELECT invoice_id, invoice_number, field, op_column, db_value, "
+            "first_seen_at, last_seen_at FROM op_mirror_residue "
+            "ORDER BY invoice_number, field"
+        )
+        items = [dict(r) for r in await cur.fetchall()]
+        return {
+            "items": items,
+            "measured_at": await self.get_setting("op_mirror_checked_at") or "",
+            "count": len(items),
         }
 
     async def get_lead_stats_v2(

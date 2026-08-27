@@ -3502,6 +3502,196 @@ def format_discrepancy_card(disc: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+# Человеческие названия зеркальных полей «Импорт ОП». Показывать ГД сырое
+# `loaders_fact_op` бессмысленно — он оперирует колонками листа, а не колонками БД.
+_OP_MIRROR_FIELD_LABELS: dict[str, str] = {
+    "materials_fact_op": "Материалы факт",
+    "montazh_fact_op": "Монтаж факт",
+    "loaders_fact_op": "Грузчики факт",
+    "logistics_fact_op": "Логистика факт",
+    "taxes_fact_op": "Налоги факт",
+    "agent_payout_op": "Выплата агенту",
+    "rentability_fact_op": "Рент-ть факт",
+    "estimated_materials": "Расч. материалы",
+    "estimated_installation": "Установка",
+    "estimated_loaders": "Грузчики расч.",
+    "estimated_logistics": "Логистика расч.",
+    "zp_manager_payout": "Выплата ЗП мен.",
+    "zp_manager_request_amount": "Запрос ЗП мен.",
+    "zp_manager_hold": "Удержать из ЗП",
+    "cost_diff_calc_fact": "Разница себест.",
+    "amount": "Сумма счёта",
+    "outstanding_debt": "Долг",
+    "first_payment_amount": "Сумма 1-го пл.",
+    "surcharge_amount": "Сумма доплаты",
+    "final_surcharge_amount": "Финальный платёж",
+    "rp_payout_op": "Выдано РП",
+    "rp_request_op": "Запрос РП",
+    "npn_amount": "НПН с налогом",
+    "profit_calc_op": "Прибыль расч.",
+    "profit_tax_op": "Налог на прибыль",
+    # Добор 25.08 — до этого 24 поля из 49 показывались СЫРЫМ именем колонки
+    # БД, и первая же боевая находка попала в непокрытое. Подписи взяты из
+    # комментариев `_OP_COL_MAP`, чтобы имя на карточке совпадало с шапкой ОП.
+    "client_name": "Контрагент",
+    "traffic_source": "Ист. трафика",
+    "is_credit": "Кред/б.н.",
+    "object_address": "Адрес",
+    "zamery_info_op": "Замеры",
+    "profit_tax": "Прибыль кред.",
+    "nds_amount": "НДС",
+    "rp_10_pct_op": "РП 10%",
+    "rentability_calc": "Рент-ть расч.",
+    "surcharge_date": "Дата доплаты",
+    "final_surcharge_date": "Дата фин. платежа",
+    "payment_terms": "Пояснения",
+    "agent_fee": "Агентское",
+    "agent_payout_date_op": "Дата выпл. агенту",
+    "manager_zp_blank": "Мен. ЗП (бланк)",
+    "zp_manager_request_text": "Запрос ЗП (текст)",
+    "logistics_fact_date": "Дата логистики",
+    "loaders_fact_date": "Дата грузчиков",
+    # Поля ниже детектор больше НЕ сравнивает (их пишет сам бот, см.
+    # `GoogleSheetsService._OP_BOT_WRITTEN_FIELDS`), подписи оставлены на случай
+    # старых записей в таблице находок.
+    "receipt_date": "Дата пост.",
+    "deadline_days": "Сроки (дни)",
+    "client_source": "Свой/Атм",
+    "actual_completion_date": "Дата Факт",
+    "zp_manager_payout_date": "Дата выпл. мен.",
+    "rp_payout_date_op": "Дата РП",
+}
+
+# Потолок строк в карточке и пуше. Приём проекта — `_SENT_MAX_BLOCKS = 20`
+# (`rp_new.py`): без него ~70-80 находок дают текст длиннее лимита Telegram
+# 4096, и сообщение не уходит ЦЕЛИКОМ — а находки при этом помечаются
+# «сообщили». Режем показ, а не сами находки: полное число печатаем в «Итого».
+_OP_MIRROR_MAX_ROWS = 20
+
+
+def _op_mirror_rows(items: list[dict[str, Any]]) -> tuple[list[tuple[str, str]], int]:
+    """Строки «№счёта · Поле» → «значение · ОП X пусто», экранированные.
+
+    🔴 Экранирование обязательно: бот работает с глобальным `parse_mode=HTML`, а
+    `format_card_section` сама не экранирует — один символ `<` в значении БД или
+    в номере счёта, и Telegram отвергает сообщение целиком. Возвращает также
+    число срезанных строк, чтобы вызывающий честно сказал «показаны не все».
+    """
+    rows: list[tuple[str, str]] = []
+    for it in items[:_OP_MIRROR_MAX_ROWS]:
+        num = html.quote(str(it.get("invoice_number") or "—"))
+        field = str(it.get("field") or "")
+        label = html.quote(_OP_MIRROR_FIELD_LABELS.get(field, field))
+        col = html.quote(str(it.get("op_column") or ""))
+        raw = str(it.get("db_value") or "")
+        try:
+            shown = f"{float(raw):,.0f}".replace(",", " ")
+        except (TypeError, ValueError):
+            shown = raw[:18]
+        rows.append((f"№{num} · {label}", f"{html.quote(shown)} · ОП {col} пусто"))
+    return rows, max(0, len(items) - _OP_MIRROR_MAX_ROWS)
+
+
+def format_op_mirror_card(report: dict[str, Any]) -> str:
+    """Карточка детектора «зеркало ОП врёт» для ГД/ТД (стиль В1).
+
+    report: {items: [...], measured_at: str, count: int} из
+    `db.get_op_mirror_residue`.
+
+    Показывает пары «в БД значение есть, а ячейка «Импорт ОП» пуста». Такое
+    значение из импорта прийти НЕ могло и само не уйдёт: с фикса 27.07 пустая
+    ячейка поле не трогает вовсе. Значит либо это мусор от съехавшей строки,
+    либо осознанная ручная правка — и различить их может только человек по
+    `audit_log`, поэтому карточка ничего не чинит ([[feedback_card_display_only_no_data_writes]]).
+    """
+    items = report.get("items") or []
+    measured_at = str(report.get("measured_at") or "")
+
+    when = "—"
+    if measured_at:
+        # ⚠️ В таблице время в UTC (`to_iso(utcnow())`), поэтому резать строку
+        # нельзя: «Проверено» печаталось на 3 часа раньше, чем время в соседних
+        # карточках бота. Идиома та же, что рядом в этом файле (utils.py:2971).
+        try:
+            when = from_iso(measured_at).astimezone(
+                tzinfo("Europe/Moscow")).strftime("%d.%m %H:%M")
+        except Exception:
+            when = measured_at[:16]
+
+    parts: list[str] = ["🪞 <b>Зеркало «Импорт ОП»</b>"]
+
+    if items:
+        by_invoice: dict[str, list[dict[str, Any]]] = {}
+        for it in items:
+            by_invoice.setdefault(str(it.get("invoice_number") or "—"), []).append(it)
+
+        # Порядок сохраняем счёт-за-счётом, но строки собирает общий хелпер:
+        # экранирование и потолок обязаны быть одни и те же в карточке и в пуше.
+        ordered = [it for group in by_invoice.values() for it in group]
+        rows, hidden = _op_mirror_rows(ordered)
+
+        parts.append(format_card_section(
+            "🔎", "В БД есть — в ОП пусто", rows,
+            total=str(len(items)), compact=True,
+        ))
+        if hidden:
+            parts.append(
+                f"<i>Показаны первые {_OP_MIRROR_MAX_ROWS} — в списке ещё {hidden}.</i>"
+            )
+        parts.append(format_card_section(
+            "📊", "Итог",
+            [
+                ("Находок", str(len(items))),
+                ("Счетов затронуто", str(len(by_invoice))),
+                ("Проверено", when),
+            ],
+            compact=True,
+        ))
+        parts.append(
+            "\n<i>Значение в БД есть, а ячейка «Импорт ОП» пуста — из импорта "
+            "оно прийти не могло. Чистить только руками, сверив происхождение "
+            "по журналу: ручные восстановления выглядят так же.</i>"
+        )
+    else:
+        parts.append(format_card_section(
+            "✅", "Расхождений нет",
+            [("Проверено", when)],
+            compact=True,
+        ))
+
+    return "\n".join(parts)
+
+
+def format_op_mirror_new_push(items: list[dict[str, Any]]) -> str:
+    """Пуш ГД о НОВЫХ находках детектора зеркала ОП.
+
+    Отдельный текст, а не карточка целиком: пуш обязан быть коротким и говорить
+    ровно то, что изменилось со вчера ([[feedback_card_compact_means_height]]).
+    Полный список — по кнопке «🪞 Зеркало ОП» в меню «Счёт END».
+    """
+    rows, hidden = _op_mirror_rows(items)
+
+    tail = (
+        "\n<i>Значение в БД есть, а ячейка «Импорт ОП» пуста — из импорта оно "
+        "прийти не могло. Проверьте происхождение, прежде чем чистить: так же "
+        "выглядят ручные восстановления.</i>"
+    )
+    if hidden:
+        tail = (
+            f"\n<i>Показаны первые {_OP_MIRROR_MAX_ROWS} из {len(items)} — "
+            f"остальные {hidden} в меню «Счёт END» → «🪞 Зеркало ОП».</i>" + tail
+        )
+
+    return "\n".join([
+        "🪞 <b>Зеркало «Импорт ОП»: новое расхождение</b>",
+        format_card_section(
+            "🔎", "В БД есть — в ОП пусто", rows,
+            total=str(len(items)), compact=True,
+        ),
+        tail,
+    ])
+
+
 def format_ended_invoice_compact(inv: dict[str, Any], pf: dict[str, Any]) -> str:
     """Компактная карточка ended-счёта для списка ГД."""
     num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"

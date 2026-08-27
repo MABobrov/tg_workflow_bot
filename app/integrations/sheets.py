@@ -442,6 +442,9 @@ class GoogleSheetsService:
         self._sync_lock = RLock()
         # Invoices: key column = "Номер счета" at index 8 → gspread 1-indexed = 9
         self._KEY_COL: dict[str, int] = {cfg.invoices_tab: 9}
+        # {номер счёта: [поля, чья ячейка «Импорт ОП» пуста]} — снимок последнего
+        # полного чтения листа; наполняется в read_op_sheet_sync (детектор 18.08).
+        self.last_op_empty_fields: dict[str, list[str]] = {}
 
     def _fmt_amount(self, amount: Any) -> str:
         if isinstance(amount, (int, float)):
@@ -2361,6 +2364,63 @@ class GoogleSheetsService:
         # парсится отдельным методом `import_op_monthly_balance` в op_company_monthly.
     }
 
+    # Поля карты ОП, которые ПИШЕТ САМ БОТ своей бизнес-логикой.
+    # ⛔ Детектор «зеркало ОП врёт» их НЕ сравнивает — решение owner 25.08:
+    # «бот переносит из листа Импорт ОП только те данные, которые в нём есть;
+    # статусы — из бота, он транслирует их на лист Invoices, ОП их не касается,
+    # смешивать эти данные просто глупо».
+    # 🔑 Пустая ячейка ОП тут не улика: ОП про эти значения не знает и знать не
+    # должна, поэтому «в БД есть, в ОП пусто» — норма, а не мусор.
+    # Список собран grep'ом по местам ЗАПИСИ, а не на глаз; место указано у
+    # каждого поля, чтобы следующая правка могла его перепроверить.
+    # ⚠️ Поля, которые правит ЧЕЛОВЕК через лист Invoices (webhook
+    # `sheet_commands._handle_field_change`: amount, outstanding_debt,
+    # materials_fact_op, montazh_fact_op) сюда НЕ входят намеренно — ручная
+    # правка мимо ОП это ровно то, ради чего детектор и заводился.
+    _OP_BOT_WRITTEN_FIELDS: frozenset[str] = frozenset({
+        # handlers/manager_new.py:1203 — флоу «Счёт в Работу» пишет их разом
+        "receipt_date",
+        "first_payment_amount",
+        "deadline_days",
+        "client_source",
+        "estimated_installation",
+        "estimated_loaders",
+        "estimated_logistics",
+        # handlers/installer_new.py:627 («Счёт ОК») + db.py:6351 (автодата
+        # `fill_fact_date_on_invoice_end`, деплой factdate 13.08)
+        "actual_completion_date",
+        # handlers/td.py:1777 + db.py:9846/12213 — выплата ЗП менеджера
+        "zp_manager_payout",
+        "zp_manager_payout_date",
+        # handlers/rp.py:1780 (запрос РП) / handlers/gd.py:4827 (сброс)
+        "rp_request_op",
+        # handlers/gd.py:4696-4697 — выплата РП
+        "rp_payout_op",
+        "rp_payout_date_op",
+    })
+
+    @classmethod
+    def op_column_letters(cls) -> dict[str, str]:
+        """{поле → буква колонки «Импорт ОП»} — чтобы ГД знал, куда смотреть.
+
+        Считается из той же `_OP_COL_MAP`, что и разбор: второго списка колонок
+        в проекте заводить нельзя, разъедется ([[feedback_op_mirror_no_mixing]]).
+        ⛔ Это буквы листа «Импорт ОП», а НЕ листа «Invoices» — раскладки разные
+        ([[reference_invoices_sheet_columns]]).
+        """
+        out: dict[str, str] = {}
+        for idx, field in cls._OP_COL_MAP.items():
+            if field == "invoice_number":
+                continue
+            letter, n = "", idx
+            while True:
+                letter = chr(ord("A") + n % 26) + letter
+                n = n // 26 - 1
+                if n < 0:
+                    break
+            out[field] = letter
+        return out
+
     def _parse_num(self, val: str) -> float | None:
         """Parse number from string, handling spaces/commas as thousand separators."""
         if not val or not val.strip():
@@ -2503,7 +2563,21 @@ class GoogleSheetsService:
         self,
         row_values: list[str],
         op_row_index: int | None = None,
+        empty_out: dict[str, list[str]] | None = None,
     ) -> dict[str, Any] | None:
+        """Разобрать строку «Импорт ОП» в поля счёта.
+
+        ``empty_out`` — необязательный сборник «какие ячейки строки ПУСТЫ»
+        (для детектора «зеркало ОП врёт», 18.08). Пишется ТОЛЬКО в переданный
+        словарь; возвращаемый ``parsed`` не меняется ни на ключ.
+        🔑 Именно поэтому не «положить список в parsed»: этот словарь идёт прямо
+        в ``import_invoice_from_sheet`` — горячий путь, на котором случился
+        инцидент 27.07. Лишний ключ там сегодня безопасен (обе ветки фильтруют
+        по белому списку ``sheet_fields``), но контракт менять незачем.
+        ⚠️ Пустоту нельзя выводить из отсутствия ключа в ``parsed``: ключа нет и
+        когда ячейка НЕ пуста, но значение не распарсилось (битая дата) — это
+        другой класс дефекта, и путать их нельзя.
+        """
         inv_num = str(row_values[4]).strip() if len(row_values) > 4 else ""
         if not inv_num:
             return None
@@ -2575,6 +2649,16 @@ class GoogleSheetsService:
                 inv_num, len(skipped_empty), len(self._OP_COL_MAP),
             )
 
+        if empty_out is not None:
+            # ⛔ Поля, которые бот пишет сам, в снимок пустот не кладём вовсе
+            # (решение owner 25.08). Фильтруем ЗДЕСЬ, а не в `skipped_empty`
+            # выше: тот список считает «строка пришла почти пустой» и обязан
+            # видеть ВСЕ пустые ячейки — иначе порог 80% поедет и сигнал о
+            # чтении листа во время правки перестанет срабатывать.
+            empty_out[inv_num] = [
+                f for f in skipped_empty if f not in self._OP_BOT_WRITTEN_FIELDS
+            ]
+
         return parsed
 
     def _detect_op_sheet_start_row(self, all_data: list[list[str]]) -> int:
@@ -2595,7 +2679,13 @@ class GoogleSheetsService:
 
     def read_op_sheet_sync(self) -> list[dict[str, Any]]:
         """Read all rows from source 'Отдел продаж' sheet, return parsed dicts."""
+        # ⚠️ На КАЖДОМ раннем выходе снимок пустот обязан гаснуть. Иначе
+        # детектор «зеркало ОП врёт» посчитает по ПОЗАВЧЕРАШНЕМУ снимку и
+        # поставит свежую отметку «Проверено» — соврёт дважды: и находками, и
+        # временем проверки. Пустой снимок безопасен: `refresh_op_mirror_residue`
+        # на нём выходит сразу и ничего не трогает.
         if not self.cfg.source_spreadsheet_id:
+            self.last_op_empty_fields = {}
             return []
 
         gc = self._get_client()
@@ -2603,16 +2693,19 @@ class GoogleSheetsService:
             source_sh = gc.open_by_key(self.cfg.source_spreadsheet_id)
         except Exception as e:
             log.error("Cannot open source spreadsheet: %s", e)
+            self.last_op_empty_fields = {}
             return []
 
         try:
             ws = source_sh.worksheet(self.cfg.source_sheet_name)
         except gspread.WorksheetNotFound:
             log.error("Sheet '%s' not found in source spreadsheet", self.cfg.source_sheet_name)
+            self.last_op_empty_fields = {}
             return []
 
         all_data = ws.get_all_values()
         if len(all_data) < 2:
+            self.last_op_empty_fields = {}
             return []
 
         start_row = self._detect_op_sheet_start_row(all_data)
@@ -2630,11 +2723,21 @@ class GoogleSheetsService:
             log.warning("ОП col AA (final_surcharge_date): all values empty")
 
         results: list[dict[str, Any]] = []
+        empties: dict[str, list[str]] = {}
         for row_idx in range(start_row, len(all_data)):
             # row_idx 0-based → номер строки листа 1-based
-            parsed = self._parse_op_row(all_data[row_idx], op_row_index=row_idx + 1)
+            parsed = self._parse_op_row(
+                all_data[row_idx], op_row_index=row_idx + 1, empty_out=empties,
+            )
             if parsed:
                 results.append(parsed)
+
+        # Снимок «какие ячейки ОП пусты» — для детектора «зеркало ОП врёт».
+        # Присваивание ОДНО и в конце: пока идёт разбор, прежний снимок остаётся
+        # целым, и параллельный читатель не увидит полусобранный словарь.
+        # ⚠️ Одиночный разбор строки (webhook, `parse_op_row_from_webhook`) сюда
+        # НЕ пишет — иначе снимок листа затирался бы одной строкой.
+        self.last_op_empty_fields = empties
 
         log.info("Read %d invoices from source ОП sheet", len(results))
         return results

@@ -71,6 +71,8 @@ async def gd_invoice_end_combined(message: Message, db: Database) -> None:
     # INVOICE_END_REQUEST. Нет запроса → у ГД нет ни одного способа подтвердить
     # статус, даже когда счёт очевидно готов (2671-1КИА, 26623-1КВ).
     n_pending = len(await db.list_invoices_pending_end())
+    # Детектор «зеркало ОП врёт» — счёт находок последнего импорта (18.08).
+    n_mirror = int((await db.get_op_mirror_residue()).get("count") or 0)
 
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     rows: list[list[InlineKeyboardButton]] = []
@@ -88,6 +90,10 @@ async def gd_invoice_end_combined(message: Message, db: Database) -> None:
     )])
     rows.append([InlineKeyboardButton(text="📊 Статистика по лидам", callback_data="gd_lead_stats")])
     rows.append([InlineKeyboardButton(text="🔀 Расхождения РП", callback_data="gd_discrepancy")])
+    rows.append([InlineKeyboardButton(
+        text=f"🪞 Зеркало ОП: {n_mirror}",
+        callback_data="gd_op_mirror",
+    )])
     rows.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="gd_end:close")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -108,12 +114,14 @@ async def _render_invoice_end_menu(cb: CallbackQuery, db: Database) -> None:
     tasks_ie = await db.list_tasks_for_user(user_id, limit=30, type_filter=TaskType.INVOICE_END_REQUEST)
     n_tasks = len(tasks_pc) + len(tasks_ie)
     n_pending = len(await db.list_invoices_pending_end())  # см. gd_invoice_end_combined
+    n_mirror = int((await db.get_op_mirror_residue()).get("count") or 0)
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text=f"📊 Счета end: {n_ended}", callback_data="gd_end:stats")],
         [InlineKeyboardButton(text=f"📋 Задачи Счёт End: {n_tasks}", callback_data="gd_end:tasks")],
         [InlineKeyboardButton(text=f"🏁 Закрыть счёт: {n_pending}", callback_data="invend_pick:list")],
         [InlineKeyboardButton(text="📊 Статистика по лидам", callback_data="gd_lead_stats")],
         [InlineKeyboardButton(text="🔀 Расхождения РП", callback_data="gd_discrepancy")],
+        [InlineKeyboardButton(text=f"🪞 Зеркало ОП: {n_mirror}", callback_data="gd_op_mirror")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="gd_end:close")],
     ]
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
@@ -332,6 +340,27 @@ async def gd_discrepancy_handler(cb: CallbackQuery, db: Database) -> None:
     ])
     disc = await db.get_rp_discrepancies()
     await cb.message.answer(format_discrepancy_card(disc), reply_markup=back_kb)  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "gd_op_mirror")
+async def gd_op_mirror_handler(cb: CallbackQuery, db: Database) -> None:
+    """Детектор «зеркало ОП врёт»: в БД значение есть, ячейка «Импорт ОП» пуста.
+
+    Показывает снимок последнего импорта ОП, а НЕ читает лист заново: чтение
+    Google в момент нажатия кнопки — лишний запрос под те самые 503, которых
+    у нас ~0.2/час. Снимок обновляет каждый импорт, включая ручную кнопку синка.
+    Только показ, ничего не пишет ([[feedback_card_display_only_no_data_writes]]).
+    """
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    await cb.answer()
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from ..utils import format_op_mirror_card
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ К меню Счёт END", callback_data="gd_end:menu")],
+    ])
+    report = await db.get_op_mirror_residue()
+    await cb.message.answer(format_op_mirror_card(report), reply_markup=back_kb)  # type: ignore[union-attr]
 
 
 # ==================== ОПЛАТА ПОСТАВЩИКУ — ДАШБОРД + ЗП ====================

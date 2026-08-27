@@ -35,6 +35,87 @@ def invoice_export_sort_key(item: dict[str, Any]) -> tuple[int, str, int]:
     )
 
 
+async def _refresh_op_mirror(
+    db: Database,
+    sheets: GoogleSheetsService,
+    notifier: Any | None,
+    *,
+    log_prefix: str,
+) -> None:
+    """Пересчитать детектор «зеркало ОП врёт» и толкнуть ГД НОВЫЕ находки.
+
+    Зовётся ПОСЛЕ импорта, а не до: до записи значения в БД устаревшие, и поле,
+    которое этот же импорт сейчас обновит, попало бы в находки зря.
+
+    Лист повторно НЕ читается — берётся снимок пустых ячеек, собранный тем же
+    `read_op_sheet_sync`, что уже отработал выше. Своего запроса к Google здесь
+    нет вовсе, значит и под 503 детектор не попадает.
+
+    Сбой детектора не должен ронять импорт — он вторичен по отношению к данным.
+    """
+    empties = getattr(sheets, "last_op_empty_fields", None) or {}
+    if not empties:
+        return
+    try:
+        result = await db.refresh_op_mirror_residue(
+            empties, columns=sheets.op_column_letters(),
+        )
+    except Exception:
+        log.exception("%s: op-mirror detector failed", log_prefix)
+        return
+
+    log.info(
+        "%s: зеркало ОП — находок %d (новых %d), заглушено ручных правок %d, счетов %d",
+        log_prefix, result["total"], len(result["new"]),
+        result["suppressed"], result["checked"],
+    )
+
+    new_items = result.get("new") or []
+    if not new_items or notifier is None:
+        return
+
+    # Пуш ТОЛЬКО на новые пары: находка, о которой уже сообщали, молчит — иначе
+    # ГД получал бы один и тот же список каждую ночь и перестал бы его читать.
+    from ..enums import Role
+    from ..utils import format_op_mirror_new_push
+
+    text = format_op_mirror_new_push(new_items)
+    try:
+        gd_users = await db.find_users_by_role(Role.GD, limit=10)
+    except Exception:
+        log.exception("%s: op-mirror push — не смог получить список ГД", log_prefix)
+        return
+    sent = False
+    for u in gd_users:
+        # 🔴 `safe_send` НЕ бросает исключений НИКОГДА — он ловит вплоть до
+        # `except Exception` и возвращает False (`notifier.py:24-68`). Поэтому
+        # судить об успехе по отсутствию исключения НЕЛЬЗЯ: `sent` был бы True
+        # всегда, и `mark_op_mirror_notified` глушил бы находку навсегда, даже
+        # когда пуш не ушёл никому. Читаем возвращаемое значение; форма разбора
+        # — та же, что у `Notifier.notify_workchat` (`notifier.py:141-142`).
+        try:
+            res = await notifier.safe_send(u.telegram_id, text)
+        except Exception:
+            log.exception("%s: op-mirror push to %s raised", log_prefix, u.telegram_id)
+            res = False
+        ok = res[0] if isinstance(res, tuple) else bool(res)
+        if ok:
+            sent = True
+        else:
+            log.warning("%s: op-mirror push to %s NOT delivered", log_prefix, u.telegram_id)
+        await asyncio.sleep(0.1)
+    # Метку «сообщили» ставим, только если хоть кто-то ДЕЙСТВИТЕЛЬНО получил:
+    # иначе находка молча замолчит навсегда из-за сбоя отправки.
+    if sent:
+        await db.mark_op_mirror_notified(new_items)
+    else:
+        log.error(
+            "%s: зеркало ОП — %d новых находок НЕ доставлены ни одному ГД, "
+            "метку «сообщили» не ставим (всплывут в следующий проход)",
+            log_prefix, len(new_items),
+        )
+
+
 async def import_from_source_sheet(
     db: Database,
     sheets: GoogleSheetsService,
@@ -76,6 +157,7 @@ async def import_from_source_sheet(
                     row_data.get("invoice_number"),
                     exc_info=True,
                 )
+        await _refresh_op_mirror(db, sheets, None, log_prefix=log_prefix)
         return {"imported": imported, "closed_credits": 0, "errors": 0}
 
     imported = 0
@@ -110,6 +192,9 @@ async def import_from_source_sheet(
         "%s: import done — imported=%d, closed_credits=%d, errors=%d",
         log_prefix, imported, closed_credits, errors,
     )
+
+    # Детектор «зеркало ОП врёт» (18.08) — сразу после импорта, на свежей БД.
+    await _refresh_op_mirror(db, sheets, notifier, log_prefix=log_prefix)
 
     # Помесячная аналитика компании (Доходы/Расходы из «Импорт ОП» BM-колонки).
     # Отдельный pass — читает те же rows, но интерпретирует их как монтлвью.
