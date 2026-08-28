@@ -559,13 +559,17 @@ async def _finalize_invoice_ok(
         # создастся вовсе (`request_final_payment_eta` пишет `created_by=actor_id`),
         # а потерять напоминание о долге хуже, чем показать неверного инициатора.
         from ..utils import request_final_payment_eta
-        _fpeta_actor = await resolve_default_assignee(db, config, Role.GD) or installer_id
-        await request_final_payment_eta(db, notifier, config, invoice_id, int(_fpeta_actor))
+        _gd_actor = await resolve_default_assignee(db, config, Role.GD) or installer_id
+        await request_final_payment_eta(db, notifier, config, invoice_id, int(_gd_actor))
 
         # ТЗ 18.06: «Счёт ОК» (монтаж завершён) + долга по счёту нет → напомнить
         # менеджеру закрыть счёт (Счет End) + бейдж 🔴 на кнопке (дедуп в хелпере).
+        # 🔑 Автор — тот же ГД, что и у задачи выше (owner 27.08): напоминание
+        # адресовано менеджеру и монтажника не касается, а из-за installer_id
+        # оно висело в ЕГО списке исходящих (боевая задача #504). Конвенция та же,
+        # что в daily_sync:468 — там уже передаётся gd_id.
         from ..utils import prompt_invoice_end_ready
-        await prompt_invoice_end_ready(db, notifier, invoice_id, installer_id, config)
+        await prompt_invoice_end_ready(db, notifier, invoice_id, int(_gd_actor), config)
 
         # ТЗ 2026-05-19 блок C + user-уточнение: авто-закрытие ЗП если paid авансы
         # покрывают БАЗУ. ЗП ставится = итог (база + 10% для б.н.). 10%-бонус
