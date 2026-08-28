@@ -548,8 +548,19 @@ async def _finalize_invoice_ok(
 
         # ТЗ 14.06: «Счёт ОК» с непогашенным долгом по счёту → задача менеджеру
         # на ввод ориент. даты финального платежа (дедуп внутри хелпера).
+        # 🔑 Автор задачи — ГД, а НЕ монтажник (owner 27.08: «монтажники никак не
+        # относятся к этому процессу, в нём участвуют только менеджер и ГД»).
+        # Монтажник лишь нажал «Счёт ОК»; из-за `created_by=installer_id` менеджеру
+        # приходило «от Игоря». Конвенция не выдумана — она уже действует в ОБОИХ
+        # путях daily_sync: `created_by=gd_id` (:511) и прямым комментарием
+        # «actor = ГД (создатель догоняющей задачи)» (:583). Здесь было
+        # единственное расхождение.
+        # ⚠️ Fallback на монтажника оставлен намеренно: без автора задача не
+        # создастся вовсе (`request_final_payment_eta` пишет `created_by=actor_id`),
+        # а потерять напоминание о долге хуже, чем показать неверного инициатора.
         from ..utils import request_final_payment_eta
-        await request_final_payment_eta(db, notifier, config, invoice_id, installer_id)
+        _fpeta_actor = await resolve_default_assignee(db, config, Role.GD) or installer_id
+        await request_final_payment_eta(db, notifier, config, invoice_id, int(_fpeta_actor))
 
         # ТЗ 18.06: «Счёт ОК» (монтаж завершён) + долга по счёту нет → напомнить
         # менеджеру закрыть счёт (Счет End) + бейдж 🔴 на кнопке (дедуп в хелпере).
