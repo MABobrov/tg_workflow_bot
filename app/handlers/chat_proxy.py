@@ -2033,12 +2033,18 @@ async def chat_menu_back(
 _GDTASK_INV_PREFIX = "gdtask_inv"
 
 
-_DEFAULT_DUE_DAYS = 7
+_DEFAULT_DUE_DAYS = 1
 _DEFAULT_DUE_HOUR = 18
 
 
 def _default_task_due(config: Config):
-    """Срок по умолчанию: +7 дней, 18:00 по TZ бота (конец рабочего дня)."""
+    """Срок по умолчанию: +1 день, 18:00 по TZ бота (конец рабочего дня).
+
+    Было +7 дней (owner 27.08: «неделя срока — мне так неудобно», просил
+    сутки). Час 18:00 не менялся — он и был таким; правится ТОЛЬКО число
+    дней, поэтому оба потребителя (карточка подтверждения и ввод «-»)
+    съезжают вместе и разойтись не могут.
+    """
     from datetime import timedelta
     from ..utils import tzinfo as _tzinfo
     d = (utcnow() + timedelta(days=_DEFAULT_DUE_DAYS)).astimezone(_tzinfo(config.timezone))
@@ -2057,7 +2063,7 @@ async def _show_task_confirm(
 
     Раньше после описания шли ТРИ последовательных вопроса: дата → время →
     экран вложений, и только потом задача создавалась. Теперь всё видно сразу
-    одним экраном: кому, по какому счёту, текст, срок (по умолчанию — неделя).
+    одним экраном: кому, по какому счёту, текст, срок (по умолчанию — сутки).
     «✅ Создать» — один тап. Срок меняется кнопкой, файл просто присылается
     сообщением: состояние GdTaskCreateSG.attachments его и принимает.
     """
@@ -2071,7 +2077,7 @@ async def _show_task_confirm(
     if not due_iso:
         due_iso = to_iso(_default_task_due(config))
         await state.update_data(task_due=due_iso)
-        due_hint = " <i>(по умолчанию — неделя)</i>"
+        due_hint = " <i>(по умолчанию — завтра 18:00)</i>"
     else:
         due_hint = ""
 
@@ -2431,7 +2437,7 @@ async def gd_task_ask_due(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.message.answer(  # type: ignore[union-attr]
         "📅 Укажите срок одной строкой:\n"
         "<b>07 марта 14:00</b> · <b>15.03.2026</b> · <b>07 марта</b>\n\n"
-        "Без времени — 18:00. «-» — срок по умолчанию (неделя).",
+        "Без времени — 18:00. «-» — срок по умолчанию (сутки).",
     )
 
 
@@ -2521,7 +2527,7 @@ async def gd_task_create_deadline(
     if not parsed:
         await message.answer(
             "Не удалось распознать срок.\n"
-            "Например: <b>07 марта 14:00</b>, <b>15.03.2026</b> или «-» (неделя):"
+            "Например: <b>07 марта 14:00</b>, <b>15.03.2026</b> или «-» (сутки):"
         )
         return
 

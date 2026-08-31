@@ -287,7 +287,7 @@ def load_config() -> Config:
     amocrm_leads_webhook_secret = os.getenv("AMOCRM_LEADS_WEBHOOK_SECRET")
 
     reminders_enabled = _parse_bool(os.getenv("REMINDERS_ENABLED"), default=True)
-    remind_soon_minutes = _parse_int(os.getenv("REMIND_SOON_MINUTES", "60")) or 60
+    remind_soon_minutes = _parse_int(os.getenv("REMIND_SOON_MINUTES", "120")) or 120
     remind_overdue_minutes = _parse_int(os.getenv("REMIND_OVERDUE_MINUTES", "10")) or 10
 
     installer_remind_interval_min = _parse_int(os.getenv("INSTALLER_REMIND_INTERVAL_MIN", "10")) or 10
