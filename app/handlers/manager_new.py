@@ -100,7 +100,7 @@ from ..states import (
     SelfReminderSG,
     ZameryRequestSG,
 )
-from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, build_funds_card, build_invoice_section, close_condition_core_rows, compute_plan_profit, credit_wallet_label, fmt_money, format_card, format_card_section, format_invoice_card_standard, format_invoice_end_financials, format_manager_invoices_overview, format_manager_recalc_card, format_materials_list, get_initiator_label, manager_zp_net_payout, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads, credit_zp_montazh_unpaid
+from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, build_funds_card, build_invoice_section, card_num as _card_num, close_condition_core_rows, compute_plan_profit, credit_wallet_label, fmt_money, format_card, format_card_section, format_invoice_card_standard, format_manager_invoices_overview, format_manager_recalc_card, format_materials_list, get_initiator_label, invoice_end_fin_rows, manager_zp_net_payout, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads, credit_zp_montazh_unpaid
 from ._mirror import collect_attachment
 from .auth import RoleFilter, require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
@@ -1917,133 +1917,6 @@ async def invoice_docs_finalize(cb: CallbackQuery, db: Database, notifier: Notif
     )
 
 
-def _card_num(v: Any) -> str:
-    """Число для эталон-ячейки: без ₽, минус — U+2212.
-
-    ₽ не моноширинный в Telegram <pre> и ломает правое выравнивание чисел
-    ([[feedback_card_telegram_pre_alignment]]).
-    """
-    try:
-        return f"{float(v or 0):,.0f}".replace(",", " ").replace("-", "\u2212")
-    except (ValueError, TypeError):
-        return "—"
-
-
-def _card_pct(v: Any) -> str:
-    """Процент для карточки: одна цифра после запятой, минус — U+2212.
-
-    Формат взят у канонической карточки план/факт (utils.format_plan_fact_card,
-    строка «Рент-ть»: `{pct:>9.1f}%`), чтобы одна и та же величина в двух
-    витринах ГД выглядела одинаково.
-    """
-    try:
-        return f"{float(v or 0):.1f}%".replace("-", "\u2212")
-    except (ValueError, TypeError):
-        return "—"
-
-
-def _invoice_end_fin_rows(inv: dict[str, Any], pf: dict[str, Any]) -> list[tuple[str, str]]:
-    """Финблок «Счёт End» строками эталона (owner 22.08).
-
-    Каждая величина — своей строкой, числа справа, ₽ из ячеек убран. Прежняя
-    вёрстка шла через format_card_section(compact=True), а в ветке compact
-    параметр width НЕ применяется вовсе (utils.py:3941-3948) — строка вида
-    «Себест-ть: расч N / факт N₽» переваливала за 44 знака и переносилась на
-    телефоне. Ровно на это жаловался owner: «строки переносятся».
-
-    ⚠️ Состав ШИРЕ, чем у utils.format_invoice_end_financials (24.08): добавлены
-    НДС, рент-ть расч/факт, ЗП РП 10% и доля ГД, а ЗП менеджера переведена на AJ.
-    Это вторая половина того же требования owner 22.08 — «не хватает важной
-    информации» — и его же «данные поступают неправильно»; состав и источники
-    взяты у канонической карточки utils.format_plan_fact_card и у письменного
-    эталона [[feedback_card_calc_sources]], а не придуманы здесь.
-
-    ⚠️ Копия расчёта здесь СОЗНАТЕЛЬНАЯ и ВРЕМЕННАЯ. Общий рендер живёт в
-    utils.format_invoice_end_financials, но utils.py сейчас держит
-    непродеплоенный патч «детектор зеркала ОП» и катить его нельзя
-    ([[feedback_undeployed_patch_survives_resync]]). Свести обратно в utils.py
-    сразу после деплоя детектора — тогда тот же вид получит и карточка задачи
-    (tasks.py:364), которая пока остаётся в старой вёрстке.
-
-    Пустой список — расчётных данных нет, показывать нечего.
-    """
-    if not pf.get("has_estimated"):
-        return []
-
-    est_total = pf.get("estimated_total_cost", 0) or 0
-    fact_total = pf.get("actual_total_cost", 0) or 0
-    est_profit = pf.get("estimated_profit", 0) or 0
-    fact_profit = pf.get("actual_profit", 0) or 0
-    est_pct = pf.get("estimated_profitability", 0) or 0
-    fact_pct = pf.get("actual_profitability", 0) or 0
-    net_vat = pf.get("net_vat", 0) or 0
-    rp_zp = pf.get("rp_zp", 0) or 0
-    gd_profit = pf.get("gd_profit", 0) or 0
-    client_source = pf.get("client_source", "own")
-
-    # Гейт «факт готов» — зеркало _has_key_facts из format_plan_fact_card: факт
-    # показываем только при наличии факт-материалов И факт-установки, иначе «—»
-    # (частичные данные на этапе закрытия вводят в заблуждение). Копия 1:1.
-    cost = pf.get("cost_card", {}) or {}
-    _sp_svc = 0.0
-    for _sp in cost.get("supplier_payments_list", []) or []:
-        if _sp.get("material_type") in ("service", "montazh", "extra_svc"):
-            _sp_svc += _sp.get("amount", 0) or 0
-    fact_mat = cost.get("mat_and_suppliers", cost.get("materials_combined", 0)) or 0
-    fact_inst = max(
-        cost.get("montazh_combined", float(cost.get("zp_installer", 0) or 0)) or 0,
-        _sp_svc,
-    )
-    has_fact = bool(fact_mat) and bool(fact_inst)
-
-    # 🔴 НДС строкой МЕЖДУ себестоимостью и прибылью — чтобы числа сходились
-    # НА ЭКРАНЕ. Это не изобретение: ровно так предписывает ТЗ 2026-05-19 A.6,
-    # уже реализованное в канонической карточке (utils.format_plan_fact_card,
-    # комментарий там дословно: «показываем НДС/Налог приб./НПН строками между
-    # Себест-ть и Прибыль — чтобы визуально Сумма − Себест-ть − НДС − Налог −
-    # НПН = Прибыль»). В карточку «Счёт End» это правило не доехало, и owner
-    # 22.08 жаловался: «в карточку финансы данные поступают неправильно».
-    # Замер 24.08 по боевым: у 24 счетов из 38 «Сумма − Себест-ть» не равнялась
-    # «Прибыли», и у ВСЕХ 24 разрыв в точности равен net_vat (до 359 754 ₽).
-    # ⛔ У кредитных НДС не считается и НЕ показывается (owner 28.05,
-    # [[feedback_card_calc_sources]]): замер подтвердил — у 14 кредитных
-    # net_vat = 0 и разрыва нет, набор строк у них не меняется.
-    rows: list[tuple[str, str]] = [("Себест-ть расч", _card_num(est_total))]
-    if not inv.get("is_credit") and abs(float(net_vat or 0)) > 0.5:
-        rows.append(("НДС расч", _card_num(net_vat)))
-    rows.append(("Прибыль расч", _card_num(est_profit)))
-    rows.append(("Рент-ть расч", _card_pct(est_pct)))
-    rows.append(("Себест-ть факт", _card_num(fact_total) if has_fact else "—"))
-    rows.append(("Прибыль факт", _card_num(fact_profit) if has_fact else "—"))
-    rows.append(("Рент-ть факт", _card_pct(fact_pct) if has_fact else "—"))
-    # При расч. прибыли ≤ 0 распределять нечего (зеркало format_plan_fact_card,
-    # который скрывает блок распределения при est_profit ≤ 0) — отрицательную
-    # «зарплату» не показываем.
-    if est_profit and float(est_profit) > 0:
-        # Распределение прибыли целиком, как в канонической карточке: без ЗП РП
-        # и доли ГД оно было показано на треть, а доля ГД — это собственные
-        # деньги того, кто на эту карточку смотрит и принимает решение.
-        rows.append(("ЗП РП 10%", _card_num(rp_zp)))
-        # 🔴 Источник ЗП менеджера — AJ через manager_zp_net_payout, а НЕ
-        # расчётный сплит pf["manager_zp"]. Owner 27.06 дословно: «Правильно: aj»
-        # ([[feedback_card_calc_sources]]: «ЗП менеджер | AJ»), и каноническая
-        # карточка уже читает AJ (utils.py, format_plan_fact_card). Карточка
-        # «Счёт End» единственная осталась на расчётном сплите: замер 24.08 —
-        # расхождение у 37 счетов из 38, суммарно 131 896 ₽ (до 25 483 ₽ на счёт).
-        rows.append(("ЗП менеджера", _card_num(manager_zp_net_payout(inv))))
-        rows.append(("Доля ГД", _card_num(gd_profit)))
-        # Соотношение — в виде 75/25 и 50/50, как задаёт письменный эталон
-        # источников (H: 1 = 50/50, 2 = 75/25) и как печатает соседняя карточка.
-        # Прежняя подпись «лид ГД 25%» показывала долю менеджера и расходилась
-        # с соседней витриной ГД по тому же счёту.
-        rows.append(
-            ("Соотношение", "📋 Лид ГД 75/25" if client_source == "gd_lead" else "👤 Свой 50/50")
-        )
-    else:
-        rows.append(("ЗП менеджера", "—"))
-    return rows
-
-
 async def _build_invoice_end_cards(
     db: Database,
     inv: dict[str, Any],
@@ -2092,7 +1965,7 @@ async def _build_invoice_end_cards(
 
     # PART B (ТЗ 19.06): справочный финблок — display-only, ТОЛЬКО ГД.
     pf = await db.get_plan_fact_card(invoice_id)
-    fin_rows = _invoice_end_fin_rows(inv, pf)
+    fin_rows = invoice_end_fin_rows(inv, pf)
 
     docs = _invoice_docs_lines(inv)
     docs_section = (
