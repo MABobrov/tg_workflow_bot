@@ -4287,6 +4287,39 @@ async def mgr_cred_chat(message: Message, state: FSMContext, db: Database) -> No
 # =====================================================================
 
 CREDIT_WALLET_ROLES = ("manager_kv", "manager_kia", "manager_npn")
+
+
+def _cw_u16(text: str) -> int:
+    """Длина в UTF-16 units — так лимит сообщения (4096) считает Telegram."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+# Потолок длины карточки кошелька. Число — канон проекта: gd.py:1807
+# «TG_LIMIT = 4000  # запас 96 байт под HTML-теги»; им же подогнана карточка ГД
+# (chat_proxy._CWHIST_MAX_UNITS, 01.09).
+# 🔴 Не страховка на будущее: на 01.09 лента кошелька КВ занимает 4217 units, а
+# экран выбора режима — 4340, оба выше лимита 4096, то есть Telegram их НЕ
+# принимает. Отправка во всех трёх местах ниже стоит ВНЕ try, а глобального
+# errors-handler в проекте нет — падение уходило МОЛЧА: 30.08 РП дважды подряд
+# выбрал кошелёк КВ и не получил экран «Расход кредита» (audit_log обрывается на
+# cwspend:wallet, следом человек ушёл в другое меню и дважды перезапустил /menu).
+# Лента доросла до лимита на 74-м движении из 77 — около 25.08.
+_CW_MAX_UNITS = 4000
+
+# Хвост экрана «Расход кредита» уходит в ОДНОМ сообщении с карточкой (см. ниже
+# _cw_show_mode), поэтому его длина вычитается из потолка.
+_CW_MODE_TAIL = (
+    "Выберите режим траты:\n"
+    "🔗 <b>С привязкой</b> — к счёту в работе (ляжет в его расходы DP–DV)\n"
+    "📄 <b>Без привязки</b> — в «Баланс компании»"
+)
+
+# ⚠️ Считаем ВМЕСТЕ с HTML-тегами, тогда как подгонка внутри
+# build_credit_wallet_card_ex меряет карточку БЕЗ них (utils.py:4710,
+# _CARD_TAG_RE) — Telegram проверяет длину после разбора сущностей. Расхождение
+# ровно на длину тегов хвоста (14 units) и идёт в БЕЗОПАСНУЮ сторону: запас чуть
+# больше нужного. Так намеренно, чтобы не тянуть сюда приватный _CARD_TAG_RE.
+_CW_MODE_TAIL_UNITS = _cw_u16("\n\n" + _CW_MODE_TAIL)
 _CREDIT_COST_CHOICES = [
     ("metal", "Металл"), ("glass", "Стекло"), ("montazh", "Монтаж"),
     ("loaders", "Грузчики"), ("logistics", "Логистика"),
@@ -4300,7 +4333,11 @@ async def _cw_show_mode(target: Message, state: FSMContext, db: Database) -> Non
     data = await state.get_data()
     role = data.get("wallet_role") or ""
     try:
-        card = await build_credit_wallet_card(db, role)
+        # Карточка уходит В ОДНОМ сообщении с хвостом выбора режима, поэтому
+        # потолок для неё уменьшен на его длину.
+        card = await build_credit_wallet_card(
+            db, role, max_units=_CW_MAX_UNITS - _CW_MODE_TAIL_UNITS,
+        )
     except Exception:
         card = ""
     await state.set_state(CreditWalletSpendSG.pick_mode)
@@ -4311,10 +4348,7 @@ async def _cw_show_mode(target: Message, state: FSMContext, db: Database) -> Non
     b.adjust(1)
     head = card + "\n\n" if card else ""
     await target.answer(
-        head
-        + "Выберите режим траты:\n"
-        "🔗 <b>С привязкой</b> — к счёту в работе (ляжет в его расходы DP–DV)\n"
-        "📄 <b>Без привязки</b> — в «Баланс компании»",
+        head + _CW_MODE_TAIL,
         reply_markup=b.as_markup(),
     )
 
@@ -6260,7 +6294,7 @@ async def cw_balance_show(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
     try:
-        card = await build_credit_wallet_card(db, role)
+        card = await build_credit_wallet_card(db, role, max_units=_CW_MAX_UNITS)
     except Exception:
         card = "⚠️ Не удалось построить карточку баланса."
     await cb.message.answer(card)  # type: ignore[union-attr]
@@ -7744,7 +7778,7 @@ async def _credit_show(target: Message, db: Database, user_id: int) -> None:
         await target.answer("❌ Кредитный кошелёк есть только у менеджеров КВ/КИА/НПН.")
         return
     try:
-        card = await build_credit_wallet_card(db, wallet)
+        card = await build_credit_wallet_card(db, wallet, max_units=_CW_MAX_UNITS)
     except Exception:
         log.warning("build_credit_wallet_card failed role=%s", wallet, exc_info=True)
         card = "🏦 <b>Кредитный баланс</b>"
