@@ -18,9 +18,10 @@ import re
 from typing import Any
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
@@ -42,7 +43,7 @@ from ..services.notifier import Notifier
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..states import ChatProxySG, CreditPaymentExecuteSG, CreditPaymentReceiptSG, CreditTaskRejectSG, CreditTaskSG, CreditWalletSpendSG, GdTaskCreateSG, InvoicePaymentSG, ReplyToGDSG
-from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, credit_wallet_label, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_by_wallet_payment, utcnow, to_iso
+from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card_ex, credit_wallet_label, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_by_wallet_payment, utcnow, to_iso
 from ._mirror import collect_attachment, mirror_attachment
 
 log = logging.getLogger(__name__)
@@ -142,6 +143,42 @@ def parse_amount_from_text(text: str) -> float | None:
 
 
 FINANCE_CHANNELS = {"manager_kv", "manager_kia", "manager_npn"}
+
+# Свёрнутый вид карточки кошелька: сколько движений видно до раскрытия (owner 01.09).
+# Охват — ТОЛЬКО ГД: менеджерские вызовы build_credit_wallet_card идут без recent.
+_CWHIST_RECENT = 10
+# Потолок длины карточки в UTF-16 units — так лимит считает Telegram (4096).
+# Запас на HTML-сущности и рост строк; полная лента КВ на 01.09 занимает 4217
+# units, то есть БЕЗ подгонки раскрытие отдавало бы отказ ровно там, где нужно.
+_CWHIST_MAX_UNITS = 4000
+
+
+def _cw_hist_kb(channel: str, *, expanded: bool, meta: dict) -> InlineKeyboardMarkup | None:
+    """Кнопка «раскрыть/свернуть» ленту движений кредит-кошелька на карточке ГД.
+
+    Состояние — в callback_data, а НЕ в FSM ([[feedback_fsm_old_buttons_trap]]):
+    кнопка остаётся в сообщении навсегда, фильтр состояния молча съел бы нажатие,
+    а кошелёк, взятый из FSM, после перезахода в другой канал был бы уже чужим.
+    Кнопки нет вовсе, когда вся история и так помещается — сворачивать нечего.
+    ⚠️ Инлайн-кнопка возможна ровно потому, что карточка уходит ОТДЕЛЬНЫМ
+    сообщением без reply-клавиатуры; на стартовой карточке ГД так нельзя —
+    Telegram не совмещает инлайн и reply в одном сообщении (грабля invendcard 22.08).
+    """
+    total = int(meta.get("total") or 0)
+    if total <= _CWHIST_RECENT:
+        return None
+    b = InlineKeyboardBuilder()
+    if expanded:
+        b.button(text="🔼 Свернуть", callback_data=f"cwhist:{channel}:0")
+    else:
+        # Числа на метке НЕТ намеренно: раскроется столько, сколько влезет в
+        # лимит Telegram (для КВ это 72 из 77), и «(77)» на кнопке разошлось бы
+        # с заголовком «72 из 77» на том же экране. Сколько всего — говорит
+        # заголовок карточки.
+        b.button(text="🧾 Раскрыть историю", callback_data=f"cwhist:{channel}:1")
+    b.adjust(1)
+    return b.as_markup()
+
 
 # Маппинг канала → роль менеджера (для поиска кредитных счетов)
 _CHANNEL_TO_ROLE = {
@@ -305,8 +342,14 @@ async def enter_chat_menu(
 
     if db is not None and channel in FINANCE_CHANNELS:
         try:
-            card = await build_credit_wallet_card(db, channel, show_header_total=False)
-            await message.answer(card)
+            card, _cwm = await build_credit_wallet_card_ex(
+                db, channel, recent=_CWHIST_RECENT,
+                max_units=_CWHIST_MAX_UNITS, show_header_total=False,
+            )
+            await message.answer(
+                card,
+                reply_markup=_cw_hist_kb(channel, expanded=False, meta=_cwm),
+            )
         except Exception:
             log.warning("enter_chat_menu: credit card failed channel=%s", channel, exc_info=True)
 
@@ -670,14 +713,106 @@ async def gd_cred_balance(message: Message, state: FSMContext, db: Database) -> 
     channel = data.get("channel", "")
     if channel not in FINANCE_CHANNELS:
         return
+    _cwm: dict = {}
     try:
         # ГД-вид: сумму баланса в шапке не показываем (она остаётся в footer
         # «Остаток»). По запросу user 03.06 — только для ГД (канал=кошелёк).
-        card = await build_credit_wallet_card(db, channel, show_header_total=False)
+        card, _cwm = await build_credit_wallet_card_ex(
+            db, channel, recent=_CWHIST_RECENT,
+            max_units=_CWHIST_MAX_UNITS, show_header_total=False,
+        )
     except Exception:
         log.warning("gd_cred_balance: card failed channel=%s", channel, exc_info=True)
         card = "⚠️ Не удалось построить карточку баланса."
-    await message.answer(card)
+    await message.answer(
+        card,
+        reply_markup=_cw_hist_kb(channel, expanded=False, meta=_cwm),
+    )
+
+
+@router.callback_query(F.data.startswith("cwhist:"))
+async def gd_cred_hist_toggle(cb: CallbackQuery, db: Database) -> None:
+    """Раскрыть/свернуть ленту движений кредит-кошелька ПРЯМО на карточке.
+
+    Без StateFilter намеренно: кнопка живёт в сообщении вечно, и фильтр состояния
+    молча съел бы нажатие ([[feedback_fsm_old_buttons_trap]]). Кошелёк и режим —
+    из callback_data, а не из FSM. Отвечаем на callback ВСЕГДА и ровно один раз:
+    catch-all для нераспознанных callback-ов в проекте нет, поэтому молчание
+    оставило бы человеку вечный спиннер.
+    """
+    parts = (cb.data or "").split(":")
+    channel = parts[1] if len(parts) > 1 else ""
+    expand = len(parts) > 2 and parts[2] == "1"
+    if channel not in FINANCE_CHANNELS:
+        await cb.answer("⚠️ Кнопка устарела — откройте карточку заново.", show_alert=True)
+        return
+    # Кошелёк менеджера видит не всякий: проверяем доступ здесь, а не полагаемся на
+    # то, что кнопку выдавали лишь ГД, — callback_data подделывается руками
+    # ([[feedback_manager_own_credit_wallet_only]]). Гейт — канонический
+    # require_role_callback: он же проверяет is_active и приватность чата и сам
+    # отвечает на callback. 🔴 Список ролей берём ТОТ ЖЕ, что пускает на экран
+    # (gd.GD_ACCESS_ROLES = ГД + ТД, гейт require_role_message у gd_chat_kv/kia/npn):
+    # разойдись они — ТД получил бы кнопку и отказ на неё. Импорт локальный:
+    # gd.py тянет chat_proxy на уровне модуля, обратный импорт в шапке дал бы цикл.
+    from .auth import require_role_callback
+    from .gd import GD_ACCESS_ROLES as _CWH_ROLES
+    try:
+        if not await require_role_callback(cb, db, roles=_CWH_ROLES):
+            return
+    except Exception:
+        # Обращение к БД может упасть («database is locked» — известная в проекте
+        # ситуация): без ответа человек получил бы вечный спиннер.
+        log.warning("gd_cred_hist_toggle: gate failed channel=%s", channel, exc_info=True)
+        await cb.answer("⚠️ Не удалось проверить доступ, повторите.", show_alert=True)
+        return
+    try:
+        card, _cwm = await build_credit_wallet_card_ex(
+            db,
+            channel,
+            recent=(None if expand else _CWHIST_RECENT),
+            max_units=_CWHIST_MAX_UNITS,
+            show_header_total=False,
+        )
+    except Exception:
+        log.warning("gd_cred_hist_toggle: card failed channel=%s", channel, exc_info=True)
+        await cb.answer("⚠️ Не удалось построить карточку.", show_alert=True)
+        return
+    try:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            card,
+            reply_markup=_cw_hist_kb(channel, expanded=expand, meta=_cwm),
+        )
+    except TelegramBadRequest as _e:
+        # «message is not modified» и родня — безобидны: нужный вид уже на экране
+        # (двойной клик, кнопка старого сообщения). Списком причин пользуемся
+        # общим с tasks._ignorable_markup_error, чтобы трактовка не разъехалась;
+        # свой алерт здесь соврал бы про длину.
+        from .tasks import _ignorable_markup_error
+        if _ignorable_markup_error(_e):
+            await cb.answer()
+            return
+        # Развёрнутая лента может не влезть в лимит Telegram 4096 — тогда edit_text
+        # падает, и молчать нельзя: кнопка читалась бы как мёртвая. answer() как
+        # запасной путь НЕ годится — он упрётся в тот же лимит.
+        log.warning(
+            "gd_cred_hist_toggle: edit failed channel=%s expand=%s",
+            channel, expand, exc_info=True,
+        )
+        await cb.answer("⚠️ История слишком длинная для одного сообщения.", show_alert=True)
+        return
+    except Exception:
+        log.warning(
+            "gd_cred_hist_toggle: edit crashed channel=%s expand=%s",
+            channel, expand, exc_info=True,
+        )
+        await cb.answer("⚠️ Не удалось обновить карточку.", show_alert=True)
+        return
+    try:
+        await cb.answer()
+    except Exception:
+        # Пока шла перерисовка, query мог просрочиться. Карточка у человека уже
+        # обновлена — ронять хендлер трейсбэком из-за этого незачем.
+        pass
 
 
 @router.message(ChatProxySG.menu, F.text == GD_BTN_CRED_SPEND)

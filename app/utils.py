@@ -4323,12 +4323,33 @@ def format_card(sections: list[str]) -> str:
     return "\n\n".join(s for s in sections if s)
 
 
+# Разметка в лимит Telegram не входит: Bot API считает длину «after entities
+# parsing». Снимаем теги, чтобы оценка длины карточки была честной.
+_CARD_TAG_RE = re.compile(r"</?(?:b|i|u|s|pre|code|a)\b[^>]*>")
+
+
 def credit_wallet_label(role: str) -> str:
     """Короткая метка кошелька менеджера для кредит-карточек/журнала."""
     return {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}.get(role, role)
 
 
-async def build_credit_wallet_card(db: "Database", role: str, *, recent: int = 10, show_header_total: bool = True) -> str:
+async def build_credit_wallet_card(db: "Database", role: str, *, recent: int | None = None, max_units: int | None = None, show_header_total: bool = True) -> str:
+    """Текст карточки «Кредитный баланс» — тонкая обёртка над build_credit_wallet_card_ex.
+
+    Вызовы менеджеров (manager_new.py:4303/6263/7747) идут БЕЗ recent → recent=None
+    → вся история, вывод байт в байт как до правки 01.09. Оставить прежний дефолт
+    10 было НЕЛЬЗЯ: он обрезал бы и менеджерам, то есть нарушил бы охват «только ГД».
+    ⚠️ Прежний `recent: int = 10` в сигнатуре был МЁРТВ — в теле не использовался
+    ни разу; оживление параметра и есть суть правки (owner 01.09).
+    """
+    card, _meta = await build_credit_wallet_card_ex(
+        db, role, recent=recent, max_units=max_units,
+        show_header_total=show_header_total,
+    )
+    return card
+
+
+async def build_credit_wallet_card_ex(db: "Database", role: str, *, recent: int | None = None, max_units: int | None = None, show_header_total: bool = True) -> tuple[str, dict]:
     """Карточка «Кредитный баланс» кошелька менеджера (эталон, TZ 02.06; relayout 2026-06-10).
 
     Источник остатка — db.get_credit_balance_summary(role) (carry-DA): остатки
@@ -4346,6 +4367,18 @@ async def build_credit_wallet_card(db: "Database", role: str, *, recent: int = 1
     траты кошелька, хронологически. Σ(баланс+приход) − Σтрат = «Итого». Сырые
     приходы прочих открытых счетов НЕ показываем — они свёрнуты в перенос (раньше
     показывались и Σприходов ≠ «Вход», что путало; TZ переноса 02–04.06 цел).
+
+    recent (owner 01.09, охват — ТОЛЬКО ГД): None = вся история (поведение до
+    правки, им пользуются все три вызова менеджеров); int N = свёрнутый вид,
+    видны последние N ДВИЖЕНИЙ. Возврат — (текст, meta), где meta =
+    {'total': всего движений, 'shown': показано, 'truncated': была ли обрезка};
+    по meta вызывающий решает, рисовать ли кнопку раскрытия и что на ней писать.
+
+    max_units — потолок длины карточки в UTF-16 units (так лимит считает
+    Telegram). 🔴 Не страховка на будущее: полная лента КВ на 01.09 занимает
+    4217 units при лимите 4096, то есть такое сообщение сервер НЕ принимает.
+    При заданном max_units показ ужимается до влезающего числа движений;
+    None (все вызовы менеджеров) — прежнее поведение без подгонки.
     """
     label = credit_wallet_label(role)
 
@@ -4430,7 +4463,20 @@ async def build_credit_wallet_card(db: "Database", role: str, *, recent: int = 1
         first = str(role_str).split(",")[0].strip()
         return _ABBR.get(first, first[:3].upper())
 
+    def _moves_header(shown: int, total: int) -> str:
+        """Заголовок блока движений; при обрезке несёт видимую пометку «N из M».
+
+        Пометка стоит в заголовке, а НЕ строкой внутри <pre>: там она расширила
+        бы колонку и порвала выравнивание чисел
+        ([[feedback_card_telegram_pre_alignment]]).
+        """
+        h = "<b>🧾  Последние движения</b>"
+        if shown < total:
+            h += f"  <i>{shown} из {total}</i>"
+        return h
+
     moves_body = ""
+    _meta: dict[str, Any] = {"total": 0, "shown": 0, "truncated": False}
     try:
         bundle = await db.list_all_credit_events(limit=500)
         mgr = next(
@@ -4606,6 +4652,7 @@ async def build_credit_wallet_card(db: "Database", role: str, *, recent: int = 1
         _sverka_done = _anchor_amt is None
 
         _lines: list[str] = []
+        _move_at: list[int] = []   # индекс первой строки блока каждого движения
         _run = 0.0
 
         def _bal_line() -> None:
@@ -4618,6 +4665,7 @@ async def build_credit_wallet_card(db: "Database", role: str, *, recent: int = 1
             )
 
         for (ts, kind, icon, amt, signed, ab, street) in rows:
+            _blk = len(_lines)   # начало блока: сюда же попадёт «⚖️ Сверка», если встанет
             if not _sverka_done and str(ts) > _anchor_ts:
                 _run = _anchor_amt  # type: ignore[assignment]
                 _sverka_line()
@@ -4626,6 +4674,7 @@ async def build_credit_wallet_card(db: "Database", role: str, *, recent: int = 1
             _run += signed
             arrow = "" if kind == "bal" else ("⬆️" if kind == "in" else "⬇️")
             prefix = f"{_d(ts)} {arrow}{icon}".rstrip()
+            _move_at.append(_blk)
             _lines.append(
                 "   " + _pad(prefix, _PREFIX_W) + _pad(_k(amt), _SUM_W, True)
                 + " " + _pad(ab, _ABBR_W) + " " + street
@@ -4636,15 +4685,56 @@ async def build_credit_wallet_card(db: "Database", role: str, *, recent: int = 1
             _run = _anchor_amt  # type: ignore[assignment]
             _sverka_line()
             _bal_line()
+
+        # Свёрнутый вид (owner 01.09, только ГД): видны последние `recent` ДВИЖЕНИЙ.
+        # 🔴 Режем ГОТОВЫЕ строки, а не входные rows: running-баланс (_run) накоплен
+        # по ВСЕЙ истории, и обрезка входа увела бы колонку «баланс» и разошлась бы
+        # с «Итого». Считаем по ДВИЖЕНИЯМ (_move_at), а не по строкам списка: строки
+        # идут парами (движение + «баланс»), и между ними может встать «⚖️ Сверка»
+        # со своим балансом.
+        _total_moves = len(_move_at)
+        _lines_all = _lines
+
+        def _cut(n: int) -> list[str]:
+            # n <= 0 обязан давать пустой блок, а не IndexError: без этой ветки
+            # вызов с recent=0 падал бы во внешний except и МОЛЧА стирал весь
+            # блок движений вместе с кнопкой, без следа в логе.
+            if n <= 0:
+                return []
+            if n >= _total_moves:
+                return _lines_all
+            return _lines_all[_move_at[_total_moves - n]:]
+
+        def _units(_ls: list[str], n: int) -> int:
+            _t = _moves_header(n, _total_moves) + "\n<pre>" + "\n".join(_ls) + "</pre>\n\n" + main
+            return len(_CARD_TAG_RE.sub("", _t).encode("utf-16-le")) // 2
+
+        _shown = _total_moves if recent is None else min(_total_moves, int(recent))
+        # 🔴 Подгонка под лимит Telegram — не страховка: полная лента КВ на 01.09
+        # это 4217 units при лимите 4096, сервер такое сообщение не принимает, то
+        # есть карточка не доходит ВООБЩЕ. Кнопка «раскрыть», заведомо отдающая
+        # отказ, заказ owner'а не выполняет — показываем столько, сколько влезает.
+        if max_units is not None:
+            while _shown > 1 and _units(_cut(_shown), _shown) > int(max_units):
+                _shown -= 1
+
+        _lines = _cut(_shown)
+        _meta["total"] = _total_moves
+        _meta["shown"] = _shown
+        _meta["truncated"] = _shown < _total_moves
         moves_body = "\n".join(_lines)
     except Exception:
         moves_body = ""
 
     if moves_body:
         # Блоки местами (user 2026-06-10): «Последние движения» сверху, баланс снизу.
-        moves = f"<b>🧾  Последние движения</b>\n<pre>{moves_body}</pre>"
-        return f"{moves}\n\n{main}"
-    return main
+        # Обрезка обязана быть ВИДИМОЙ — молчаливое усечение читается как «это всё»
+        # ([[feedback_display_no_unrequested_history_truncation]]); пометку ставит
+        # _moves_header, им же меряется длина при подгонке под лимит.
+        _hdr = _moves_header(int(_meta["shown"]), int(_meta["total"]))
+        moves = f"{_hdr}\n<pre>{moves_body}</pre>"
+        return f"{moves}\n\n{main}", _meta
+    return main, _meta
 
 
 async def apply_credit_wallet_spend(
