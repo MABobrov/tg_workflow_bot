@@ -6096,10 +6096,28 @@ class Database:
                 return True
         return False
 
-    async def invoice_end_prompt_blocked(self, invoice_id: int) -> bool:
+    async def invoice_end_prompt_blocked(
+        self, invoice_id: int, ready_state: str | None = None
+    ) -> bool:
         """Дедуп напоминания «счёт готов к закрытию» (ТЗ 18.06): True, если по
         счёту уже открыта задача INVOICE_END_READY ИЛИ INVOICE_END_REQUEST
-        (менеджер уже начал закрытие) — тогда новое напоминание не плодим."""
+        (менеджер уже начал закрытие) — тогда новое напоминание не плодим.
+
+        02.09: плюс дедуп по ОТКЛОНЁННЫМ напоминаниям. Раньше смотрели только
+        открытые, поэтому отказ ничего не гасил: счёт оставался готовым, и
+        ночной догон каждое утро заводил новую задачу. По счёту 66
+        (26721-1НПН) так набралось ОДИННАДЦАТЬ подряд, 19–29.08, все rejected.
+
+        🔑 Ключ — не «был отказ», а «был отказ ПО ТОМУ ЖЕ СОСТОЯНИЮ готовности»
+        (`ready_state` = стадия монтажа + статус счёта + долг). Изменится
+        состояние — напоминание вернётся, то есть отказ не глушит счёт навсегда.
+        ⚠️ Именно состояние, а НЕ `invoices.updated_at`: его трогает любой синк
+        строки, и по нему «счёт изменился» было бы верно почти всегда.
+        ⚠️ У задач, созданных ДО этой правки, `ready_state` в payload нет —
+        такие не блокируют (иначе правка задним числом погасила бы напоминания,
+        о которых никто не просил). Значит после деплоя придёт максимум ОДНО
+        напоминание, и уже его отказ встанет барьером.
+        """
         from .enums import TaskType, TaskStatus
         tasks = await self.search_tasks_by_payload(
             field="invoice_id",
@@ -6108,13 +6126,21 @@ class Database:
             limit=30,
         )
         for t in tasks:
-            if t.get("status") not in (TaskStatus.OPEN, TaskStatus.IN_PROGRESS):
-                continue
             try:
                 payload = json.loads(t.get("payload_json") or "{}")
             except (ValueError, TypeError):
                 continue
-            if int(payload.get("invoice_id") or 0) == int(invoice_id):
+            # LIKE в search_tasks_by_payload ловит и 166, и 660 — сверяем точно.
+            if int(payload.get("invoice_id") or 0) != int(invoice_id):
+                continue
+            if t.get("status") in (TaskStatus.OPEN, TaskStatus.IN_PROGRESS):
+                return True
+            if (
+                ready_state
+                and t.get("status") == TaskStatus.REJECTED
+                and t.get("type") == TaskType.INVOICE_END_READY
+                and payload.get("ready_state") == ready_state
+            ):
                 return True
         return False
 

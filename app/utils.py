@@ -2476,8 +2476,17 @@ async def prompt_invoice_end_ready(
         manager_id = inv.get("created_by")
         if not manager_id:
             return False
-        # дедуп: открытое напоминание ИЛИ менеджер уже инициировал закрытие
-        if await db.invoice_end_prompt_blocked(invoice_id):
+        # Состояние готовности — ключ дедупа по ОТКЛОНЁННЫМ напоминаниям
+        # (02.09). Ровно те три величины, из-за которых счёт считается готовым и
+        # проверяются выше; отказ гасит напоминание, пока они не изменились.
+        ready_state = "%s|%s|%.2f" % (
+            inv.get("montazh_stage") or "",
+            inv.get("status") or "",
+            float(inv.get("outstanding_debt") or 0),
+        )
+        # дедуп: открытое напоминание, начатое закрытие ИЛИ уже отклонённое
+        # напоминание по тому же состоянию счёта
+        if await db.invoice_end_prompt_blocked(invoice_id, ready_state=ready_state):
             return False
 
         from .enums import TaskType, TaskStatus
@@ -2492,6 +2501,8 @@ async def prompt_invoice_end_ready(
                 payload={
                     "invoice_id": invoice_id,
                     "invoice_number": inv.get("invoice_number"),
+                    # ключ дедупа: по нему отказ гасит повтор до смены состояния
+                    "ready_state": ready_state,
                 },
             )
         except Exception:
