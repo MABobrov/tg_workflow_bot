@@ -3229,29 +3229,78 @@ class GoogleSheetsService:
                 (j.get("description_credit") or "").strip(),
             ])
 
-        # Walk 1: вставляем БД-записи в пустые template-rows + flush остатки перед «Итого:».
+        # Walk 1: вставляем БД-записи в пустые template-rows + flush остатки перед
+        # «Итого:», при СМЕНЕ месяца и в конце журнала.
+        #
+        # 🔴 Дефект, который закрывают два последних условия (замер 02.09): до них
+        # записи месяца попадали в output ТОЛЬКО двумя путями — в пустую
+        # template-row своего месяца либо перед строкой «Итого:» этого месяца.
+        # У августа 2026 в журнале офиса «Итого:» НЕТ, а все 12 его строк несут
+        # описания (то есть не пустые) — деваться записям было некуда, и **19
+        # записей просто исчезали**, молча. У сентября блока нет вовсе — терялась
+        # ещё одна. Всего 20 записей на 771 873,67 ₽ по модулю: они есть в БД
+        # (источник истины), но на листе их не видно.
+        #
+        # ⚠️ Бот НЕ пишет в «Импорт ОП» ([[feedback_import_op_readonly]]), поэтому
+        # завести недостающую структуру там он не может — только выложить свои
+        # записи здесь, на СВОЁМ листе.
         output: list[dict[str, Any]] = []
+
+        def _flush_month_db(key: tuple[int, int] | None) -> None:
+            """Выложить оставшиеся БД-записи месяца key в конец output."""
+            if not key or not key[1]:
+                return
+            remaining = db_by_month.get(key) or []
+            for e in remaining:
+                e["month_name"] = (
+                    self._MONTHS_NUM_TO_RU.get(key[1], "") or e.get("month_name") or ""
+                )
+                output.append(e)
+            db_by_month[key] = []
+
+        prev_key: tuple[int, int] | None = None
         for j in sheet_journal:
             month_name = (j.get("month_name") or "")
+            key = (int(j.get("year") or 0), int(j.get("month_num") or 0))
+            # Месяц сменился, а «Итого:» у прошлого не было — выложить его остаток
+            # ЗДЕСЬ, пока блок не закрылся, иначе записи уедут в чужой месяц.
+            if month_name != "Итого:" and prev_key is not None and key != prev_key:
+                _flush_month_db(prev_key)
             if month_name == "Итого:":
                 # Перед «Итого:» — flush оставшиеся БД-записи этого месяца.
-                key = (int(j.get("year") or 0), int(j.get("month_num") or 0))
-                remaining = db_by_month.get(key) or []
-                for e in remaining:
-                    e["month_name"] = self._MONTHS_NUM_TO_RU.get(key[1], "")
-                    output.append(e)
-                db_by_month[key] = []
+                _flush_month_db(key)
                 output.append(j)  # placeholder для пересчёта на walk 2
+                prev_key = None   # блок месяца закрыт
                 continue
             if _is_empty_template(j):
-                key = (int(j.get("year") or 0), int(j.get("month_num") or 0))
                 pending = db_by_month.get(key) or []
                 if pending:
                     e = pending.pop(0)
                     e["month_name"] = j.get("month_name") or e["month_name"]
                     output.append(e)
+                    prev_key = key
                     continue
             output.append(j)
+            prev_key = key
+        _flush_month_db(prev_key)   # хвост последнего месяца без «Итого:»
+
+        # Месяцы, которых в журнале офиса НЕТ ВООБЩЕ (например только что
+        # начавшийся): бот заводит блок сам и вставляет его в хронологическую
+        # позицию — перед первым месяцем, который больше по (год, месяц).
+        for key in sorted([k for k, v in db_by_month.items() if v and k[1]]):
+            rows = db_by_month.get(key) or []
+            for e in rows:
+                e["month_name"] = (
+                    self._MONTHS_NUM_TO_RU.get(key[1], "") or e.get("month_name") or ""
+                )
+            pos = len(output)
+            for i, r in enumerate(output):
+                rk = (int(r.get("year") or 0), int(r.get("month_num") or 0))
+                if rk[1] and rk > key:
+                    pos = i
+                    break
+            output[pos:pos] = rows
+            db_by_month[key] = []
 
         # Walk 1.5: УКЛАДКА без пустых строк внутри блока месяца (owner 04.07:
         # «нельзя пропускать строки»). Записи op_company_entries односторонние
@@ -3319,11 +3368,21 @@ class GoogleSheetsService:
                 packed.append(row)
             month_block.clear()
 
+        # ⚠️ Блок рвётся И по смене месяца, а не только по «Итого:». Иначе месяц
+        # без «Итого:» (август 2026) склеился бы со следующим в ОДИН блок, а
+        # упаковка зиппует б/н и кредит и берёт month_name у б/н-строки — строки
+        # получили бы ЧУЖУЮ подпись месяца.
+        pack_key: tuple[int, int] | None = None
         for j in output:
             if (j.get("month_name") or "") == "Итого:":
                 _flush_month()
                 packed.append(j)          # «Итого:» — как есть, без изменений
+                pack_key = None
             else:
+                k = (int(j.get("year") or 0), int(j.get("month_num") or 0))
+                if pack_key is not None and k != pack_key:
+                    _flush_month()
+                pack_key = k
                 month_block.append(j)
         _flush_month()                    # хвост (текущий месяц без «Итого:»)
         output = packed
@@ -3356,11 +3415,19 @@ class GoogleSheetsService:
             sized.extend(rows)
             size_block.clear()
 
+        # ⚠️ Так же рвём по смене месяца: иначе два месяца выровнялись бы как один
+        # блок в 20 строк и добивка ушла бы под подпись чужого месяца.
+        size_key: tuple[int, int] | None = None
         for j in output:
             if (j.get("month_name") or "") == "Итого:":
                 _flush_sized()
                 sized.append(j)
+                size_key = None
             else:
+                k = (int(j.get("year") or 0), int(j.get("month_num") or 0))
+                if size_key is not None and k != size_key:
+                    _flush_sized()
+                size_key = k
                 size_block.append(j)
         _flush_sized()                    # хвост (текущий месяц без «Итого:»)
         output = sized
@@ -3382,6 +3449,12 @@ class GoogleSheetsService:
                 if (r.get("month_name") or "") == "Итого:":
                     continue
                 if int(r.get("month_num") or 0) != m:
+                    continue
+                # ⚠️ Год обязателен: без него «Итого:» за январь 2027 просуммировал
+                # бы и январь 2026. Латентно, пока на листе один год — но блоки
+                # месяцев теперь заводит и бот, и год на листе рано или поздно
+                # сменится.
+                if int(r.get("year") or 0) != y:
                     continue
                 total["amount_cashless"] += float(r.get("amount_cashless") or 0)
                 total["nds"]             += float(r.get("nds") or 0)
