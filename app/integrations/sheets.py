@@ -3432,6 +3432,40 @@ class GoogleSheetsService:
         _flush_sized()                    # хвост (текущий месяц без «Итого:»)
         output = sized
 
+        # Walk 1.8: месяц, которому офис не завёл строку «Итого:» (август 2026 и
+        # далее любой новый), получает её ОТ БОТА — иначе на листе блок с данными
+        # есть, а итога под ним нет, и месяц читается как незакрытый. Ставим
+        # ПЛЕЙСХОЛДЕР в конец блока месяца; суммы в него подставит Walk 2 ниже —
+        # той же формулой, что и для строк офиса, поэтому расхождения между
+        # «своими» и «чужими» итогами быть не может.
+        # ⚠️ Если офис позже заведёт «Итого:» сам, бот его подхватит и свой уже не
+        # добавит: список have_total строится из ЖУРНАЛА на каждом синке.
+        have_total = {
+            (int(r.get("year") or 0), int(r.get("month_num") or 0))
+            for r in output if (r.get("month_name") or "") == "Итого:"
+        }
+        with_totals: list[dict[str, Any]] = []
+        for i, r in enumerate(output):
+            with_totals.append(r)
+            k = (int(r.get("year") or 0), int(r.get("month_num") or 0))
+            if not k[1] or k in have_total:
+                continue
+            nxt = output[i + 1] if i + 1 < len(output) else None
+            nk = (
+                (int(nxt.get("year") or 0), int(nxt.get("month_num") or 0))
+                if nxt else None
+            )
+            if nxt is None or nk != k:      # последняя строка блока этого месяца
+                with_totals.append({
+                    "year": k[0], "month_num": k[1], "month_name": "Итого:",
+                    "date_cashless": "", "amount_cashless": None, "nds": None,
+                    "description": "", "taxes": None, "loan": None,
+                    "date_other": "", "amount_other": None,
+                    "description_credit": "",
+                })
+                have_total.add(k)
+        output = with_totals
+
         # Walk 2: пересчёт «Итого:» по всем data rows месяца.
         for i, j in enumerate(output):
             if (j.get("month_name") or "") != "Итого:":
