@@ -100,7 +100,7 @@ from ._mirror import collect_attachment
 from .installer_new import (
     _advance_cg_amount,
     _advance_raw_cur,
-    _is_credit,
+    _gd_zp_request_card,
 )
 from .auth import RoleFilter, require_role_callback, require_role_message
 
@@ -2771,7 +2771,6 @@ async def rp_montazh_naem_ok(
     await integrations.sync_invoice_row(invoice_id)
 
     inv_number = inv.get("invoice_number") or "—"
-    addr = inv.get("object_address") or "—"
     gd_id = await resolve_default_assignee(db, config, Role.GD)
     if gd_id:
         await db.create_task(
@@ -2789,29 +2788,26 @@ async def rp_montazh_naem_ok(
             },
         )
         initiator = await get_initiator_label(db, u.id)
-        credit_warn = "\n🏦 <b>⚠️ КРЕДИТНЫЙ СЧЁТ</b>\n" if _is_credit(inv) else ""
-        # ГД видит, почему сумма меньше Согласованного, — иначе выглядит как ошибка.
-        due_note = (
-            f" — доплата\n🔗 Согласовано {agreed:,.0f}₽, "
-            f"выплачено прошлой группе {paid_prev:,.0f}₽"
-            if paid_prev > 0 else " (согласованная)"
-        )
-        # Owner 22.08: надбавки к сумме РП больше нет, поэтому прежняя разбивка
-        # «Внёс РП» / «С надбавкой +10%» печатала бы одно и то же число дважды.
-        money_block = f"💵 Сумма: <b>{due:,.0f}₽</b>{due_note}"
         b = InlineKeyboardBuilder()
         b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
         b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
         b.adjust(2)
-        await notifier.safe_send(
-            int(gd_id),
-            f"💰 <b>Запрос ЗП монтажника (наёмная гр. 2️⃣)</b>{credit_warn}\n"
-            f"👤 От: {initiator}\n"
-            f"🔢 Счёт: №{inv_number}\n"
-            f"📍 {addr}\n"
-            f"{money_block}",
-            reply_markup=b.as_markup(),
-        )
+        # Owner 01.09: единый вид карточки «Запрос ЗП монтажника» во ВСЕХ местах.
+        # Здесь лежал ad-hoc плоский текст — запрещённый anti-pattern B
+        # [[feedback_card_template_standard]]: один и тот же счёт выглядел у ГД иначе,
+        # чем присланный из installer_new. Кредит-пометку печатает сам
+        # билдер, поэтому credit_warn здесь больше не нужен. initiator НЕ
+        # передаём: билдер подписал бы его «(монтажник)», а здесь
+        # заявку подаёт РП — подпись уходит в хвост.
+        card = _gd_zp_request_card(inv, due, agreed=agreed)
+        tail = f"\n👤 От: {initiator} (РП, наёмная группа 2️⃣)"
+        if paid_prev > 0:
+            # Без этой строки сумма выглядит как ошибка: она МЕНЬШЕ Согласованного.
+            tail += (
+                f"\n🔗 Согласовано {agreed:,.0f}₽, "
+                f"выплачено прошлой группе {paid_prev:,.0f}₽"
+            )
+        await notifier.safe_send(int(gd_id), card + tail, reply_markup=b.as_markup())
         await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
 
     try:

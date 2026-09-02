@@ -975,6 +975,20 @@ async def gd_zp_installer_approve(
         await integrations.sync_invoice_row(invoice_id)
     except Exception as e:
         log.warning("sync_invoice_row after zp approve offset failed: %s", e)
+    # Owner 01.09: «✅ ЗП ОК» — это и есть приёмка задачи, но accepted_at она не
+    # ставила, а generic-выборка напоминаний смотрит именно её
+    # (db.list_tasks_needing_15m_reminder: status='open' AND accepted_at IS NULL).
+    # Поэтому по #553 ГД принял в 18:32, в 19:11 получил «задача ожидает
+    # подтверждения» и в 19:13 нажал «✅ Принято» второй раз.
+    # Задачу НЕ закрываем — она закроется после выплаты (см. ниже).
+    # Стоит ПОСЛЕ зачёта аванса и под try: отметка приёмки не должна
+    # уметь отменить согласование ЗП — это денежный путь.
+    try:
+        for _t in await db.list_open_tasks_by_invoice(invoice_id, TaskType.ZP_INSTALLER):
+            if not _t.get("accepted_at"):
+                await db.accept_task(int(_t["id"]))
+    except Exception as e:
+        log.warning("accept zp_installer task after approve failed: %s", e)
     # НЕ закрываем задачу — она закроется после выплаты (платёжкой или без неё)
     b = InlineKeyboardBuilder()
     b.button(text="📎 Отправить платёжку", callback_data=f"gdzp_inst:pdf:{invoice_id}")

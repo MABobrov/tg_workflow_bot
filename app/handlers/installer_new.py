@@ -2248,15 +2248,23 @@ def _gd_zp_request_card(
         items.append(("Аванс", _f(advance_cg)))
         total = _f(requested)
     else:
+        # Owner 01.09: карточка СОЗДАНИЯ была «обрезанной» — при совпадении сумм
+        # печатала один «Итого», тогда как карточка-НАПОМИНАНИЕ по той же задаче
+        # (utils.build_task_reminder_card, ТЗ owner 24.06) всегда показывает
+        # Расчётную и Фактическую. ГД видел два РАЗНЫХ вида одной задачи: #553
+        # создана 18:26 (только «Итого: 32 000₽»), напоминание 19:11 (обе суммы).
+        # Приводим создание к тому же составу: обе суммы всегда, «Разница» —
+        # только когда они разошлись. Тройного повтора одного числа не возникает:
+        # при равенстве «Итого» не печатается (owner 22.08 — одно и то же число
+        # дважды в карточке не показывать).
+        if est_val:
+            items.append(("Расчётная", _f(est_val)))
+        items.append(("Запрошено", _f(requested or est_val)))
         changed = bool(est_val) and abs(float(requested) - float(est_val)) >= 1
         if changed:
-            items.append(("Расчётная", _f(est_val)))
-            items.append(("Запрошено", _f(requested)))
             diff = float(requested) - float(est_val)
             sign = "+" if diff >= 0 else "−"
             footer = ("Разница", f"{sign}{_f(abs(diff))}")
-        else:
-            total = _f(requested or est_val)
 
     card = _short(format_card_section(
         emoji="💰",
