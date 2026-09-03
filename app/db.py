@@ -2876,6 +2876,73 @@ class Database:
             "last_completed_at": last["completed_at"] if last else None,
         }
 
+    async def get_pending_costs_for_invoice(self, inv: dict[str, Any]) -> dict[str, Any]:
+        """Затраты, ПОДАННЫЕ к ГД, но ещё НЕ оплаченные (owner 2026-09-03).
+
+        Возвращает {"total": float, "by_type": {...}, "items": [...]}.
+
+        🔑 Предикат намеренно узкий, каждое условие закрывает конкретную дыру:
+          • `TaskType.INVOICE_PAYMENT` ПЕРЕГРУЖЕН — под ним живут ТРИ потока, и
+            различает их только `payload_json["kind"]` (канон keyboards.py:813-834):
+            счёт поставщику кладёт `kind` ВОВСЕ, кредит-заявка ставит
+            `credit_payment_request`, трата хозяина кошелька —
+            `credit_spend_gd_confirm`. Берём ТОЛЬКО поток «счёт поставщику»
+            (`kind` отсутствует И есть `material_type`), иначе в себестоимость
+            заедут кредит-заявки, которые идут другим каналом и уже учтены.
+          • Матч по ТОЧНОМУ номеру счёта, а не LIKE: подстрока ловит 66 в 166 и 660.
+          • Гард от задвоения по `supplier_payments`: если по задаче уже есть строка
+            платежа (по `task_id` либо по паре «номер счёта + сумма») — затрата уже
+            сидит в `cost_*`, второй раз не прибавляем. Это не теория: замер 03.09
+            показал, что у ОТКРЫТЫХ задач #510 и #511 платежи (#168, #167) уже
+            существуют.
+
+        ⛔ ЗП менеджера / РП / замерщика сюда НЕ входят: owner говорил о материалах
+        и услугах, а ЗП в `bg_cost` не участвует вовсе. ЗП монтажа считается
+        отдельно в `get_full_invoice_cost_card` — по признаку «согласована ГД, но не
+        выплачена», потому что открытой задачи по ней может не быть.
+        """
+        out: dict[str, Any] = {"total": 0.0, "by_type": {}, "items": []}
+        inv_num = str(inv.get("invoice_number") or "").strip()
+        if not inv_num:
+            return out
+        cur = await self.conn.execute(
+            "SELECT id, payload_json FROM tasks "
+            "WHERE type = 'invoice_payment' AND status IN ('open', 'in_progress')"
+        )
+        rows = await cur.fetchall()
+        for row in rows:
+            task_id = int(row[0])
+            try:
+                payload = json.loads(row[1] or "{}")
+            except Exception:
+                continue
+            if payload.get("kind"):
+                continue
+            mtype = payload.get("material_type")
+            if not mtype:
+                continue
+            amount = payload.get("amount")
+            if not isinstance(amount, (int, float)) or amount <= 0:
+                continue
+            if str(payload.get("invoice_number") or "").strip() != inv_num:
+                continue
+            cur2 = await self.conn.execute(
+                "SELECT COUNT(*) FROM supplier_payments "
+                "WHERE task_id = ? "
+                "   OR (invoice_number = ? AND ROUND(amount, 2) = ROUND(?, 2))",
+                (task_id, inv_num, float(amount)),
+            )
+            dup = await cur2.fetchone()
+            if dup and int(dup[0] or 0) > 0:
+                continue
+            amount = float(amount)
+            out["total"] = float(out["total"]) + amount
+            out["by_type"][mtype] = float(out["by_type"].get(mtype, 0.0)) + amount
+            out["items"].append(
+                {"task_id": task_id, "material_type": mtype, "amount": amount}
+            )
+        return out
+
     async def get_full_invoice_cost_card(self, invoice_id: int) -> dict[str, Any]:
         """
         Полная карточка себестоимости по родительскому счёту.
@@ -3013,7 +3080,38 @@ class Database:
         #        max(AN, аванс×1.10 [б/н], бот) и только при полной выплате (≥ Согласовано);
         #      • Логистика/Грузчики = logistics_fact_op / loaders_fact_op (BU/BR);
         #      • + агентское АМ (agent_payout); НДС/налог — прежние (от старой базы).
+        # ── BT «Материалы факт» — ЗЕРКАЛО integrations/sheets.py:1473-1481.
+        # 🔴 Раньше здесь стояло СЫРОЕ materials_fact_op, и с 04.08 это стало ложью:
+        # деплои btmat (04.08) и bt80 (10.08) научили лист подставлять в BT сумму
+        # cost_metal+cost_glass+cost_extra_mat, когда ОП AM пуст. То есть BT на листе
+        # перестал равняться materials_fact_op, а расчёт прибыли об этом не знал —
+        # и BG (формула Google =BR+BS+BT+BU) с BL (печатает бот отсюда) начали
+        # противоречить друг другу НА ОДНОЙ СТРОКЕ: у 26331-1НПН 323 056 против
+        # 99 700, у 26324-1НПН 1 067 436 против 25 050. Материалы на 1 265 741,86 ₽
+        # не участвовали в прибыли, рентабельность показывалась 69,8 % и 82,2 %
+        # против офисных 53 % и 70 % (замер 03.09 на боевых данных, 2 счёта из 41).
+        # Тот же класс расхождения чинил деплой drbs 01.08 (там BS стоял на листе,
+        # а bg_cost держал ноль).
+        # ⛔ Это НЕ возврат MAX(материалы, оплаты поставщикам): его убрали намеренно
+        # 17.06 — он завышал материалы и задваивал логистику с грузчиками. Здесь
+        # ровно та же подстановка и ровно тот же гейт, что уже применяет лист, так
+        # что правило owner «Материалы = BT» соблюдается — просто BT с 04.08
+        # означает не то, что раньше. Зеркало ОП не искажается: при заполненном AM
+        # ветка не срабатывает вовсе [[feedback_op_mirror_no_mixing]].
+        _credit_fully_closed_bg = bool(inv.get("is_credit")) and \
+            inv.get("montazh_stage") == "invoice_end"
+        _fact_visible_bg = (inv.get("status") == "ended") or _credit_fully_closed_bg \
+            or (inv.get("montazh_stage") or "") in ("invoice_ok", "invoice_end")
+        _own_mat_bt = (float(inv.get("cost_metal") or 0)
+                       + float(inv.get("cost_glass") or 0)
+                       + float(inv.get("cost_extra_mat") or 0))
+        _est_mat_bt = float(inv.get("estimated_materials") or 0)
+        # Триггер 4 (owner 10.08): закупка считается состоявшейся и без «Счёт ОК»,
+        # если траты достигли >= 80 % от Q «Расч.мат.». Порог НЕстрогий — копия bt80.
+        _mat_80_bt = _est_mat_bt > 0 and _own_mat_bt >= 0.8 * _est_mat_bt
         _bt = float(inv.get("materials_fact_op") or 0)
+        if not _bt and (_fact_visible_bg or _mat_80_bt):
+            _bt = _own_mat_bt
         _bu = float(inv.get("logistics_fact_op") or 0)
         _br = float(inv.get("loaders_fact_op") or 0)
         _agreed = float(inv.get("montazh_agreed_amount") or 0)
@@ -3056,7 +3154,36 @@ class Database:
             _montazh_bs = _mfo_bs
         else:
             _montazh_bs = 0.0
-        bg_cost = _bt + _montazh_bs + _bu + _br + agent_payout
+        # ── Поданные к ГД, но ещё НЕ ОПЛАЧЕННЫЕ затраты (owner 2026-09-03).
+        # Дословно: «если менеджер пытается изменить статус счёта на Счёт End, но
+        # затраты по материнскому счёту на материалы или услуги ещё не оплачены, но
+        # отправлены к ГД и висят у него открытыми задачами, ... то менеджер не
+        # виноват, что ГД ещё не оплатил. Стоимость уже не изменится, это поданные
+        # задачи с суммами и счетами. Соответственно нужно к уже оплаченным расходам
+        # прибавить ещё не оплаченные и сделать перерасчёт прибыли».
+        # Гейт — тот же _fact_visible, что у остальных «факт»-величин: до «Счёт ОК»
+        # показывать поданное рано, счёт ещё набирает затраты.
+        # ⛔ КРЕДИТНЫЕ ИСКЛЮЧЕНЫ НАМЕРЕННО: у них затраты идут ПАРАЛЛЕЛЬНЫМ каналом
+        # credit_expenses (решение 2026-05-14: в total_cost не суммируется), и там
+        # уже лежат грузчики/металл по тем же счетам — прибавка задвоила бы расход.
+        # Оба примера owner (26331-1НПН, 26324-1НПН) — некредитные. Расширение на
+        # кредит — отдельное решение owner, не делать молча.
+        _pending = {"total": 0.0, "by_type": {}, "items": []}
+        _pending_montazh = 0.0
+        if _fact_visible_bg and not inv.get("is_credit"):
+            _pending = await self.get_pending_costs_for_invoice(inv)
+            # ЗП монтажа отдельным признаком: у 26324-1НПН (пример owner) открытой
+            # задачи НЕТ вовсе — её сняли 02.09, — но сумма СОГЛАСОВАНА ГД
+            # (zp_installer_status='approved', montazh_agreed_amount=155 000) и по
+            # логике owner «уже не изменится». Предикат по задачам её бы не поймал.
+            # _montazh_bs здесь либо 0 (выплата неполная), либо >= _agreed, поэтому
+            # разность даёт ровно недостающую часть и задвоения с BS не создаёт.
+            if (inv.get("zp_installer_status") == "approved"
+                    and _agreed > 0 and _montazh_bs < _agreed - 0.001):
+                _pending_montazh = _agreed - _montazh_bs
+        _pending_total = float(_pending.get("total") or 0) + _pending_montazh
+
+        bg_cost = _bt + _montazh_bs + _bu + _br + agent_payout + _pending_total
 
         # Прибыль факт = (Сумма − Долг) − BG − НДС − налог на прибыль − НПН 10%
         # (агентское АМ уже в bg_cost).
@@ -3094,6 +3221,13 @@ class Database:
             # Отдаём в карточку себестоимости для блока «сверка маржи» (хвост #3,
             # user 2026-06-17): display-only, значения уже посчитаны для margin.
             "bg_cost": bg_cost,
+            # Поданные к ГД, но не оплаченные затраты (owner 2026-09-03) — отдаём
+            # отдельными полями, чтобы карточки могли показать их строкой, а не
+            # растворять внутри bg_cost без объяснения, откуда выросла себестоимость.
+            "pending_cost_total": _pending_total,
+            "pending_cost_by_type": _pending.get("by_type") or {},
+            "pending_cost_items": _pending.get("items") or [],
+            "pending_montazh": _pending_montazh,
             "npn_10pct": npn_10pct,
             "credit_expenses_total": credit_exp_total,
             "margin": margin,
