@@ -4,6 +4,7 @@ import asyncio
 import html
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 try:
     from zoneinfo import ZoneInfo  # py>=3.9
@@ -14,7 +15,7 @@ from ..db import Database
 from ..enums import TaskStatus, TaskType
 from ..keyboards import task_actions_kb
 from ..utils import build_task_reminder_card, from_iso, parse_roles, try_json_loads, utcnow
-from .notifier import Notifier
+from .notifier import Notifier, is_transient_error
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,87 @@ def _in_quiet_hours(hour_msk: int, start_hour: int, end_hour: int) -> bool:
     return hour_msk >= start_hour or hour_msk < end_hour
 
 
+# =====================================================================
+# Доставка напоминаний (06.09.2026, owner)
+# ---------------------------------------------------------------------
+# Раньше db.mark_task_reminded_* вызывался БЕЗУСЛОВНО после отправки, не глядя
+# на результат: напоминание, не ушедшее в сетевой шторм, не уходило уже никогда
+# (замер: 29 потерянных отправок за трое суток). Теперь ЗАЩЁЛКИ ставятся только
+# при доставке / перманентном отказе / истечении give-up-окна.
+#
+# ⛔ КУРСОРЫ (mark_task_reminded_15 = UPDATE last_reminded_at, db.py:1864)
+# остаются БЕЗУСЛОВНЫМИ: выборка идёт по last_reminded_at <= cutoff, и не
+# подвинув курсор при сбое, мы сменили бы такт 15 мин на такт петли 60 с (x15,
+# а в installer-петле x10 и x60) — то есть поменяли бы потерю уведомлений на
+# пинг-шторм по API.
+# =====================================================================
+
+# Повторов ВНУТРИ safe_send для фоновых петель. В хендлерах остаётся 0.
+_REMINDER_SEND_RETRIES = 2
+
+
+async def _deliver(
+    notifier: Notifier,
+    chat_id: int,
+    text: str,
+    reply_markup: Any | None = None,
+    *,
+    retries: int = _REMINDER_SEND_RETRIES,
+) -> bool:
+    """Отправить и сказать, можно ли ставить ЗАЩЁЛКУ напоминания.
+
+    True  = доставлено ЛИБО отказ перманентный (forbidden / bad request / баг).
+            Флаг ставим — это и есть защита от вечного повтора тому, кто
+            заблокировал бота.
+    False = временный отказ (сеть / rate-limit). Флаг НЕ ставим, повторим на
+            следующем тике петли.
+    """
+    result = await notifier.safe_send(
+        chat_id, text, reply_markup=reply_markup,
+        return_error=True, retries=retries,
+    )
+    ok, err = result if isinstance(result, tuple) else (bool(result), None)
+    if ok:
+        return True
+    return not is_transient_error(err)
+
+
+def _gave_up(
+    now: datetime,
+    sendable_since: datetime | None,
+    giveup_minutes: int,
+    kind: str,
+    task: dict,
+) -> bool:
+    """Fail-safe: сдаёмся, если доставка не удаётся дольше окна.
+
+    Окно считается от УЖЕ СУЩЕСТВУЮЩИХ колонок (due_at / created_at /
+    accepted_at), поэтому переживает рестарт контейнера и не требует миграций.
+    🔴 Счётчик в памяти тут НЕ годится: контейнер перезапускает chain-watchdog
+    (chain-watchdog.sh:302/326) ровно во время сетевых аварий — 06.09 в 16:11
+    это случилось вживую, — и счётчик обнулялся бы на каждой из них.
+    """
+    if sendable_since is None:
+        return True   # точки отсчёта нет — не зацикливаемся
+    if now - sendable_since < timedelta(minutes=giveup_minutes):
+        return False
+    log.warning(
+        "reminder %s #%s: giving up delivery after %s min",
+        kind, task.get("id"), giveup_minutes,
+    )
+    return True
+
+
+def _iso_or_none(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return from_iso(str(value))
+    except Exception:
+        return None
+
+
+
 async def reminders_loop(
     db: Database,
     notifier: Notifier,
@@ -39,6 +121,7 @@ async def reminders_loop(
     remind_overdue_minutes: int = 10,
     interval_seconds: int = 60,
     self_reminder_giveup_minutes: int = 30,
+    reminder_giveup_minutes: int = 30,
 ) -> None:
     """Background reminders loop.
 
@@ -84,13 +167,28 @@ async def reminders_loop(
 
                 # soon reminder
                 if not t.get("reminded_soon") and timedelta(0) < delta <= timedelta(minutes=remind_soon_minutes):
-                    await _send_task_reminder(db, notifier, t, timezone_name, kind="soon")
-                    await db.mark_task_reminded_soon(int(t["id"]))
+                    settled = await _send_task_reminder(db, notifier, t, timezone_name, kind="soon")
+                    # ЗАЩЁЛКА — только при доставке ИЛИ перманентном отказе.
+                    # Сетевой сбой не должен «потерять» напоминание: вернёмся на
+                    # следующем тике (60 с). Замер: самый длинный обрыв канала
+                    # 632 с = 10.5 тика, повтор дожмёт.
+                    if settled or _gave_up(
+                        now, due - timedelta(minutes=remind_soon_minutes),
+                        reminder_giveup_minutes, "soon", t,
+                    ):
+                        await db.mark_task_reminded_soon(int(t["id"]))
 
                 # overdue reminder
                 if not t.get("reminded_overdue") and -delta >= timedelta(minutes=remind_overdue_minutes):
-                    await _send_task_reminder(db, notifier, t, timezone_name, kind="overdue")
-                    await db.mark_task_reminded_overdue(int(t["id"]))
+                    settled = await _send_task_reminder(db, notifier, t, timezone_name, kind="overdue")
+                    # ⚠️ У этой ветки НЕТ верхней границы по времени (условие
+                    # -delta >= N истинно вечно), поэтому give-up здесь —
+                    # единственный ограничитель повторов.
+                    if settled or _gave_up(
+                        now, due + timedelta(minutes=remind_overdue_minutes),
+                        reminder_giveup_minutes, "overdue", t,
+                    ):
+                        await db.mark_task_reminded_overdue(int(t["id"]))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -99,10 +197,15 @@ async def reminders_loop(
         await asyncio.sleep(interval_seconds)
 
 
-async def _send_task_reminder(db: Database, notifier: Notifier, task: dict, tz_name: str, kind: str) -> None:
+async def _send_task_reminder(db: Database, notifier: Notifier, task: dict, tz_name: str, kind: str) -> bool:
+    """Напоминание о дедлайне.
+
+    Возвращает True, если ЗАЩЁЛКУ можно ставить: доставлено ЛИБО отказ
+    перманентный. False = сетевой сбой, повторим на следующем тике.
+    """
     assigned_to = task.get("assigned_to")
     if not assigned_to:
-        return
+        return True   # слать некому — повторять нечего, считаем обработанным
     project = None
     if task.get("project_id"):
         try:
@@ -115,8 +218,16 @@ async def _send_task_reminder(db: Database, notifier: Notifier, task: dict, tz_n
     else:
         prefix = "🔥 Просрочена задача"
 
-    text = prefix + "\n\n" + await build_task_reminder_card(db, task, project, tz_name)
-    await notifier.safe_send(int(assigned_to), text)
+    # try/except как в _reminder_with_card: сбой сборки карточки не должен
+    # срывать весь тик петли (иначе исключение уходит в общий except и
+    # остальные задачи прохода не обрабатываются).
+    try:
+        body = await build_task_reminder_card(db, task, project, tz_name)
+    except Exception:
+        log.exception("reminder: build_task_reminder_card failed for task %s", task.get("id"))
+        body = f"Задача #{task.get('id')} ожидает обработки."
+
+    return await _deliver(notifier, int(assigned_to), prefix + "\n\n" + body)
     # NOTE: workchat notification removed to avoid duplicate delivery
     # (assigned_to already receives the reminder in private chat)
 
@@ -173,6 +284,7 @@ async def acceptance_reminders_loop(
     db: Database,
     notifier: Notifier,
     timezone_name: str = "Europe/Moscow",
+    reminder_giveup_minutes: int = 30,
     interval_seconds: int = 60,
 ) -> None:
     """Background loop: remind every 15 min until accepted, then once after 2h.
@@ -222,7 +334,8 @@ async def acceptance_reminders_loop(
                     await db.mark_task_reminded_15(tid)
                     continue
 
-                await notifier.safe_send(
+                settled = await _deliver(
+                    notifier,
                     int(assigned),
                     await _reminder_with_card(
                         db, task, timezone_name,
@@ -231,11 +344,22 @@ async def acceptance_reminders_loop(
                     ),
                     reply_markup=task_actions_kb(task, assigned_role=role),
                 )
+                # ⛔ КУРСОР двигаем ВСЕГДА: last_reminded_at это не «отправлено»,
+                # а анти-флуд-курсор выборки (db.py:4482 last_reminded_at <= cutoff).
+                # Не подвинув его при сбое, сменили бы такт 15 мин на 60 с (x15).
+                # Повтор и так произойдёт — штатной каденцией, через 15 минут.
                 await db.mark_task_reminded_15(tid)
-                # Для ГД помечаем reminded_soon чтобы блокировать повторы
-                # на следующих тиках (визуальная индикация остаётся в меню).
+                # А reminded_soon у ГД — настоящая ЗАЩЁЛКА: она включает супрессор
+                # выше, после которого ГД не получит НИЧЕГО. Ставим только при
+                # доставке / перманентном отказе / give-up.
                 if role == "gd":
-                    await db.mark_task_reminded_soon(tid)
+                    _created = _iso_or_none(task.get("created_at"))
+                    if settled or _gave_up(
+                        now_dt,
+                        (_created + timedelta(minutes=15)) if _created else None,
+                        reminder_giveup_minutes, "gd_15m", task,
+                    ):
+                        await db.mark_task_reminded_soon(tid)
 
             # 2. Принятые задачи — одно напоминание через 2 часа
             cutoff_2h = (now_dt - timedelta(hours=2)).isoformat()
@@ -257,7 +381,8 @@ async def acceptance_reminders_loop(
                     await db.mark_task_reminded_2h(tid)
                     continue
 
-                await notifier.safe_send(
+                settled = await _deliver(
+                    notifier,
                     int(assigned),
                     await _reminder_with_card(
                         db, task, timezone_name,
@@ -265,7 +390,12 @@ async def acceptance_reminders_loop(
                     ),
                     reply_markup=task_actions_kb(task, assigned_role=role),
                 )
-                await db.mark_task_reminded_2h(tid)
+                _acc = _iso_or_none(task.get("accepted_at"))
+                if settled or _gave_up(
+                    now_dt, (_acc + timedelta(hours=2)) if _acc else None,
+                    reminder_giveup_minutes, "2h", task,
+                ):
+                    await db.mark_task_reminded_2h(tid)
 
         except asyncio.CancelledError:
             raise
@@ -319,7 +449,10 @@ async def installer_acceptance_reminders_loop(
                 if not assigned:
                     continue
                 tid = int(task["id"])
-                await notifier.safe_send(
+                # Ретрай ради устойчивости к сетевому шторму; КУРСОР ниже
+                # остаётся безусловным (см. шапку раздела).
+                await _deliver(
+                    notifier,
                     int(assigned),
                     await _reminder_with_card(
                         db, task, timezone_name,
@@ -340,7 +473,10 @@ async def installer_acceptance_reminders_loop(
                 if not assigned:
                     continue
                 tid = int(task["id"])
-                await notifier.safe_send(
+                # Ретрай ради устойчивости к сетевому шторму; КУРСОР ниже
+                # остаётся безусловным (см. шапку раздела).
+                await _deliver(
+                    notifier,
                     int(assigned),
                     await _reminder_with_card(
                         db, task, timezone_name,
