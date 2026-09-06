@@ -1,0 +1,1612 @@
+[
+ {
+  "mod": "app.utils",
+  "name": "fmt_money",
+  "kind": "format",
+  "async": false,
+  "sig": "fmt_money(value: float | int | None) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_dt_iso",
+  "kind": "format",
+  "async": false,
+  "sig": "format_dt_iso(iso_s: str | None, tz_name: str) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_date_iso",
+  "kind": "format",
+  "async": false,
+  "sig": "format_date_iso(iso_s: str | None, tz_name: str) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "parse_amount",
+  "kind": "calc",
+  "async": false,
+  "sig": "parse_amount(text: str) -> Optional[float]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "get_initiator_label",
+  "kind": "format",
+  "async": true,
+  "sig": "async get_initiator_label(db: Database, user_id: int) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_invoice_card_standard",
+  "kind": "render",
+  "async": false,
+  "sig": "format_invoice_card_standard(*, inv, creator_label: str, section=None, comment=None, title_override=None, extra_meta=None) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "close_condition_core_rows",
+  "kind": "calc",
+  "async": false,
+  "sig": "close_condition_core_rows(inv, conditions, *, debts_label: str = 'Долгов нет') -> list[tuple[str, str]]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_invoice_section",
+  "kind": "render",
+  "async": true,
+  "sig": "async build_invoice_section(db, inv, invoice_id: int, *, include_zp: bool = True) -> tuple[str, list[str]]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "_accounting_blocked",
+  "kind": "calc",
+  "async": false,
+  "sig": "_accounting_blocked(viewer_role: Any, what: str) -> str | None"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_materials_list",
+  "kind": "render",
+  "async": false,
+  "sig": "format_materials_list(inv, children, supplier_payments, viewer_role=None) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_rp_expenses",
+  "kind": "render",
+  "async": false,
+  "sig": "format_rp_expenses(inv, children, supplier_payments, viewer_role=None) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "_compute_remaining_to_buy",
+  "kind": "calc",
+  "async": false,
+  "sig": "_compute_remaining_to_buy(inv: dict[str, Any]) -> dict[str, Any] | None"
+ },
+ {
+  "mod": "app.utils",
+  "name": "_render_remaining_to_buy",
+  "kind": "render",
+  "async": false,
+  "sig": "_render_remaining_to_buy(remaining: dict[str, Any]) -> list[str]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_purchases_in_work_block",
+  "kind": "render",
+  "async": false,
+  "sig": "build_purchases_in_work_block(invoices: list[dict[str, Any]]) -> list[str]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_purchases_summary_line",
+  "kind": "render",
+  "async": false,
+  "sig": "build_purchases_summary_line(invoices: list[dict[str, Any]]) -> list[str]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_cost_card",
+  "kind": "render",
+  "async": false,
+  "sig": "format_cost_card(inv, cost, viewer_role=None) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_plan_fact_card",
+  "kind": "render",
+  "async": false,
+  "sig": "format_plan_fact_card(inv, pf, role: str = 'gd') -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "card_num",
+  "kind": "format",
+  "async": false,
+  "sig": "card_num(v: Any) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "card_pct",
+  "kind": "format",
+  "async": false,
+  "sig": "card_pct(v: Any) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "invoice_end_fin_rows",
+  "kind": "calc",
+  "async": false,
+  "sig": "invoice_end_fin_rows(inv, pf) -> list[tuple[str, str]]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_invoice_end_financials",
+  "kind": "render",
+  "async": false,
+  "sig": "format_invoice_end_financials(inv, pf) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "credit_zp_montazh_unpaid",
+  "kind": "calc",
+  "async": false,
+  "sig": "credit_zp_montazh_unpaid(inv: dict[str, Any]) -> bool"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_manager_recalc_card",
+  "kind": "render",
+  "async": false,
+  "sig": "format_manager_recalc_card(inv, pf=None) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "fact_installation",
+  "kind": "calc",
+  "async": false,
+  "sig": "fact_installation(inv: dict[str, Any]) -> float"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_inwork_summary",
+  "kind": "render",
+  "async": false,
+  "sig": "format_inwork_summary(invoices: list[dict[str, Any]]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_inwork_remaining",
+  "kind": "render",
+  "async": false,
+  "sig": "format_inwork_remaining(invoices: list[dict[str, Any]]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_monthly_ended_summary",
+  "kind": "render",
+  "async": false,
+  "sig": "format_monthly_ended_summary(months: list[dict[str, Any]]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_rp_invoices_in_work_card",
+  "kind": "render",
+  "async": false,
+  "sig": "format_rp_invoices_in_work_card(breakdown: dict[str, int]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "_format_gd_inwork_section",
+  "kind": "render",
+  "async": false,
+  "sig": "_format_gd_inwork_section(*, inv_pay, paid_today_inv, suppl_pay, paid_today_sup, in_progress, inv_year, credit_count, credit_year, total, unread_msgs) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "_build_gd_debts_section",
+  "kind": "render",
+  "async": true,
+  "sig": "async _build_gd_debts_section(db) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "_build_gd_tasks_section",
+  "kind": "render",
+  "async": true,
+  "sig": "async _build_gd_tasks_section(db, user_id: int, limit: int = 9, for_user: int | None = None) -> str | None"
+ },
+ {
+  "mod": "app.utils",
+  "name": "_build_gd_balance_section",
+  "kind": "render",
+  "async": true,
+  "sig": "async _build_gd_balance_section(db, *, is_credit: bool, year: int, current_month: int, total_debt: float = 0.0) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_manager_invoices_overview",
+  "kind": "render",
+  "async": false,
+  "sig": "format_manager_invoices_overview(initiator: str, role_label: str, invoices: list[dict[str, Any]]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_discrepancy_card",
+  "kind": "render",
+  "async": false,
+  "sig": "format_discrepancy_card(disc: dict[str, Any]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "_op_mirror_rows",
+  "kind": "format",
+  "async": false,
+  "sig": "_op_mirror_rows(items: list[dict[str, Any]]) -> tuple[list[tuple[str, str]], int]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_op_mirror_card",
+  "kind": "render",
+  "async": false,
+  "sig": "format_op_mirror_card(report: dict[str, Any]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_op_mirror_new_push",
+  "kind": "render",
+  "async": false,
+  "sig": "format_op_mirror_new_push(items: list[dict[str, Any]]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_ended_invoice_compact",
+  "kind": "render",
+  "async": false,
+  "sig": "format_ended_invoice_compact(inv, pf) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "compute_plan_profit",
+  "kind": "calc",
+  "async": false,
+  "sig": "compute_plan_profit(*, amount, est_glass=0.0, est_profile=0.0, est_mat_legacy=0.0, est_inst=0.0, est_load=0.0, est_log=0.0, is_credit=False, client_source='own') -> dict[str, float]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "compute_profit_recalc",
+  "kind": "calc",
+  "async": false,
+  "sig": "compute_profit_recalc(inv, cost: dict | None) -> float"
+ },
+ {
+  "mod": "app.utils",
+  "name": "manager_zp_net_payout",
+  "kind": "calc",
+  "async": false,
+  "sig": "manager_zp_net_payout(inv: dict[str, Any]) -> float"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_estimated_summary",
+  "kind": "render",
+  "async": false,
+  "sig": "format_estimated_summary(inv: dict[str, Any]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_card_section",
+  "kind": "format",
+  "async": false,
+  "sig": "format_card_section(emoji, title, items, total=None, footer=None, width=32, compact=False, sep_ratio=1.0) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_zamery_settlement_card",
+  "kind": "render",
+  "async": false,
+  "sig": "format_zamery_settlement_card(summary: dict[str, Any], surveyor_name: str) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_zamery_settlement_detail_cards",
+  "kind": "render",
+  "async": false,
+  "sig": "format_zamery_settlement_detail_cards(rows: list[dict[str, Any]]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_leads_section",
+  "kind": "format",
+  "async": false,
+  "sig": "format_leads_section(*, emoji, title, today: int, month: int, mgr_rows, src_rows, funnel_rows=None, width=32, show_header_total=False) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_card",
+  "kind": "format",
+  "async": false,
+  "sig": "format_card(sections: list[str]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "credit_wallet_label",
+  "kind": "format",
+  "async": false,
+  "sig": "credit_wallet_label(role: str) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_credit_wallet_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async build_credit_wallet_card(db, role: str, *, recent=None, max_units=None, show_header_total=True) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_credit_wallet_card_ex",
+  "kind": "render",
+  "async": true,
+  "sig": "async build_credit_wallet_card_ex(db, role: str, *, recent=None, max_units=None, show_header_total=True) -> tuple[str, dict]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_funds_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async build_funds_card(db, user_id: int, wallet_role: str | None = None, *, recent: int = 6) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_advance_history_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async build_advance_history_card(db, installer_id: int, wallet_role: str | None = None) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_installer_advance_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async build_installer_advance_card(db, installer_id: int, wallet_role: str | None = None) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_installer_zp_invoiceok_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async build_installer_zp_invoiceok_card(db, installer_id: int) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_deposit_history_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async build_deposit_history_card(db, installer_id: int, wallet_role: str | None = None) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "fmt_project_card",
+  "kind": "render",
+  "async": false,
+  "sig": "fmt_project_card(project: dict[str, Any], tz_name: str) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "enrich_task_invoice_label",
+  "kind": "calc",
+  "async": true,
+  "sig": "async enrich_task_invoice_label(db, task: dict[str, Any]) -> dict[str, Any]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "_task_payload_items",
+  "kind": "format",
+  "async": false,
+  "sig": "_task_payload_items(task: dict[str, Any]) -> list[tuple[str, str]]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "fmt_task_card",
+  "kind": "render",
+  "async": false,
+  "sig": "fmt_task_card(task, project: dict | None, tz_name: str) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "format_rp_oklad_lines",
+  "kind": "format",
+  "async": false,
+  "sig": "format_rp_oklad_lines(calc: dict[str, float] | None, oklad: float) -> list[str]"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_rp_zp_family_open_card",
+  "kind": "render",
+  "async": false,
+  "sig": "build_rp_zp_family_open_card(task, advance: dict[str, float] | None = None) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_task_reminder_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async build_task_reminder_card(db, task, project: dict | None, tz_name: str) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_task_done_card",
+  "kind": "render",
+  "async": false,
+  "sig": "build_task_done_card(task, project, tz_name, *, title='Задача выполнена', emoji='✅', actor_label=None, actor_field='Исполнитель') -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_manager_task_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async build_manager_task_card(db, task, tz_name='Europe/Moscow', *, header_emoji='📋', header_title=None, actor_label=None, actor_field='Поставил') -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "_docs_status_compact",
+  "kind": "format",
+  "async": false,
+  "sig": "_docs_status_compact(inv, payload: dict[str, Any]) -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "build_manager_task_open_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async build_manager_task_open_card(db, task, tz_name='Europe/Moscow') -> str"
+ },
+ {
+  "mod": "app.utils",
+  "name": "fmt_payment_details_card",
+  "kind": "render",
+  "async": false,
+  "sig": "fmt_payment_details_card(payload: dict[str, Any], object_address: str = '') -> str"
+ },
+ {
+  "mod": "app.handlers.td",
+  "name": "_montazh_zp_amounts",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _montazh_zp_amounts(inv: dict, adv_offset: float) -> tuple[float, float, float]"
+ },
+ {
+  "mod": "app.handlers.td",
+  "name": "_montazh_zp_list_card",
+  "kind": "render",
+  "async": false,
+  "sig": "def _montazh_zp_list_card(inv: dict, adv_offset: float = 0.0, adv_date: str | None = None) -> str"
+ },
+ {
+  "mod": "app.handlers.td",
+  "name": "_montazh_zp_total_card",
+  "kind": "render",
+  "async": false,
+  "sig": "def _montazh_zp_total_card(rows: list[tuple[dict, float]]) -> str"
+ },
+ {
+  "mod": "app.handlers.td",
+  "name": "_zp_manager_pay_amount",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _zp_manager_pay_amount(inv: dict[str, Any]) -> float"
+ },
+ {
+  "mod": "app.handlers.td",
+  "name": "_render_rp_salary_confirm",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_rp_salary_confirm(rp_id: int, rp_label: str, month_str: str, has_receipt: bool, adv_bn: dict[str, float] | None = None, adv_cash: dict[str, float] | None = None) -> tuple[str, Any]"
+ },
+ {
+  "mod": "app.handlers.td",
+  "name": "_rp_salary_advances",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _rp_salary_advances(db: Database, rp_id: int) -> tuple[dict, dict]"
+ },
+ {
+  "mod": "app.handlers.td",
+  "name": "_fmt_rub_td",
+  "kind": "format",
+  "async": false,
+  "sig": "def _fmt_rub_td(value: float | int | None) -> str"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_build_gd_invoices_view",
+  "kind": "render",
+  "async": true,
+  "sig": "async def _build_gd_invoices_view(db: Database, user_id: int)"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_backup_status_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async def _backup_status_card(db: Database, now: datetime | None = None) -> str | None"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_render_rp_zp_select",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_rp_zp_select(task_id: int, payment_type: str | None, unpaid: list[dict], selected: set[int]) -> tuple[str, Any]"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_render_rp_zp_pay_confirm",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_rp_zp_pay_confirm(task_id: int, payment_type: str | None, total: float, n_inv: int, has_receipt: bool) -> tuple[str, Any]"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_render_zam_zp_select",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_zam_zp_select(task_id: int, zamery: list[dict], selected: set[int]) -> tuple[str, Any]"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_render_zam_zp_pay_confirm",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_zam_zp_pay_confirm(task_id: int, total: float, n_zam: int, has_receipt: bool) -> tuple[str, Any]"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_gd_funds_type_screen",
+  "kind": "render",
+  "async": true,
+  "sig": "async def _gd_funds_type_screen(db: Database, installer_id: int, name: str, emp_role: str, is_dual: bool) -> tuple[str, Any]"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_gd_funds_wallet_screen",
+  "kind": "render",
+  "async": false,
+  "sig": "def _gd_funds_wallet_screen(op: str, name: str) -> tuple[str, Any]"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_parse_task_payload",
+  "kind": "format",
+  "async": false,
+  "sig": "def _parse_task_payload(task: dict) -> dict"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_fmt_rub",
+  "kind": "format",
+  "async": false,
+  "sig": "def _fmt_rub(value: float | int | None) -> str"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_depo_sum",
+  "kind": "format",
+  "async": false,
+  "sig": "def _depo_sum(n: float) -> str"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_bn_bind_categories",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _bn_bind_categories() -> tuple[list[tuple[str, str]], dict[str, str]]"
+ },
+ {
+  "mod": "app.handlers.gd",
+  "name": "_is_sales_not_urgent_task",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _is_sales_not_urgent_task(db: Database, task: dict[str, object]) -> bool"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_build_invoice_end_cards",
+  "kind": "render",
+  "async": true,
+  "sig": "async def _build_invoice_end_cards(db: Database, inv: dict[str, Any], invoice_id: int, initiator: str, comment: str) -> tuple[str, str]"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_invoice_docs_lines",
+  "kind": "render",
+  "async": false,
+  "sig": "def _invoice_docs_lines(inv: dict[str, Any]) -> list[str]"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_kp_history_card_text",
+  "kind": "render",
+  "async": false,
+  "sig": "def _kp_history_card_text(task: dict[str, Any]) -> tuple[str, dict[str, Any]]"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_render_mgr_adv_fill",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_mgr_adv_fill(invoices: list[dict[str, Any]], selected: set[int]) -> tuple[str, Any]"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_mgr_advfill_addr",
+  "kind": "format",
+  "async": false,
+  "sig": "def _mgr_advfill_addr(addr: Any, width: int = 22) -> str"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_cw_bind_line",
+  "kind": "format",
+  "async": false,
+  "sig": "def _cw_bind_line(mode: str | None, invoice_number: str, cost_type: str | None) -> str"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_cw_u16",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _cw_u16(text: str) -> int"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_classify_credit_task",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _classify_credit_task(task: dict, p: dict) -> str"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_cw_task_payload",
+  "kind": "format",
+  "async": false,
+  "sig": "def _cw_task_payload(task: dict) -> dict"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_cred_channel",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _cred_channel(role: str) -> str"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_parse_est_value",
+  "kind": "format",
+  "async": false,
+  "sig": "def _parse_est_value(text: str) -> float | None"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_sort_invoices_desc",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _sort_invoices_desc(invoices: list[dict]) -> list[dict]"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_mgr_week_range",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _mgr_week_range(base: date, offset: int = 0) -> tuple[date, date]"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_mgr_wallet_role",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _mgr_wallet_role(db: Database, user_id: int) -> str | None"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_mgr_role_key",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _mgr_role_key(db: Database, user_id: int) -> str | None"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_current_role",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _current_role(db: Database, user_id: int) -> str | None"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_current_menu",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_matches_funds_menu_button",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _matches_funds_menu_button(text: str | None) -> bool"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_matches_credit_menu_button",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _matches_credit_menu_button(text: str | None) -> bool"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_cw_edit_actions_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def _cw_edit_actions_kb(spend_id: int)"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_cw_task_edit_actions_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def _cw_task_edit_actions_kb(task_id: int)"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_cw_reattr_actions_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def _cw_reattr_actions_kb(task_id: int)"
+ },
+ {
+  "mod": "app.handlers.manager_new",
+  "name": "_self_reminder_when_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def _self_reminder_when_kb() -> Any"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "vw",
+  "kind": "format",
+  "async": false,
+  "sig": "def vw(s)"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_money",
+  "kind": "format",
+  "async": false,
+  "sig": "def _money(v)"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_mt_to_cat",
+  "kind": "format",
+  "async": false,
+  "sig": "def _mt_to_cat(mt)"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_street",
+  "kind": "format",
+  "async": false,
+  "sig": "def _street(addr, width)"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_addr_cell",
+  "kind": "format",
+  "async": false,
+  "sig": "def _addr_cell(addr, width)"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_mont",
+  "kind": "format",
+  "async": false,
+  "sig": "def _mont(assigned, group=None, empty='⬛')"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_cell",
+  "kind": "format",
+  "async": false,
+  "sig": "def _cell(inv, key, field, ords, empty='⬛')"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_zp_mont",
+  "kind": "format",
+  "async": false,
+  "sig": "def _zp_mont(zp_status, has_open_task, empty='⬛')"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_load",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _load(db)"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_data_rows",
+  "kind": "render",
+  "async": false,
+  "sig": "def _data_rows(inv_rows, ordered, zp_open, col_sep, name_w, empty='⬛')"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_legend",
+  "kind": "render",
+  "async": false,
+  "sig": "def _legend()"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_sub_bold",
+  "kind": "render",
+  "async": false,
+  "sig": "def _sub_bold(title, rows, width=32)"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_rj",
+  "kind": "format",
+  "async": false,
+  "sig": "def _rj(s, w)"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_profit_row",
+  "kind": "render",
+  "async": false,
+  "sig": "def _profit_row(c0, c1, c2, c3)"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_rp_to_pay_monthly",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _rp_to_pay_monthly(db, year)"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_oklad_bot_months",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _oklad_bot_months(db, year: int) -> dict[int, float]"
+ },
+ {
+  "mod": "app.rp_start_card",
+  "name": "_short_header",
+  "kind": "format",
+  "async": false,
+  "sig": "def _short_header(block: str) -> str"
+ },
+ {
+  "mod": "app.zamery_start_card",
+  "name": "vw",
+  "kind": "format",
+  "async": false,
+  "sig": "def vw(s: str) -> int"
+ },
+ {
+  "mod": "app.zamery_start_card",
+  "name": "_day_cell",
+  "kind": "format",
+  "async": false,
+  "sig": "def _day_cell(day: int, busy: bool, off: bool, full: bool=False) -> str"
+ },
+ {
+  "mod": "app.zamery_start_card",
+  "name": "render_calendar",
+  "kind": "render",
+  "async": false,
+  "sig": "def render_calendar(year: int, month: int, busy_days: set[int], off_days: set[int]) -> str"
+ },
+ {
+  "mod": "app.zamery_start_card",
+  "name": "_pad_vw",
+  "kind": "format",
+  "async": false,
+  "sig": "def _pad_vw(s: str, w: int) -> str"
+ },
+ {
+  "mod": "app.zamery_start_card",
+  "name": "_join_cols_n",
+  "kind": "render",
+  "async": false,
+  "sig": "def _join_cols_n(cols: list[list[str]], w: int, gap: str=' ') -> list[str]"
+ },
+ {
+  "mod": "app.zamery_start_card",
+  "name": "_month_grid_rows",
+  "kind": "render",
+  "async": false,
+  "sig": "def _month_grid_rows(year: int, month: int, busy: set[int], off: set[int], full: set[int]|None=None, min_day: int=1, max_day: int=31) -> list[str]"
+ },
+ {
+  "mod": "app.zamery_start_card",
+  "name": "_cal_block",
+  "kind": "render",
+  "async": false,
+  "sig": "def _cal_block(year: int, month: int, m: dict, min_day: int, max_day: int, label: str) -> list[str]"
+ },
+ {
+  "mod": "app.zamery_start_card",
+  "name": "render_window_calendar",
+  "kind": "render",
+  "async": false,
+  "sig": "def render_window_calendar(y0,m0,c0,y1,m1,c1,y2,m2,c2) -> str"
+ },
+ {
+  "mod": "app.zamery_start_card",
+  "name": "_stats_rows",
+  "kind": "render",
+  "async": false,
+  "sig": "def _stats_rows(month: int, st: dict) -> list[str]"
+ },
+ {
+  "mod": "app.zamery_start_card",
+  "name": "render_manager_stats",
+  "kind": "render",
+  "async": false,
+  "sig": "def render_manager_stats(cols: list[tuple[int, dict]]) -> str"
+ },
+ {
+  "mod": "app.zamery_start_card",
+  "name": "_collect",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _collect(db, user_ids: list[int], year: int, month: int) -> dict"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "task_actions_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def task_actions_kb(task: dict[str,Any], *, assigned_role: str|None=None, viewer_role: str|None=None) -> InlineKeyboardMarkup"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "main_menu",
+  "kind": "render",
+  "async": false,
+  "sig": "def main_menu(role, is_admin=False, unread=0, unread_channels=None, gd_inbox_unread=None, gd_invoice_unread=None, gd_invoice_end_unread=None, gd_supplier_pay_unread=None, gd_total_open_tasks=None, isolated_role=False, rp_tasks=0, rp_messages=0, npn_tasks=0, npn_messages=0, rp_check_kp=0, rp_invoices_pay=0, rp_ch_mgr_kv=0, rp_ch_mgr_kia=0, rp_ch_montazh=0, rp_invoice_paid=0, inst_in_work=0, inst_zp_badge=0, mgr_invoice_end_ready=0, mgr_recalc_confirm=0) -> ReplyKeyboardMarkup"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "_format_role_badge",
+  "kind": "format",
+  "async": false,
+  "sig": "def _format_role_badge(base: str, tasks: int=0, messages: int=0) -> str"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "tasks_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def tasks_kb(tasks, *, back_callback=None, show_delete=False) -> InlineKeyboardMarkup"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "invoice_list_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def invoice_list_kb(invoices, action_prefix='inv', *, back_callback=None, hide_amount=False, show_address=False) -> InlineKeyboardMarkup"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "invoices_work_list_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def invoices_work_list_kb(invoices: list[dict[str,Any]]) -> InlineKeyboardMarkup"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "invoice_end_conditions_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def invoice_end_conditions_kb(invoice_id: int, conditions: dict) -> InlineKeyboardMarkup"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "invoice_select_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def invoice_select_kb(invoices, prefix='selinv', allow_skip=True, *, back_callback=None) -> InlineKeyboardMarkup"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "gd_more_menu",
+  "kind": "render",
+  "async": false,
+  "sig": "def gd_more_menu(is_admin=False, show_role_selector_back=False, unread_channels=None, gd_invoice_end_unread=None, gd_total_open_tasks=None, credit_channels=None) -> ReplyKeyboardMarkup"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "manager_more_menu",
+  "kind": "render",
+  "async": false,
+  "sig": "def manager_more_menu(show_role_selector_back=False, credit_count=0, recalc_count=0) -> ReplyKeyboardMarkup"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "_fmt_money_short",
+  "kind": "format",
+  "async": false,
+  "sig": "def _fmt_money_short(amount: float) -> str"
+ },
+ {
+  "mod": "app.keyboards",
+  "name": "kp_task_list_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def kp_task_list_kb(tasks, show_issued=True) -> InlineKeyboardMarkup"
+ },
+ {
+  "mod": "app.handlers.rp_new",
+  "name": "_sent_money",
+  "kind": "format",
+  "async": false,
+  "sig": "def _sent_money(n: float) -> str"
+ },
+ {
+  "mod": "app.handlers.rp_new",
+  "name": "_rp_sent_invoice_tasks",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _rp_sent_invoice_tasks(db: Database, user_id: int) -> list[dict[str,Any]]"
+ },
+ {
+  "mod": "app.handlers.rp_new",
+  "name": "_build_rp_sent_invoices_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async def _build_rp_sent_invoices_card(db: Database, tasks: list[dict[str,Any]]) -> str|None"
+ },
+ {
+  "mod": "app.handlers.rp_new",
+  "name": "_sent_folder_btn",
+  "kind": "render",
+  "async": false,
+  "sig": "def _sent_folder_btn(b: InlineKeyboardBuilder, tasks: list[dict[str,Any]], expanded: bool) -> None"
+ },
+ {
+  "mod": "app.handlers.rp_new",
+  "name": "_invoices_pay_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def _invoices_pay_kb(invoices, sent_tasks=None, sent_expanded=False) -> InlineKeyboardMarkup"
+ },
+ {
+  "mod": "app.handlers.rp_new",
+  "name": "_rp_cancel_reject_text",
+  "kind": "render",
+  "async": true,
+  "sig": "async def _rp_cancel_reject_text(db: Database, task_id: int, user_id: int) -> str"
+ },
+ {
+  "mod": "app.handlers.rp_new",
+  "name": "_rp_cancel_gd_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async def _rp_cancel_gd_card(db: Database, task: dict, reason: str) -> str"
+ },
+ {
+  "mod": "app.handlers.rp_new",
+  "name": "_build_montazh_zp_card",
+  "kind": "render",
+  "async": true,
+  "sig": "async def _build_montazh_zp_card(db: Database, invoice_id: int) -> tuple[str,Any]|None"
+ },
+ {
+  "mod": "app.handlers.rp_new",
+  "name": "_grp_label",
+  "kind": "format",
+  "async": false,
+  "sig": "def _grp_label(inv: dict[str,Any]) -> str"
+ },
+ {
+  "mod": "app.handlers.rp_new",
+  "name": "_montazh_payout_done",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _montazh_payout_done(inv: dict[str,Any]) -> bool"
+ },
+ {
+  "mod": "app.handlers.rp_new",
+  "name": "_montazh_money_state",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _montazh_money_state(db: Database, inv: dict[str,Any]) -> tuple[float,float]"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_is_credit",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _is_credit(inv: dict) -> bool"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_credit_tag",
+  "kind": "format",
+  "async": false,
+  "sig": "def _credit_tag(inv: dict) -> str"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_round_montazh",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _round_montazh(value: float) -> int"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_calc_est_montazh_base",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _calc_est_montazh_base(inv: dict) -> int"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_calc_est_montazh",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _calc_est_montazh(inv: dict) -> int"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_apply_montazh_bonus",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _apply_montazh_bonus(inv: dict, amount: float) -> int"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_advance_cg_amount",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _advance_cg_amount(advance_offset: float, inv: dict) -> float"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_advance_raw_cur",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _advance_raw_cur(db: Database, inv: dict) -> float"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_zp_remainder_for_invoice",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _zp_remainder_for_invoice(db: Database, inv: dict) -> tuple[float,float,float]"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_is_work_done_for_zp",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _is_work_done_for_zp(inv: dict) -> bool"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_can_edit_zp_amount",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _can_edit_zp_amount(inv: dict) -> bool"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_inst_card_header",
+  "kind": "format",
+  "async": false,
+  "sig": "def _inst_card_header(inv: dict) -> tuple[str,str,str,str]"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_build_archive_card",
+  "kind": "render",
+  "async": false,
+  "sig": "def _build_archive_card(inv: dict) -> str"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_gd_zp_request_card",
+  "kind": "render",
+  "async": false,
+  "sig": "def _gd_zp_request_card(inv: dict, requested: float, *, initiator='', comment='', agreed=None, advance_cg=None) -> str"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_build_zpadj_confirm_text",
+  "kind": "render",
+  "async": false,
+  "sig": "def _build_zpadj_confirm_text(data: dict[str,Any]) -> str"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_build_inst_zp_summary",
+  "kind": "render",
+  "async": false,
+  "sig": "def _build_inst_zp_summary(invoices, not_req, requested, approved, sum_approved) -> str"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_fmt_money",
+  "kind": "format",
+  "async": false,
+  "sig": "def _fmt_money(v: float) -> str"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_short_addr",
+  "kind": "format",
+  "async": false,
+  "sig": "def _short_addr(a: Any, n: int=24) -> str"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_build_advance_rows",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _build_advance_rows(db: Database, installer_id: int) -> list[dict[str,Any]]"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_render_advance_list",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_advance_list(rows, cart: dict[int,float]) -> tuple[str,Any]"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_render_inst_adv_fill",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_inst_adv_fill(invoices, selected: set[int]) -> tuple[str,Any]"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_advfill_addr",
+  "kind": "format",
+  "async": false,
+  "sig": "def _advfill_addr(addr: Any, width: int=22) -> str"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_depo_req_text",
+  "kind": "render",
+  "async": false,
+  "sig": "def _depo_req_text(payload: dict, status: str) -> str"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_depo_req_step_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def _depo_req_step_kb(task_id: int, status: str)"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_build_distribute_candidates",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _build_distribute_candidates(db: Database, installer_id: int) -> list[dict[str,Any]]"
+ },
+ {
+  "mod": "app.handlers.installer_new",
+  "name": "_build_zp_init_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def _build_zp_init_kb(invoices, selected: set[int]) -> InlineKeyboardBuilder"
+ },
+ {
+  "mod": "app.handlers.tasks",
+  "name": "_task_take_text",
+  "kind": "render",
+  "async": false,
+  "sig": "def _task_take_text(task: dict[str,Any], project: dict[str,Any]|None) -> str"
+ },
+ {
+  "mod": "app.handlers.tasks",
+  "name": "_invoice_task_details",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _invoice_task_details(payload: dict[str,Any]) -> tuple[int|None,str,str,str]"
+ },
+ {
+  "mod": "app.handlers.tasks",
+  "name": "_invoice_task_sender_id",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _invoice_task_sender_id(payload: dict[str,Any]) -> int|None"
+ },
+ {
+  "mod": "app.handlers.accounting_new",
+  "name": "_doc_status_line",
+  "kind": "format",
+  "async": false,
+  "sig": "def _doc_status_line(edo_signed: bool, originals_holder: str|None) -> str"
+ },
+ {
+  "mod": "app.handlers.accounting_new",
+  "name": "_is_fully_documented",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _is_fully_documented(inv: dict[str,Any]) -> bool"
+ },
+ {
+  "mod": "app.handlers.accounting_new",
+  "name": "_build_acc_work_list_card",
+  "kind": "render",
+  "async": false,
+  "sig": "def _build_acc_work_list_card(invoices, title_label='📊 Счета в работе') -> str"
+ },
+ {
+  "mod": "app.handlers.accounting_new",
+  "name": "_clip_addr_consonant",
+  "kind": "format",
+  "async": false,
+  "sig": "def _clip_addr_consonant(name: str) -> str"
+ },
+ {
+  "mod": "app.handlers.accounting_new",
+  "name": "_acc_addr",
+  "kind": "format",
+  "async": false,
+  "sig": "def _acc_addr(addr: Any) -> str"
+ },
+ {
+  "mod": "app.handlers.accounting_new",
+  "name": "_build_doc_menu_text",
+  "kind": "render",
+  "async": false,
+  "sig": "def _build_doc_menu_text(inv: dict[str,Any]) -> str"
+ },
+ {
+  "mod": "app.handlers.accounting_new",
+  "name": "_build_doc_menu_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def _build_doc_menu_kb(inv: dict[str,Any]) -> InlineKeyboardMarkup"
+ },
+ {
+  "mod": "app.handlers.chat_proxy",
+  "name": "channel_label",
+  "kind": "format",
+  "async": false,
+  "sig": "def channel_label(channel: str) -> str"
+ },
+ {
+  "mod": "app.handlers.chat_proxy",
+  "name": "parse_amount_from_text",
+  "kind": "calc",
+  "async": false,
+  "sig": "def parse_amount_from_text(text: str) -> float|None"
+ },
+ {
+  "mod": "app.handlers.chat_proxy",
+  "name": "_extract_invoice_number",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _extract_invoice_number(text: str) -> str|None"
+ },
+ {
+  "mod": "app.handlers.chat_proxy",
+  "name": "_cw_hist_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def _cw_hist_kb(channel: str, *, expanded: bool, meta: dict) -> InlineKeyboardMarkup|None"
+ },
+ {
+  "mod": "app.handlers.chat_proxy",
+  "name": "_parse_bare_time",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _parse_bare_time(text: str) -> tuple[int,int]|None"
+ },
+ {
+  "mod": "app.handlers.chat_proxy",
+  "name": "_apply_time_to_due",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _apply_time_to_due(due_iso: str, hour: int, minute: int, tz_name: str) -> str"
+ },
+ {
+  "mod": "app.handlers.chat_proxy",
+  "name": "_invoice_label",
+  "kind": "format",
+  "async": true,
+  "sig": "async def _invoice_label(db: Database, invoice_id: Any) -> str"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_fmt_rub",
+  "kind": "format",
+  "async": false,
+  "sig": "def _fmt_rub(value: float|int|None) -> str"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_list_rp_zp_eligible_invoices",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _list_rp_zp_eligible_invoices(db: Database) -> list[dict[str,Any]]"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_split_rp_zp_by_type",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _split_rp_zp_by_type(invoices) -> dict[str, list[dict[str,Any]]]"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_build_rp_zp_cart_from_source",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _build_rp_zp_cart_from_source(invoices) -> tuple[dict[int,float], int]"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_pay_type_label",
+  "kind": "format",
+  "async": false,
+  "sig": "def _pay_type_label(payment_type: str|None) -> str"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_render_rp_zp_type_menu",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_rp_zp_type_menu(invoices) -> tuple[str,Any]"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_render_rp_zp_type_cart",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_rp_zp_type_cart(type_invoices, cart: dict[int,float], payment_type: str) -> tuple[str,Any]"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_render_rp_zp_summary",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_rp_zp_summary(invoices, cart, skipped=0) -> tuple[str,Any]"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_render_rp_zp_cart",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_rp_zp_cart(invoices, cart: dict[int,float]) -> tuple[str,Any]"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_render_rp_adv_fill",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_rp_adv_fill(invoices, selected: set[int], oklad=None) -> tuple[str,Any]"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_render_rp_oklad_choose",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_rp_oklad_choose(remaining: float, month_str: str) -> tuple[str,Any]"
+ },
+ {
+  "mod": "app.handlers.rp",
+  "name": "_render_rp_oklad_confirm",
+  "kind": "render",
+  "async": false,
+  "sig": "def _render_rp_oklad_confirm(amount: float, remaining: float, month_str: str) -> tuple[str,Any]"
+ },
+ {
+  "mod": "app.handlers.zamery",
+  "name": "_fmt_money",
+  "kind": "format",
+  "async": false,
+  "sig": "def _fmt_money(x: float|int|None) -> str"
+ },
+ {
+  "mod": "app.handlers.zamery",
+  "name": "_zam_ident",
+  "kind": "format",
+  "async": false,
+  "sig": "def _zam_ident(z: dict[str,Any]) -> str"
+ },
+ {
+  "mod": "app.handlers.zamery",
+  "name": "_attr_fmt_ddmm",
+  "kind": "format",
+  "async": false,
+  "sig": "def _attr_fmt_ddmm(iso: str|None) -> str"
+ },
+ {
+  "mod": "app.handlers.zamery",
+  "name": "build_attr_question",
+  "kind": "render",
+  "async": false,
+  "sig": "def build_attr_question(req: dict[str,Any]) -> tuple[str,Any]"
+ },
+ {
+  "mod": "app.handlers.zamery",
+  "name": "_zam_pay_group",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _zam_pay_group(z: dict[str,Any]) -> str"
+ },
+ {
+  "mod": "app.handlers.zamery",
+  "name": "_format_request_card",
+  "kind": "render",
+  "async": false,
+  "sig": "def _format_request_card(req: dict[str,Any], initiator: str, *, with_schedule: bool) -> str"
+ },
+ {
+  "mod": "app.handlers.zamery",
+  "name": "_split_blackouts",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _split_blackouts(blackouts: list[dict[str,Any]]) -> tuple[set[str], set[str]]"
+ },
+ {
+  "mod": "app.handlers.zamery",
+  "name": "_get_monthly_stats",
+  "kind": "calc",
+  "async": true,
+  "sig": "async def _get_monthly_stats(db: Database, uid: int, target_date: date) -> dict[str,int]"
+ },
+ {
+  "mod": "app.handlers.zamery",
+  "name": "_format_date_short",
+  "kind": "format",
+  "async": false,
+  "sig": "def _format_date_short(d: date) -> str"
+ },
+ {
+  "mod": "app.handlers.invoice_chat",
+  "name": "invoice_chat_button",
+  "kind": "format",
+  "async": false,
+  "sig": "def invoice_chat_button(invoice_id: int, label: str='💬 Чат') -> tuple[str,str]"
+ },
+ {
+  "mod": "app.handlers.fallback",
+  "name": "_channel_label",
+  "kind": "format",
+  "async": false,
+  "sig": "def _channel_label(channel: str) -> str"
+ },
+ {
+  "mod": "app.handlers.fallback",
+  "name": "_submenu_button_texts",
+  "kind": "calc",
+  "async": false,
+  "sig": "def _submenu_button_texts() -> frozenset[str]"
+ },
+ {
+  "mod": "app.handlers.admin",
+  "name": "_employee_card_text",
+  "kind": "render",
+  "async": true,
+  "sig": "async def _employee_card_text(db: Database, user_id: int) -> str|None"
+ },
+ {
+  "mod": "app.handlers.admin",
+  "name": "_employee_roles_kb",
+  "kind": "render",
+  "async": false,
+  "sig": "def _employee_roles_kb(user_id: int, mode: str) -> InlineKeyboardBuilder"
+ }
+]
