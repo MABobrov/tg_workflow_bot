@@ -380,6 +380,35 @@ CONST_ARGS: dict[str, Any] = {
     "items": [("Строка", "1")],
     "iso_s": "2026-09-01T12:00:00+00:00",
     "what": "проба",
+    # Вторая волна провайдеров (06.09): имена взяты из фактического списка
+    # непокрытых по частоте, а не выдуманы. Значения фиксированные и нейтральные.
+    # ⚠️ Если форма аргумента не угадана, функция бросит исключение и уйдёт
+    # в skipped как «все вызовы дали исключение» — фиктивного покрытия не будет.
+    "year": 2026,
+    "month": 8,
+    "month_str": "2026-08",
+    "addr": "г. Москва, ул. Тестовая, д. 1",
+    "initiator": "Проба",
+    "channel": "kv",
+    "mode": "bn",
+    "status": "open",
+    "payment_type": "cash",
+    "s": "проба",
+    "w": 34,
+    "n": 3,
+    "z": 0.0,
+    "c0": 0.0,
+    "c1": 0.0,
+    "base": 0.0,
+    "requested": 0.0,
+    "has_receipt": False,
+    "expanded": False,
+    "selected": [],
+    "rows": [],
+    "cart": [],
+    "conditions": [],
+    "payload": {},
+    "req": {},
 }
 
 ENTITY = {
@@ -387,8 +416,11 @@ ENTITY = {
     "cost": "cost", "cost_card": "cost", "card": "cost",
     "pf": "pf", "plan_fact": "pf",
     "invoice_id": "invoice_id",
-    "task": "task",
+    "task": "task", "task_id": "task_id",
+    "tasks": "tasks",
+    "remaining": "remaining",
     "user_id": "user", "telegram_id": "user", "actor_id": "user", "installer_id": "user",
+    "rp_id": "user",
     "db": "db",
     "invoices": "invoices",
 }
@@ -429,6 +461,13 @@ def _resolve(pname: str, ctx: dict[str, Any], item: Any) -> Any:
         # ⚠️ deepcopy обязателен: enrich_task_invoice_label переписывает
         # task['payload_json'] НА МЕСТЕ, и второй прогон пошёл бы другой веткой.
         return copy.deepcopy(ctx["tasks"][item])
+    if slot == "task_id":
+        return item
+    if slot == "tasks":
+        return [ctx["tasks"][t] for t in ctx["task_ids"][:30]]
+    if slot == "remaining":
+        from app.utils import _compute_remaining_to_buy
+        return _compute_remaining_to_buy(ctx["invoices"][item])
     if slot == "user":
         return item
     if slot == "db":
@@ -440,9 +479,10 @@ def _resolve(pname: str, ctx: dict[str, Any], item: Any) -> Any:
 
 def _axis(names: list[str]) -> str | None:
     slots = {ENTITY.get(n) for n in names}
-    if "invoice" in slots or "cost" in slots or "pf" in slots or "invoice_id" in slots:
+    if ("invoice" in slots or "cost" in slots or "pf" in slots
+            or "invoice_id" in slots or "remaining" in slots):
         return "inv"
-    if "task" in slots:
+    if "task" in slots or "task_id" in slots:
         return "task"
     if "user" in slots:
         return "user"
