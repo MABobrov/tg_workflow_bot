@@ -3195,6 +3195,197 @@ class GoogleSheetsService:
             log.info("balance_company: wrote %d journal rows", len(journal_rows))
             return len(journal_rows)
 
+    # ------------------------------------------------------------------
+    # Фильтр собственного эха в журнале «Импорт ОП»
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _echo_norm_desc(desc: Any) -> str:
+        return " ".join(str(desc or "").split()).casefold()
+
+    @staticmethod
+    def _echo_norm_amount(amount: Any) -> int | None:
+        """Сумма, приведённая к тому виду, в каком она ВЕРНЁТСЯ из журнала.
+
+        🔑 Бот печатает деньги через `_fmt_amount` = f"{x:.0f}" — копейки гибнут
+        при первом же выводе на лист. Поэтому запись 253.88 («Комиссия банка»,
+        июль) приходит обратно как 254, и сравнение «как есть» её не узнаёт:
+        замер показал утечку +1 строка в блоке июля за каждый виток связки.
+        Сравниваем по печатному виду. None = «в журнале суммы нет» (эхо часто
+        её теряет) и работает как джокер.
+        """
+        if amount in (None, ""):
+            return None
+        try:
+            return int(round(float(amount)))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _collapse_moneyless_twins(
+        cls, sheet_journal: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Схлопнуть половину строки, которая потеряла деньги, в свою «полную» копию.
+
+        🔴 Откуда берётся. Пока связка крутилась без вычитания эха, часть строк
+        офиса вернулась из зеркала с описанием и датой, но БЕЗ суммы: в июне это
+        «Бухгалтерские услуги», «Снятие САБ», «Зп директор», «Жуковский 2025 —
+        ЗП Монтаж», «Реклама Авито», «Налоги 3/3», в июле — тот же набор с
+        ИЮНЬСКИМИ датами. Эти строки уже не растут (сверка 03.09↔08.09), но
+        засоряют лист: owner 08.09 отметил их как мусор.
+
+        🔑 Правило money-neutral ПО ПОСТРОЕНИЮ: гасим половину, только если
+        (а) в ней нет НИ суммы, НИ НДС, НИ налога, НИ займа — то есть ноль
+        рублей, и (б) в ТОМ ЖЕ месяце есть половина с той же датой и тем же
+        описанием, у которой деньги ЕСТЬ. Ни один итог сдвинуться не может.
+
+        ⚠️ Одиночные строки-пометки офиса НЕ трогаем: февральская «Кредит
+        (ТБанк)» тоже без сумм, но пары у неё нет — остаётся как была.
+        ⛔ «Итого:» не трогаем.
+        """
+        def _bn_money(j: dict[str, Any]) -> bool:
+            return any(j.get(k) not in (None, "") for k in
+                       ("amount_cashless", "nds", "taxes", "loan"))
+
+        def _cr_money(j: dict[str, Any]) -> bool:
+            return j.get("amount_other") not in (None, "")
+
+        rich_bn, rich_cr = set(), set()
+        for j in sheet_journal:
+            if (j.get("month_name") or "") == "Итого:":
+                continue
+            key = (int(j.get("year") or 0), int(j.get("month_num") or 0))
+            if str(j.get("description") or "").strip() and _bn_money(j):
+                rich_bn.add(key + (str(j.get("date_cashless") or "").strip(),
+                                   cls._echo_norm_desc(j.get("description"))))
+            if str(j.get("description_credit") or "").strip() and _cr_money(j):
+                rich_cr.add(key + (str(j.get("date_other") or "").strip(),
+                                   cls._echo_norm_desc(j.get("description_credit"))))
+
+        out, killed = [], 0
+        for j in sheet_journal:
+            if (j.get("month_name") or "") == "Итого:":
+                out.append(j)
+                continue
+            row = dict(j)
+            key = (int(row.get("year") or 0), int(row.get("month_num") or 0))
+            if str(row.get("description") or "").strip() and not _bn_money(row):
+                k = key + (str(row.get("date_cashless") or "").strip(),
+                           cls._echo_norm_desc(row.get("description")))
+                if k in rich_bn:
+                    row["date_cashless"] = ""
+                    row["description"] = ""
+                    killed += 1
+            if str(row.get("description_credit") or "").strip() and not _cr_money(row):
+                k = key + (str(row.get("date_other") or "").strip(),
+                           cls._echo_norm_desc(row.get("description_credit")))
+                if k in rich_cr:
+                    row["date_other"] = ""
+                    row["description_credit"] = ""
+                    killed += 1
+            out.append(row)
+        return out, killed
+
+    @classmethod
+    def _strip_own_echo(
+        cls,
+        sheet_journal: list[dict[str, Any]],
+        db_entries: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Убрать из журнала половины строк, которые бот сам же и напечатал.
+
+        🔴 Зачем. «Баланс компании» пишет бот; лист уезжает зеркалом в чужую
+        таблицу, оттуда `=IMPORTRANGE(...;"Затраты!a1:j160")` возвращает его в
+        «Импорт ОП» BH-BQ — и бот читает СВОЙ ЖЕ вывод как «журнал офиса»
+        (owner 08.09: связка круговая и задумана специально). Walk 1 печатает
+        каждую строку журнала 1:1 и ДОБАВЛЯЕТ сверху все op_company_entries,
+        не сверяясь ни с чем → выход = вход + N записей, по копии за синк.
+        Замер 03.09→08.09: копий каждой из пяти записей стало 3 → 11, «Итого»
+        июня уехало со строки 129 на 140, а июльские строки офиса выдавило за
+        160-ю (потолок IMPORTRANGE) — 386 637 ₽ пропало с листа.
+
+        🔑 Лечение — не дедуп «похожих», а вычитание СВОЕГО: строка журнала,
+        отвечающая живой записи `op_company_entries`, гасится, потому что ту же
+        запись бот тут же выложит из БД. Копия всегда ровно одна и всегда из
+        БД — значит правка в БД доезжает до листа, как owner и задумывал.
+
+        ⚠️ Гасится ПОЛОВИНА строки, а не строка целиком: Walk 1.5 зиппует б/н и
+        кредит, поэтому у 14 строк журнала левая половина подлинно офисная, а
+        правая — эхо бота (стр. 107: офисные «ЗП Авитолог Трефилов» 10 000 и
+        эхо «грузчики Жуковский 2 чел» 8 000). Снос строки целиком стёр бы
+        офисные деньги.
+
+        ⚠️ Сумма и дата — предохранители от ложного совпадения, оба мягкие:
+        пустое значение в журнале считается джокером, потому что эхо их теряет
+        (у 30 из 33 июньских кредит-строк дата пуста; у апрельских б/н-эхо на
+        строках 72-73 потеряна сумма). Зато когда значение ЕСТЬ — оно обязано
+        совпасть, и это защищает законные повторы: «Реклама Яндекс.Директ»
+        30 620 в апреле дважды (офисная 14.04 и запись БД 28.04) под гашение
+        НЕ попадает — проверено A/B, апрельский итог 206 856 ₽ не изменился.
+
+        ⛔ Строки «Итого:» не трогаем — их пересчитывает Walk 2.
+
+        Возвращает: (журнал без собственного эха, сколько половин погашено).
+        """
+        if not db_entries:
+            return sheet_journal, 0
+
+        # (год, месяц, описание) -> список (сумма_печатная, дата) живых записей
+        bn_idx: dict[tuple, list[tuple]] = {}
+        cr_idx: dict[tuple, list[tuple]] = {}
+        for r in db_entries:
+            y, m = int(r.get("year") or 0), int(r.get("month") or 0)
+            if str(r.get("description") or "").strip():
+                bn_idx.setdefault((y, m, cls._echo_norm_desc(r.get("description"))), []).append(
+                    (cls._echo_norm_amount(r.get("cashless_amount")),
+                     str(r.get("date_display") or "").strip()))
+            if str(r.get("description_credit") or "").strip():
+                cr_idx.setdefault((y, m, cls._echo_norm_desc(r.get("description_credit"))), []).append(
+                    (cls._echo_norm_amount(r.get("other_amount")),
+                     str(r.get("date_other_display") or "").strip()))
+
+        def _hit(idx: dict[tuple, list[tuple]], key: tuple,
+                 j_amount: Any, j_date: Any) -> bool:
+            cands = idx.get(key)
+            if not cands:
+                return False
+            ja = cls._echo_norm_amount(j_amount)
+            jd = j_date.strip() if isinstance(j_date, str) else ""
+            for amt, dat in cands:
+                if ja is not None and amt is not None and ja != amt:
+                    continue
+                if jd and dat and jd != dat:
+                    continue
+                return True
+            return False
+
+        out: list[dict[str, Any]] = []
+        killed = 0
+        for j in sheet_journal:
+            if (j.get("month_name") or "") == "Итого:":
+                out.append(j)
+                continue
+            row = dict(j)
+            y, m = int(row.get("year") or 0), int(row.get("month_num") or 0)
+            if str(row.get("description") or "").strip():
+                k = (y, m, cls._echo_norm_desc(row.get("description")))
+                if _hit(bn_idx, k, row.get("amount_cashless"), row.get("date_cashless")):
+                    row["date_cashless"] = ""
+                    row["amount_cashless"] = None
+                    row["nds"] = None
+                    row["description"] = ""
+                    row["taxes"] = None
+                    row["loan"] = None
+                    killed += 1
+            if str(row.get("description_credit") or "").strip():
+                k = (y, m, cls._echo_norm_desc(row.get("description_credit")))
+                if _hit(cr_idx, k, row.get("amount_other"), row.get("date_other")):
+                    row["date_other"] = ""
+                    row["amount_other"] = None
+                    row["description_credit"] = ""
+                    killed += 1
+            out.append(row)
+        return out, killed
+
     async def sync_balance_company_sheet(self, db) -> int:
         """Sync «Баланс компании» sheet — структура BH-BQ Импорт ОП + auto-fill из БД.
 
@@ -3229,6 +3420,15 @@ class GoogleSheetsService:
         except Exception as ex:
             log.warning("balance_company: list_op_company_entries failed: %s", ex)
             db_entries = []
+
+        # 🔴 Вычесть собственное эхо: журнал BH-BQ — зеркало прошлого вывода бота
+        # (круговая связка owner). Без этого выход = вход + записи БД, то есть
+        # по копии каждой записи за синк. Подробности — в _strip_own_echo.
+        sheet_journal, _echo_killed = self._strip_own_echo(sheet_journal, db_entries)
+        sheet_journal, _twin_killed = self._collapse_moneyless_twins(sheet_journal)
+        if _echo_killed or _twin_killed:
+            log.info("balance_company: погашено половин — своё эхо %s, пустых близнецов %s",
+                     _echo_killed, _twin_killed)
 
         from collections import defaultdict
         db_by_month: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
