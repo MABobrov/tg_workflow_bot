@@ -3220,6 +3220,109 @@ class GoogleSheetsService:
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _echo_date_month(value: Any) -> int | None:
+        """Месяц из даты вида ДД.ММ.ГГГГ; None если даты нет или она не разобралась."""
+        txt = str(value or "").strip()
+        if len(txt) >= 5 and txt[2] == "." and txt[:2].isdigit() and txt[3:5].isdigit():
+            m = int(txt[3:5])
+            return m if 1 <= m <= 12 else None
+        return None
+
+    @classmethod
+    def _drop_stray_rows(
+        cls, sheet_journal: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Убрать строки, попавшие не в свой месяц, и обломок строки «Итого:».
+
+        🔴 Откуда. Пока связка крутилась без вычитания эха, блоки разъехались:
+        в блоке ИЮЛЯ осели строки с ИЮНЬСКИМИ датами («Бухгалтерские услуги»
+        08.06, «Зп директор» 15.06, «Жуковский 2025 — ЗП Монтаж» 25.06, шесть
+        «Снятие САБ» и др.), а июньская строка «Итого:» уехала в данные июля
+        обломком без даты и описания (485 724 / 21 639). Owner 08.09 отметил их
+        как мусор. Расти они перестали после echofix, но сами не уйдут.
+
+        Три правила, каждое безопасно по построению:
+          R1 — половина БЕЗ единого рубля, у которой месяц даты ≠ месяцу блока.
+               Денег ноль → ни один итог сдвинуться не может.
+          R2 — половина с деньгами, но БЕЗ даты И БЕЗ описания. Настоящего
+               расхода без того и другого не бывает; это обломок «Итого:».
+          R3 — половина с деньгами, у которой месяц даты ≠ месяцу блока, И в
+               блоке СВОЕГО месяца есть строка с той же датой и той же суммой.
+               То есть доказанный дубль, уехавший в чужой блок. Сверяем по
+               (дата, сумма) без описания: описание у копии могло разъехаться.
+
+        ⛔ «Итого:» не трогаем — их пересчитывает Walk 2.
+        ⚠️ Строки, у которых месяц даты совпадает с блоком, не трогаются НИКОГДА,
+        даже пустые: одиночные пометки офиса имеют право на существование.
+        """
+        def _bn_money(j):
+            return any(j.get(k) not in (None, "") for k in
+                       ("amount_cashless", "nds", "taxes", "loan"))
+
+        def _cr_money(j):
+            return j.get("amount_other") not in (None, "")
+
+        # (месяц блока, дата, сумма) для строк, стоящих в СВОЁМ месяце
+        home_bn, home_cr = set(), set()
+        for j in sheet_journal:
+            if (j.get("month_name") or "") == "Итого:":
+                continue
+            blk = int(j.get("month_num") or 0)
+            d = str(j.get("date_cashless") or "").strip()
+            if _bn_money(j) and d and cls._echo_date_month(d) == blk:
+                home_bn.add((blk, d, cls._echo_norm_amount(j.get("amount_cashless"))))
+            d2 = str(j.get("date_other") or "").strip()
+            if _cr_money(j) and d2 and cls._echo_date_month(d2) == blk:
+                home_cr.add((blk, d2, cls._echo_norm_amount(j.get("amount_other"))))
+
+        out, killed = [], 0
+        for j in sheet_journal:
+            if (j.get("month_name") or "") == "Итого:":
+                out.append(j)
+                continue
+            row = dict(j)
+            blk = int(row.get("month_num") or 0)
+
+            d = str(row.get("date_cashless") or "").strip()
+            dm = cls._echo_date_month(d)
+            has_desc = bool(str(row.get("description") or "").strip())
+            if has_desc or _bn_money(row) or d:
+                drop = False
+                if not _bn_money(row) and dm is not None and dm != blk:
+                    drop = True                                   # R1
+                elif _bn_money(row) and not d and not has_desc:
+                    drop = True                                   # R2
+                elif (_bn_money(row) and dm is not None and dm != blk
+                      and (dm, d, cls._echo_norm_amount(row.get("amount_cashless"))) in home_bn):
+                    drop = True                                   # R3
+                if drop:
+                    row["date_cashless"] = ""
+                    row["amount_cashless"] = None
+                    row["nds"] = None
+                    row["description"] = ""
+                    row["taxes"] = None
+                    row["loan"] = None
+                    killed += 1
+
+            d2 = str(row.get("date_other") or "").strip()
+            dm2 = cls._echo_date_month(d2)
+            has_desc2 = bool(str(row.get("description_credit") or "").strip())
+            if has_desc2 or _cr_money(row) or d2:
+                drop = False
+                if not _cr_money(row) and dm2 is not None and dm2 != blk:
+                    drop = True                                   # R1
+                elif (_cr_money(row) and dm2 is not None and dm2 != blk
+                      and (dm2, d2, cls._echo_norm_amount(row.get("amount_other"))) in home_cr):
+                    drop = True                                   # R3
+                if drop:
+                    row["date_other"] = ""
+                    row["amount_other"] = None
+                    row["description_credit"] = ""
+                    killed += 1
+            out.append(row)
+        return out, killed
+
     @classmethod
     def _collapse_moneyless_twins(
         cls, sheet_journal: list[dict[str, Any]],
@@ -3426,6 +3529,8 @@ class GoogleSheetsService:
         # по копии каждой записи за синк. Подробности — в _strip_own_echo.
         sheet_journal, _echo_killed = self._strip_own_echo(sheet_journal, db_entries)
         sheet_journal, _twin_killed = self._collapse_moneyless_twins(sheet_journal)
+        sheet_journal, _stray_killed = self._drop_stray_rows(sheet_journal)
+        _twin_killed += _stray_killed
         if _echo_killed or _twin_killed:
             log.info("balance_company: погашено половин — своё эхо %s, пустых близнецов %s",
                      _echo_killed, _twin_killed)
