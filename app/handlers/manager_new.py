@@ -4311,7 +4311,8 @@ _CW_MAX_UNITS = 4000
 _CW_MODE_TAIL = (
     "Выберите режим траты:\n"
     "🔗 <b>С привязкой</b> — к счёту в работе (ляжет в его расходы DP–DV)\n"
-    "📄 <b>Без привязки</b> — в «Баланс компании»"
+    "📄 <b>Без привязки</b> — в «Баланс компании»\n"
+    "🏧 <b>Не учитывать в балансе</b> — только кредитный баланс кошелька"
 )
 
 # ⚠️ Считаем ВМЕСТЕ с HTML-тегами, тогда как подгонка внутри
@@ -4344,6 +4345,7 @@ async def _cw_show_mode(target: Message, state: FSMContext, db: Database) -> Non
     b = InlineKeyboardBuilder()
     b.button(text="🔗 С привязкой к счёту", callback_data="cwspend:mode:bound")
     b.button(text="📄 Без привязки", callback_data="cwspend:mode:free")
+    b.button(text="🏧 Не учитывать в балансе", callback_data="cwspend:mode:withdraw")
     b.button(text="❌ Отмена", callback_data="cwspend:cancel")
     b.adjust(1)
     head = card + "\n\n" if card else ""
@@ -4415,8 +4417,10 @@ async def cw_mode_free(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "cwspend:mode:withdraw", CreditWalletSpendSG.pick_mode)
 async def cw_mode_withdraw(cb: CallbackQuery, state: FSMContext) -> None:
-    # «Вывод ДС» (TZ 09.06) — как «Без привязки», но запись ТОЛЬКО в кредит-баланс
-    # (не на «Баланс компании»). Привязки/категории нет; дальше — сумма → назначение.
+    # «Не учитывать в балансе» (TZ 09.06 как «Вывод ДС», восстановлено 09.09 по
+    # заказу owner 02.09 — та же функция) — как «Без привязки», но запись ТОЛЬКО
+    # в кредит-баланс (не на «Баланс компании»). Привязки/категории нет; дальше —
+    # сумма → назначение.
     await state.update_data(mode="withdraw", invoice_id=None, invoice_number="", cost_type=None)
     await state.set_state(CreditWalletSpendSG.amount)
     await cb.answer()
@@ -4623,7 +4627,7 @@ async def _cw_show_confirm(target: Message, state: FSMContext) -> None:
         cat = _CREDIT_COST_LABELS.get(data.get("cost_type") or "", "—")
         bind_s = f"Счёт №{data.get('invoice_number')} · {cat}"
     elif data.get("mode") == "withdraw":
-        bind_s = "Вывод ДС → только кредитный баланс"
+        bind_s = "Не учитывать в балансе → только кредитный баланс"
     else:
         bind_s = "Без привязки → «Баланс компании»"
     file_line = "\n  📎 Вложение приложено" if data.get("attach_file_id") else ""
@@ -4866,7 +4870,7 @@ async def _cw_confirm_impl(
     if mode == "bound":
         bind_line = f"Счёт №{inv_num} · {_CREDIT_COST_LABELS.get(cost_type or '', '—')}"
     elif mode == "withdraw":
-        bind_line = "Вывод ДС → только кредитный баланс"
+        bind_line = "Не учитывать в балансе → только кредитный баланс"
     else:
         bind_line = "Без привязки → «Баланс компании»"
     info = format_card_section(
@@ -5080,7 +5084,7 @@ def _cw_bind_line(mode: str | None, invoice_number: str, cost_type: str | None) 
         cat = _CREDIT_COST_LABELS.get(cost_type or "", "—")
         return f"Счёт №{invoice_number} · {cat}"
     if mode == "withdraw":
-        return "Вывод ДС → только кредитный баланс"
+        return "Не учитывать в балансе → только кредитный баланс"
     return "Без привязки → «Баланс компании»"
 
 
