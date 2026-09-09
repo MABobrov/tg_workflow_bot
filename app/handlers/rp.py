@@ -1163,7 +1163,7 @@ async def invoice_finalize(
     material_type = data.get("material_type")
 
     from ..services.assignment import resolve_default_assignee
-    from ..enums import TaskType, TaskStatus
+    from ..enums import TaskType, TaskStatus, MaterialType
     from ..utils import utcnow, to_iso
     from datetime import timedelta
 
@@ -1173,16 +1173,22 @@ async def invoice_finalize(
         await state.clear()
         return
 
-    urgency = data.get("urgency", "1h")
-    _URGENCY_DELTA = {"1h": timedelta(hours=1), "7h": timedelta(hours=7), "24h": timedelta(hours=24)}
-    due = utcnow() + _URGENCY_DELTA.get(urgency, timedelta(hours=1))
+    # Грузчики — без дедлайна (owner 09.09): суммы поданы, а не сумма важна,
+    # а срочность, которую напоминание всё равно создавало ложным шумом ночью.
+    if material_type == MaterialType.LOADERS:
+        due_at_iso = None
+    else:
+        urgency = data.get("urgency", "1h")
+        _URGENCY_DELTA = {"1h": timedelta(hours=1), "7h": timedelta(hours=7), "24h": timedelta(hours=24)}
+        due = utcnow() + _URGENCY_DELTA.get(urgency, timedelta(hours=1))
+        due_at_iso = to_iso(due)
     task = await db.create_task(
         project_id=project_id,
         type_=TaskType.INVOICE_PAYMENT,
         status=TaskStatus.OPEN,
         created_by=u.id,
         assigned_to=int(gd_id),
-        due_at_iso=to_iso(due),
+        due_at_iso=due_at_iso,
         payload={
             "supplier": supplier,
             "amount": amount,

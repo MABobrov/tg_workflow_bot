@@ -3858,7 +3858,7 @@ async def _rp_sinv_finalize(
     num = (inv.get("invoice_number") if inv else None) or f"#{invoice_id}"
 
     from ..services.assignment import resolve_default_assignee
-    from ..enums import TaskType, TaskStatus, MATERIAL_TYPE_LABELS
+    from ..enums import TaskType, TaskStatus, MATERIAL_TYPE_LABELS, MaterialType
     from ..utils import utcnow, to_iso
     from datetime import timedelta
 
@@ -3867,14 +3867,20 @@ async def _rp_sinv_finalize(
         await event_msg.answer("⚠️ ГД не найден. Настройте роль GD.")
         return
 
-    due = utcnow() + timedelta(hours=7)
+    # Грузчики — без дедлайна (owner 09.09): напоминание о сроке создавало
+    # ложный ночной шум, а не срочность.
+    if sinv_material_type == MaterialType.LOADERS:
+        due_at_iso = None
+    else:
+        due = utcnow() + timedelta(hours=7)
+        due_at_iso = to_iso(due)
     task = await db.create_task(
         project_id=inv.get("project_id") if inv else None,
         type_=TaskType.INVOICE_PAYMENT,
         status=TaskStatus.OPEN,
         created_by=from_user.id if from_user else 0,
         assigned_to=int(gd_id),
-        due_at_iso=to_iso(due),
+        due_at_iso=due_at_iso,
         payload={
             "invoice_id": invoice_id,
             "parent_invoice_id": invoice_id,
