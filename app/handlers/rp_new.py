@@ -503,14 +503,15 @@ async def _show_invoices_pay_dashboard(
     credit = await db.list_invoices(status=InvoiceStatus.CREDIT, limit=30)
     active_inv = list(pending) + list(in_progress) + list(credit)
 
-    # + последние 10 «Счёт End» (owner 2026-09-09: «счета на оплату — добавить
-    # 10 счетов Счёт End»). Та же механика, что у пикера привязки кредит-расхода
-    # cw_mode_bound (деплой 29.06, [[project_credit_wallet_bind_ended_10_20260629]]):
-    # дедуп против активных ПОСЛЕ фильтра дочерних, срез [:10] последним шагом.
-    ended = await db.list_ended_invoices(limit=25, include_credit=True)
+    # + последние 15 «Счёт End» (owner 2026-09-09: «счета на оплату — добавить
+    # 10 счетов Счёт End», порог поднят до 15 тем же владельцем в тот же день).
+    # Та же механика, что у пикера привязки кредит-расхода cw_mode_bound
+    # (деплой 29.06, [[project_credit_wallet_bind_ended_10_20260629]]):
+    # дедуп против активных ПОСЛЕ фильтра дочерних, срез [:15] последним шагом.
+    ended = await db.list_ended_invoices(limit=30, include_credit=True)
     ended = [i for i in ended if not i.get("parent_invoice_id")]
     active_ids = {i["id"] for i in active_inv}
-    ended = [i for i in ended if i["id"] not in active_ids][:10]
+    ended = [i for i in ended if i["id"] not in active_ids][:15]
     all_inv = active_inv + ended
 
     # Папка «Отправлено в оплату» (ТЗ 15.07; вход кнопкой — owner 18.08).
@@ -924,14 +925,15 @@ async def rp_invoices_pay_create(cb: CallbackQuery, state: FSMContext, db: Datab
     invoices = await db.list_invoices_in_work(
         limit=20, only_regular=True, include_credit=True,
     )
-    # + последние 10 «Счёт End» (owner 2026-09-09) — та же механика, что у
-    # пикера привязки кредит-расхода cw_mode_bound (деплой 29.06): поздний
-    # счёт на оплату можно привязать к недавно закрытому объекту. Дедуп
-    # против «в работе», дочерние счета исключены, срез [:10] последним шагом.
-    ended = await db.list_ended_invoices(limit=25, include_credit=True, only_regular=True)
+    # + последние 15 «Счёт End» (owner 2026-09-09, порог поднят с 10 до 15
+    # в тот же день) — та же механика, что у пикера привязки кредит-расхода
+    # cw_mode_bound (деплой 29.06): поздний счёт на оплату можно привязать к
+    # недавно закрытому объекту. Дедуп против «в работе», дочерние счета
+    # исключены, срез [:15] последним шагом.
+    ended = await db.list_ended_invoices(limit=30, include_credit=True, only_regular=True)
     ended = [i for i in ended if not i.get("parent_invoice_id")]
     inwork_ids = {i["id"] for i in invoices}
-    ended = [i for i in ended if i["id"] not in inwork_ids][:10]
+    ended = [i for i in ended if i["id"] not in inwork_ids][:15]
     if not invoices and not ended:
         await cb.message.answer(  # type: ignore[union-attr]
             "⚠️ Нет счетов в работе."

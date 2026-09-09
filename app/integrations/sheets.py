@@ -2805,135 +2805,79 @@ class GoogleSheetsService:
         "сентябрь": 9, "октябрь": 10, "ноябрь": 11, "декабрь": 12,
     }
 
-    def read_op_monthly_balance_sync(self) -> list[dict[str, Any]]:
-        """Парсер журнала BH-BQ из «Импорт ОП» (структура с 2026-05-12).
-
-        Структура листа в колонках BH-BQ:
-          BH (59) — Месяц (RU-имя: Январь, Февраль, ...)
-          BI (60) — Дата DD.MM.YYYY безналичного расхода
-          BJ (61) — Расходы Сумма б/н
-          BK (62) — НДС (выделенный из BJ, информационно)
-          BL (63) — Описание расхода ('ЗП директор', 'Реклама ...', 'Итого налоги', 'Возврат займа ...')
-          BM (64) — Налоги (заполнено ТОЛЬКО на строке BL='Итого налоги')
-          BN (65) — Займ (нетто, со знаком; + = входящий, − = возврат)
-          BO (66) — Дата DD.MM.YYYY наличной/прочей оплаты
-          BP (67) — Сумма наличной/прочей оплаты
-          BQ (68) — Описание наличной оплаты
-
-        Блок месяца завершается строкой BH='Итого:' с агрегатами BJ/BK/BN/BP.
-        State-machine: track (current_month, current_year). На «Итого:»-строке
-        фиксируем агрегаты; на BL='Итого налоги' внутри блока — налоги. Год
-        берётся из первой DD.MM.YYYY в BI или BO внутри блока месяца.
-
-        Returns: список dict с year, month, expense_cashless, expense_nds,
-                 expense_taxes, expense_other, loan_net.
-        """
-        if not self.cfg.source_spreadsheet_id:
-            return []
-
-        gc = self._get_client()
-        try:
-            source_sh = gc.open_by_key(self.cfg.source_spreadsheet_id)
-            ws = source_sh.worksheet(self.cfg.source_sheet_name)
-        except Exception as e:
-            log.error("Cannot open source sheet for monthly balance: %s", e)
-            return []
-
-        all_data = ws.get_all_values()
-        if len(all_data) < 2:
-            return []
-        start_row = self._detect_op_sheet_start_row(all_data)
-
-        def _parse_year_from_date(s: str) -> int | None:
-            s = (s or "").strip()
-            if not s or "." not in s:
-                return None
-            parts = s.split(".")
-            if len(parts) != 3:
-                return None
-            try:
-                y = int(parts[2])
-                return y + 2000 if y < 100 else y
-            except ValueError:
-                return None
-
-        accum: dict[tuple[int, int], dict[str, Any]] = {}
-        current_month: int | None = None
-        current_year: int | None = None
-
-        for r in all_data[start_row:]:
-            bh = (r[59] if len(r) > 59 else "").strip()
-            bl = (r[63] if len(r) > 63 else "").strip()
-            if not bh:
-                continue
-
-            if bh == "Итого:":
-                if current_year is not None and current_month is not None:
-                    key = (current_year, current_month)
-                    e = accum.setdefault(key, {"year": current_year, "month": current_month})
-                    e["expense_cashless"] = self._parse_num(r[61] if len(r) > 61 else "")
-                    e["expense_nds"] = self._parse_num(r[62] if len(r) > 62 else "")
-                    e["loan_net"] = self._parse_num(r[65] if len(r) > 65 else "")
-                    e["expense_other"] = self._parse_num(r[67] if len(r) > 67 else "")
-                current_month = None
-                current_year = None
-                continue
-
-            month_num = self._MONTHS_RU_TO_NUM.get(bh.lower())
-            if month_num is None:
-                continue
-
-            if month_num != current_month:
-                current_month = month_num
-                current_year = None
-
-            if current_year is None:
-                y = _parse_year_from_date(r[60] if len(r) > 60 else "") \
-                    or _parse_year_from_date(r[66] if len(r) > 66 else "")
-                if y is not None:
-                    current_year = y
-
-            if bl == "Итого налоги" and current_year is not None and current_month is not None:
-                taxes = self._parse_num(r[64] if len(r) > 64 else "")
-                key = (current_year, current_month)
-                e = accum.setdefault(key, {"year": current_year, "month": current_month})
-                e["expense_taxes"] = taxes
-
-        results = sorted(accum.values(), key=lambda x: (x["year"], x["month"]))
-        log.info("op_monthly: parsed %d (year, month) blocks from BH-BQ journal", len(results))
-        return results
-
     async def import_op_monthly_balance(self, db) -> int:
         """Пересобрать op_company_monthly из «Импорт ОП» (BH-BQ) + op_company_entries.
 
-        Для каждого (year, month) итог = агрегаты листа («Итого:»-row даёт
-        cashless/nds/loan/other, «Итого налоги»-row → taxes) ПЛЮС суммы ручных
+        Для каждого (year, month) итог = офисная часть журнала (детальные
+        строки BH-BQ, ПОСЛЕ вычитания собственного эха бота) ПЛЮС суммы ручных
         записей op_company_entries того же месяца. Пишутся АБСОЛЮТНЫЕ значения
-        (0.0 при отсутствии источника), а не None — поэтому пересборка идемпотентна:
-        повторные синки дают тот же результат.
+        (0.0 при отсутствии источника), а не None — поэтому пересборка идемпотентна.
+
+        🔴 До 2026-09-09 источником офисной части был `read_op_monthly_balance_sync`
+        — сырая «Итого:»-строка журнала, БЕЗ вычитания эха. Связка круговая
+        (owner 08.09/09.09, [[project-20260908-oce-deleted-wallet-entries]]):
+        «Баланс компании» пишет бот → зеркалом уезжает в «Затраты» чужой
+        таблицы → оттуда `IMPORTRANGE` возвращает его в «Импорт ОП» BH-BQ. Как
+        только круг доносил лист обратно, «Итого:» журнала уже включало
+        записи бота — и это же ПЛЮС `op_company_entries` считало их ВТОРОЙ
+        раз. Пример: восстановленный налог июня (`#83`, 108 741 ₽) сначала не
+        давал задвоения (в «Итого:» его ещё не было), но следующий цикл связки
+        задвоил бы его. Теперь офисная часть считается из ДЕТАЛЬНЫХ строк
+        (`read_op_journal_rows_sync`) той же тройкой фильтров, что и рендер
+        «Баланс компании» (`_strip_own_echo` → `_collapse_moneyless_twins` →
+        `_drop_stray_rows`), а «Итого:» листа не читается вовсе — она сама
+        эхо, если месяц уже прогнан через связку.
 
         ⚠️ До 2026-06-18 второй pass ПРИБАВЛЯЛ записи к уже сохранённому значению,
         а пустой лист «Итого:» (None) из-за COALESCE в upsert не сбрасывал прошлый
         результат — за много автосинков месяц раздувался (июнь 2026 показывал
-        −30,4 млн при реальных ~−247 тыс; май — налоги 25,5 млн). Теперь — пересборка
-        начисто. income_* / legacy expense_cash/credit/total НЕ трогаем (приходят из
-        импорта счетов и сохраняются COALESCE'ом, т.к. сюда не передаются).
+        −30,4 млн при реальных ~−247 тыс; май — налоги 25,5 млн). Пересборка
+        начисто (абсолют, не аддитивно) остаётся в силе. income_* / legacy
+        expense_cash/credit/total НЕ трогаем (приходят из импорта счетов и
+        сохраняются COALESCE'ом, т.к. сюда не передаются).
 
         Returns: количество обработанных (year, month) ключей (объединение источников).
         """
         if not self.cfg.enabled:
             return 0
-        sheet_entries = await asyncio.to_thread(self.read_op_monthly_balance_sync)
-        sheet_by_key: dict[tuple[int, int], dict[str, Any]] = {
-            (e["year"], e["month"]): e for e in sheet_entries
-        }
 
-        # Агрегаты ручных записей op_company_entries по (year, month).
+        sheet_journal = await asyncio.to_thread(self.read_op_journal_rows_sync)
+
+        # Агрегаты ручных записей op_company_entries по (year, month) — нужны
+        # ДВАЖДЫ: сначала как основа для вычитания эха, потом как второе
+        # слагаемое итога.
         try:
             db_rows = await db.list_op_company_entries()
         except Exception as ex:
             log.warning("op_monthly: list_op_company_entries failed (table missing?): %s", ex)
             db_rows = []
+
+        sheet_journal, _ = self._strip_own_echo(sheet_journal, db_rows)
+        sheet_journal, _ = self._collapse_moneyless_twins(sheet_journal)
+        sheet_journal, _ = self._drop_stray_rows(sheet_journal)
+
+        # Офисная часть — сумма ДЕТАЛЬНЫХ строк (без «Итого:», её не пересчитываем
+        # здесь: она либо совпадёт с этой же суммой, либо сама эхо).
+        sheet_agg: dict[tuple[int, int], dict[str, float]] = {}
+        for j in sheet_journal:
+            if (j.get("month_name") or "") == "Итого:":
+                continue
+            y, m = int(j.get("year") or 0), int(j.get("month_num") or 0)
+            if not m:
+                continue
+            a = sheet_agg.setdefault((y, m), {
+                "cashless": 0.0, "nds": 0.0, "taxes": 0.0, "loan": 0.0, "other": 0.0,
+            })
+            if j.get("amount_cashless") is not None:
+                a["cashless"] += float(j["amount_cashless"])
+            if j.get("nds") is not None:
+                a["nds"] += float(j["nds"])
+            if j.get("taxes") is not None:
+                a["taxes"] += float(j["taxes"])
+            if j.get("loan") is not None:
+                a["loan"] += float(j["loan"])
+            if j.get("amount_other") is not None:
+                a["other"] += float(j["amount_other"])
 
         agg: dict[tuple[int, int], dict[str, float]] = {}
         for r in db_rows:
@@ -2952,25 +2896,26 @@ class GoogleSheetsService:
             if r.get("other_amount") is not None:
                 a["other"] += float(r["other_amount"])
 
-        # Неаддитивная пересборка: итог = лист + ручные записи, пишем абсолют
-        # (перезапись через COALESCE, т.к. значения всегда не-None) → мусор от
-        # прошлых аддитивных синков сбрасывается, результат идемпотентен.
-        merged_keys = set(sheet_by_key.keys()) | set(agg.keys())
+        # Неаддитивная пересборка: итог = офисная часть (без эха) + ручные
+        # записи, пишем абсолют (перезапись через COALESCE, т.к. значения
+        # всегда не-None) → мусор от прошлых аддитивных синков сбрасывается,
+        # результат идемпотентен.
+        merged_keys = set(sheet_agg.keys()) | set(agg.keys())
         for (y, m) in merged_keys:
-            s = sheet_by_key.get((y, m)) or {}
+            s = sheet_agg.get((y, m)) or {}
             a = agg.get((y, m)) or {}
             await db.upsert_monthly_op_company(
                 y, m,
-                expense_cashless=float(s.get("expense_cashless") or 0) + float(a.get("cashless") or 0),
-                expense_nds=float(s.get("expense_nds") or 0) + float(a.get("nds") or 0),
-                expense_taxes=float(s.get("expense_taxes") or 0) + float(a.get("taxes") or 0),
-                expense_other=float(s.get("expense_other") or 0) + float(a.get("other") or 0),
-                loan_net=float(s.get("loan_net") or 0) + float(a.get("loan") or 0),
+                expense_cashless=float(s.get("cashless") or 0) + float(a.get("cashless") or 0),
+                expense_nds=float(s.get("nds") or 0) + float(a.get("nds") or 0),
+                expense_taxes=float(s.get("taxes") or 0) + float(a.get("taxes") or 0),
+                expense_other=float(s.get("other") or 0) + float(a.get("other") or 0),
+                loan_net=float(s.get("loan") or 0) + float(a.get("loan") or 0),
             )
 
         log.info(
-            "op_monthly: rebuilt %d (year,month) keys (sheet=%d, db-entries=%d)",
-            len(merged_keys), len(sheet_by_key), len(agg),
+            "op_monthly: rebuilt %d (year,month) keys (sheet-office=%d, db-entries=%d)",
+            len(merged_keys), len(sheet_agg), len(agg),
         )
         return len(merged_keys)
 
