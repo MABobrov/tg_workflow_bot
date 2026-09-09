@@ -501,7 +501,17 @@ async def _show_invoices_pay_dashboard(
     pending = await db.list_invoices(status=InvoiceStatus.PENDING_PAYMENT, limit=30)
     in_progress = await db.list_invoices(status=InvoiceStatus.IN_PROGRESS, limit=30)
     credit = await db.list_invoices(status=InvoiceStatus.CREDIT, limit=30)
-    all_inv = list(pending) + list(in_progress) + list(credit)
+    active_inv = list(pending) + list(in_progress) + list(credit)
+
+    # + последние 10 «Счёт End» (owner 2026-09-09: «счета на оплату — добавить
+    # 10 счетов Счёт End»). Та же механика, что у пикера привязки кредит-расхода
+    # cw_mode_bound (деплой 29.06, [[project_credit_wallet_bind_ended_10_20260629]]):
+    # дедуп против активных ПОСЛЕ фильтра дочерних, срез [:10] последним шагом.
+    ended = await db.list_ended_invoices(limit=25, include_credit=True)
+    ended = [i for i in ended if not i.get("parent_invoice_id")]
+    active_ids = {i["id"] for i in active_inv}
+    ended = [i for i in ended if i["id"] not in active_ids][:10]
+    all_inv = active_inv + ended
 
     # Папка «Отправлено в оплату» (ТЗ 15.07; вход кнопкой — owner 18.08).
     # В ТЕЛЕ этого же сообщения, а НЕ отдельным: и «🔄 Обновить», и разворот
@@ -543,6 +553,8 @@ async def _show_invoices_pay_dashboard(
         header_parts.append(f"🔄 В работе: {len(in_progress)}")
     if credit:
         header_parts.append(f"💳 Кредит: {len(credit)}")
+    if ended:
+        header_parts.append(f"🏁 Закрыто: {len(ended)}")
 
     await _answer_or_edit(
         target,
@@ -912,7 +924,15 @@ async def rp_invoices_pay_create(cb: CallbackQuery, state: FSMContext, db: Datab
     invoices = await db.list_invoices_in_work(
         limit=20, only_regular=True, include_credit=True,
     )
-    if not invoices:
+    # + последние 10 «Счёт End» (owner 2026-09-09) — та же механика, что у
+    # пикера привязки кредит-расхода cw_mode_bound (деплой 29.06): поздний
+    # счёт на оплату можно привязать к недавно закрытому объекту. Дедуп
+    # против «в работе», дочерние счета исключены, срез [:10] последним шагом.
+    ended = await db.list_ended_invoices(limit=25, include_credit=True, only_regular=True)
+    ended = [i for i in ended if not i.get("parent_invoice_id")]
+    inwork_ids = {i["id"] for i in invoices}
+    ended = [i for i in ended if i["id"] not in inwork_ids][:10]
+    if not invoices and not ended:
         await cb.message.answer(  # type: ignore[union-attr]
             "⚠️ Нет счетов в работе."
         )
@@ -920,10 +940,16 @@ async def rp_invoices_pay_create(cb: CallbackQuery, state: FSMContext, db: Datab
 
     await state.clear()
     await state.set_state(InvoiceCreateSG.parent_invoice)
+    cnt = f"{len(invoices)} в работе"
+    if ended:
+        cnt += f" + {len(ended)} закрытых 🏁"
     await cb.message.answer(  # type: ignore[union-attr]
         "💳 <b>Счёт на оплату ГД</b>\n"
-        "Шаг 1: выберите счёт объекта (№, адрес):",
-        reply_markup=invoice_select_kb(invoices, prefix="inv_create_parent", allow_skip=True, back_callback="nav:home"),
+        f"Шаг 1: выберите счёт объекта ({cnt}):",
+        reply_markup=invoice_select_kb(
+            invoices + ended, prefix="inv_create_parent", allow_skip=True,
+            back_callback="nav:home", ended_ids={i["id"] for i in ended},
+        ),
     )
 
 

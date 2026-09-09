@@ -1613,13 +1613,27 @@ def invoice_select_kb(
     allow_skip: bool = True,
     *,
     back_callback: str | None = None,
+    ended_ids: set[int] | None = None,
 ) -> InlineKeyboardMarkup:
-    """Inline-пикер счетов «в работе» для привязки задач/сообщений к счёту."""
+    """Inline-пикер счетов «в работе» для привязки задач/сообщений к счёту.
+
+    ended_ids: id счетов из `invoices`, фактически «Счёт End» (закрытые) — их
+    метим 🏁 и не даём активным вытеснить из среза [:15] (owner 2026-09-09,
+    та же механика, что у пикера привязки кредит-расхода cw_mode_bound,
+    деплой 29.06). None (по умолчанию) — прежнее поведение без изменений.
+    """
     b = InlineKeyboardBuilder()
-    for inv in invoices[:15]:
+    if ended_ids:
+        active = [i for i in invoices if i["id"] not in ended_ids]
+        ended = [i for i in invoices if i["id"] in ended_ids]
+        shown = active[:15] + ended
+    else:
+        shown = invoices[:15]
+    for inv in shown:
         num = inv.get("invoice_number") or f"#{inv['id']}"
         addr = (inv.get("object_address") or "")[:28]
-        label = f"№{num}"
+        marker = "🏁 " if ended_ids and inv["id"] in ended_ids else ""
+        label = f"{marker}№{num}"
         if addr:
             label += f" — {addr}"
         b.button(text=label, callback_data=f"{prefix}:{inv['id']}")

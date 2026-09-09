@@ -3813,6 +3813,7 @@ class Database:
         *,
         include_credit: bool = False,
         creator_role: str | None = None,
+        only_regular: bool = False,
     ) -> list[dict[str, Any]]:
         """List ENDED invoices. If month_start given, filter by updated_at >= month_start.
 
@@ -3821,11 +3822,23 @@ class Database:
         creator_role: если задан — только счета этого создателя (creator_role);
         зеркалит list_invoices_in_work (скоуп пикера привязки кредит-расхода для
         менеджера: его собственные закрытые счета). ТЗ 19.06.
+        only_regular: тот же фильтр по формату номера, что у list_invoices_in_work
+        (регулярный DDMMYY-N ИЛИ кредитный) — чтобы пикер «Счёт на оплату» РП
+        (только материнские/кредитные) не подмешивал дочерние/служебные счета
+        в срез «последние 10 Счёт End» (owner 2026-09-09).
         """
         status_clause = (
             "(status = 'ended' OR (status = 'credit' AND montazh_stage = 'invoice_end'))"
             if include_credit else "status = 'ended'"
         )
+        if only_regular:
+            fmt_clause = (
+                "AND (invoice_number GLOB '[0-9]*-*' OR is_credit = 1) "
+                if include_credit else
+                "AND invoice_number GLOB '[0-9]*-*' "
+            )
+        else:
+            fmt_clause = ""
         role_clause = "AND creator_role = ? " if creator_role else ""
         date_clause = "AND updated_at >= ? " if month_start else ""
         params: list[Any] = []
@@ -3836,7 +3849,7 @@ class Database:
         params.append(limit)
         cur = await self.conn.execute(
             f"SELECT * FROM invoices WHERE {status_clause} "
-            f"{role_clause}{date_clause}"
+            f"{fmt_clause}{role_clause}{date_clause}"
             "ORDER BY updated_at DESC LIMIT ?",
             tuple(params),
         )
