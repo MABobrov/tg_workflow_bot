@@ -4312,7 +4312,7 @@ _CW_MODE_TAIL = (
     "Выберите режим траты:\n"
     "🔗 <b>С привязкой</b> — к счёту в работе (ляжет в его расходы DP–DV)\n"
     "📄 <b>Без привязки</b> — в «Баланс компании»\n"
-    "🏧 <b>Не учитывать в балансе</b> — только кредитный баланс кошелька"
+    "🏧 <b>Снятие САБ</b> — только кредитный баланс кошелька"
 )
 
 # ⚠️ Считаем ВМЕСТЕ с HTML-тегами, тогда как подгонка внутри
@@ -4345,7 +4345,7 @@ async def _cw_show_mode(target: Message, state: FSMContext, db: Database) -> Non
     b = InlineKeyboardBuilder()
     b.button(text="🔗 С привязкой к счёту", callback_data="cwspend:mode:bound")
     b.button(text="📄 Без привязки", callback_data="cwspend:mode:free")
-    b.button(text="🏧 Не учитывать в балансе", callback_data="cwspend:mode:withdraw")
+    b.button(text="🏧 Снятие САБ", callback_data="cwspend:mode:withdraw")
     b.button(text="❌ Отмена", callback_data="cwspend:cancel")
     b.adjust(1)
     head = card + "\n\n" if card else ""
@@ -4417,7 +4417,7 @@ async def cw_mode_free(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "cwspend:mode:withdraw", CreditWalletSpendSG.pick_mode)
 async def cw_mode_withdraw(cb: CallbackQuery, state: FSMContext) -> None:
-    # «Не учитывать в балансе» (TZ 09.06 как «Вывод ДС», восстановлено 09.09 по
+    # «Снятие САБ» (TZ 09.06 как «Вывод ДС», восстановлено 09.09 по
     # заказу owner 02.09 — та же функция) — как «Без привязки», но запись ТОЛЬКО
     # в кредит-баланс (не на «Баланс компании»). Привязки/категории нет; дальше —
     # сумма → назначение.
@@ -4627,7 +4627,7 @@ async def _cw_show_confirm(target: Message, state: FSMContext) -> None:
         cat = _CREDIT_COST_LABELS.get(data.get("cost_type") or "", "—")
         bind_s = f"Счёт №{data.get('invoice_number')} · {cat}"
     elif data.get("mode") == "withdraw":
-        bind_s = "Не учитывать в балансе → только кредитный баланс"
+        bind_s = "Снятие САБ → только кредитный баланс"
     else:
         bind_s = "Без привязки → «Баланс компании»"
     file_line = "\n  📎 Вложение приложено" if data.get("attach_file_id") else ""
@@ -4870,7 +4870,7 @@ async def _cw_confirm_impl(
     if mode == "bound":
         bind_line = f"Счёт №{inv_num} · {_CREDIT_COST_LABELS.get(cost_type or '', '—')}"
     elif mode == "withdraw":
-        bind_line = "Не учитывать в балансе → только кредитный баланс"
+        bind_line = "Снятие САБ → только кредитный баланс"
     else:
         bind_line = "Без привязки → «Баланс компании»"
     info = format_card_section(
@@ -5084,8 +5084,20 @@ def _cw_bind_line(mode: str | None, invoice_number: str, cost_type: str | None) 
         cat = _CREDIT_COST_LABELS.get(cost_type or "", "—")
         return f"Счёт №{invoice_number} · {cat}"
     if mode == "withdraw":
-        return "Не учитывать в балансе → только кредитный баланс"
+        return "Снятие САБ → только кредитный баланс"
     return "Без привязки → «Баланс компании»"
+
+
+def _cw_spend_mode(spend: dict) -> str:
+    """Режим УЖЕ СУЩЕСТВУЮЩЕГО credit_spend по факту хранения, а не по одному
+    отсутствию bound_invoice_id — «withdraw» (Снятие САБ) тоже не имеет
+    bound_invoice_id, и без различения по op_entry_id читался бы как «free»
+    (найдено при добавлении withdraw в пикер правки 10.09)."""
+    if spend.get("bound_invoice_id"):
+        return "bound"
+    if spend.get("op_entry_id"):
+        return "free"
+    return "withdraw"
 
 
 def _msk_now_str() -> str:
@@ -5152,6 +5164,7 @@ async def _cw_edit_show_mode(target: Message, state: FSMContext) -> None:
     b = InlineKeyboardBuilder()
     b.button(text="🔗 С привязкой к счёту", callback_data="cwedit:mode:bound")
     b.button(text="📄 Без привязки", callback_data="cwedit:mode:free")
+    b.button(text="🏧 Снятие САБ", callback_data="cwedit:mode:withdraw")
     b.button(text="❌ Отмена", callback_data="cwedit:abort")
     b.adjust(1)
     await target.answer("Изменение назначения — выберите привязку:", reply_markup=b.as_markup())
@@ -5194,7 +5207,7 @@ async def cw_edit_start(cb: CallbackQuery, state: FSMContext, db: Database) -> N
     spend = await _cw_initiator_guard(cb, db, spend_id)
     if not spend:
         return
-    old_mode = "bound" if spend.get("bound_invoice_id") else "free"
+    old_mode = _cw_spend_mode(spend)
     old_inv_num = ""
     if old_mode == "bound" and spend.get("bound_invoice_id"):
         try:
@@ -5284,6 +5297,21 @@ async def cw_edit_amount(message: Message, state: FSMContext, db: Database) -> N
 @router.callback_query(F.data == "cwedit:mode:free", CreditWalletEditSG.pick_mode)
 async def cw_edit_mode_free(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(new_mode="free", new_invoice_id=None, new_invoice_number="", new_cost_type=None)
+    await state.set_state(CreditWalletEditSG.purpose)
+    await cb.answer()
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+    except Exception:
+        pass
+    await cb.message.answer("Введите НОВОЕ назначение (3–200 символов):")  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "cwedit:mode:withdraw", CreditWalletEditSG.pick_mode)
+async def cw_edit_mode_withdraw(cb: CallbackQuery, state: FSMContext) -> None:
+    # «Снятие САБ» (mode="withdraw") — как «Без привязки», но реверс/перезапись
+    # идёт ТОЛЬКО через apply_credit_wallet_spend/cancel_credit_spend без записи
+    # на «Баланс компании» и без supplier_payment; см. cw_mode_withdraw (создание).
+    await state.update_data(new_mode="withdraw", new_invoice_id=None, new_invoice_number="", new_cost_type=None)
     await state.set_state(CreditWalletEditSG.purpose)
     await cb.answer()
     try:
@@ -6085,7 +6113,7 @@ async def _cw_reattr_start(
     if not spend:
         await cb.answer("Расход не найден — обновите карточку.", show_alert=True)
         return
-    old_mode = "bound" if spend.get("bound_invoice_id") else "free"
+    old_mode = _cw_spend_mode(spend)
     old_inv_num = ""
     if old_mode == "bound" and spend.get("bound_invoice_id"):
         try:
@@ -6197,7 +6225,7 @@ async def _cw_reattribute_save(
     new_inv_num = (d.get("new_invoice_number") or "") if bound else ""
     wallet_role = d.get("wallet_role") or spend.get("wallet_role") or ""
     amount = float(spend.get("amount") or 0)
-    old_mode = d.get("old_mode") or ("bound" if spend.get("bound_invoice_id") else "free")
+    old_mode = d.get("old_mode") or _cw_spend_mode(spend)
     old_inv_num = d.get("old_invoice_number") or ""
     old_ct = d.get("old_cost_type")
     tid = int(d.get("edit_task_id") or 0)

@@ -7838,12 +7838,23 @@ class Database:
         old_sp_id = row.get("supplier_payment_id")
         old_op_id = row.get("op_entry_id")
         old_bound_invoice_id = row.get("bound_invoice_id")
-        old_mode = "bound" if old_bound_invoice_id else "free"
+        # 🔴 «withdraw» (Снятие САБ) не пишет ни supplier_payment, ни op_entry —
+        # у него ОБА поля пустые, как и у «free» без денег быть не может (см.
+        # apply_credit_wallet_spend mode=="withdraw"), поэтому различаем по
+        # НАЛИЧИЮ op_id, а не одним отсутствием bound_invoice_id (иначе withdraw
+        # молча читался бы как free и получал бы лишнюю запись при переносе).
+        if old_bound_invoice_id:
+            old_mode = "bound"
+        elif old_op_id:
+            old_mode = "free"
+        else:
+            old_mode = "withdraw"
         old_cost_type = row.get("cost_type")
         old_parent: int | None = None
         old_cost_col: str | None = None
 
         bound = bool(new_mode == "bound" and new_invoice_id)
+        withdraw = bool(new_mode == "withdraw")
         new_cost_type = (new_cost_type or "extra_mat") if bound else None
         new_cost_col = self._COST_COL_MAP.get(new_cost_type or "") if bound else None
 
@@ -7890,6 +7901,14 @@ class Database:
                     f"UPDATE invoices SET {new_cost_col} = COALESCE({new_cost_col}, 0) + ? WHERE id = ?",
                     (amount, new_parent),
                 )
+        elif withdraw:
+            # «Снятие САБ» — ничего не пишем (ни supplier_payment, ни op_entry):
+            # запись остаётся ТОЛЬКО в credit_spends/credit_expenses, как и при
+            # создании через apply_credit_wallet_spend mode=="withdraw". Раньше
+            # это ветвление сюда не доходило (withdraw не был выбираем на этом
+            # экране) и молчаливо падало в «else» ниже — писало на «Баланс
+            # компании», что противоречит смыслу режима.
+            pass
         else:
             # op_entry: период берём из ДАТЫ исходной траты (атрибуция переносится —
             # экономический месяц расхода не сдвигается). Поля идентичны
@@ -7937,7 +7956,8 @@ class Database:
                 "supplier_payment_id": old_sp_id, "op_entry_id": old_op_id,
             },
             "new": {
-                "mode": "bound" if bound else "free", "invoice_id": new_bound_invoice_id,
+                "mode": "bound" if bound else ("withdraw" if withdraw else "free"),
+                "invoice_id": new_bound_invoice_id,
                 "parent_invoice_id": new_parent, "cost_type": new_cost_type,
                 "cost_col": new_cost_col,
                 "invoice_number": new_invoice_number if bound else "",
