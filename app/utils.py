@@ -21,6 +21,21 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 SERVICE_MESSAGE_TTL_SECONDS = 120
 
+# Ставка налога на прибыль. Owner 16.09: «правильно — 25%», и офис поднял до 25%
+# ОБЕ стороны — плановую (ОП S «Налог на приб.» → лист Invoices W «Нал.приб.») и
+# фактовую (ОП AZ «Налоги факт» → лист Invoices BO + прибыль BL). До правки бот
+# считал 20% везде, и плановая сторона разошлась с ОП на 147 005 ₽ по 22 счетам
+# (замер 16.09: implied rate ОП S ровно 0.250 на той же базе, что у бота).
+# 🔑 ЕДИНЫЙ источник для ВСЕХ пяти потребителей — трёх плановых
+# (sheets._invoice_cells W, utils.format_plan_fact_card, td месячная сводка) и
+# двух фактовых (db.get_full_invoice_cost_card ×2 ветки,
+# utils.format_monthly_ended_summary). Разойдись копии — один и тот же счёт
+# показывал бы разный налог на листе и в карточке; ровно этот класс расхождения
+# правится здесь, плодить его заново нельзя.
+# ⛔ Кредитные счета налог не платят вовсе (owner 28.05) — у них ставка не
+# применяется, ветка отсекается раньше по is_credit.
+PROFIT_TAX_RATE = 0.25
+
 # Strong references to pending cleanup tasks so the GC doesn't collect them
 # before the sleep completes. Entries are discarded automatically on completion.
 _pending_cleanup_tasks: set[asyncio.Task] = set()
@@ -1411,10 +1426,11 @@ def format_plan_fact_card(
     is_credit_inv = bool(inv.get("is_credit"))
     # План НДС/Налог приб. — зеркало листа Invoices (V/W): НДС = выходной минус
     # входной по материалам ((Сумма − Материалы)·22/122, как sheets.py _nds),
-    # налог = 20% от (Сумма − Себест − НДС). owner 27.06.
+    # налог = PROFIT_TAX_RATE от (Сумма − Себест − НДС). owner 27.06; ставка
+    # 20% → 25% owner 16.09 (см. PROFIT_TAX_RATE).
     nds_p = 0.0 if is_credit_inv else (((amount - materials_total) * 22 / 122) if amount else 0.0)
     nds_f = 0.0 if is_credit_inv else (cost.get("nds_fact", 0) or 0)
-    tax_p = 0.0 if is_credit_inv else (max(0.0, (amount - est_total - nds_p) * 0.20) if amount else 0.0)
+    tax_p = 0.0 if is_credit_inv else (max(0.0, (amount - est_total - nds_p) * PROFIT_TAX_RATE) if amount else 0.0)
     tax_f = 0.0 if is_credit_inv else (cost.get("profit_tax_fact", 0) or 0)
     npn_p = 0.0 if is_credit_inv else float(inv.get("npn_amount") or 0)
     npn_f = npn_p
@@ -1912,13 +1928,14 @@ def format_monthly_ended_summary(months: list[dict[str, Any]]) -> str:
         fact_cost = m["fact_materials"] + m["fact_montazh"] + m["fact_loaders"] + m["fact_logistics"]
         agent = m.get("agent_payout") or 0
 
-        # Налоги: НДС = (сумма − материалы) × 22/122, налог на прибыль = (сумма − расходы − НДС) × 20%
+        # Налоги: НДС = (сумма − материалы) × 22/122, налог на прибыль =
+        # (сумма − расходы − НДС) × PROFIT_TAX_RATE (25% с 16.09, было 20%)
         # Прибыль = сумма − расходы − ЗП мен. − НДС − налог (как BL, после ЗП мен.)
         # ТЗ 2026-05-19 A.5: zp_manager включён в total_expenses (иначе прибыль завышена).
         amt = m["total_amount"]
         total_expenses = fact_cost + agent + float(m.get("zp_manager") or 0)
         nds = (amt * 22 / 122) - (m["fact_materials"] * 22 / 122) if amt else 0
-        profit_tax = max(0, (amt - total_expenses - nds) * 0.20) if amt else 0
+        profit_tax = max(0, (amt - total_expenses - nds) * PROFIT_TAX_RATE) if amt else 0
         taxes_total = nds + profit_tax
         profit = amt - total_expenses - taxes_total
 

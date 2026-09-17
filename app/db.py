@@ -10,6 +10,7 @@ import aiosqlite
 
 from .enums import INVOICE_END_READY_STAGES, InvoiceStatus, Role
 from .utils import (
+    PROFIT_TAX_RATE,
     ZP_FACT_STATUSES,
     compute_plan_profit,
     fact_installation,
@@ -26,7 +27,8 @@ log = logging.getLogger(__name__)
 # с receipt_date >= этой даты — «строка 21 и ниже» (= счёт 2654, 2026-05-04) — у которых
 # заполнены металл (DP cost_metal) и/или стекло (DQ cost_glass). Для них НДС = (Сумма −
 # металл − стекло)×22/122, налог = (Сумма − МатериалыФакт − МонтажФакт − Грузчики −
-# Логистика − НДС)×20% (точно по формуле AZ). Счета до отсечки и без металла/стекла
+# Логистика − НДС)×PROFIT_TAX_RATE (точно по формуле AZ; ставка 20% → 25% owner
+# 16.09 — офис поднял фактовую сторону вслед за плановой). Счета до отсечки и без металла/стекла
 # (напр. 26423) — старая база (совпадает с AZ строк 1–20). user 2026-06-17 (скрин формулы).
 NDS_V2_CUTOFF = "2026-05-04"
 
@@ -3053,20 +3055,24 @@ class Database:
             # «Налоги факт» (user 2026-06-17, скрин формулы):
             #   НДС   = (Сумма − металл DP − стекло DQ) × 22/122
             #   Налог = (Сумма − МатериалыФакт AM − МонтажФакт AN − Грузчики AQ −
-            #            Логистика AO − НДС) × 20%   (БЕЗ max(0), БЕЗ агентского)
+            #            Логистика AO − НДС) × PROFIT_TAX_RATE (БЕЗ max(0), БЕЗ агентского)
+            # ⚠️ Ставка 20% → 25% (owner 16.09). На момент правки живая ОП AZ ещё
+            # несла значения, посчитанные по 20% (замер: implied 0.200 у 7 из 7
+            # счетов v2-ветки) — то есть BO бота и AZ офиса разойдутся до тех пор,
+            # пока офис не пересчитает свою колонку. Это ожидаемо, а не дефект.
             if _v2_rdate >= NDS_V2_CUTOFF and (_v2_metal > 0 or _v2_glass > 0) and invoice_amount:
                 nds_fact = (invoice_amount - _v2_metal - _v2_glass) * 22 / 122
                 _az_costs = (float(inv.get("materials_fact_op") or 0)
                              + float(inv.get("montazh_fact_op") or 0)
                              + float(inv.get("loaders_fact_op") or 0)
                              + float(inv.get("logistics_fact_op") or 0))
-                profit_tax_fact = (invoice_amount - _az_costs - nds_fact) * 0.20
+                profit_tax_fact = (invoice_amount - _az_costs - nds_fact) * PROFIT_TAX_RATE
             else:
                 # Старая база (счета до отсечки и без металла/стекла, напр. 26423) —
                 # воспроизводит «Налоги факт» AZ строк 1–20.
                 # НДС = (Сумма − mat_and_suppliers) × 22/122; налог как было (с max(0)).
                 nds_fact = (invoice_amount * 22 / 122) - (mat_and_suppliers * 22 / 122) if invoice_amount else 0.0
-                profit_tax_fact = max(0.0, (invoice_amount - total_cost - nds_fact) * 0.20) \
+                profit_tax_fact = max(0.0, (invoice_amount - total_cost - nds_fact) * PROFIT_TAX_RATE) \
                     if invoice_amount else 0.0
 
         # ── Прибыль факт (user 2026-06-17): затраты = «факт»-столбцы листа

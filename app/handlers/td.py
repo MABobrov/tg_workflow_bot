@@ -179,7 +179,7 @@ async def gd_end_stats(cb: CallbackQuery, db: Database) -> None:
         return
     await cb.answer()
     # Monthly summary card (ended + закрытые кредитные, по требованию ГД)
-    from ..utils import format_monthly_ended_summary
+    from ..utils import PROFIT_TAX_RATE, format_monthly_ended_summary
     months_data = await db.get_ended_monthly_summary()
     # ТЗ 2026-05-19 блок B: pre-compute «План» для ЗП менеджера и Налогов.
     # SQL get_ended_monthly_summary не агрегирует план — собираем через
@@ -203,7 +203,8 @@ async def gd_end_stats(cb: CallbackQuery, db: Database) -> None:
             nv = float(pf.get("net_vat") or 0)
             et = float(pf.get("estimated_total_cost") or 0)
             if amt > 0:
-                est_tax += nv + max(0.0, (amt - et - nv) * 0.20)
+                # Ставка 20% → 25% (owner 16.09, см. utils.PROFIT_TAX_RATE).
+                est_tax += nv + max(0.0, (amt - et - nv) * PROFIT_TAX_RATE)
         m["est_manager_zp"] = est_mgr
         m["est_taxes"] = est_tax
     summary_text = format_monthly_ended_summary(months_data)

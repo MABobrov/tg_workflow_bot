@@ -13,6 +13,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 from ..utils import (
+    PROFIT_TAX_RATE,
     compute_profit_recalc,
     encode_sa_json,
     format_date_iso,
@@ -1046,7 +1047,13 @@ class GoogleSheetsService:
             _profit_tax = 0
         else:
             _nds = (_amount * 22 / 122) - (materials_total * 22 / 122) if _amount else 0
-            _profit_tax = ((_amount - _est_total - _nds) / 100 * 20) if _amount else 0
+            # Ставка 20% → 25% (owner 16.09, см. utils.PROFIT_TAX_RATE). База не
+            # менялась: та же, по которой офис считает ОП S «Налог на приб.» —
+            # замер 16.09 дал implied rate ровно 0.250 у 22 счетов из 24.
+            # ⚠️ max(0, …) здесь НЕТ намеренно — так было и до правки; у двух
+            # счетов с планом дороже суммы (26721-1НПН, 26820-1НПН) W уходит в
+            # минус, и это расхождение с ОП имеет ДРУГУЮ причину, не ставку.
+            _profit_tax = ((_amount - _est_total - _nds) * PROFIT_TAX_RATE) if _amount else 0
         _profit = _amount - _est_total - _nds - _profit_tax
         _rentability = (_profit / _amount * 100) if _amount > 0 else 0
 
