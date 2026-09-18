@@ -113,6 +113,25 @@ def _iso_or_none(value: Any) -> datetime | None:
 
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-09-18 (owner 16.09): «отключи у роли гд систему оповещения о ПРОСРОЧЕННЫХ
+# задачах — пока я не скажу включить».
+# ВКЛЮЧИТЬ ОБРАТНО = поставить True. Одна строка, других правок не нужно.
+#
+# 🔑 Защёлку `reminded_overdue` при подавлении НЕ ставим — owner 18.09 выбрал
+# этот вариант осознанно: база не трогается ВООБЩЕ, отключение полностью
+# обратимо. Цена: при обратном включении придёт всё, что просрочилось за время
+# тишины, одной пачкой. Замер 18.09 (до решения): у ГД 15 просроченных задач и
+# по ВСЕМ 15 бот уже писал раньше, то есть копиться будет только новое —
+# порядка 2 задач в неделю.
+#
+# ⛔ Скоуп — ТОЛЬКО ветка overdue («🔥 Просрочена задача»). Ветка soon («⏰ Скоро
+# дедлайн») и acceptance_reminders_loop («задача не принята») НЕ тронуты: owner
+# просил именно просрочку, и путать эти три петли нельзя.
+_GD_OVERDUE_REMINDERS_ENABLED = False
+_GD_OVERDUE_ROLE = "gd"
+
+
 async def reminders_loop(
     db: Database,
     notifier: Notifier,
@@ -133,6 +152,23 @@ async def reminders_loop(
     while True:
         try:
             now = utcnow()
+            # Кого глушим по overdue (см. _GD_OVERDUE_REMINDERS_ENABLED выше).
+            # Собираем РАЗ ЗА ТИК, а не на каждую задачу: запрос один, задач в
+            # проходе десятки.
+            # ⚠️ Fail-OPEN намеренно: упала выборка — множество пустое и
+            # напоминания идут как раньше. Fail-closed заглушил бы просрочку ВСЕМ
+            # ролям из-за одной ошибки БД, а это хуже лишнего сообщения ГД.
+            gd_muted: set[int] = set()
+            if not _GD_OVERDUE_REMINDERS_ENABLED:
+                try:
+                    gd_muted = {
+                        int(u.telegram_id)
+                        for u in await db.find_users_by_role(_GD_OVERDUE_ROLE)
+                    }
+                except Exception:
+                    log.exception(
+                        "reminders: список ГД не получен — подавление overdue пропущено"
+                    )
             tasks = await db.list_tasks_for_reminders(now.isoformat())
             for t in tasks:
                 due_iso = t.get("due_at")
@@ -179,7 +215,14 @@ async def reminders_loop(
                         await db.mark_task_reminded_soon(int(t["id"]))
 
                 # overdue reminder
-                if not t.get("reminded_overdue") and -delta >= timedelta(minutes=remind_overdue_minutes):
+                # Условие внутри САМОГО if, а не `continue` внутри блока: так
+                # пропускается и отправка, и постановка защёлки — ровно тот
+                # вариант, который выбрал owner (база не трогается).
+                if (
+                    not t.get("reminded_overdue")
+                    and -delta >= timedelta(minutes=remind_overdue_minutes)
+                    and int(t.get("assigned_to") or 0) not in gd_muted
+                ):
                     settled = await _send_task_reminder(db, notifier, t, timezone_name, kind="overdue")
                     # ⚠️ У этой ветки НЕТ верхней границы по времени (условие
                     # -delta >= N истинно вечно), поэтому give-up здесь —
