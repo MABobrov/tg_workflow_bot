@@ -5835,7 +5835,11 @@ def fmt_task_card(task: dict[str, Any], project: dict[str, Any] | None, tz_name:
     """Карточка задачи в эталонном дизайне (assets/card_etalon.png).
 
     1-2 <pre>-секции: главная (статус/срок/тип) + опц. детали из payload.
-    Если задан project — добавляется секция fmt_project_card.
+
+    ⛔ Секция проекта НЕ рисуется (owner 18.09: «карточка проект — лишняя»).
+    Параметр project оставлен в сигнатуре намеренно: вызовов четыре
+    (tasks.py:353, build_task_done_card и два в этом файле), и правка
+    сигнатуры расширила бы дифф на файлы, которых заказ не касается.
     """
     tid = task["id"]
     ttype = html.quote(task_type_label(task.get("type")))
@@ -5865,9 +5869,6 @@ def fmt_task_card(task: dict[str, Any], project: dict[str, Any] | None, tz_name:
                 emoji="📦", title="Детали", items=payload_items, compact=True
             )
         )
-
-    if project:
-        sections.append(fmt_project_card(project, tz_name))
 
     return format_card(sections)
 
@@ -6058,9 +6059,21 @@ async def build_task_reminder_card(
     if num:
         items.append(("Счёт", html.quote(f"№{num}")))
 
-    # Назначение (кредит-задачи: purpose)
+    # Назначение: у кредит-задач — свободный purpose, у счёта поставщику —
+    # категория из material_type (metal/loaders/…). owner 18.09: «в карточке
+    # счёт на оплату — нет назначения». Пуш при СОЗДАНИИ той же задачи его
+    # показывает («Тип: Металл», rp_new.py:3911), карточка открытия — тоже
+    # («Материал», _task_payload_items), а напоминание молчало: по нему нельзя
+    # было понять, за что деньги. Источник меток тот же — MATERIAL_TYPE_LABELS.
+    # ⚠️ elif, а не второй if: две строки «Назначение» в одной карточке
+    # читались бы как противоречие. На боевых 18.09 пересечения нет — из 28
+    # открытых invoice_payment у 25 material_type, у 3 purpose (кредит-заявки).
     if payload.get("purpose"):
         items.append(("Назначение", html.quote(str(payload["purpose"]))))
+    elif payload.get("material_type"):
+        from .enums import MATERIAL_TYPE_LABELS
+        _mt = str(payload["material_type"])
+        items.append(("Назначение", html.quote(MATERIAL_TYPE_LABELS.get(_mt, _mt))))
 
     if ttype == "zp_installer":
         # Расчётная (предложенная монтажнику) + Фактическая (что монтажник подал).
@@ -6081,9 +6094,11 @@ async def build_task_reminder_card(
     if task.get("due_at"):
         items.append(("Срок", format_dt_iso(task.get("due_at"), tz_name)))
 
+    # ⛔ Секция проекта снята (owner 18.09: «карточка проект — лишняя»).
+    # Параметр project оставлен в сигнатуре: его передают ОБА вызова в
+    # reminders.py, и правка сигнатуры тронула бы петлю напоминаний ради
+    # косметики.
     sections = [format_card_section(emoji="📋", title=title, items=items, compact=True)]
-    if project:
-        sections.append(fmt_project_card(project, tz_name))
     return format_card(sections)
 
 
