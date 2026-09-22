@@ -958,6 +958,21 @@ async def task_actions_part2(
             return
         invoice_number = str(invoice.get("invoice_number", ""))
 
+        # owner 22.09: «Счёт End при долге — это ошибка». До правки эта кнопка
+        # закрывала счёт БЕЗ единой проверки и вдобавок сама ставила
+        # no_debts=True ниже — то есть записывала в базу «долгов нет» поверх
+        # реального долга, после чего долг исчезал из ВСЕХ проверок разом
+        # (check_close_conditions читает этот флаг как override, db.py:6154).
+        _conds = await db.check_close_conditions(invoice_id)
+        if not _conds.get("no_debts"):
+            _debt_s = f"{float(invoice.get('outstanding_debt') or 0):,.0f}".replace(",", " ")
+            await cb.answer(
+                f"⛔️ По счёту №{invoice_number} не погашен долг {_debt_s} ₽. "
+                "«Счет End» недоступен, пока долг не закрыт.",
+                show_alert=True,
+            )
+            return
+
         from ..enums import MontazhStage as _MontazhStage
         await db.update_invoice_status(invoice_id, InvoiceStatus.ENDED)
         await db.update_montazh_stage(invoice_id, _MontazhStage.INVOICE_END)
@@ -966,6 +981,9 @@ async def task_actions_part2(
                 await db.set_invoice_installer_ok(invoice_id, ok=True)
             except Exception:
                 log.exception("invend_ok: set_installer_ok failed for %s", invoice_number)
+        # Флаг ставится ПОСЛЕ гейта выше, поэтому он больше не подделывает
+        # состояние: сюда доходят только счета, где долг реально погашен либо
+        # ГД подтвердил оплату. Нужен листовой логике «счёт закрыт полностью».
         if not invoice.get("no_debts"):
             try:
                 await db.set_invoice_no_debts(invoice_id, no_debts=True)

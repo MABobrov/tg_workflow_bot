@@ -654,6 +654,23 @@ async def _auto_close_credit_invoice(
     invoice_id = int(invoice["id"])
     invoice_number = str(invoice["invoice_number"])
 
+    # owner 22.09: «Счёт End при долге — это ошибка». Этот путь долг не смотрел
+    # вовсе и ставил no_debts=True ниже — так 31.08 закрылся КВ 13 с долгом
+    # 151 000 ₽ (в базе «долгов нет» при непогашенном долге, audit#10038).
+    # Условие берём у общего check_close_conditions, а не считаем заново:
+    # формула «долг<=0 ИЛИ подтверждение ГД» обязана быть ОДНА на все три пути
+    # закрытия, иначе они разойдутся.
+    # ⚠️ force=True (force_close_half_state.py) обход сохранён: это служебная
+    # ре-эмиссия сайд-эффектов у счёта, который УЖЕ закрыт, а не новое закрытие.
+    if not force:
+        _conds = await db.check_close_conditions(invoice_id)
+        if not _conds.get("no_debts"):
+            log.info(
+                "auto_close_credit: %s — долг %s не погашен, оставляем «Счет ОК»",
+                invoice_number, invoice.get("outstanding_debt"),
+            )
+            return False
+
     # 1. Status + montazh stage + closure flags (no_debts/installer_ok).
     # Для credit-flow бухгалтерия не участвует, поэтому edo_signed остаётся
     # как есть. Но `no_debts` и `installer_ok` обязаны выставиться, иначе
