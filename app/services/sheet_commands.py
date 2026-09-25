@@ -35,6 +35,7 @@ from ..enums import (
 from ..services.assignment import resolve_default_assignee
 from ..utils import format_cost_card, refresh_recipient_keyboard, utcnow, to_iso
 from ..utils import credit_zp_montazh_unpaid
+from ..utils import compute_plan_profit
 
 log = logging.getLogger(__name__)
 
@@ -1480,6 +1481,10 @@ async def _cmd_stats_zp_pending(
         "  i.estimated_materials, i.estimated_glass, i.estimated_profile, "
         "  i.estimated_installation, i.estimated_loaders, "
         "  i.estimated_logistics, i.actual_logistics, "
+        # agent_payout_op / agent_fee добавлены 25.09: агентское вычитается из базы
+        # плановой прибыли (формула офиса, compute_plan_profit) — без этих полей
+        # вызов хелпера упал бы на отсутствующем ключе.
+        "  i.agent_payout_op, i.agent_fee, "
         "  i.client_source, i.profit_tax, i.nds_amount, i.is_credit "
         "FROM invoices i "
         "WHERE i.parent_invoice_id IS NULL "
@@ -1511,29 +1516,29 @@ async def _cmd_stats_zp_pending(
             parts.append(f"Замерщик: {amt:,.0f}₽")
             total_zam += amt
 
-        # РП: 10% от прибыли с вычетом налогов
+        # РП: 10% от прибыли с вычетом налогов.
+        # 🔑 owner 25.09: переведено на ЕДИНЫЙ `utils.compute_plan_profit`. Это была
+        # ШЕСТАЯ копия расчёта, и она давала ТРЕТИЙ ответ: лист считал возврат НДС от
+        # ОП M, карточка — от стекла+профиля, а здесь — от суммы всех трёх, и ни одна
+        # не вычитала налог на прибыль и агентское. Хелпер заводился 19.06 именно
+        # чтобы копии не расходились, но этот вызов к нему так и не подключили.
+        # Сверка с эталоном (колонка T «РП − 10 %», источник реальной выплаты):
+        # прежняя формула совпадала у 15 счетов из 40, новая — у 40 из 40.
+        # ⚠️ Местная особенность СОХРАНЕНА: логистика берётся через
+        # `_effective_logistics_cost` (факт важнее плана), а не сырым estimated.
         amount = r["amount"] or 0
-        est_mat = (r["estimated_materials"] or 0) + (r["estimated_glass"] or 0) + (r["estimated_profile"] or 0)
-        est_inst = r["estimated_installation"] or 0
-        est_load = r["estimated_loaders"] or 0
-        est_log = _effective_logistics_cost(r["estimated_logistics"], r["actual_logistics"])
-        est_total = est_mat + est_inst + est_load + est_log
-        # НДС: 22/122 (выход - вход). Кредитные счета → НДС = 0 (зеркало факт-стороны
-        # get_full_invoice_cost_card; иначе плановая прибыль кредита занижается → rp_zp
-        # занижен). user 2026-06-19. База возврата = МАТЕРИАЛЫ (вкл. legacy
-        # estimated_materials), БЕЗ логистики — по формуле листа AZ «Налоги факт»
-        # (металл+стекло для новых; mat_and_suppliers для legacy, логистики там нет).
-        # Логистика убрана 2026-06-20 (user одобрил «убрать доставку»); display-only,
-        # на реальную выплату РП (лист, столбец T rp_10_pct_op) не влияет.
-        if r["is_credit"]:
-            net_vat = 0.0
-        else:
-            refundable = est_mat  # материалы (вкл. legacy), БЕЗ логистики — формула AZ
-            output_vat = amount * 22 / 122 if amount > 0 else 0
-            input_vat = refundable * 22 / 122 if refundable > 0 else 0
-            net_vat = output_vat - input_vat
-        est_profit = amount - est_total - net_vat
-        rp_zp = est_profit * 0.10 if est_profit > 0 else 0
+        _pp_rp = compute_plan_profit(
+            amount=amount,
+            est_mat_legacy=r["estimated_materials"] or 0,
+            est_glass=r["estimated_glass"] or 0,
+            est_profile=r["estimated_profile"] or 0,
+            est_inst=r["estimated_installation"] or 0,
+            est_load=r["estimated_loaders"] or 0,
+            est_log=_effective_logistics_cost(r["estimated_logistics"], r["actual_logistics"]),
+            est_agent=float(r["agent_payout_op"] or r["agent_fee"] or 0),
+            is_credit=bool(r["is_credit"]),
+        )
+        rp_zp = _pp_rp["rp_zp"]
         if rp_zp > 0:
             parts.append(f"РП(10%): {rp_zp:,.0f}₽")
             total_rp += rp_zp

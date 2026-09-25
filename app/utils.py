@@ -3900,49 +3900,84 @@ def format_ended_invoice_compact(inv: dict[str, Any], pf: dict[str, Any]) -> str
 def compute_plan_profit(
     *,
     amount: float,
+    est_mat_legacy: float = 0.0,
     est_glass: float = 0.0,
     est_profile: float = 0.0,
-    est_mat_legacy: float = 0.0,
     est_inst: float = 0.0,
     est_load: float = 0.0,
     est_log: float = 0.0,
+    est_agent: float = 0.0,
     is_credit: bool = False,
     client_source: str = "own",
 ) -> dict[str, float]:
     """ЕДИНЫЙ расчёт ПЛАНОВОЙ прибыли + распределения (единственный источник истины).
 
-    Зеркалит налоговую логику факт-стороны db.get_full_invoice_cost_card:
-      • Кредитные счета → НДС = 0 (для кредита налоги не начисляются). Иначе плановая
-        прибыль кредитного счёта занижалась на полный output_vat.
-      • Иначе net_vat = выходной(Сумма) − возвратный(стекло+профиль), ставка 22/122.
+    🔑 owner 25.09: формула приведена к ФОРМУЛЕ ОФИСА — той, по которой реально платят.
+    Эталон не выдуман: колонка **T «РП − 10 %»** («Импорт ОП» → `rp_10_pct_op`) это
+    ИСТОЧНИК выплаты ЗП РП (`rp._build_rp_zp_cart_from_source`), и замер 25.09 по
+    боевым дал совпадение **40 счетов из 40 ДО РУБЛЯ**:
+
+        НДС     = (Сумма − ОП M) × 22/122
+        налог   = (Сумма − ОП M − монтаж − грузчики − логистика − НДС) × PROFIT_TAX_RATE
+        прибыль = Сумма − ОП M − монтаж − грузчики − логистика − НДС − налог − агентское
+        T       = прибыль × 10 %
+
+    Что изменилось против прежней редакции (расхождений было ЧЕТЫРЕ, а не одно):
+      1) материалы = ОП M, а стекло/профиль стали РЕЗЕРВОМ на случай пустой M (шаг
+         создания счёта, где колонки M ещё нет). Раньше складывались M + стекло +
+         профиль — то самое подмешивание, которое deploy `nomix` 18.09 убрал С ЛИСТА;
+         у 3 счетов оно задваивало материал (у `26820-1НПН` стекло 73 334 В ТОЧНОСТИ
+         равно ОП M) и загоняло плановую прибыль в МИНУС → доли показывались нулями.
+      2) возвратный НДС считается от ВСЕЙ базы материалов (ОП M), как на листе
+         (`sheets.py:1059-1073`), а не от стекла+профиля: прежняя база совпадала с
+         листом только при `estimated_materials = 0`, то есть почти нигде — НДС
+         расходился у 23 из 23 некредитных счетов.
+      3) вычитается налог на прибыль — лист его вычитает, а здесь его не было вовсе.
+      4) вычитается агентское: оно не входит в долю РП у офиса. Без него сходимость
+         с T была 37/40, и все три промаха равнялись `агентское × 10 %` до рубля.
+    ⛔ Кредитные счета: НДС и налог = 0 (решение owner 28.05, зеркало факт-стороны
+       `db.get_full_invoice_cost_card`) — у них все варианты совпадают и раньше.
+
     Распределение прибыли: РП 10%; остаток лид-ГД 25(мен)/75(ГД), свой клиент 50/50.
     При прибыли ≤ 0 ВСЕ доли = 0 (раньше гард стоял только у rp_zp → manager_zp/gd_profit
-    уходили в минус). Введён 2026-06-19 (user), чтобы 5 копий этого расчёта
+    уходили в минус). Введён 2026-06-19 (user), чтобы копии этого расчёта
     (db.get_plan_fact_card, format_estimated_summary, manager_new ×2, sheet_commands)
-    не расходились в будущем.
+    не расходились в будущем. ⚠️ Копий по факту было ШЕСТЬ: `sheet_commands` считал сам
+    и давал третий ответ — сведён сюда 25.09 по решению owner.
     """
     amount = float(amount or 0)
+    est_mat_legacy = float(est_mat_legacy or 0)
     est_glass = float(est_glass or 0)
     est_profile = float(est_profile or 0)
-    est_mat_legacy = float(est_mat_legacy or 0)
     est_inst = float(est_inst or 0)
     est_load = float(est_load or 0)
     est_log = float(est_log or 0)
+    est_agent = float(est_agent or 0)
 
-    materials_total = est_glass + est_profile + est_mat_legacy
+    # 🔑 Стекло и профиль — РЕЗЕРВ, а не слагаемое. ОП M (est_mat_legacy) уже включает
+    # их в себя (замер 25.09: у `26820-1НПН` стекло 73 334 В ТОЧНОСТИ равно ОП M), и
+    # сложение давало двойной счёт. Но на шаге СОЗДАНИЯ счёта колонки M ещё не
+    # существует — менеджер вводит стекло и профиль руками, и там они единственный
+    # источник материалов. Поэтому: есть M → считаем по M (как лист), нет M →
+    # берём ручной ввод. На боевых 25.09 резерв не срабатывает ни разу: у всех трёх
+    # счетов с непустым стеклом заполнена и M.
+    materials_total = est_mat_legacy if est_mat_legacy > 0 else (est_glass + est_profile)
     est_total = materials_total + est_inst + est_load + est_log
 
     if is_credit:
         output_vat = 0.0
         input_vat = 0.0
         net_vat = 0.0
+        profit_tax = 0.0
     else:
-        refundable_base = est_glass + est_profile  # возвратный НДС: стекло + профиль
+        refundable_base = materials_total  # возвратный НДС: вся база материалов (ОП M)
         output_vat = amount * 22 / 122 if amount > 0 else 0.0
         input_vat = refundable_base * 22 / 122 if refundable_base > 0 else 0.0
         net_vat = output_vat - input_vat
+        # max(0, …) НЕТ намеренно — его нет и на листе (sheets.py:1072).
+        profit_tax = (amount - est_total - net_vat) * PROFIT_TAX_RATE if amount else 0.0
 
-    est_profit = amount - est_total - net_vat
+    est_profit = amount - est_total - net_vat - profit_tax - est_agent
     est_pct = (est_profit / amount * 100) if amount > 0 else 0.0
 
     if est_profit > 0:
@@ -3965,6 +4000,8 @@ def compute_plan_profit(
         "output_vat": output_vat,
         "input_vat": input_vat,
         "net_vat": net_vat,
+        "profit_tax": profit_tax,
+        "agent": est_agent,
         "est_profit": est_profit,
         "est_pct": est_pct,
         "rp_zp": rp_zp,
@@ -4059,10 +4096,15 @@ def format_estimated_summary(inv: dict[str, Any]) -> str:
     est_load = float(inv.get("estimated_loaders") or 0)
     est_log = float(inv.get("estimated_logistics") or 0)
     # ЕДИНЫЙ helper (credit-aware НДС + гард распределения).
+    # owner 25.09: стекло/профиль — РЕЗЕРВ при пустой ОП M, а не слагаемое (они и так
+    # внутри M); агентское вычитается — см. докстринг compute_plan_profit. Строки
+    # «Стекло»/«Ал.профиль» ниже остаются: это показ ввода менеджера, а не база расчёта.
+    _est_agent = float(inv.get("agent_payout_op") or inv.get("agent_fee") or 0)
     _pp = compute_plan_profit(
         amount=amount, est_glass=est_glass, est_profile=est_profile,
         est_mat_legacy=est_mat_legacy, est_inst=est_inst, est_load=est_load,
-        est_log=est_log, is_credit=bool(inv.get("is_credit")),
+        est_log=est_log, est_agent=_est_agent,
+        is_credit=bool(inv.get("is_credit")),
         client_source=inv.get("client_source") or "own",
     )
     materials_total = _pp["materials_total"]

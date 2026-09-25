@@ -3397,10 +3397,15 @@ class Database:
         # зеркало факт-стороны) + гард распределения при прибыли ≤ 0. Источник истины,
         # чтобы копии расчёта (manager_new, format_estimated_summary, sheet_commands)
         # не расходились в будущем (user 2026-06-19, КВ-6 inv50).
+        # owner 25.09: est_glass/est_profile теперь РЕЗЕРВ при пустой ОП M, а не
+        # слагаемое (подмешивание задваивало материал); агентское вычитается, источник
+        # тот же, что у факт-стороны — ОП AE, иначе своё поле. См. compute_plan_profit.
+        _est_agent = float(inv.get("agent_payout_op") or inv.get("agent_fee") or 0)
         _pp = compute_plan_profit(
             amount=amount, est_glass=est_glass, est_profile=est_profile,
             est_mat_legacy=est_mat_legacy, est_inst=est_inst, est_load=est_load,
-            est_log=est_log, is_credit=bool(inv.get("is_credit")),
+            est_log=est_log, est_agent=_est_agent,
+            is_credit=bool(inv.get("is_credit")),
             client_source=inv.get("client_source") or "own",
         )
         materials_total = _pp["materials_total"]
