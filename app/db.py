@@ -3072,7 +3072,17 @@ class Database:
                 # воспроизводит «Налоги факт» AZ строк 1–20.
                 # НДС = (Сумма − mat_and_suppliers) × 22/122; налог как было (с max(0)).
                 nds_fact = (invoice_amount * 22 / 122) - (mat_and_suppliers * 22 / 122) if invoice_amount else 0.0
-                profit_tax_fact = max(0.0, (invoice_amount - total_cost - nds_fact) * PROFIT_TAX_RATE) \
+                # owner 24.09: агентское АМ из базы налога НЕ вычитается — ровно как в
+                # ветке v2 выше («БЕЗ агентского») и как в самой формуле офиса AZ, где
+                # агентского нет. Ветки расходились: old вычитала его через total_cost.
+                # Замер 24.09 по 23 счетам с заполненной AZ: расхождение 26119-1КВ
+                # объясняется этим ДО РУБЛЯ (agent 29 700 × 0.25 = 7 425; было 33 768
+                # против AZ 41 193, стало 41 192). Починилось 1, сломалось 0, прочие 17
+                # без изменений — агентское ненулевое всего у двух счетов.
+                # ⛔ Саму total_cost НЕ трогаем: она уходит в cost-card как «Себест-ть
+                # факт» и в карточки ролей — правка касается ТОЛЬКО базы налога.
+                _tax_base_costs = total_cost - agent_payout
+                profit_tax_fact = max(0.0, (invoice_amount - _tax_base_costs - nds_fact) * PROFIT_TAX_RATE) \
                     if invoice_amount else 0.0
 
         # ── Прибыль факт (user 2026-06-17): затраты = «факт»-столбцы листа
