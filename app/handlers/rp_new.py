@@ -1327,9 +1327,27 @@ async def rp_montazh_assign(cb: CallbackQuery, state: FSMContext, db: Database) 
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    # Защита от повторного назначения
     stage = inv.get("montazh_stage") or ""
-    if stage in ("assigned", "in_work", "razmery_ok", "invoice_ok", "invoice_end"):
+    # 🔴 owner 25.09: «у РП пропала возможность переназначить монтажную группу».
+    # Счёт, УЖЕ назначенный, но ещё НЕ принятый монтажником, список «➕ Счёт в монтаж»
+    # показывает НАМЕРЕННО — `db.list_invoices_to_send_montazh` (db.py:2364) включает
+    # стадию 'assigned' и рисует ей отдельный значок 📩 (:1298). А этот гард такие счета
+    # отбивал «уже назначен», и сменить группу было нельзя НИ ОДНИМ путём: в «📋 Счета в
+    # работе» стадия 'assigned' пускается ТОЛЬКО для наёмной группы (:1232), то есть
+    # кнопка «🔁 Изменить Монтажников» (:2739) для НАШЕЙ группы недостижима.
+    # Замер 25.09 на боевых: заперт ровно 1 счёт из 44 — `260915-1НПН` (наша группа,
+    # монтажник не принял); дефект латентный, стреляет только в этом окне.
+    # 🔑 Ведём в ТОТ ЖЕ проверенный поток regroup, а НЕ в назначение с нуля: у него есть
+    # предупреждение о выплаченных деньгах, объединение платежей (montazh_paid_prev) и
+    # гард двойного клика — назначение заново всё это обошло бы.
+    if stage == "assigned":
+        if not await _regroup_warn_if_money(db, inv, cb.message):  # type: ignore[arg-type]
+            await _regroup_picker(cb.message, inv)  # type: ignore[arg-type]
+        return
+    # Прочие стадии: штатный путь смены — «📋 Счета в работе» → «🔁 Изменить Монтажников».
+    # Сюда они попадают только со СТАРЫХ кнопок (выборка их не отдаёт вовсе) — backstop
+    # [[feedback_fsm_old_buttons_trap]].
+    if stage in ("in_work", "razmery_ok", "invoice_ok", "invoice_end"):
         from ..enums import MONTAZH_STAGE_LABELS
         label = MONTAZH_STAGE_LABELS.get(stage, stage)
         await cb.message.answer(  # type: ignore[union-attr]
