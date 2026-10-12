@@ -634,6 +634,7 @@ class RpSupplierInvoiceSG(StatesGroup):
     material_type = State()      # тип материала/услуги
     attachments = State()        # прикрепить файл(ы) счёта
     comment = State()            # комментарий
+    deadline = State()           # срок оплаты одной строкой (owner 25.09)
 
 
 class RpInvCancelSG(StatesGroup):

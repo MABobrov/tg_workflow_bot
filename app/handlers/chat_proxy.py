@@ -2579,6 +2579,7 @@ async def gd_task_ask_due(cb: CallbackQuery, state: FSMContext) -> None:
 _DUE_TIME_RE = re.compile(r"(?:^|\s)(\d{1,2})[:.](\d{2})\s*$")
 _DUE_HOUR_ONLY_RE = re.compile(r"\s(\d{1,2})\s*$")
 _BARE_TIME_RE = re.compile(r"(\d{1,2})(?::(\d{2}))?")
+_DUE_DOT_DATE_RE = re.compile(r"\d{1,2}\.\d{2}")
 
 
 def _parse_bare_time(text: str) -> tuple[int, int] | None:
@@ -2610,6 +2611,56 @@ def _apply_time_to_due(due_iso: str, hour: int, minute: int, tz_name: str) -> st
     return to_iso(due_dt.replace(hour=hour, minute=minute, second=0, microsecond=0))
 
 
+def parse_due_line(text: str, tz_name: str) -> "datetime | str":
+    """Срок одной строкой «дата [время]» → datetime в TZ бота либо код ошибки.
+
+    Время отделяется с конца строки («07 марта 14:00», «07 марта 14»), остаток
+    разбирается как дата (`utils.parse_date`); без времени — `_DEFAULT_DUE_HOUR`.
+    Коды ошибок: "bad_time" (час/минута вне диапазона), "bad_date" (дата не
+    распознана). Тексты ответов — забота вызывающего.
+
+    ЕДИНАЯ реализация для двух потоков: задача ГД (`gd_task_create_deadline`) и
+    срок счёта на оплату у РП (`rp_new`, owner 25.09) — разбор дат не дублируем.
+    """
+    from ..utils import parse_date, tzinfo as _tz
+
+    text = (text or "").strip()
+
+    # «15.10» / «31.12» ЦЕЛИКОМ — это дата без года (DD.MM), а не время 15:10:
+    # регулярка времени ниже съела бы строку целиком, и без даты ответом всегда
+    # была ошибка (owner 12.10: чинить в общем разборе). Меняются только вводы,
+    # которые раньше не принимались вовсе; «31.02» и прочие не-даты идут дальше
+    # прежним путём к прежней ошибке.
+    if _DUE_DOT_DATE_RE.fullmatch(text):
+        d = parse_date(text, tz_name)
+        if d:
+            return d.astimezone(_tz(tz_name)).replace(
+                hour=_DEFAULT_DUE_HOUR, minute=0, second=0, microsecond=0,
+            )
+
+    hour, minute = _DEFAULT_DUE_HOUR, 0
+    m = _DUE_TIME_RE.search(text)
+    if m:
+        hour, minute = int(m.group(1)), int(m.group(2))
+        text = text[: m.start()].strip()
+    else:
+        m = _DUE_HOUR_ONLY_RE.search(text)   # «07 марта 14» — час без минут
+        if m:
+            hour, minute = int(m.group(1)), 0
+            text = text[: m.start()].strip()
+
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return "bad_time"
+
+    parsed = parse_date(text, tz_name) if text else None
+    if not parsed:
+        return "bad_date"
+
+    return parsed.astimezone(_tz(tz_name)).replace(
+        hour=hour, minute=minute, second=0, microsecond=0,
+    )
+
+
 @router.message(GdTaskCreateSG.deadline)
 async def gd_task_create_deadline(
     message: Message, state: FSMContext, db: Database, config: Config,
@@ -2617,10 +2668,9 @@ async def gd_task_create_deadline(
     """Срок задачи одной строкой: дата + (необязательно) время.
 
     Было двумя вопросами подряд — дата, потом время (owner 30.07: лишний шаг).
-    Время отделяем с конца строки, остаток парсим как дату; нет времени — 18:00.
+    Время отделяем с конца строки, остаток парсим как дату; нет времени — 18:00
+    (разбор — в `parse_due_line`, общий с потоком РП).
     """
-    from ..utils import parse_date, tzinfo as _tzinfo
-
     text = (message.text or "").strip()
     data = await state.get_data()
     label = channel_label(data.get("task_channel", ""))
@@ -2643,32 +2693,17 @@ async def gd_task_create_deadline(
         await _show_task_confirm(message, state, config, label, inv_label)
         return
 
-    hour, minute = _DEFAULT_DUE_HOUR, 0
-    m = _DUE_TIME_RE.search(text)
-    if m:
-        hour, minute = int(m.group(1)), int(m.group(2))
-        text = text[: m.start()].strip()
-    else:
-        m = _DUE_HOUR_ONLY_RE.search(text)   # «07 марта 14» — час без минут
-        if m:
-            hour, minute = int(m.group(1)), 0
-            text = text[: m.start()].strip()
-
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+    due = parse_due_line(text, config.timezone)
+    if due == "bad_time":
         await message.answer("Некорректное время. Укажите от 00:00 до 23:59:")
         return
-
-    parsed = parse_date(text, config.timezone) if text else None
-    if not parsed:
+    if isinstance(due, str):
         await message.answer(
             "Не удалось распознать срок.\n"
             "Например: <b>07 марта 14:00</b>, <b>15.03.2026</b> или «-» (сутки):"
         )
         return
 
-    due = parsed.astimezone(_tzinfo(config.timezone)).replace(
-        hour=hour, minute=minute, second=0, microsecond=0,
-    )
     await state.update_data(task_due=to_iso(due))
     await _show_task_confirm(message, state, config, label, inv_label)
 

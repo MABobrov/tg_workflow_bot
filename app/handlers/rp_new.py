@@ -3744,12 +3744,12 @@ async def rp_sinv_comment_text(
     message: Message, state: FSMContext, db: Database,
     config: "Config", notifier: "Notifier",
 ) -> None:
-    """Получить комментарий и отправить ГД."""
+    """Получить комментарий → экран срока."""
     comment = (message.text or "").strip()
     if comment == "-":
         comment = ""
     await state.update_data(comment=comment)
-    await _rp_sinv_finalize(message, state, db, config, notifier, message.from_user)
+    await _rp_sinv_ask_due(message, state)
 
 
 @router.callback_query(F.data == "rp_sinv:send")
@@ -3757,12 +3757,112 @@ async def rp_sinv_send_no_comment(
     cb: CallbackQuery, state: FSMContext, db: Database,
     config: "Config", notifier: "Notifier",
 ) -> None:
-    """Отправить без комментария."""
+    """Без комментария → экран срока."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
     await state.update_data(comment="")
+    await _rp_sinv_ask_due(cb.message, state)  # type: ignore[arg-type]
+
+
+# Срок оплаты (owner 25.09): раньше задача уходила ГД с авто-сроком +7 ч молча
+# (грузчики — без срока, owner 09.09). Теперь РП выбирает: «как сейчас» либо
+# своя дата; своя дата ставится и грузчикам. Разбор строки — общий с задачами
+# ГД (`chat_proxy.parse_due_line`), своей логики дат здесь нет.
+
+
+async def _rp_sinv_draft_alive(target: Message, state: FSMContext) -> bool:
+    """Черновик счёта ещё в FSM? Кнопки живут в сообщении дольше черновика."""
+    data = await state.get_data()
+    if data.get("invoice_id"):
+        return True
+    await target.answer(
+        "⚠️ Черновик счёта потерян — начните заново кнопкой «📎 Счёт ГД» в карточке счёта.",
+    )
+    return False
+
+
+async def _rp_sinv_ask_due(target: Message, state: FSMContext) -> None:
+    """Экран срока перед отправкой ГД: «как сейчас» либо своя дата."""
+    from ..enums import MaterialType
+
+    if not await _rp_sinv_draft_alive(target, state):
+        return
+    data = await state.get_data()
+    loaders = (data.get("sinv_material_type") or "") == MaterialType.LOADERS
+    await state.update_data(sinv_due_iso=None)
+    await state.set_state(RpSupplierInvoiceSG.deadline)
+    b = InlineKeyboardBuilder()
+    # У грузчиков авто-срока нет — подпись обязана это говорить, иначе бот соврёт.
+    b.button(
+        text="⏭ Без срока" if loaders else "⏱ Как сейчас (+7 ч)",
+        callback_data="rp_sinv:due_default",
+    )
+    b.button(text="📅 Указать дату", callback_data="rp_sinv:due_ask")
+    b.button(text="❌ Отмена", callback_data="rp_sinv:cancel")
+    b.adjust(1)
+    await target.answer("⏰ Срок оплаты для ГД:", reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data == "rp_sinv:due_default")
+async def rp_sinv_due_default(
+    cb: CallbackQuery, state: FSMContext, db: Database,
+    config: "Config", notifier: "Notifier",
+) -> None:
+    """«Как сейчас» / «Без срока» — прежний авто-срок.
+
+    Без StateFilter намеренно: кнопка живёт в сообщении, фильтр состояния молча
+    съел бы нажатие ([[feedback_fsm_old_buttons_trap]]).
+    """
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    if not await _rp_sinv_draft_alive(cb.message, state):  # type: ignore[arg-type]
+        return
+    await state.update_data(sinv_due_iso=None)
     await _rp_sinv_finalize(cb.message, state, db, config, notifier, cb.from_user)  # type: ignore[arg-type]
+
+
+@router.callback_query(F.data == "rp_sinv:due_ask")
+async def rp_sinv_due_ask(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """«📅 Указать дату» — дата и время одной строкой. Без StateFilter намеренно."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    if not await _rp_sinv_draft_alive(cb.message, state):  # type: ignore[arg-type]
+        return
+    await state.set_state(RpSupplierInvoiceSG.deadline)
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📅 Укажите срок одной строкой:\n"
+        "<b>завтра 14:00</b> · <b>15.03.2026</b> · <b>07 марта 10:30</b>\n\n"
+        "Без времени — 18:00.",
+    )
+
+
+@router.message(RpSupplierInvoiceSG.deadline)
+async def rp_sinv_due_text(
+    message: Message, state: FSMContext, db: Database,
+    config: "Config", notifier: "Notifier",
+) -> None:
+    """Срок строкой → задача ГД с этим сроком."""
+    from .chat_proxy import parse_due_line
+    from ..utils import utcnow, to_iso
+
+    due = parse_due_line(message.text or "", config.timezone)
+    if due == "bad_time":
+        await message.answer("Некорректное время. Укажите от 00:00 до 23:59:")
+        return
+    if isinstance(due, str):
+        await message.answer(
+            "Не удалось распознать срок.\n"
+            "Например: <b>завтра 14:00</b>, <b>15.03.2026</b> или <b>07 марта</b>:"
+        )
+        return
+    if due <= utcnow():
+        await message.answer("⚠️ Этот срок уже прошёл. Укажите дату и время позже текущего:")
+        return
+    await state.update_data(sinv_due_iso=to_iso(due))
+    await _rp_sinv_finalize(message, state, db, config, notifier, message.from_user)
 
 
 @router.callback_query(F.data == "rp_sinv:cancel")
@@ -3885,9 +3985,13 @@ async def _rp_sinv_finalize(
         await event_msg.answer("⚠️ ГД не найден. Настройте роль GD.")
         return
 
+    # Своя дата РП (owner 25.09) главнее авто-срока — в том числе у грузчиков.
     # Грузчики — без дедлайна (owner 09.09): напоминание о сроке создавало
     # ложный ночной шум, а не срочность.
-    if sinv_material_type == MaterialType.LOADERS:
+    custom_due: str | None = data.get("sinv_due_iso")
+    if custom_due:
+        due_at_iso = custom_due
+    elif sinv_material_type == MaterialType.LOADERS:
         due_at_iso = None
     else:
         due = utcnow() + timedelta(hours=7)
@@ -3923,12 +4027,15 @@ async def _rp_sinv_finalize(
 
     initiator = await get_initiator_label(db, from_user.id) if from_user else "?"
     mat_label = MATERIAL_TYPE_LABELS.get(sinv_material_type, sinv_material_type)
-    from ..utils import format_card_section
+    from ..utils import format_card_section, format_dt_iso
     _items: list[tuple[str, str]] = [
         ("От", initiator),
         ("Счёт", f"№{num}"),
         ("Тип", mat_label),
     ]
+    due_label = format_dt_iso(due_at_iso, config.timezone) if due_at_iso else ""
+    if due_label:
+        _items.append(("Срок", due_label))
     if inv and inv.get("object_address"):
         _items.append(("Объект", inv["object_address"][:50]))
     if attachments:
@@ -3967,6 +4074,7 @@ async def _rp_sinv_finalize(
     await event_msg.answer(
         f"✅ Счёт от поставщика отправлен ГД (счёт №{num}).\n"
         f"📎 Файлов: {len(attachments)}"
+        + (f"\n⏰ Срок: {due_label}" if due_label else "")
     )
 
 
