@@ -5508,7 +5508,11 @@ async def advance_distribute_pick(
     agreed = float(inv.get("montazh_agreed_amount") or 0) - float(
         inv.get("montazh_paid_prev") or 0)
     taken = await _advance_raw_cur(db, inv)
-    remaining = agreed - taken
+    # Аванс гасит ЗП БЕЗ надбавки (owner 13.10): у б/н agreed уже с +10%, поэтому
+    # закрыть авансом можно остаток базы = (agreed − аванс×1.10) / 1.10. Кредит — 1:1.
+    # Та же арифметика, что в db.apply_advance_to_invoice_now — лимит здесь и там один.
+    k = 1.0 if _is_credit(inv) else 1.10
+    remaining = round((agreed - taken * k) / k, 2)
     if agreed <= 0 or remaining <= 0.001:
         await cb.message.answer(  # type: ignore[union-attr]
             "⚠️ По этому счёту ЗП-монтаж не согласована или уже закрыта авансом."
@@ -5521,10 +5525,11 @@ async def advance_distribute_pick(
     await state.update_data(adv_dist_invoice_id=invoice_id, adv_dist_remaining=remaining)
     await state.set_state(AdvanceDistributeSG.enter_amount)
     num = inv.get("invoice_number") or f"#{invoice_id}"
+    _base_note = "" if k == 1.0 else " авансом (без надбавки 10%)"
     await cb.message.answer(  # type: ignore[union-attr]
         f"📍 <b>{num}</b>\n"
         f"Согласованная ЗП-монтаж: <b>{_fmt_money(agreed)} ₽</b>\n"
-        f"Остаток к закрытию: <b>{_fmt_money(remaining)} ₽</b>\n"
+        f"Остаток к закрытию{_base_note}: <b>{_fmt_money(remaining)} ₽</b>\n"
         f"Доступно аванса: <b>{_fmt_money(limit)} ₽</b>\n\n"
         f"Введите сумму к применению (₽):"
     )

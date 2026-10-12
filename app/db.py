@@ -12175,7 +12175,18 @@ class Database:
         группы (montazh_agreed_amount − montazh_paid_prev), а Σприменённого — без авансов
         прошлых групп (− montazh_adv_prev). Обычный счёт: оба поля 0 → поведение прежнее.
         Старые add_advance_item_for_distribution / offset_approved_zp_with_advance НЕ трогаются.
-        Возвращает {applied, total_applied, remaining, full_closed}.
+
+        Б/н (owner 13.10): «на аванс надбавка 10% не нужна; при распределении аванса
+        участвует сумма ЗП монтаж БЕЗ надбавки». montazh_agreed для б/н уже с +10%, поэтому
+        аванс гасит её с коэффициентом k=1.10 (CG-конвенция, тот же расчёт, что у карточки
+        ГД «Монтаж ЗП» и `installer_new._zp_remainder_for_invoice`): остаток = agreed −
+        аванс×k, то есть (база − аванс) + 10% на остаток. Кредит — k=1 (как было). Раньше
+        здесь было 1:1 против суммы С надбавкой: #474 (26324-1НПН) — аванс 90 000 показал
+        монтажнику остаток 65 000 при карточке ГД 56 000.
+        Открытая заявка ЗП (requested/approved) при частичном зачёте уменьшается на аванс×k:
+        «Выплачено» платит ровно zp_installer_amount, и без этого заплатило бы всю сумму
+        поверх уже выданного аванса (#474: 155 000 вместо 56 000).
+        Возвращает {applied, total_applied, remaining, full_closed, k, request_amount_after}.
         """
         if amount <= 0:
             raise ValueError(f"amount must be > 0, got {amount}")
@@ -12183,13 +12194,19 @@ class Database:
         await self.assert_invoice_advance_eligible(installer_id, int(invoice_id))
         # Счёт: назначен этому монтажнику + есть согласованная ЗП-монтаж.
         cur = await self.conn.execute(
-            "SELECT assigned_to, montazh_agreed_amount, montazh_paid_prev, montazh_adv_prev "
+            "SELECT assigned_to, montazh_agreed_amount, montazh_paid_prev, montazh_adv_prev, "
+            "       is_credit, invoice_number, zp_installer_status, zp_installer_amount "
             "FROM invoices WHERE id = ?",
             (invoice_id,),
         )
         inv = await cur.fetchone()
         if not inv:
             raise RuntimeError(f"invoice id={invoice_id} not found")
+        # Кредит — как у всего проекта: is_credit ИЛИ номер «ЗМ…» (ср. :3135).
+        _credit = bool(inv[4]) or str(inv[5] or "").upper().startswith("ЗМ")
+        k = 1.0 if _credit else 1.10
+        # Допуск: у кредита прежний (0.001 — арифметика ровно как была), у б/н 1 ₽.
+        tol = 0.001 if _credit else 1.0
         if int(inv[0] or 0) != int(installer_id):
             raise RuntimeError(
                 f"invoice {invoice_id} assigned_to={inv[0]} != installer {installer_id}",
@@ -12209,13 +12226,16 @@ class Database:
         unallocated = await self.get_advance_outstanding_unallocated(installer_id, wallet_role)
         if amount > unallocated + 0.001:
             raise ValueError(f"amount={amount} > free advance={unallocated}")
-        # Остаток ЗП по счёту = agreed − уже применённое (та же сумма, что в BS/BJ).
+        # Остаток ЗП по счёту = agreed − уже применённое×k (та же сумма, что в BS/BJ).
+        # Аванс сам по себе без надбавки: закрыть им можно не больше остатка БАЗЫ
+        # (remaining_before / k). Допуск 1 ₽ — база б/н дробная (155 000 / 1.1 = 140 909.09),
+        # и ввод «140 909» обязан закрыть ЗП целиком, а не оставить висеть 10 копеек.
         taken = max(0.0, await self.get_installer_advance_for_invoice(invoice_id) - adv_prev)
-        remaining_before = agreed - taken
-        if amount > remaining_before + 0.001:
+        remaining_before = agreed - taken * k
+        if amount * k > remaining_before + tol:
             raise ValueError(
-                f"amount={amount} > remaining ZP={remaining_before} "
-                f"(agreed={agreed}, taken={taken})",
+                f"amount={amount} > remaining ZP base={remaining_before / k:.2f} "
+                f"(agreed={agreed}, taken={taken}, k={k})",
             )
         # Родитель — последнее оплаченное пополнение типа 'request' (чтобы get_advance_balance
         # корректно вычел offset_amount: он считает только request-parent, не transfer_depo_to_adv).
@@ -12242,7 +12262,10 @@ class Database:
         )
         item_id = int(cur.lastrowid)
         total_applied = taken + amount
-        full_closed = total_applied >= agreed - 0.001
+        remaining_after = max(0.0, agreed - total_applied * k)
+        full_closed = total_applied * k >= agreed - tol
+        request_amount_before = float(inv[7] or 0)
+        request_amount_after: float | None = None
         if full_closed:
             # Полное закрытие авансом → ЗП по счёту 'оплачено' (решение user 03.06).
             # BS заполнит ветка 3 (=montazh_agreed), DO из confirmed_at.
@@ -12250,6 +12273,14 @@ class Database:
                 "UPDATE invoices SET zp_installer_status = 'confirmed', "
                 "zp_installer_amount = ?, zp_installer_confirmed_at = ? WHERE id = ?",
                 (agreed, now, invoice_id),
+            )
+        elif (inv[6] or "") in ("requested", "approved") and request_amount_before > 0:
+            # Заявка уже подана — аванс гасит её часть (owner 13.10). Канал тот же,
+            # что у кнопки ГД «✏️ Изменить сумму»: меняется только zp_installer_amount.
+            request_amount_after = round(max(0.0, request_amount_before - amount * k), 2)
+            await self.conn.execute(
+                "UPDATE invoices SET zp_installer_amount = ? WHERE id = ?",
+                (request_amount_after, invoice_id),
             )
         await self.conn.commit()
         await self.audit(
@@ -12260,14 +12291,18 @@ class Database:
             payload={
                 "request_id": req_id, "invoice_id": invoice_id, "amount": amount,
                 "agreed": agreed, "total_applied": total_applied,
-                "full_closed": full_closed,
+                "full_closed": full_closed, "k": k,
+                "request_amount_before": request_amount_before,
+                "request_amount_after": request_amount_after,
             },
         )
         return {
             "applied": amount,
             "total_applied": total_applied,
-            "remaining": max(0.0, agreed - total_applied),
+            "remaining": remaining_after,
             "full_closed": full_closed,
+            "k": k,
+            "request_amount_after": request_amount_after,
         }
 
     async def record_installer_advance_offset_from_wallet(

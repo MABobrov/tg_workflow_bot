@@ -478,8 +478,12 @@ def _montazh_zp_list_card(
                           КАК ЕСТЬ, без ×1,35: монтажник вносит уже финальную стоимость,
                           надбавка «официальной выплаты» на согласование не нужна (owner 23.07).
                           Кредит так же (owner 21.07 — «кредит как есть»).
-      • Аванс          = зачтённый аванс монтажника по счёту (CG-конвенция: б/н ×1.10,
-                          кредит как есть) + дата зачёта, МСК (ТЗ user 08.06pm)
+      • Без надбавки    = Согласовано / 1.10 — только б/н (owner 13.10: «у ГД в карточке
+                          отдельной строкой сумма без надбавки»); у кредита надбавки нет
+      • Аванс          = зачтённый аванс монтажника по счёту КАК ЕСТЬ, без ×1.10 (owner
+                          13.10: «на аванс надбавка 10% не нужна») + дата зачёта, МСК.
+                          ⚠️ «к выплате» по-прежнему считается CG-конвенцией (аванс×1.10):
+                          (база − аванс) + 10% на остаток — правило owner 13.10, то же число
       • Поступила      = zp_installer_requested_at (дата прихода задачи, МСК)
       • к выплате (footer) = BJ-остаток = Согласовано − max(AN, аванс) (ТЗ user 08.06pm)
     """
@@ -526,8 +530,11 @@ def _montazh_zp_list_card(
     # с итоговой карточкой внизу списка — см. _montazh_zp_amounts. Без вычета
     # paid_prev footer показал бы «к выплате 220 000» рядом с заявкой на 130 000, а
     # под карточкой живёт «✏️ Изменить сумму» — ГД переплатил бы в один тап.
-    adv_cg, _agreed, _bj = _montazh_zp_amounts(inv, adv_offset)
-    adv_str = f"{_f(adv_cg)} ({_fmt_dt(adv_date)})" if adv_offset > 0 else "—"
+    from .installer_new import _is_credit
+
+    _adv_cg, _agreed, _bj = _montazh_zp_amounts(inv, adv_offset)
+    # Аванс показываем КАК ЕСТЬ (owner 13.10); ×1.10 живёт только внутри «к выплате».
+    adv_str = f"{_f(adv_offset)} ({_fmt_dt(adv_date)})" if adv_offset > 0 else "—"
     bj_str = _f(_bj) if _agreed > 0 else "—"
 
     items: list[tuple[str, str]] = [
@@ -537,6 +544,10 @@ def _montazh_zp_list_card(
         ("Сумма счёта", _f(inv.get("amount"))),
         ("Расчётная уст.", _f(inv.get("estimated_installation"))),
         ("Согласовано", _agreed_str(inv.get("montazh_agreed_amount"))),
+    ]
+    if _agreed > 0 and not _is_credit(inv):
+        items.append(("Без надбавки", _f(_agreed / 1.10)))
+    items += [
         ("Аванс", adv_str),
         ("Поступила", _fmt_dt(inv.get("zp_installer_requested_at"))),
     ]
@@ -577,9 +588,9 @@ def _montazh_zp_total_card(rows: list[tuple[dict, float]]) -> str:
     sum_agreed = sum_adv = sum_bj = 0.0
     n_approved = 0
     for inv, adv_offset in rows:
-        adv_cg, agreed, bj = _montazh_zp_amounts(inv, adv_offset)
+        _adv_cg, agreed, bj = _montazh_zp_amounts(inv, adv_offset)
         sum_agreed += agreed
-        sum_adv += adv_cg
+        sum_adv += adv_offset  # как есть, без ×1.10 — колонка карточек выше (owner 13.10)
         sum_bj += bj
         if (inv.get("zp_installer_status") or "") == "approved":
             n_approved += 1
