@@ -5785,11 +5785,14 @@ async def enrich_task_invoice_label(db: "Database", task: dict[str, Any]) -> dic
     return task
 
 
-def _task_payload_items(task: dict[str, Any]) -> list[tuple[str, str]]:
+def _task_payload_items(task: dict[str, Any], *, for_gd: bool = False) -> list[tuple[str, str]]:
     """Поля из payload задачи для секции «Детали».
 
     Общая логика для fmt_task_card (все роли) и build_manager_task_open_card
     (роль менеджер — ТЗ 23.06). Возвращает список (label, value), уже HTML-safe.
+
+    for_gd (owner 13.10): ГД не видит служебных «#id» (строки «Привязка»/«Объект
+    (счёт)» — счёт уже назван строкой «№ счёта») и сырых кодов этапа оплаты.
     """
     payload = try_json_loads(task.get("payload_json"))
     payload_items: list[tuple[str, str]] = []
@@ -5823,7 +5826,10 @@ def _task_payload_items(task: dict[str, Any]) -> list[tuple[str, str]]:
     if payload.get("payment_method"):
         payload_items.append(("Тип оплаты", html.quote(str(payload["payment_method"]))))
     if payload.get("payment_type"):
-        payload_items.append(("Этап оплаты", html.quote(str(payload["payment_type"]))))
+        _pt = str(payload["payment_type"])
+        if for_gd:
+            _pt = _GD_PAYMENT_TYPE_LABELS.get(_pt, _pt)
+        payload_items.append(("Этап оплаты", html.quote(_pt)))
     if payload.get("payment_amount"):
         try:
             _pa = float(payload["payment_amount"])
@@ -5866,6 +5872,8 @@ def _task_payload_items(task: dict[str, Any]) -> list[tuple[str, str]]:
     # Привязка к счёту: человекочитаемо — «№ счёта» + «Объект» (адрес) выше,
     # обогащаются enrich_task_invoice_label. Сырой #id — только fallback, если
     # счёт не разрешился (ТЗ 17.06: «#48 ни о чём не говорит»).
+    if for_gd:
+        return payload_items
     if payload.get("linked_invoice_id") and not payload.get("invoice_number"):
         payload_items.append(("Привязка", f"#{payload['linked_invoice_id']}"))
     if payload.get("parent_invoice_id"):
@@ -5873,7 +5881,154 @@ def _task_payload_items(task: dict[str, Any]) -> list[tuple[str, str]]:
     return payload_items
 
 
-def fmt_task_card(task: dict[str, Any], project: dict[str, Any] | None, tz_name: str) -> str:
+# Коды этапа оплаты → слова для ГД (ЗП РП кладёт в payload «beznal»/«credit»).
+_GD_PAYMENT_TYPE_LABELS: dict[str, str] = {"beznal": "Б/н", "bn": "Б/н", "credit": "Кредит"}
+
+# ЗП монтажника: payload.amount — сумма на момент ПОДАЧИ заявки. После зачёта аванса
+# или правки ГД «✏️ Изменить сумму» к выплате идёт invoices.zp_installer_amount
+# (#474: в payload 155 000, к выплате 56 000) — ГД показываем то, что уйдёт.
+_GD_LIVE_ZP_STATUSES = ("requested", "approved")
+
+
+async def gd_task_with_live_amounts(db: "Database", task: dict[str, Any]) -> dict[str, Any]:
+    """Копия задачи для показа ГД: сумма ЗП монтажника — живая из счёта.
+
+    Только показ ([[feedback_card_display_only_no_data_writes]]): в БД ничего не пишет,
+    исходный task не меняет. Прочие типы возвращаются как есть (та же копия).
+    """
+    out = dict(task)
+    if str(task.get("type") or "") != "zp_installer":
+        return out
+    payload = try_json_loads(task.get("payload_json")) or {}
+    inv_id = payload.get("invoice_id")
+    if not inv_id:
+        return out
+    try:
+        inv = await db.get_invoice(int(inv_id))
+    except Exception:
+        return out
+    if not inv or inv.get("zp_installer_status") not in _GD_LIVE_ZP_STATUSES:
+        return out
+    live = inv.get("zp_installer_amount")
+    if live is None:
+        return out
+    payload = dict(payload)
+    payload["amount"] = float(live)
+    out["payload_json"] = json.dumps(payload, ensure_ascii=False)
+    return out
+
+
+def _gd_money(value: Any) -> str:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if not v:
+        return ""
+    return f"{v:,.0f}".replace(",", " ") + " ₽"
+
+
+def _gd_one_line(text: Any, limit: int = 60) -> str:
+    s = " ".join(str(text or "").split())
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+async def build_gd_task_labels(db: "Database", tasks: list[dict[str, Any]]) -> dict[int, str]:
+    """Подписи задач в меню ГД (owner 13.10): суть · счёт · назначение · сумма.
+
+    «#556 (НПН) • ЗП РП • Новая» ГД ни о чём не говорит — принимать или подтверждать,
+    не понимая, что это, неразумно, поэтому задачи висели непринятыми. Номер задачи
+    убран, 🆕 = задачу ещё не открывали (open без accepted_at). Подписи передаются в
+    keyboards.tasks_kb(labels=...) только с экранов ГД — у других ролей вид прежний.
+    """
+    from .enums import MATERIAL_TYPE_LABELS
+
+    names: dict[int, str] = {}
+
+    async def _name(uid: Any) -> str:
+        try:
+            key = int(uid)
+        except (TypeError, ValueError):
+            return ""
+        if key not in names:
+            u = None
+            try:
+                u = await db.get_user_optional(key)
+            except Exception:
+                u = None
+            full = (getattr(u, "full_name", None) or "").strip()
+            uname = getattr(u, "username", None) if u else None
+            names[key] = full.split()[0] if full else (f"@{uname}" if uname else "")
+        return names[key]
+
+    out: dict[int, str] = {}
+    for t in tasks:
+        try:
+            tid = int(t["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        try:
+            live = await gd_task_with_live_amounts(db, t)
+            await enrich_task_invoice_label(db, live)  # № счёта по linked_invoice_id
+            p = try_json_loads(live.get("payload_json")) or {}
+            ttype = str(t.get("type") or "")
+            inv = str(p.get("invoice_number") or "")
+            if ttype == "invoice_payment":
+                kind = p.get("kind")
+                if kind == "credit_payment_request":
+                    parts = ["🏦 Кредит-заявка", inv, _gd_one_line(p.get("purpose"), 24),
+                             _gd_money(p.get("amount"))]
+                elif kind == "credit_spend_gd_confirm":
+                    parts = ["🏦 Трата кошелька", _gd_one_line(p.get("purpose"), 24),
+                             _gd_money(p.get("amount"))]
+                else:
+                    mt = str(p.get("material_type") or "")
+                    parts = ["💳 Оплата", inv, MATERIAL_TYPE_LABELS.get(mt, mt).lower(),
+                             _gd_money(p.get("amount"))]
+            elif ttype == "zp_installer":
+                parts = ["💰 ЗП монтажа", inv, _gd_money(p.get("amount"))]
+            elif ttype == "zp_rp":
+                n = len(p.get("invoices") or [])
+                parts = ["💰 ЗП РП 10%", await _name(p.get("rp_id") or t.get("created_by")),
+                         f"{n} сч." if n else "", _gd_money(p.get("total"))]
+            elif ttype == "rp_salary":
+                m = str(p.get("month") or "")
+                month = f"{m[5:7]}.{m[:4]}" if len(m) == 7 and m[4] == "-" else m
+                parts = ["💰 Оклад РП", month, _gd_money(p.get("amount"))]
+            elif ttype == "zp_manager":
+                parts = ["💰 ЗП менеджера", inv, _gd_money(p.get("amount"))]
+            elif ttype == "zp_zamery_batch":
+                parts = ["💰 ЗП замерщика", _gd_money(p.get("total") or p.get("amount"))]
+            elif ttype in ("urgent_gd", "not_urgent_gd"):
+                icon = "🚨" if ttype == "urgent_gd" else "📝"
+                who = await _name(p.get("sender_id") or t.get("created_by"))
+                text = _gd_one_line(p.get("comment"), 48) or "без текста"
+                # счёт ДО текста: длинный комментарий обрезается хвостом, счёт остаётся
+                head = " · ".join(x for x in (f"{icon} {who}" if who else icon, inv) if x)
+                parts = [f"{head}: {text}"]
+            elif ttype == "invoice_end":
+                parts = ["🏁 Закрыть счёт", inv]
+            elif ttype == "invoice_end_ready":
+                parts = ["🏁 Готов к закрытию", inv]
+            elif ttype == "acc_question":
+                parts = [f"❓ Бухгалтер: {_gd_one_line(p.get('question_text'), 48)}"]
+            elif ttype == "self_reminder":
+                parts = [f"⏰ {_gd_one_line(p.get('comment'), 56) or 'Напоминание'}"]
+            else:
+                parts = [task_type_label(ttype), inv, _gd_money(p.get("amount") or p.get("total"))]
+            label = " · ".join(x for x in parts if x)
+        except Exception:
+            log.exception("build_gd_task_labels: task %s", t.get("id"))
+            label = task_type_label(t.get("type"))
+        if t.get("status") == "open" and not t.get("accepted_at"):
+            label = "🆕 " + label
+        out[tid] = label if len(label) <= 64 else label[:63] + "…"
+    return out
+
+
+def fmt_task_card(
+    task: dict[str, Any], project: dict[str, Any] | None, tz_name: str, *, for_gd: bool = False,
+) -> str:
     """Карточка задачи в эталонном дизайне (assets/card_etalon.png).
 
     1-2 <pre>-секции: главная (статус/срок/тип) + опц. детали из payload.
@@ -5882,6 +6037,9 @@ def fmt_task_card(task: dict[str, Any], project: dict[str, Any] | None, tz_name:
     Параметр project оставлен в сигнатуре намеренно: вызовов четыре
     (tasks.py:353, build_task_done_card и два в этом файле), и правка
     сигнатуры расширила бы дифф на файлы, которых заказ не касается.
+
+    for_gd (owner 13.10): заголовок — суть задачи («Счёт на оплату»), а не «Задача #N»
+    (номер ГД ни о чём не говорит); строка «Тип» тогда дублировала бы заголовок.
     """
     tid = task["id"]
     ttype = html.quote(task_type_label(task.get("type")))
@@ -5889,22 +6047,20 @@ def fmt_task_card(task: dict[str, Any], project: dict[str, Any] | None, tz_name:
     due = format_dt_iso(task.get("due_at"), tz_name)
     created = format_dt_iso(task.get("created_at"), tz_name)
 
+    main_items = [("Статус", status), ("Срок", due), ("Создана", created)]
+    if not for_gd:
+        main_items.insert(0, ("Тип", ttype))
     sections: list[str] = []
     sections.append(
         format_card_section(
             emoji="📋",
-            title=f"Задача #{tid}",
-            items=[
-                ("Тип", ttype),
-                ("Статус", status),
-                ("Срок", due),
-                ("Создана", created),
-            ],
+            title=ttype if for_gd else f"Задача #{tid}",
+            items=main_items,
             compact=True,
         )
     )
 
-    payload_items = _task_payload_items(task)
+    payload_items = _task_payload_items(task, for_gd=for_gd)
     if payload_items:
         sections.append(
             format_card_section(
@@ -6013,6 +6169,8 @@ async def build_task_reminder_card(
     task: dict[str, Any],
     project: dict[str, Any] | None,
     tz_name: str,
+    *,
+    for_gd: bool = False,
 ) -> str:
     """ЕДИНАЯ карточка-напоминание (ТЗ owner 24.06).
 
@@ -6125,11 +6283,23 @@ async def build_task_reminder_card(
             if est:
                 items.append(("Расчётная", fmt_money(est)))
         if payload.get("amount") is not None:
-            items.append(("Фактическая", fmt_money(payload.get("amount"))))
+            # ГД получает задачу копией с ЖИВОЙ суммой (gd_task_with_live_amounts) —
+            # это то, что уйдёт по «Выплачено», поэтому «К выплате» (owner 13.10).
+            items.append(("К выплате" if for_gd else "Фактическая", fmt_money(payload.get("amount"))))
     else:
         amt = payload.get("amount") or payload.get("payment_amount")
         if amt is not None:
             items.append(("Сумма", fmt_money(amt)))
+
+    # ГД (owner 13.10): по напоминанию должно быть понятно, ЧТО это — у «Не срочно ГД»
+    # суть задачи лежит только в комментарии, у оплат — поставщик.
+    if for_gd:
+        if payload.get("supplier"):
+            items.append(("Поставщик", html.quote(str(payload["supplier"]))))
+        if payload.get("comment"):
+            items.append(("Комментарий", html.quote(str(payload["comment"]))))
+        elif payload.get("question_text"):
+            items.append(("Вопрос", html.quote(str(payload["question_text"]))))
 
     items.append(("Статус", html.quote(task_status_label(task.get("status")))))
     items.append(("Создана", format_dt_iso(task.get("created_at"), tz_name)))

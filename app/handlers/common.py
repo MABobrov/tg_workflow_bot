@@ -28,9 +28,17 @@ from ..services.menu_context import build_menu_context
 from ..services.notifier import Notifier
 from ..services.menu_scope import resolve_active_menu_role
 from ..services.sheets_sync import export_to_sheets, import_from_source_sheet
-from ..utils import answer_service, parse_roles, private_only_reply_markup, role_label
+from ..utils import answer_service, build_gd_task_labels, parse_roles, private_only_reply_markup, role_label
 
 log = logging.getLogger(__name__)
+
+
+async def _gd_labels_if_gd(db: Database, role: str | None, tasks: list[dict]) -> dict[int, str] | None:
+    """Подписи задач для ГД (owner 13.10: без «#N», суть · счёт · сумма); остальным — None
+    (прежний вид tasks_kb)."""
+    if "gd" not in parse_roles(role or ""):
+        return None
+    return await build_gd_task_labels(db, tasks)
 
 router = Router()
 # Все message-хендлеры работают только в личном чате с ботом.
@@ -854,7 +862,10 @@ async def inbox_tasks_universal(message: Message, db: Database) -> None:
     header = f"📥 <b>Задачи</b> ({len(tasks)})\n\nНажмите на задачу для просмотра:"
     await message.answer(
         header,
-        reply_markup=tasks_kb(tasks, back_callback="nav:home"),
+        reply_markup=tasks_kb(
+            tasks, back_callback="nav:home",
+            labels=await _gd_labels_if_gd(db, _u.role if _u else None, tasks),
+        ),
     )
 
 
@@ -938,7 +949,10 @@ async def all_tasks_list(message: Message, db: Database, config: Config) -> None
     can_delete = _can_delete_task_entries(user_role, is_admin=is_admin)
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
-    kb = tasks_kb(active_tasks, back_callback="nav:home", show_delete=can_delete)
+    kb = tasks_kb(
+        active_tasks, back_callback="nav:home", show_delete=can_delete,
+        labels=await _gd_labels_if_gd(db, user_role, active_tasks),
+    )
     # Доп. пункты под списком: «Завершённые» (всем при наличии) +
     # «⏰ Поставить напоминание» — вход в самонапоминалку для ГД отдельным
     # пунктом внутри «Все задачи» (у менеджера/РП вход — reply-кнопка в меню).
@@ -977,7 +991,10 @@ async def all_tasks_closed(cb: CallbackQuery, db: Database, config: Config) -> N
 
     await cb.message.answer(  # type: ignore[union-attr]
         f"📦 <b>Завершённые задачи</b> ({len(closed)})",
-        reply_markup=tasks_kb(closed, back_callback="nav:home", show_delete=can_delete),
+        reply_markup=tasks_kb(
+            closed, back_callback="nav:home", show_delete=can_delete,
+            labels=await _gd_labels_if_gd(db, user_role, closed),
+        ),
     )
 
 

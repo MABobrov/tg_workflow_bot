@@ -21,7 +21,7 @@ from ..services.menu_context import build_main_menu_for_user
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import CreditPaymentExecuteSG, DeliveryPaymentSG, InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCancelReasonSG, TaskCompleteSG
-from ..utils import answer_service, build_manager_task_open_card, build_rp_zp_family_open_card, build_task_done_card, enrich_task_invoice_label, fmt_task_card, format_invoice_end_financials, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
+from ..utils import answer_service, build_manager_task_open_card, build_rp_zp_family_open_card, build_task_done_card, enrich_task_invoice_label, fmt_task_card, format_invoice_end_financials, gd_task_with_live_amounts, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
 from ._mirror import collect_attachment, mirror_attachment
 from .money_guard import money_confirm_guard
 
@@ -254,11 +254,11 @@ _ACTIONS_EXTENDED = {
 # строка из БД находится словарём. Сузить/расширить объём = убрать/добавить ключ.
 _DONE_BLOCKED_PAYOUT_TYPES: dict[str, str] = {
     TaskType.RP_SALARY: (
-        "Закройте кнопкой «✅ Выплатить» — иначе оклад не попадёт в «Баланс компании». "
+        "Закройте кнопкой «💳 Выплатить» — иначе оклад не попадёт в «Баланс компании». "
         "Откройте задачу заново: «💰 Прочие ЗП» или «📥 Входящие для ГД»."
     ),
     TaskType.ZP_RP: (
-        "Закройте кнопкой «✅ Выплатить» — иначе ЗП РП 10% не встанет в счета и РП её не "
+        "Закройте кнопкой «💳 Выплатить» — иначе ЗП РП 10% не встанет в счета и РП её не "
         "увидит. Откройте задачу заново: «💰 Прочие ЗП» или «📥 Входящие для ГД»."
     ),
     # Запрос ГД из депозита (добавлен 03.08). Отличие от двух типов выше: у этого
@@ -350,7 +350,13 @@ async def send_task_open_card(
     if viewer_role in MANAGER_ROLES or viewer_role == Role.MANAGER:
         text = await build_manager_task_open_card(db, task, config.timezone)
     else:
-        text = fmt_task_card(task, project, config.timezone)
+        if Role.GD in parse_roles(viewer_role or ""):
+            # ГД (owner 13.10): заголовок — суть задачи без «#N», без служебных #id,
+            # ЗП монтажника — сумма к выплате из счёта, а не из старого payload (#474).
+            _shown = await gd_task_with_live_amounts(db, task)
+            text = fmt_task_card(_shown, project, config.timezone, for_gd=True)
+        else:
+            text = fmt_task_card(task, project, config.timezone)
         # PART B (ТЗ 19.06): справочный финблок в задаче «Счёт End» — display-only.
         # Только ГД/ТД (прибыль/себестоимость/ЗП скрыты от прочих ролей).
         if task.get("type") == TaskType.INVOICE_END_REQUEST and ({Role.GD, Role.TD} & set(parse_roles(viewer_role))):
@@ -1228,12 +1234,12 @@ async def task_actions_part2(
                 f"💰 Сумма: {_amount}\n"
                 f"📦 Тип: {_mat_label}",
             )
-        # Показать ГД кнопку "Подтвердить оплату"
-        kb = task_actions_kb(task)
+        # Показать ГД кнопку «💳 Оплачено» (owner 13.10 — надпись = что делает кнопка)
+        kb = task_actions_kb(task, viewer_role=Role.GD)
         try:
             await notifier.bot.send_message(
                 cb.from_user.id,
-                "✅ Счёт принят. Нажмите «💳 Подтвердить оплату» для завершения.",
+                "✅ Счёт принят. Когда оплатите — нажмите «💳 Оплачено».",
                 reply_markup=kb,
                 parse_mode="HTML",
             )

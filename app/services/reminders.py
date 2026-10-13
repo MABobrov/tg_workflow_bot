@@ -14,10 +14,62 @@ except ImportError:  # pragma: no cover
 from ..db import Database
 from ..enums import TaskStatus, TaskType
 from ..keyboards import task_actions_kb
-from ..utils import build_task_reminder_card, from_iso, parse_roles, try_json_loads, utcnow
+from ..utils import (
+    build_rp_zp_family_open_card,
+    build_task_reminder_card,
+    from_iso,
+    gd_task_with_live_amounts,
+    parse_roles,
+    task_type_label,
+    try_json_loads,
+    utcnow,
+)
 from .notifier import Notifier, is_transient_error
 
 log = logging.getLogger(__name__)
+
+# Задачи ГД, по которым от него ждут денег — напоминание говорит «Ждёт выплаты».
+_GD_PAYOUT_TYPES = {
+    TaskType.INVOICE_PAYMENT, TaskType.ZP_INSTALLER, TaskType.ZP_RP, TaskType.RP_SALARY,
+    TaskType.ZP_MANAGER, TaskType.ZP_ZAMERY_BATCH, TaskType.DELIVERY_REQUEST,
+    TaskType.SUPPLIER_PAYMENT,
+}
+
+
+async def _gd_reminder_text(db: Database, task: dict, tz_name: str, kb: Any) -> str:
+    """Напоминание ГД (owner 13.10): ЧТО это и что нажать.
+
+    Прежний текст «ожидает подтверждения — нажмите «✅ Принято»» у задач на выплату
+    врал: у ЗП РП такой кнопки нет вовсе (#556 провисел с 02.09). Подсказка теперь
+    собирается из РЕАЛЬНЫХ кнопок этого же сообщения; у ЗП РП / Оклада РП — та же
+    карточка со счетами и итогом, что при открытии задачи.
+    """
+    ttype = str(task.get("type") or "")
+    header = (
+        "💳 <b>Ждёт выплаты</b>" if ttype in _GD_PAYOUT_TYPES
+        else "🔔 <b>Напоминание</b> — задача ждёт ответа."
+    )
+    try:
+        if ttype in (TaskType.ZP_RP, TaskType.RP_SALARY):
+            advance = None
+            if ttype == TaskType.RP_SALARY:
+                _rp_id = int((try_json_loads(task.get("payload_json")) or {}).get("rp_id") or 0)
+                if _rp_id:
+                    advance = await db.get_rp_oklad_advance_offset(_rp_id)
+            body = build_rp_zp_family_open_card(task, advance)
+        else:
+            body = await build_task_reminder_card(
+                db, await gd_task_with_live_amounts(db, task), None, tz_name, for_gd=True,
+            )
+    except Exception:
+        log.exception("reminder: GD card failed for task %s", task.get("id"))
+        body = html.escape(task_type_label(ttype))
+    rows = getattr(kb, "inline_keyboard", None) or []
+    actions = [b.text for row in rows for b in row if not b.text.startswith(("❌", "🚫"))]
+    text = header + "\n\n" + body
+    if actions:
+        text += "\n\nНажмите «" + "» или «".join(actions) + "»."
+    return text
 
 
 def _in_quiet_hours(hour_msk: int, start_hour: int, end_hour: int) -> bool:
@@ -264,11 +316,26 @@ async def _send_task_reminder(db: Database, notifier: Notifier, task: dict, tz_n
     # try/except как в _reminder_with_card: сбой сборки карточки не должен
     # срывать весь тик петли (иначе исключение уходит в общий except и
     # остальные задачи прохода не обрабатываются).
+    # ГД (owner 13.10): суть и комментарий задачи, сумма ЗП монтажника — из счёта.
+    _for_gd = False
     try:
-        body = await build_task_reminder_card(db, task, project, tz_name)
+        _u = await db.get_user_optional(int(assigned_to))
+        _for_gd = bool(_u and _u.role == "gd")
+    except Exception:
+        _for_gd = False
+    try:
+        if _for_gd:
+            body = await build_task_reminder_card(
+                db, await gd_task_with_live_amounts(db, task), project, tz_name, for_gd=True,
+            )
+        else:
+            body = await build_task_reminder_card(db, task, project, tz_name)
     except Exception:
         log.exception("reminder: build_task_reminder_card failed for task %s", task.get("id"))
-        body = f"Задача #{task.get('id')} ожидает обработки."
+        body = (
+            html.escape(task_type_label(task.get("type"))) if _for_gd
+            else f"Задача #{task.get('id')} ожидает обработки."
+        )
 
     return await _deliver(notifier, int(assigned_to), prefix + "\n\n" + body)
     # NOTE: workchat notification removed to avoid duplicate delivery
@@ -377,16 +444,16 @@ async def acceptance_reminders_loop(
                     await db.mark_task_reminded_15(tid)
                     continue
 
-                settled = await _deliver(
-                    notifier,
-                    int(assigned),
-                    await _reminder_with_card(
+                _kb = task_actions_kb(task, assigned_role=role)
+                if role == "gd":
+                    _text = await _gd_reminder_text(db, task, timezone_name, _kb)
+                else:
+                    _text = await _reminder_with_card(
                         db, task, timezone_name,
                         "🔔 <b>Напоминание</b> — задача ожидает подтверждения.",
                         "Нажмите «✅ Принято» для подтверждения.",
-                    ),
-                    reply_markup=task_actions_kb(task, assigned_role=role),
-                )
+                    )
+                settled = await _deliver(notifier, int(assigned), _text, reply_markup=_kb)
                 # ⛔ КУРСОР двигаем ВСЕГДА: last_reminded_at это не «отправлено»,
                 # а анти-флуд-курсор выборки (db.py:4482 last_reminded_at <= cutoff).
                 # Не подвинув его при сбое, сменили бы такт 15 мин на 60 с (x15).

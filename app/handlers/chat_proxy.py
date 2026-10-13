@@ -43,7 +43,7 @@ from ..services.notifier import Notifier
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..states import ChatProxySG, CreditPaymentExecuteSG, CreditPaymentReceiptSG, CreditTaskRejectSG, CreditTaskSG, CreditWalletSpendSG, GdTaskCreateSG, InvoicePaymentSG, ReplyToGDSG
-from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card_ex, credit_wallet_label, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_by_wallet_payment, utcnow, to_iso
+from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card_ex, build_gd_task_labels, credit_wallet_label, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_by_wallet_payment, utcnow, to_iso
 from ._mirror import collect_attachment, mirror_attachment
 
 log = logging.getLogger(__name__)
@@ -657,7 +657,7 @@ async def show_channel_tasks(
     b.button(text="➕ Создать задачу", callback_data=f"gd_task_create:{channel}")
     await message.answer(
         f"📋 <b>{label} — Задачи</b> ({len(unique_tasks)}):",
-        reply_markup=tasks_kb(unique_tasks),
+        reply_markup=tasks_kb(unique_tasks, labels=await build_gd_task_labels(db, unique_tasks)),
     )
     await message.answer("Или создайте новую:", reply_markup=b.as_markup())
 

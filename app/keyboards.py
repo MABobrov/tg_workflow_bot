@@ -712,15 +712,25 @@ def tasks_kb(
     *,
     back_callback: str | None = None,
     show_delete: bool = False,
+    labels: dict[int, str] | None = None,
 ) -> InlineKeyboardMarkup:
+    """labels — готовые подписи ГД (utils.build_gd_task_labels, owner 13.10): суть ·
+    счёт · сумма без «#N». Не передан — прежний вид для всех остальных ролей."""
     b = InlineKeyboardBuilder()
     for t in tasks:
-        role_short = _ROLE_SHORT.get(t.get("creator_role", ""), "")
-        role_tag = f" ({role_short})" if role_short else ""
-        text = f"#{t['id']}{role_tag} • {task_type_label(t.get('type'))} • {task_status_label(t.get('status'))}"
-        b.button(text=text[:64], callback_data=TaskCb(task_id=int(t["id"]), action="open").pack())
+        tid = int(t["id"])
+        if labels is not None and tid in labels:
+            text = labels[tid]
+        else:
+            role_short = _ROLE_SHORT.get(t.get("creator_role", ""), "")
+            role_tag = f" ({role_short})" if role_short else ""
+            text = f"#{t['id']}{role_tag} • {task_type_label(t.get('type'))} • {task_status_label(t.get('status'))}"
+        b.button(text=text[:64], callback_data=TaskCb(task_id=tid, action="open").pack())
         if show_delete:
-            b.button(text=f"🗑 #{t['id']}", callback_data=TaskCb(task_id=int(t["id"]), action="delete").pack())
+            b.button(
+                text="🗑 Удалить" if labels is not None else f"🗑 #{t['id']}",
+                callback_data=TaskCb(task_id=tid, action="delete").pack(),
+            )
     if back_callback:
         b.button(text="⬅️ Назад", callback_data=back_callback)
     if show_delete:
@@ -742,6 +752,11 @@ def task_actions_kb(
     b = InlineKeyboardBuilder()
 
     tid = int(task["id"])
+    # ГД (owner 13.10): по надписи должно быть ясно — «беру в работу» это или «отчёт о
+    # выплате». Меняются ТОЛЬКО тексты, callback_data прежние → кнопки старых
+    # сообщений работают как раньше. Остальные роли видят прежние надписи.
+    _gd_view = Role.GD in parse_roles(viewer_role or assigned_role or "")
+    _take_txt = "📥 Беру, оплачу позже" if _gd_view else None
 
     # Личная напоминалка (self_reminder): не рабочая задача — generic-кнопки
     # «Принято/Завершить/Отклонить» бессмысленны. Оставляем только «🗑 Отменить
@@ -769,9 +784,12 @@ def task_actions_kb(
         _inv_id = (_payload or {}).get("invoice_id") if isinstance(_payload, dict) else None
         b = InlineKeyboardBuilder()
         if status == TaskStatus.OPEN and not task.get("accepted_at"):
-            b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+            b.button(text=_take_txt or "✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
         if _inv_id:
-            b.button(text="✅ Завершить", callback_data=f"gdzp_inst:pdf:{int(_inv_id)}")
+            b.button(
+                text="💳 Оплачено (платёжка)" if _gd_view else "✅ Завершить",
+                callback_data=f"gdzp_inst:pdf:{int(_inv_id)}",
+            )
         b.button(text="🚫 Снять задачу", callback_data=TaskCb(task_id=tid, action="cancel").pack())
         b.adjust(1)
         return b.as_markup()
@@ -786,7 +804,14 @@ def task_actions_kb(
     if ttype == TaskType.ZP_RP and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         from .callbacks import RpZpPayCb, RpZpRejectCb
         b = InlineKeyboardBuilder()
-        b.button(text="✅ Выплатить", callback_data=RpZpPayCb(task_id=tid).pack())
+        _zp_txt = "✅ Выплатить"
+        if _gd_view:
+            _zp_total = (try_json_loads(task.get("payload_json")) or {}).get("total")
+            try:
+                _zp_txt = "💳 Выплатить " + f"{float(_zp_total):,.0f}".replace(",", " ") + " ₽"
+            except (TypeError, ValueError):
+                _zp_txt = "💳 Выплатить"
+        b.button(text=_zp_txt, callback_data=RpZpPayCb(task_id=tid).pack())
         b.button(text="❌ Отклонить", callback_data=RpZpRejectCb(task_id=tid).pack())
         b.adjust(2)
         return b.as_markup()
@@ -801,8 +826,11 @@ def task_actions_kb(
         # гашение аванса + notify РП).
         _show_accept = status == TaskStatus.OPEN and not task.get("accepted_at")
         if _show_accept:
-            b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
-        b.button(text="✅ Выплатить", callback_data=RpSalaryTaskCb(task_id=tid, action="open").pack())
+            b.button(text=_take_txt or "✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+        b.button(
+            text="💳 Выплатить" if _gd_view else "✅ Выплатить",
+            callback_data=RpSalaryTaskCb(task_id=tid, action="open").pack(),
+        )
         b.button(text="❌ Отклонить", callback_data=RpSalaryTaskCb(task_id=tid, action="reject_start").pack())
         if _show_accept:
             b.adjust(1, 2)
@@ -970,11 +998,14 @@ def task_actions_kb(
     if ttype == TaskType.INVOICE_PAYMENT:
         if status == TaskStatus.OPEN:
             b = InlineKeyboardBuilder()
-            b.button(text="✅ Принять", callback_data=TaskCb(task_id=tid, action="inv_received").pack())
+            b.button(text=_take_txt or "✅ Принять", callback_data=TaskCb(task_id=tid, action="inv_received").pack())
             b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="inv_reject").pack())
         elif status == TaskStatus.IN_PROGRESS:
             b = InlineKeyboardBuilder()
-            b.button(text="💳 Подтвердить оплату", callback_data=TaskCb(task_id=tid, action="inv_pay").pack())
+            b.button(
+                text="💳 Оплачено" if _gd_view else "💳 Подтвердить оплату",
+                callback_data=TaskCb(task_id=tid, action="inv_pay").pack(),
+            )
             b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="inv_reject").pack())
 
     # Оплата доставки — кнопки для ГД

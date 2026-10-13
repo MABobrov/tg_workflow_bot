@@ -76,6 +76,7 @@ from ..utils import (
     answer_service,
     build_deposit_history_card,
     build_gd_sync_card_text,
+    build_gd_task_labels,
     build_invoice_section,
     format_card_section,
     format_dt_iso,
@@ -233,7 +234,9 @@ async def gd_inbox_all(message: Message, db: Database, config: Config, notifier:
         "Выберите задачу:"
     )
 
-    await message.answer(text, reply_markup=tasks_kb(all_tasks, back_callback="nav:home"))
+    await message.answer(text, reply_markup=tasks_kb(
+        all_tasks, back_callback="nav:home", labels=await build_gd_task_labels(db, all_tasks),
+    ))
 
 
 
@@ -667,7 +670,9 @@ async def gd_search_execute(message: Message, state: FSMContext, db: Database, c
 
     await message.answer(
         f"<b>Результаты поиска</b> ({len(results)}):",
-        reply_markup=tasks_kb(results, back_callback="nav:home"),
+        reply_markup=tasks_kb(
+            results, back_callback="nav:home", labels=await build_gd_task_labels(db, results),
+        ),
     )
 
 # ---------------------------------------------------------------------------
@@ -1190,7 +1195,9 @@ async def sales_incoming(message: Message, state: FSMContext, db: Database, conf
 
     await message.answer(
         f"<b>Входящие «Не срочно»</b> ({len(tasks)}):",
-        reply_markup=tasks_kb(tasks, back_callback="nav:home"),
+        reply_markup=tasks_kb(
+            tasks, back_callback="nav:home", labels=await build_gd_task_labels(db, tasks),
+        ),
     )
 
 
@@ -1714,7 +1721,10 @@ async def gd_summary_drilldown(
             return
         # Use existing tasks_kb with delete buttons
         b.button(text="⬅️ Назад к сводке", callback_data=SummaryCb(section="", action="back").pack())
-        kb = tasks_kb(task_list, show_delete=True, back_callback=SummaryCb(section="", action="back").pack())
+        kb = tasks_kb(
+            task_list, show_delete=True, back_callback=SummaryCb(section="", action="back").pack(),
+            labels=await build_gd_task_labels(db, task_list),
+        )
         text = f"<b>📊 {title}</b> ({len(task_list)})\n\nНажмите на задачу для действий:"
         try:
             await cb.message.edit_text(text, reply_markup=kb)  # type: ignore[union-attr]
