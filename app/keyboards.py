@@ -1297,8 +1297,17 @@ def zamery_my_requests_kb(requests: list[dict[str, Any]]) -> InlineKeyboardMarku
     return b.as_markup()
 
 
-def zamery_incoming_kb(requests: list[dict[str, Any]], *, back_callback: str | None = None) -> InlineKeyboardMarkup:
-    """Замерщик: входящие заявки на замер."""
+def zamery_incoming_kb(
+    requests: list[dict[str, Any]],
+    *,
+    tasks: list[dict[str, Any]] | None = None,
+    back_callback: str | None = None,
+) -> InlineKeyboardMarkup:
+    """Замерщик: входящие заявки на замер + открытые задачи (owner 13.10).
+
+    Кнопка задачи — та же, что в «📋 Все задачи» (`tasks_kb`), и ведёт в ту же
+    карточку задачи с «✅ Принято».
+    """
     b = InlineKeyboardBuilder()
     for req in requests:
         addr = (req.get("address") or "")[:25]
@@ -1307,6 +1316,11 @@ def zamery_incoming_kb(requests: list[dict[str, Any]], *, back_callback: str | N
             text=f"📐 #{req['id']} ({role_short}) — {addr}"[:55],
             callback_data=f"zam_in:view:{req['id']}",
         )
+    for t in tasks or []:
+        role_short = _ROLE_SHORT.get(t.get("creator_role", ""), "")
+        role_tag = f" ({role_short})" if role_short else ""
+        text = f"#{t['id']}{role_tag} • {task_type_label(t.get('type'))} • {task_status_label(t.get('status'))}"
+        b.button(text=text[:64], callback_data=TaskCb(task_id=int(t["id"]), action="open").pack())
     if back_callback:
         b.button(text="⬅️ Назад", callback_data=back_callback)
     b.adjust(1)

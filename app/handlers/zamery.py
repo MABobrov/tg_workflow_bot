@@ -22,7 +22,7 @@ from ..callbacks import ZamAttrCb, ZamZpPayCb, ZamZpRejectCb
 from ..config import Config
 from ..db import Database
 from ..enums import (
-    InvoiceStatus, Role, TaskStatus,
+    InvoiceStatus, Role, TaskStatus, TaskType,
     ZAMERY_SOURCE_LABELS,
 )
 from ..integrations.minio_storage import MinioStorage
@@ -96,7 +96,10 @@ async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
 # ЗАМЕРЫ (incoming requests — структурированные заявки)
 # =====================================================================
 
-@router.message(F.text == ZAM_BTN_ZAMERY)
+# startswith, а не ==: при открытых задачах кнопка приходит с бейджем
+# «📋 Заявка на замер 🔴N» (keyboards._patch_inbox), и точное сравнение
+# отдавало нажатие в fallback — кнопка молчала (owner 13.10).
+@router.message(lambda m: (m.text or "").strip().startswith(ZAM_BTN_ZAMERY))
 async def zamery_inbox(message: Message, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.ZAMERY]):
         return
@@ -110,22 +113,42 @@ async def zamery_inbox(message: Message, db: Database) -> None:
     )
     all_reqs = reqs + in_progress
 
-    if not all_reqs:
+    # Открытые задачи замерщику (напр. от ГД через канал «Замерщик») —
+    # бейдж 🔴N считает их (count_unread_tasks), значит экран обязан их
+    # показать (owner 13.10: «заявки + задачи»). zamery_request — та же
+    # заявка, она уже в списке выше; self_reminder бейдж не считает.
+    tasks = [
+        t for t in await db.list_tasks_for_user(
+            uid, statuses=("open", "in_progress"), limit=30,
+        )
+        if t.get("type") not in (TaskType.ZAMERY_REQUEST, TaskType.SELF_REMINDER)
+    ]
+
+    if not all_reqs and not tasks:
         await answer_service(message, "📐 Нет входящих заявок на замеры ✅", delay_seconds=60)
         return
 
-    # Сводка по менеджерам (эталон-карточка: счётчики + Всего в футере)
-    stats = await db.get_zamery_stats_by_manager(uid)
-    mgr_items = [
-        (_REQ_ROLE_SHORT.get(s.get("requester_role", ""), s.get("requester_role", "?")), str(s["cnt"]))
-        for s in stats
-    ]
+    # Сводка по менеджерам (эталон-карточка: счётчики + Всего в футере).
+    # Ключ — «active» (open+in_progress): «cnt» запрос не отдаёт.
+    items: list[tuple[str, str]] = []
+    if all_reqs:
+        stats = await db.get_zamery_stats_by_manager(uid)
+        mgr_items = [
+            (_REQ_ROLE_SHORT.get(s.get("requester_role", ""), s.get("requester_role", "?")), str(s["active"]))
+            for s in stats
+            if s.get("active")
+        ]
+        items.extend(mgr_items or [("Заявок", str(len(all_reqs)))])
+    if tasks:
+        items.append(("Задачи", str(len(tasks))))
     text = format_card_section(
         "📐", "Замеры",
-        items=mgr_items or [("Заявок", str(len(all_reqs)))],
-        footer=("Всего", str(len(all_reqs))) if mgr_items else None,
+        items=items,
+        footer=("Всего", str(len(all_reqs) + len(tasks))) if len(items) > 1 else None,
     )
-    await message.answer(text, reply_markup=zamery_incoming_kb(all_reqs, back_callback="nav:home"))
+    await message.answer(
+        text, reply_markup=zamery_incoming_kb(all_reqs, tasks=tasks, back_callback="nav:home"),
+    )
 
 
 @router.callback_query(F.data.startswith("zam_in:view:"))
