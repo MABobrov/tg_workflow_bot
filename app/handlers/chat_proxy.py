@@ -43,7 +43,7 @@ from ..services.notifier import Notifier
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..states import ChatProxySG, CreditPaymentExecuteSG, CreditPaymentReceiptSG, CreditTaskRejectSG, CreditTaskSG, CreditWalletSpendSG, GdTaskCreateSG, InvoicePaymentSG, ReplyToGDSG
-from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card_ex, build_gd_task_labels, credit_wallet_label, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_by_wallet_payment, utcnow, to_iso
+from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card_ex, build_gd_task_labels, credit_wallet_label, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_after_wallet_spend, utcnow, to_iso
 from ._mirror import collect_attachment, mirror_attachment
 
 log = logging.getLogger(__name__)
@@ -1497,73 +1497,17 @@ async def _finalize_credit_execution(
     # остаётся открытой на остаток (см. resolve_installer_zp_by_wallet_payment).
     if (p.get("cost_type") == "montazh") and p.get("invoice_id"):
         try:
-            _inv_id = int(p["invoice_id"])
-            _zp_open = await db.list_open_tasks_by_invoice(_inv_id, "zp_installer")
-            if _zp_open:
-                _spent = float(p.get("amount") or 0)
-                res_zp = await resolve_installer_zp_by_wallet_payment(
-                    db, _inv_id, spend_amount=_spent, actor_id=actor_id,
-                    spend_note=(
-                        f"Частичная выплата ЗП монтаж из кредит-кошелька "
-                        f"{credit_wallet_label(p.get('wallet_role') or '')}: "
-                        f"{p.get('purpose') or '—'}"
-                    ),
-                )
-                try:
-                    await integrations.sync_invoice_row(_inv_id)
-                except Exception:
-                    log.debug("credit_exec: sync after zp-resolve failed", exc_info=True)
-                _inv_num = p.get("invoice_number") or _inv_id
-                if not res_zp.get("partial"):
-                    _zp_msg = (
-                        f"ℹ️ ЗП монтажника по счёту №{_inv_num} выплачена через "
-                        "кредит-кошелёк — задача ЗП закрыта автоматически. "
-                        "Повторно платёжку отправлять не нужно."
-                    )
-                elif res_zp.get("reason") is None:
-                    _zp_msg = (
-                        f"ℹ️ <b>Частичная выплата ЗП монтажа</b> — счёт №{_inv_num}\n"
-                        f"Из кредит-кошелька: {fmt_money(_spent)}\n"
-                        f"Зачтено в счёт ЗП (аванс монтажника). Задача ЗП "
-                        f"<b>остаётся открытой</b>.\n"
-                        f"💰 Остаток к выплате: "
-                        f"<b>{fmt_money(res_zp.get('remainder') or 0)}</b>"
-                    )
-                else:
-                    _zp_msg = (
-                        f"⚠️ <b>Частичная выплата ЗП монтажа</b> — счёт №{_inv_num}\n"
-                        f"Из кредит-кошелька: {fmt_money(_spent)}, причитается "
-                        f"{fmt_money(res_zp.get('due') or 0)}.\n"
-                        f"Задача ЗП <b>НЕ закрыта</b>; зачёт автоматически не проведён "
-                        f"(наёмная группа или ошибка записи) — проведите зачёт вручную.\n"
-                        f"💰 Остаток к выплате: "
-                        f"<b>{fmt_money(res_zp.get('remainder') or 0)}</b>"
-                    )
-                for _zt in _zp_open:
-                    _aid = _zt.get("assigned_to")
-                    if _aid:
-                        try:
-                            await notifier.safe_send(int(_aid), _zp_msg)
-                        except Exception:
-                            log.debug("credit_exec: notify zp assignee failed", exc_info=True)
-                try:
-                    await db.audit(
-                        actor_id=actor_id, action="installer_zp_resolved_by_wallet",
-                        entity="invoice", entity_id=str(_inv_id),
-                        payload={
-                            "task_ids": res_zp.get("task_ids"),
-                            "marked_paid": res_zp.get("marked_paid"),
-                            "credit_task_id": tid,
-                            "spend_amount": _spent,
-                            "partial": bool(res_zp.get("partial")),
-                            "offset_applied": res_zp.get("offset_applied"),
-                            "due": res_zp.get("due"),
-                            "remainder": res_zp.get("remainder"),
-                            "reason": res_zp.get("reason"),
-                        },
-                    )
-                except Exception:
-                    log.debug("credit_exec: audit zp-resolve failed", exc_info=True)
+            await resolve_installer_zp_after_wallet_spend(
+                db, notifier, integrations,
+                invoice_id=int(p["invoice_id"]),
+                spend_amount=float(p.get("amount") or 0),
+                wallet_role=p.get("wallet_role") or "",
+                purpose=p.get("purpose") or "",
+                invoice_number=p.get("invoice_number") or "",
+                actor_id=actor_id,
+                audit_ref={"credit_task_id": tid},
+                log_tag="credit_exec",
+            )
         except Exception:
             log.warning(
                 "credit_exec: installer-zp anti-double hook failed tid=%s", tid, exc_info=True

@@ -100,7 +100,7 @@ from ..states import (
     SelfReminderSG,
     ZameryRequestSG,
 )
-from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, build_funds_card, build_invoice_section, card_num as _card_num, close_condition_core_rows, compute_plan_profit, credit_wallet_label, fmt_money, format_card, format_card_section, format_invoice_card_standard, format_manager_invoices_overview, format_manager_recalc_card, format_materials_list, get_initiator_label, invoice_end_fin_rows, manager_zp_net_payout, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads, credit_zp_montazh_unpaid
+from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, build_funds_card, build_invoice_section, card_num as _card_num, close_condition_core_rows, compute_plan_profit, credit_wallet_label, fmt_money, format_card, format_card_section, format_invoice_card_standard, format_manager_invoices_overview, format_manager_recalc_card, format_materials_list, get_initiator_label, invoice_end_fin_rows, manager_zp_net_payout, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_after_wallet_spend, try_json_loads, credit_zp_montazh_unpaid
 from ._mirror import collect_attachment
 from .auth import RoleFilter, require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
@@ -4946,6 +4946,27 @@ async def _cw_confirm_impl(
             return
         spend_id = res.get("spend_id")
 
+        # Анти-задвоение ЗП монтажника (owner 13.10, §3.1(1)): своя трата хозяина
+        # на монтаж закрывает открытую задачу ЗП (или зачитывает частичную выплату) —
+        # ровно как исполнение кредит-заявки в chat_proxy. Без этого ГД оплачивал
+        # бы ту же ЗП второй раз: 260915-1НПН, трата #95 и задача #625 по 25 000.
+        # Стоит ДО хука наёмной ЗП — тот же порядок, что в _finalize_credit_execution.
+        if cost_type == "montazh" and inv_id:
+            try:
+                await resolve_installer_zp_after_wallet_spend(
+                    db, notifier, integrations,
+                    invoice_id=int(inv_id), spend_amount=amount,
+                    wallet_role=wallet_role, purpose=purpose,
+                    invoice_number=inv_num, actor_id=u.id,
+                    audit_ref={"credit_spend_id": spend_id},
+                    log_tag="cw_confirm",
+                )
+            except Exception:
+                log.warning(
+                    "cw_confirm: installer-zp anti-double hook failed spend=%s",
+                    spend_id, exc_info=True,
+                )
+
         # Триггер наёмной ЗП — раньше срабатывал ПОСЛЕ ✅ГД, в chat_proxy
         # (_credit_spend_finalize). Со снятием гейта этот путь сюда больше не
         # доходит, поэтому хук переносится вместе с ним: без него оплата стекла/
@@ -5562,6 +5583,33 @@ async def cw_edit_save(
                 "new": {"amount": new_amount, "purpose": new_purpose},
             },
         )
+
+        # Правка траты В монтаж → та же защита ЗП монтажника, что при записи
+        # (owner 13.10, §3.1(1)). ⚠️ Только если старая трата НЕ была монтажом по
+        # тому же счёту: cancel_credit_spend зачёт аванса и статус ЗП НЕ откатывает,
+        # поэтому повторный вызов задвоил бы частичный зачёт.
+        if new_cost_type == "montazh" and new_invoice_id:
+            _old_inv = old_snap.get("bound_invoice_id")
+            _same = (
+                old_snap.get("cost_type") == "montazh"
+                and _old_inv is not None
+                and int(_old_inv) == int(new_invoice_id)
+            )
+            if not _same:
+                try:
+                    await resolve_installer_zp_after_wallet_spend(
+                        db, notifier, integrations,
+                        invoice_id=int(new_invoice_id), spend_amount=new_amount,
+                        wallet_role=wallet_role, purpose=new_purpose,
+                        invoice_number=new_invoice_number, actor_id=u.id,
+                        audit_ref={"credit_spend_id": new_spend_id},
+                        log_tag="cw_edit_save",
+                    )
+                except Exception:
+                    log.warning(
+                        "cw_edit_save: installer-zp anti-double hook failed spend=%s",
+                        new_spend_id, exc_info=True,
+                    )
 
         wlabel = credit_wallet_label(wallet_role)
         bind = _cw_bind_line(new_mode, new_invoice_number, new_cost_type)

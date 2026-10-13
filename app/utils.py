@@ -5129,6 +5129,97 @@ async def resolve_installer_zp_by_wallet_payment(
     }
 
 
+async def resolve_installer_zp_after_wallet_spend(
+    db: "Database", notifier: Any, integrations: Any, *,
+    invoice_id: int, spend_amount: float, wallet_role: str, purpose: str,
+    invoice_number: str, actor_id: int, audit_ref: dict[str, Any], log_tag: str,
+) -> dict[str, Any] | None:
+    """Трата кредит-кошелька на монтаж по счёту → закрыть ЗП монтажника либо зачесть.
+
+    Анти-задвоение ЗП монтажника: кошелёк выплатил ЗП монтажа по счёту → закрыть
+    парную открытую zp_installer + пометить ЗП выплаченной, чтобы ГД не провёл
+    вторую платёжку (cost_type=montazh = ЗП монтажника). Фикс owner 25.07: меньшая
+    сумма — аванс/частичная выплата внутрь Согласованного, задача ЗП остаётся
+    открытой на остаток (см. resolve_installer_zp_by_wallet_payment). Плюс сообщение
+    исполнителю задачи ЗП и audit installer_zp_resolved_by_wallet.
+
+    ЕДИНАЯ точка для ОБОИХ путей траты кошелька: исполнение кредит-заявки
+    (chat_proxy._finalize_credit_execution) и своя трата хозяина
+    (manager_new._cw_confirm_impl / cw_edit_save). До 13.10 защита жила только в
+    первом: 13.10 Павел оплатил монтаж по 260915-1НПН из кошелька НПН своей тратой,
+    а задача ЗП #625 на те же 25 000 осталась у ГД открытой (owner 13.10, §3.1(1)).
+    audit_ref — ссылка на источник траты (credit_task_id либо credit_spend_id).
+    Нет открытой zp_installer по счёту → None, ничего не пишет и не шлёт.
+    """
+    open_zp = await db.list_open_tasks_by_invoice(invoice_id, "zp_installer")
+    if not open_zp:
+        return None
+    res_zp = await resolve_installer_zp_by_wallet_payment(
+        db, invoice_id, spend_amount=spend_amount, actor_id=actor_id,
+        spend_note=(
+            f"Частичная выплата ЗП монтаж из кредит-кошелька "
+            f"{credit_wallet_label(wallet_role or '')}: "
+            f"{purpose or '—'}"
+        ),
+    )
+    try:
+        await integrations.sync_invoice_row(invoice_id)
+    except Exception:
+        log.debug("%s: sync after zp-resolve failed", log_tag, exc_info=True)
+    _inv_num = invoice_number or invoice_id
+    if not res_zp.get("partial"):
+        _zp_msg = (
+            f"ℹ️ ЗП монтажника по счёту №{_inv_num} выплачена через "
+            "кредит-кошелёк — задача ЗП закрыта автоматически. "
+            "Повторно платёжку отправлять не нужно."
+        )
+    elif res_zp.get("reason") is None:
+        _zp_msg = (
+            f"ℹ️ <b>Частичная выплата ЗП монтажа</b> — счёт №{_inv_num}\n"
+            f"Из кредит-кошелька: {fmt_money(spend_amount)}\n"
+            f"Зачтено в счёт ЗП (аванс монтажника). Задача ЗП "
+            f"<b>остаётся открытой</b>.\n"
+            f"💰 Остаток к выплате: "
+            f"<b>{fmt_money(res_zp.get('remainder') or 0)}</b>"
+        )
+    else:
+        _zp_msg = (
+            f"⚠️ <b>Частичная выплата ЗП монтажа</b> — счёт №{_inv_num}\n"
+            f"Из кредит-кошелька: {fmt_money(spend_amount)}, причитается "
+            f"{fmt_money(res_zp.get('due') or 0)}.\n"
+            f"Задача ЗП <b>НЕ закрыта</b>; зачёт автоматически не проведён "
+            f"(наёмная группа или ошибка записи) — проведите зачёт вручную.\n"
+            f"💰 Остаток к выплате: "
+            f"<b>{fmt_money(res_zp.get('remainder') or 0)}</b>"
+        )
+    for _zt in open_zp:
+        _aid = _zt.get("assigned_to")
+        if _aid:
+            try:
+                await notifier.safe_send(int(_aid), _zp_msg)
+            except Exception:
+                log.debug("%s: notify zp assignee failed", log_tag, exc_info=True)
+    try:
+        await db.audit(
+            actor_id=actor_id, action="installer_zp_resolved_by_wallet",
+            entity="invoice", entity_id=str(invoice_id),
+            payload={
+                "task_ids": res_zp.get("task_ids"),
+                "marked_paid": res_zp.get("marked_paid"),
+                **audit_ref,
+                "spend_amount": spend_amount,
+                "partial": bool(res_zp.get("partial")),
+                "offset_applied": res_zp.get("offset_applied"),
+                "due": res_zp.get("due"),
+                "remainder": res_zp.get("remainder"),
+                "reason": res_zp.get("reason"),
+            },
+        )
+    except Exception:
+        log.debug("%s: audit zp-resolve failed", log_tag, exc_info=True)
+    return res_zp
+
+
 async def build_funds_card(
     db: "Database", user_id: int, wallet_role: str | None = None, *, recent: int = 6,
 ) -> str:
