@@ -4996,7 +4996,8 @@ async def resolve_installer_zp_by_wallet_payment(
         «Выплачено» ADDITIVE: аванс + выплата бота = ровно Согласовано), статус и
         задача НЕ трогаются — ГД доплачивает остаток штатно.
     Сумма зачёта сравнивается в масштабе листа (CG): для б/н трата грос-апится ×1.10
-    (ЗП б/н = база+10%, [[feedback_installer_advance_spend_scope]]), для кредита 1:1.
+    (ЗП б/н = база+10%, [[feedback_installer_advance_spend_scope]]), для кредита и
+    наёмной группы (edo_task_id=2, сумма без надбавки) — 1:1.
 
     Наёмная группа (assigned_to=NULL / владелец не монтажник) — зачесть аванс НЕКОМУ
     (гард get_installer_advance_for_invoice отбросил бы запись): ЗП НЕ закрываем и НЕ
@@ -5039,12 +5040,16 @@ async def resolve_installer_zp_by_wallet_payment(
     _is_credit_inv = bool(inv.get("is_credit")) or str(
         inv.get("invoice_number") or ""
     ).upper().startswith("ЗМ")
-    adv_cg = adv_raw if (_is_credit_inv or adv_raw <= 0) else adv_raw * 1.10
+    # Наёмная группа (edo_task_id=2): сумму её ЗП РП вводит КАК ЕСТЬ, без надбавки
+    # (owner 22.08, rpzpnaem) — грос-ап ×1.10 здесь закрыл бы ЗП 25 000 тратой
+    # 22 728 и занизил бы остаток в предупреждении (owner 14.10: «чинить»). 1:1, как кредит.
+    _no_bonus = _is_credit_inv or inv.get("edo_task_id") == 2
+    adv_cg = adv_raw if (_no_bonus or adv_raw <= 0) else adv_raw * 1.10
     due = agreed - paid_prev - adv_cg
     # Масштаб листа: наличная/кредитная трата по б/н счёту закрывает ЗП с надбавкой +10%.
     spend_cg = (
         None if spend_amount is None
-        else (float(spend_amount) if _is_credit_inv else float(spend_amount) * 1.10)
+        else (float(spend_amount) if _no_bonus else float(spend_amount) * 1.10)
     )
 
     # spend_amount не передан (старые вызовы) или Согласовано не выставлено — судить
