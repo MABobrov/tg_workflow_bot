@@ -914,7 +914,7 @@ async def invoice_start_client_source(cb: CallbackQuery, state: FSMContext) -> N
     label = "👤 Мой клиент (50/50)" if source == "own" else "📋 Лид от ГД (75/25)"
     await cb.message.answer(  # type: ignore[union-attr]
         f"Источник: {label}\n\n"
-        "📅 Введите <b>дату счёта</b> в формате ДД.ММ.ГГГГ\n"
+        "📅 Введите <b>дату оплаты счёта</b> в формате ДД.ММ.ГГГГ\n"
         "<i>Например: 22.07.2026</i>",
     )
 
@@ -957,7 +957,7 @@ async def invoice_start_receipt_date(message: Message, state: FSMContext) -> Non
     amount = float((data.get("invoice_data") or {}).get("amount") or 0)
     await state.set_state(InvoiceStartSG.first_payment)
     await message.answer(
-        f"📅 Дата счёта: <b>{datetime.strptime(iso, '%Y-%m-%d').strftime('%d.%m.%Y')}</b>\n\n"
+        f"📅 Дата оплаты счёта: <b>{datetime.strptime(iso, '%Y-%m-%d').strftime('%d.%m.%Y')}</b>\n\n"
         "💵 Введите <b>сумму первого платежа</b> в ₽:\n"
         f"<i>Сумма счёта: {amount:,.0f}₽</i>",
     )
@@ -977,7 +977,7 @@ async def invoice_start_first_payment(message: Message, state: FSMContext) -> No
     await message.answer(
         f"💵 Первый платёж: <b>{val:,.0f}₽</b>{warn}\n\n"
         "📅 Введите <b>срок по договору</b> в днях\n"
-        "(количество дней от даты счёта до окончания):",
+        "(количество дней от даты оплаты счёта до окончания):",
     )
 
 
