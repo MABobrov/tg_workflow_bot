@@ -4431,12 +4431,12 @@ async def build_credit_wallet_card_ex(db: "Database", role: str, *, recent: int 
     «Итого» (= остаток); прежний дубль «Остаток»+«Итого» убран, показывается
     всегда (в т.ч. finance-канал ГД, show_header_total=False — параметр оставлен
     для совместимости вызовов, на вёрстку больше НЕ влияет). Блок «Последние
-    движения» — модель активного счёта (user 2026-06-10): СХОДИТСЯ со сводкой.
-    Первая строка «баланс» = перенос-остаток с предыдущего счёта (carry_in
-    активного; для КВ это реальный остаток КВ-8), далее приход активного счёта и
-    траты кошелька, хронологически. Σ(баланс+приход) − Σтрат = «Итого». Сырые
-    приходы прочих открытых счетов НЕ показываем — они свёрнуты в перенос (раньше
-    показывались и Σприходов ≠ «Вход», что путало; TZ переноса 02–04.06 цел).
+    движения» — модель котла (owner 13.10 «переделать»; прежняя модель
+    активного счёта с «переносом» к 24.09 давала у КВ −783,5к при «Итого» 0):
+    «баланс» считается как db._credit_wallet_pot — каждая сверка (все якоря
+    credit_wallet_anchors) строкой «⚖️ Сверка» ставит остаток на свою сумму,
+    дальше + аванс КАЖДОГО кредит-счёта роли (⬆️, на дату оплаты) + доплаты
+    долга (⬆️💵) − траты. Последняя строка «баланс» = «Итого».
 
     recent (owner 01.09, охват — ТОЛЬКО ГД): None = вся история (поведение до
     правки, им пользуются все три вызова менеджеров); int N = свёрнутый вид,
@@ -4511,7 +4511,7 @@ async def build_credit_wallet_card_ex(db: "Database", role: str, *, recent: int 
     # и СЛЕДУЮЩЕЙ строкой running-баланс кошелька («баланс {остаток:справа}»). Грузчики
     # (loaders ИЛИ desc~грузчик) свёрнуты в 1 строку за день («Грузчики ×N»); прочие
     # расходы — каждый отдельной строкой (merge «↩️ ещё N трат» убран). running
-    # считается по ОТОБРАЖАЕМЫМ строкам (перенос+приход − траты) и сходится с «Итого».
+    # считается по ОТОБРАЖАЕМЫМ строкам (сверка + приходы − траты) и сходится с «Итого».
     # Шапку «Кредитный баланс» НЕ трогаем (feedback_design_only_indicated_block).
     from .rp_start_card import _street as _street_fn, vw as _vw
 
@@ -4572,95 +4572,45 @@ async def build_credit_wallet_card_ex(db: "Database", role: str, *, recent: int 
             ts = str(ts or "")
             return f"{ts[8:10]}.{ts[5:7]}" if len(ts) >= 10 and ts[4] == "-" else ts[:5]
 
-        # Модель «активного счёта» (user 2026-06-10): движения сходятся со сводкой
-        # (перенос + приход − траты = Итого). Опорные строки: «перенос»-остаток с
-        # предыдущего счёта (carry_in активного) + приход активного счёта.
-        carry_in = 0.0
-        prev_ts = ""
-        if active_id is not None:
-            try:
-                carry_in = float(await db.get_credit_carry_in(int(active_id)))
-            except Exception:
-                carry_in = 0.0
-            idx = next((i for i, r in enumerate(invs) if r.get("id") == active_id), None)
-            if idx is not None and idx > 0:
-                prev_id = invs[idx - 1].get("id")
-                prev_in = next(
-                    (e for e in events
-                     if e.get("kind") == "in" and e.get("invoice_id") == prev_id),
-                    None,
-                )
-                prev_ts = str((prev_in or {}).get("ts") or "")
+        # Сверки кошелька — ВСЕ якоря роли (owner 13.10): на дату сверки «баланс»
+        # ставится на её сумму. Граница как в db._credit_wallet_pot: после сверки
+        # идут только движения со временем СТРОГО больше её.
+        _acur = await db.conn.execute(
+            "SELECT amount, created_at FROM credit_wallet_anchors "
+            "WHERE wallet_role = ? ORDER BY created_at ASC, id ASC",
+            (role,),
+        )
+        _anchors = [
+            (float(_a["amount"] or 0), str(_a["created_at"] or ""))
+            for _a in await _acur.fetchall()
+        ]
+
+        def _seg(ts: Any) -> int:
+            # Номер отрезка между сверками = сколько сверок раньше движения.
+            return sum(1 for _a in _anchors if str(ts or "") > _a[1])
 
         # Строки движений: (ts, kind, icon, amount, signed, abbr, street).
         rows: list[tuple[str, str, str, float, float, str, str]] = []
-        # Доплаты ПРОЧИХ (не активного) кредит-счетов роли — гашение долга
-        # (income_kind='debt_payment', invoice_id≠active). Эти приходы «зашиты» в
-        # перенос-остаток активного (carry_in = маркер «Остаток …», включающий
-        # доплаты — сверка 2026-06-13). Показываем их ОТДЕЛЬНЫМИ строками с №
-        # материнского счёта (КВ5/КВ6), а перенос УМЕНЬШАЕМ ровно на их сумму:
-        # Σ строк не меняется → running по-прежнему сходится с «Итого» (user 2026-06-13).
-        # Откат к прежнему показу (доплаты свёрнуты в перенос), если вычет увёл бы
-        # перенос в минус (доплаты не входят в маркер — иная роль/состояние).
-        _all_doplaty = [
-            e for e in events
-            if e.get("kind") == "in"
-            and e.get("income_kind") == "debt_payment"
-            and e.get("invoice_id") != active_id
-        ]
-        # Доплаты ПОСЛЕ сверки-якоря показываем ВСЕГДА отдельными строками (user
-        # 26.06): иначе при сворачивании в «перенос» (когда carry_in < Σдоплат)
-        # сверка обнулила бы их и running не сошёлся бы с «Итого». Доплаты ДО якоря
-        # (или вовсе без якоря) — прежняя логика (фолд в перенос при отрицат. carry).
-        _anchor_ts_rows = str(_wallet_anchor["created_at"]) if _wallet_anchor else ""
-        if _anchor_ts_rows:
-            post_doplaty = [e for e in _all_doplaty if str(e.get("ts") or "") > _anchor_ts_rows]
-            other_doplaty = [e for e in _all_doplaty if str(e.get("ts") or "") <= _anchor_ts_rows]
-        else:
-            post_doplaty = []
-            other_doplaty = _all_doplaty
-        _sum_other = sum(float(e.get("amount") or 0) for e in other_doplaty)
-        _carry_base = carry_in - _sum_other
-        _split = bool(other_doplaty) and _carry_base > -0.005
-        if not _split:
-            _carry_base = carry_in
-        if abs(_carry_base) > 0.005:
-            rows.append((prev_ts, "bal", "⚖️", _carry_base, _carry_base, label, "перенос"))
-
-        def _doplata_row(e: dict) -> tuple:
-            # Доплата = приход ДС по материнскому счёту: ⬆️💵 + № счёта вместо улицы.
-            _amt = float(e.get("amount") or 0)
-            return (
-                str(e.get("ts") or ""), "in", "💵",
-                _amt, _amt, label,
-                (str(e.get("invoice_number") or "").strip() or "доплата")[:_ST_W],
-            )
-
-        if _split:
-            for e in other_doplaty:
-                rows.append(_doplata_row(e))
-        for e in post_doplaty:
-            rows.append(_doplata_row(e))
-        # Приход активного счёта: base (оплачено при создании) + DISTINCT строки
-        # гашения долга (income_kind='debt_payment' — оконч.доплата AC, п.3 2026-06-12).
-        # Σ(base+доплаты)=amount−долг → running сходится с «Итого». Доплата помечена
-        # 💵 + меткой «доплата» вместо улицы (это приход ДС, не объект).
+        # Приходы ВСЕХ кредит-счетов роли (модель котла): аванс счёта (base, на дату
+        # оплаты) — ⬆️ + улица; доплата долга (credit_incomes) — ⬆️💵 + № материнского
+        # счёта (у активного — «доплата», как было). Σ строк по счёту = amount−долг.
         for e in events:
-            if e.get("kind") != "in" or e.get("invoice_id") != active_id:
+            if e.get("kind") != "in":
                 continue
-            _is_pay = (e.get("income_kind") == "debt_payment")
             _amt = float(e.get("amount") or 0)
-            rows.append((
-                str(e.get("ts") or ""), "in", ("💵" if _is_pay else ""),
-                _amt, _amt, label,
-                ("доплата" if _is_pay else _street_fn(e.get("object_address") or "", _ST_W)),
-            ))
+            _inv_no = str(e.get("invoice_number") or "").strip()
+            if e.get("income_kind") == "debt_payment":
+                _st = "доплата" if e.get("invoice_id") == active_id else (_inv_no or "доплата")
+                rows.append((str(e.get("ts") or ""), "in", "💵", _amt, _amt, label, _st[:_ST_W]))
+            else:
+                _st = _street_fn(e.get("object_address") or "", _ST_W) or _inv_no[:_ST_W]
+                rows.append((str(e.get("ts") or ""), "in", "", _amt, _amt, label, _st))
 
         # Расходы; грузчики (loaders ИЛИ desc~грузчик) сворачиваем в 1 строку за день.
         def _is_load(e: dict) -> bool:
             return e.get("cost_type") == "loaders" or "грузчик" in (e.get("description") or "").lower()
 
-        _load_day: dict[str, dict] = {}
+        _load_day: dict[tuple[str, int], dict] = {}
         for e in events:
             if e.get("kind") != "out":
                 continue
@@ -4668,8 +4618,9 @@ async def build_credit_wallet_card_ex(db: "Database", role: str, *, recent: int 
             amt = float(e.get("amount") or 0)
             ab = _abbr(_umap.get(int(e["entered_by"]))) if e.get("entered_by") else label
             if _is_load(e):
-                day = ets[:10]
-                d = _load_day.setdefault(day, {"ts": ets, "sum": 0.0, "n": 0, "ab": ab})
+                # День сворачиваем в пределах отрезка между сверками — иначе сумма
+                # грузчиков перескочила бы через «⚖️ Сверка».
+                d = _load_day.setdefault((ets[:10], _seg(ets)), {"ts": ets, "sum": 0.0, "n": 0, "ab": ab})
                 d["sum"] += amt
                 d["n"] += 1
                 if ets < d["ts"]:
@@ -4700,61 +4651,57 @@ async def build_credit_wallet_card_ex(db: "Database", role: str, *, recent: int 
         for _day, d in _load_day.items():
             rows.append((d["ts"], "out", "💪", d["sum"], -d["sum"], d["ab"], f"Грузчики ×{d['n']}"))
 
-        # 2026-06-20 (откат обрезки истории от 19.06 — по запросу owner): durable-
-        # якорь по-прежнему задаёт «Итого» в шапке (total_da от якоря, см.
-        # get_credit_balance_summary), НО блок «Последние движения» снова показывает
-        # ПОЛНУЮ историю кошелька (перенос + все приходы/траты), как до 19.06. Прежний
-        # якорь-ребейз («сверка» + ТОЛЬКО события после якоря) обрезал видимую историю
-        # до момента сверки — owner этого не запрашивал. running внизу идёт по legacy-
-        # модели и может не совпасть с «Итого» (= якорь-сверка) — это ожидаемо, данные целы.
-
-        # Прямая хронология (старые сверху, свежие снизу); «перенос» открывает блок.
-        rows.sort(key=lambda x: x[0])
+        # Прямая хронология (старые сверху, свежие снизу); в одну метку приход
+        # раньше расхода — как в list_all_credit_events.
+        rows.sort(key=lambda x: (x[0], 0 if x[1] == "in" else 1))
 
         # Рендер + строка running-баланса после каждого движения (со словом «баланс»).
-        # Якорь-сверка (credit_wallet_anchors, durable 19.06): на его дату running
-        # ПЕРЕУСТАНАВЛИВАЕТСЯ на сверенный остаток отдельной строкой «⚖️ Сверка»
-        # (user 26.06). История ДО сверки остаётся реальной, после неё running идёт
-        # от сверенного остатка → итоговый «баланс» сходится с «Итого» (= якорь +
-        # движения после, get_credit_balance_summary). Без якоря — чистый legacy-run.
-        _anchor_amt = float(_wallet_anchor["amount"]) if _wallet_anchor else None
-        _anchor_ts = str(_wallet_anchor["created_at"]) if _wallet_anchor else ""
-        _sverka_done = _anchor_amt is None
-
+        # До ПЕРВОЙ сверки остаток боту не известен (траты до 04.06 в бот не вносились,
+        # их закрыла сверка 19.06): движения видны — история не обрезается
+        # ([[feedback_display_no_unrequested_history_truncation]]), — но строк «баланс»
+        # под ними нет. Сверок нет вовсе — running от 0 (модель 02.06: приход − траты).
         _lines: list[str] = []
         _move_at: list[int] = []   # индекс первой строки блока каждого движения
         _run = 0.0
+        _known = not _anchors
+        _ai = 0
 
         def _bal_line() -> None:
             _lines.append("   " + _pad("баланс", _PREFIX_W) + _pad(_k(_run), _SUM_W, True))
 
-        def _sverka_line() -> None:
-            _lines.append(
-                "   " + _pad(f"{_d(_anchor_ts)} ⚖️", _PREFIX_W) + _pad(_k(_anchor_amt), _SUM_W, True)
-                + " " + _pad(label, _ABBR_W) + " " + "Сверка"
-            )
+        def _sverka_upto(ts: str | None) -> None:
+            # Сверки раньше движения ts (None — все оставшиеся): остаток = сумма сверки.
+            nonlocal _run, _known, _ai
+            while _ai < len(_anchors) and (ts is None or ts > _anchors[_ai][1]):
+                _a_amt, _a_ts = _anchors[_ai]
+                _run = _a_amt
+                _known = True
+                _lines.append(
+                    "   " + _pad(f"{_d(_a_ts)} ⚖️", _PREFIX_W) + _pad(_k(_a_amt), _SUM_W, True)
+                    + " " + _pad(label, _ABBR_W) + " " + "Сверка"
+                )
+                _bal_line()
+                _ai += 1
 
         for (ts, kind, icon, amt, signed, ab, street) in rows:
-            _blk = len(_lines)   # начало блока: сюда же попадёт «⚖️ Сверка», если встанет
-            if not _sverka_done and str(ts) > _anchor_ts:
-                _run = _anchor_amt  # type: ignore[assignment]
-                _sverka_line()
-                _bal_line()
-                _sverka_done = True
+            _blk = len(_lines)   # начало блока: сюда же попадут «⚖️ Сверка» перед движением
+            _sverka_upto(str(ts))
             _run += signed
-            arrow = "" if kind == "bal" else ("⬆️" if kind == "in" else "⬇️")
+            arrow = "⬆️" if kind == "in" else "⬇️"
             prefix = f"{_d(ts)} {arrow}{icon}".rstrip()
             _move_at.append(_blk)
             _lines.append(
                 "   " + _pad(prefix, _PREFIX_W) + _pad(_k(amt), _SUM_W, True)
                 + " " + _pad(ab, _ABBR_W) + " " + street
             )
-            _bal_line()
-        if not _sverka_done:
-            # Все движения раньше якоря (или их нет) — сверка закрывает блок.
-            _run = _anchor_amt  # type: ignore[assignment]
-            _sverka_line()
-            _bal_line()
+            if _known:
+                _bal_line()
+        # Сверки позже всех движений закрывают блок.
+        _sverka_upto(None)
+        if abs(_run - total_da) > 0.5:
+            log.warning(
+                "credit wallet card: лента %.2f != Итого %.2f role=%s", _run, total_da, role,
+            )
 
         # Свёрнутый вид (owner 01.09, только ГД): видны последние `recent` ДВИЖЕНИЙ.
         # 🔴 Режем ГОТОВЫЕ строки, а не входные rows: running-баланс (_run) накоплен
