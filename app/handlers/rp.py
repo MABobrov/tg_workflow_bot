@@ -1148,6 +1148,90 @@ async def invoice_finalize(
 ) -> None:
     """Create INVOICE_PAYMENT task and notify GD."""
     await cb.answer()
+    await _invoice_create_finalize(cb, state, db, config, notifier, integrations)
+
+
+async def _invoice_create_draft_alive(cb: CallbackQuery, state: FSMContext) -> bool:
+    """Черновик счёта ещё в FSM? Кнопки экрана повтора живут дольше черновика."""
+    data = await state.get_data()
+    if data.get("project_id") or data.get("parent_invoice_id"):
+        return True
+    await cb.message.answer(  # type: ignore[union-attr]
+        "⚠️ Черновик счёта потерян — начните заново кнопкой «➕ Создать счёт на оплату».",
+    )
+    return False
+
+
+@router.callback_query(F.data == "invoice_create:force")
+async def invoice_finalize_force(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
+    notifier: "Notifier", integrations: "IntegrationHub",
+) -> None:
+    """«➕ Отдельный расход» / «✅ Всё равно отправить» — без проверки повтора."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    if not await _invoice_create_draft_alive(cb, state):
+        return
+    await _invoice_create_finalize(cb, state, db, config, notifier, integrations, force=True)
+
+
+@router.callback_query(F.data.startswith("invoice_create:repl:"))
+async def invoice_finalize_replace(
+    cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
+    notifier: "Notifier", integrations: "IntegrationHub",
+) -> None:
+    """«🔁 Замена — старый снять» (owner 14.10)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    if not await _invoice_create_draft_alive(cb, state):
+        return
+    try:
+        old_id = int((cb.data or "").rsplit(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    await _invoice_create_finalize(
+        cb, state, db, config, notifier, integrations, force=True, replace_task_id=old_id,
+    )
+
+
+@router.callback_query(F.data == "invoice_create:cancel")
+async def invoice_create_cancel(cb: CallbackQuery, state: FSMContext, db: Database, config: Config) -> None:
+    """Отмена на экране повтора."""
+    await cb.answer("❌ Отменено")
+    await state.clear()
+    u = cb.from_user
+    role_raw = None
+    user_row = await db.get_user_optional(u.id) if u else None
+    if user_row:
+        role_raw = user_row.role
+    from ..keyboards import main_menu
+    await cb.message.answer(  # type: ignore[union-attr]
+        "❌ Отправка счёта отменена.",
+        reply_markup=main_menu(role_raw, is_admin=bool(u and u.id in (config.admin_ids or set())), unread=await db.count_unread_tasks(u.id), rp_tasks=await db.count_rp_role_tasks(u.id), rp_messages=await db.count_rp_role_messages(u.id)),
+    )
+
+
+async def _invoice_create_finalize(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: "Notifier",
+    integrations: "IntegrationHub",
+    *,
+    force: bool = False,
+    replace_task_id: int | None = None,
+) -> None:
+    """Создать INVOICE_PAYMENT и отправить ГД (тело прежнего invoice_finalize).
+
+    Повтор (owner 14.10, как в «📎 Счёт ГД»): по материнскому счёту и статье у ГД
+    уже висит неоплаченный счёт — экран «замена или отдельный расход?»; та же
+    сумма уже оплачена — «уже оплачен, отправить ещё раз?».
+    """
+    from ..utils import build_sinv_replace_prompt, close_gd_invoice_task, find_open_gd_invoice_tasks, gd_invoice_task_brief
+
     u = cb.from_user
     if not u:
         return
@@ -1161,6 +1245,36 @@ async def invoice_finalize(
     attachments = data.get("attachments", [])
     parent_invoice_id = data.get("parent_invoice_id")
     material_type = data.get("material_type")
+
+    if not force and parent_invoice_id and material_type:
+        try:
+            _amt = float(amount or 0)
+        except (TypeError, ValueError):
+            _amt = 0.0
+        pending = await find_open_gd_invoice_tasks(db, parent_invoice_id, str(material_type))
+        if pending:
+            _pinv = await db.get_invoice(int(parent_invoice_id))
+            text, kb = build_sinv_replace_prompt(
+                pending,
+                invoice_number=(_pinv.get("invoice_number") if _pinv else None) or f"#{parent_invoice_id}",
+                material_type=str(material_type), new_amount=_amt,
+                repl_cb="invoice_create:repl:", sep_cb="invoice_create:force",
+                cancel_cb="invoice_create:cancel",
+            )
+            await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
+            return
+        from .rp_new import _sinv_duplicate_warning
+        dup = await _sinv_duplicate_warning(db, int(parent_invoice_id), _amt, str(material_type))
+        if dup:
+            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+            await cb.message.answer(  # type: ignore[union-attr]
+                dup,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ Всё равно отправить", callback_data="invoice_create:force")],
+                    [InlineKeyboardButton(text="❌ Отмена", callback_data="invoice_create:cancel")],
+                ]),
+            )
+            return
 
     from ..services.assignment import resolve_default_assignee
     from ..enums import TaskType, TaskStatus, MaterialType
@@ -1212,6 +1326,33 @@ async def invoice_finalize(
             minio_object_key=a.get("minio_object_key"),
         )
 
+    # «🔁 Замена»: старый счёт ГД снимается после создания нового — только тот же
+    # счёт и статья и только пока ГД его не обработал.
+    replaced: str | None = None
+    replaced_task: dict | None = None
+    replace_failed = False
+    if replace_task_id:
+        try:
+            _old = await db.get_task(int(replace_task_id))
+        except Exception:
+            _old = None
+        _still = _old is not None and bool(parent_invoice_id) and any(
+            int(t["id"]) == int(replace_task_id)
+            for t in await find_open_gd_invoice_tasks(db, parent_invoice_id, str(material_type or ""))
+        )
+        if _still:
+            replaced_task = await close_gd_invoice_task(
+                db, int(replace_task_id), note="Счёт снят — заменён новым",
+                reason="replaced", actor_id=u.id,
+                extra={"replaced_by_task_id": int(task["id"])},
+            )
+        if replaced_task:
+            _ra, _rd = gd_invoice_task_brief(_old, config.timezone)  # type: ignore[arg-type]
+            replaced = f"{_ra:,.0f} ₽ от {_rd}".replace(",", " ")
+            await db.update_task_payload(int(task["id"]), {"replaces_task_id": int(replace_task_id)})
+        else:
+            replace_failed = True
+
     initiator = await get_initiator_label(db, u.id)
     project_code = data.get("project_code", "")
     msg = (
@@ -1231,6 +1372,8 @@ async def invoice_finalize(
     if material_type:
         from ..enums import MATERIAL_TYPE_LABELS
         msg += f"📦 Материал: {MATERIAL_TYPE_LABELS.get(material_type, material_type)}\n"
+    if replaced:
+        msg += f"🔁 Заменяет: {replaced}\n"
     if comment:
         msg += f"💬 {comment}\n"
     _URGENCY_LABEL = {"1h": "⚡ В течение 1 часа", "7h": "🕐 В течение 7 часов", "24h": "📅 В течение 24 часов"}
@@ -1244,6 +1387,8 @@ async def invoice_finalize(
         await notifier.safe_send_media(int(gd_id), a["file_type"], a["file_id"], caption=a.get("caption"))
 
     await integrations.sync_task(task, project_code=project_code)
+    if replaced_task:
+        await integrations.sync_task(replaced_task, project_code=project_code)
     await state.clear()
 
     from ..keyboards import main_menu
@@ -1253,7 +1398,9 @@ async def invoice_finalize(
         role_raw = user_row.role
     is_admin = u.id in (config.admin_ids or set())
     await cb.message.answer(  # type: ignore[union-attr]
-        "✅ Счёт на оплату отправлен ГД.",
+        "✅ Счёт на оплату отправлен ГД."
+        + (f"\n🔁 Старый счёт {replaced} снят — заменён новым." if replaced else "")
+        + ("\n⚠️ Старый счёт ГД уже обработал — он не снят." if replace_failed else ""),
         reply_markup=main_menu(role_raw, is_admin=is_admin, unread=await db.count_unread_tasks(u.id), rp_tasks=await db.count_rp_role_tasks(u.id), rp_messages=await db.count_rp_role_messages(u.id)),
     )
 

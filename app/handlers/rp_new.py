@@ -3917,35 +3917,16 @@ async def rp_sinv_cancel(cb: CallbackQuery, state: FSMContext, db: Database, con
 async def _sinv_duplicate_warning(
     db: Database, invoice_id: int, amount: float, material_type: str,
 ) -> str | None:
-    """Текст предупреждения, если такой счёт уже отправлен/оплачен.
+    """Текст предупреждения, если такой счёт уже оплачен.
 
     Дубль = тот же счёт (invoice_id) + та же сумма (±1 коп) + тот же тип.
+    Неоплаченный счёт ГД той же статьи (любая сумма) ловит раньше экран
+    «замена или отдельный расход?» (owner 14.10) — здесь только «уже оплачен».
     """
     from ..enums import MATERIAL_TYPE_LABELS
     EPS = 0.01
     mt_label = MATERIAL_TYPE_LABELS.get(material_type, material_type)
-    # 1) уже есть заявка на оплату (open/in_progress) с теми же параметрами
-    try:
-        pend = await db.search_tasks_by_payload(
-            field="invoice_id", value=str(invoice_id),
-            type_filter=[TaskType.INVOICE_PAYMENT], limit=30,
-        )
-    except Exception:
-        pend = []
-    for t in pend:
-        if t.get("status") not in (TaskStatus.OPEN, TaskStatus.IN_PROGRESS):
-            continue
-        p = try_json_loads(t.get("payload_json"))
-        same_inv = invoice_id in (p.get("invoice_id"), p.get("parent_invoice_id"))
-        if (same_inv and (p.get("material_type") or "") == material_type
-                and abs(float(p.get("amount") or 0) - amount) < EPS):
-            return (
-                "⚠️ <b>Похоже, этот счёт уже отправлен на оплату</b>\n"
-                f"Заявка #{t.get('id')} ещё ждёт ГД "
-                f"({mt_label}, {fmt_money(amount)}).\n\n"
-                "Отправить ещё раз?"
-            )
-    # 2) уже оплачен (есть supplier_payment с теми же параметрами)
+    # уже оплачен (есть supplier_payment с теми же параметрами)
     try:
         paid = await db.list_supplier_payments_for_invoice(invoice_id)
     except Exception:
@@ -3973,6 +3954,31 @@ async def rp_sinv_send_force(
     await _rp_sinv_finalize(cb.message, state, db, config, notifier, cb.from_user, force=True)  # type: ignore[arg-type]
 
 
+@router.callback_query(F.data.startswith("rp_sinv:repl:"))
+async def rp_sinv_send_replace(
+    cb: CallbackQuery, state: FSMContext, db: Database,
+    config: "Config", notifier: "Notifier",
+) -> None:
+    """«🔁 Замена — старый снять»: новый счёт уходит ГД, старый снимается.
+
+    Без StateFilter намеренно ([[feedback_fsm_old_buttons_trap]]); живость
+    черновика проверяется явно.
+    """
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    if not await _rp_sinv_draft_alive(cb.message, state):  # type: ignore[arg-type]
+        return
+    try:
+        old_id = int((cb.data or "").rsplit(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    await _rp_sinv_finalize(
+        cb.message, state, db, config, notifier, cb.from_user,  # type: ignore[arg-type]
+        force=True, replace_task_id=old_id,
+    )
+
+
 async def _rp_sinv_finalize(
     event_msg: Any,
     state: FSMContext,
@@ -3981,8 +3987,16 @@ async def _rp_sinv_finalize(
     notifier: Any,
     from_user: Any,
     force: bool = False,
+    replace_task_id: int | None = None,
 ) -> None:
-    """Создать задачу SUPPLIER_INVOICE и отправить ГД."""
+    """Создать задачу SUPPLIER_INVOICE и отправить ГД.
+
+    replace_task_id — РП выбрал «🔁 Замена»: старый счёт ГД снимается ПОСЛЕ
+    создания нового (отмена раньше оставила бы старый на месте), в карточке ГД —
+    строка «Заменяет».
+    """
+    from ..utils import build_sinv_replace_prompt, close_gd_invoice_task, find_open_gd_invoice_tasks, gd_invoice_task_brief
+
     data = await state.get_data()
 
     invoice_id = data.get("invoice_id")
@@ -3991,8 +4005,23 @@ async def _rp_sinv_finalize(
     sinv_amount: float = float(data.get("sinv_amount") or 0)
     sinv_material_type: str = data.get("sinv_material_type") or "extra_mat"
 
-    # Защита от дублей: тот же счёт + сумма + тип, уже отправленный или
-    # оплаченный, требует явного подтверждения «Всё равно отправить».
+    # Повторная отправка (owner 14.10): по счёту и статье у ГД уже висит
+    # неоплаченный счёт (любая сумма) — РП решает, замена это или отдельный расход.
+    if not force and invoice_id:
+        pending = await find_open_gd_invoice_tasks(db, invoice_id, sinv_material_type)
+        if pending:
+            _inv0 = await db.get_invoice(int(invoice_id))
+            text, kb = build_sinv_replace_prompt(
+                pending,
+                invoice_number=(_inv0.get("invoice_number") if _inv0 else None) or f"#{invoice_id}",
+                material_type=sinv_material_type, new_amount=sinv_amount,
+                repl_cb="rp_sinv:repl:", sep_cb="rp_sinv:force", cancel_cb="rp_sinv:cancel",
+            )
+            await event_msg.answer(text, reply_markup=kb)
+            return
+
+    # Защита от дублей: тот же счёт + сумма + тип, уже оплаченный, требует
+    # явного подтверждения «Всё равно отправить».
     if not force and invoice_id:
         dup = await _sinv_duplicate_warning(db, int(invoice_id), sinv_amount, sinv_material_type)
         if dup:
@@ -4058,6 +4087,33 @@ async def _rp_sinv_finalize(
             minio_object_key=a.get("minio_object_key"),
         )
 
+    # «🔁 Замена»: снять старый счёт ГД — только тот же счёт и статья (кнопка могла
+    # остаться от другого черновика) и только пока ГД его не обработал.
+    replaced: str | None = None
+    replace_failed = False
+    if replace_task_id:
+        try:
+            _old = await db.get_task(int(replace_task_id))
+        except Exception:
+            _old = None
+        _still = _old is not None and any(
+            int(t["id"]) == int(replace_task_id)
+            for t in await find_open_gd_invoice_tasks(db, invoice_id, sinv_material_type)
+        )
+        _closed = None
+        if _still:
+            _closed = await close_gd_invoice_task(
+                db, int(replace_task_id), note="Счёт снят — заменён новым",
+                reason="replaced", actor_id=from_user.id if from_user else 0,
+                extra={"replaced_by_task_id": int(task["id"])},
+            )
+        if _closed:
+            _ra, _rd = gd_invoice_task_brief(_old, config.timezone)  # type: ignore[arg-type]
+            replaced = f"{_ra:,.0f}₽ от {_rd}".replace(",", " ")
+            await db.update_task_payload(int(task["id"]), {"replaces_task_id": int(replace_task_id)})
+        else:
+            replace_failed = True
+
     initiator = await get_initiator_label(db, from_user.id) if from_user else "?"
     mat_label = MATERIAL_TYPE_LABELS.get(sinv_material_type, sinv_material_type)
     from ..utils import format_card_section, format_dt_iso
@@ -4066,6 +4122,8 @@ async def _rp_sinv_finalize(
         ("Счёт", f"№{num}"),
         ("Тип", mat_label),
     ]
+    if replaced:
+        _items.append(("Заменяет", replaced))
     due_label = format_dt_iso(due_at_iso, config.timezone) if due_at_iso else ""
     if due_label:
         _items.append(("Срок", due_label))
@@ -4108,6 +4166,8 @@ async def _rp_sinv_finalize(
         f"✅ Счёт от поставщика отправлен ГД (счёт №{num}).\n"
         f"📎 Файлов: {len(attachments)}"
         + (f"\n⏰ Срок: {due_label}" if due_label else "")
+        + (f"\n🔁 Старый счёт {replaced.replace('₽', ' ₽')} снят — заменён новым." if replaced else "")
+        + ("\n⚠️ Старый счёт ГД уже обработал — он не снят." if replace_failed else "")
     )
 
 

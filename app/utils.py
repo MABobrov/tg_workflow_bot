@@ -4754,6 +4754,200 @@ async def build_credit_wallet_card_ex(db: "Database", role: str, *, recent: int 
     return main, _meta
 
 
+# ── Неоплаченные счета ГД по тому же расходу (owner 14.10, §4 ТЗ 20261014) ──
+# Две защиты от двойной оплаты одного расхода: РП переотправляет счёт с новой
+# суммой (экран «замена или отдельный расход?») и хозяин кошелька сам платит
+# расход, по которому у ГД уже висит счёт (счёт ГД снимается после записи траты).
+
+
+async def find_open_gd_invoice_tasks(
+    db: "Database", invoice_id: Any, material_type: str, *, amount: float | None = None,
+) -> list[dict[str, Any]]:
+    """Неоплаченные счета поставщику у ГД по счёту и статье, старые сверху.
+
+    Задачи INVOICE_PAYMENT open/in_progress БЕЗ `kind` (кредит-заявки и
+    подтверждения трат кошелька — не счета поставщику). Счёт ищется по
+    payload.invoice_id ИЛИ parent_invoice_id: у старого пути «➕ Создать счёт
+    на оплату» есть только parent_invoice_id. amount задан — ещё и та же сумма
+    (±1 коп).
+    """
+    from .enums import TaskStatus, TaskType
+
+    try:
+        inv_id = int(invoice_id)
+    except (TypeError, ValueError):
+        return []
+    if not material_type:
+        return []
+    cur = await db.conn.execute(
+        "SELECT * FROM tasks WHERE type = ? AND status IN (?, ?) "
+        "ORDER BY created_at ASC, id ASC",
+        (TaskType.INVOICE_PAYMENT, TaskStatus.OPEN, TaskStatus.IN_PROGRESS),
+    )
+    out: list[dict[str, Any]] = []
+    for r in await cur.fetchall():
+        t = dict(r)
+        p = try_json_loads(t.get("payload_json"))
+        if not isinstance(p, dict) or p.get("kind"):
+            continue
+        ids: set[int] = set()
+        for k in ("invoice_id", "parent_invoice_id"):
+            try:
+                ids.add(int(p.get(k)))
+            except (TypeError, ValueError):
+                pass
+        if inv_id not in ids or (p.get("material_type") or "") != material_type:
+            continue
+        if amount is not None:
+            try:
+                if abs(float(p.get("amount") or 0) - float(amount)) >= 0.01:
+                    continue
+            except (TypeError, ValueError):
+                continue
+        out.append(t)
+    return out
+
+
+def gd_invoice_task_brief(task: dict[str, Any], tz_name: str = "Europe/Moscow") -> tuple[float, str]:
+    """(сумма, дата отправки «дд.мм» по МСК) счёта ГД — для строк «Заменяет» и «снят»."""
+    p = try_json_loads(task.get("payload_json"))
+    try:
+        amt = float((p or {}).get("amount") or 0)
+    except (TypeError, ValueError):
+        amt = 0.0
+    try:
+        day = from_iso(str(task.get("created_at") or "")).astimezone(tzinfo(tz_name)).strftime("%d.%m")
+    except Exception:
+        day = "—"
+    return amt, day
+
+
+async def close_gd_invoice_task(
+    db: "Database", task_id: int, *, note: str, reason: str, actor_id: int,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Снять неоплаченный счёт ГД с причиной. None — ГД уже успел его обработать.
+
+    Статус REJECTED с гардом open/in_progress. closed_note в payload показывают
+    старые кнопки карточки ГД (tasks.task_actions_part2) вместо «Этот счёт уже принят».
+    """
+    from .enums import TaskStatus
+
+    won = await db.update_task_status(
+        int(task_id), TaskStatus.REJECTED,
+        expected_statuses=(TaskStatus.OPEN, TaskStatus.IN_PROGRESS),
+    )
+    if won is None:
+        return None
+    patch = {"closed_note": note, "closed_reason": reason, "closed_by": actor_id, **(extra or {})}
+    task = await db.update_task_payload(int(task_id), patch)
+    try:
+        await db.audit(
+            actor_id=actor_id, action="gd_invoice_task_closed", entity="task",
+            entity_id=str(task_id), payload=patch,
+        )
+    except Exception:
+        log.debug("close_gd_invoice_task: audit failed task=%s", task_id, exc_info=True)
+    return task
+
+
+def build_sinv_replace_prompt(
+    pending: list[dict[str, Any]], *, invoice_number: str, material_type: str,
+    new_amount: float, repl_cb: str, sep_cb: str, cancel_cb: str,
+) -> tuple[str, Any]:
+    """Экран РП «замена старого или отдельный расход?» (макет owner 14.10).
+
+    repl_cb — префикс, к нему дописывается id старой задачи. Один неоплаченный
+    счёт — одна кнопка «Замена — старый снять», несколько — кнопка на каждый.
+    """
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from .enums import MATERIAL_TYPE_LABELS
+
+    mt = (MATERIAL_TYPE_LABELS.get(material_type, material_type) or "").lower()
+
+    def _rub(v: float) -> str:
+        return f"{v:,.0f}".replace(",", " ") + " ₽"
+
+    lines = []
+    for t in pending:
+        a, d = gd_invoice_task_brief(t)
+        lines.append(f"   {_rub(a)} — отправлен {d}")
+    head = "уже ждёт оплаты счёт" if len(pending) == 1 else "уже ждут оплаты счета"
+    text = (
+        f"⚠️ По счёту №{html.quote(str(invoice_number))} у ГД {head} на {mt}:\n"
+        + "\n".join(lines)
+        + f"\n\nНовый счёт: <b>{_rub(new_amount)}</b>\n"
+        "Это замена старого или отдельный расход?"
+    )
+    b = InlineKeyboardBuilder()
+    if len(pending) == 1:
+        b.button(text="🔁 Замена — старый снять", callback_data=f"{repl_cb}{int(pending[0]['id'])}")
+    else:
+        for t in pending:
+            a, d = gd_invoice_task_brief(t)
+            b.button(text=f"🔁 Заменить {_rub(a)} от {d}", callback_data=f"{repl_cb}{int(t['id'])}")
+    b.button(text="➕ Отдельный расход", callback_data=sep_cb)
+    b.button(text="❌ Отмена", callback_data=cancel_cb)
+    b.adjust(1)
+    return text, b.as_markup()
+
+
+async def close_gd_invoice_task_after_wallet_spend(
+    db: "Database", notifier: Any, *, invoice_id: Any, cost_type: str | None,
+    amount: float, wallet_role: str, actor_id: int, spend_id: Any = None,
+) -> str | None:
+    """Трата кошелька оплатила расход, по которому у ГД висит счёт, — снять счёт ГД.
+
+    Тот же расход = тот же счёт + статья + сумма (±1 коп); другая сумма может быть
+    другим расходом — не трогаем. Монтаж не трогаем: ЗП монтажа закрывает
+    resolve_installer_zp_after_wallet_spend. Снимается один, самый старый счёт.
+    ГД (если не он сам внёс) получает сообщение. Возврат — строка для карточки
+    исполнителя («45 424 ₽ от 25.08») или None.
+    """
+    from .enums import MATERIAL_TYPE_LABELS
+
+    if not invoice_id or not cost_type or cost_type == "montazh":
+        return None
+    found = await find_open_gd_invoice_tasks(db, invoice_id, cost_type, amount=amount)
+    if not found:
+        return None
+    t = found[0]
+    wl = credit_wallet_label(wallet_role)
+    closed = await close_gd_invoice_task(
+        db, int(t["id"]), note=f"Счёт снят — оплачен из кредит-кошелька {wl}",
+        reason="paid_from_wallet", actor_id=actor_id,
+        extra={"wallet_role": wallet_role, "credit_spend_id": spend_id},
+    )
+    if closed is None:
+        return None
+    a, d = gd_invoice_task_brief(t)
+    a_s = f"{a:,.0f}".replace(",", " ")
+    p = try_json_loads(t.get("payload_json"))
+    num = str((p or {}).get("invoice_number") or "").strip()
+    mt = MATERIAL_TYPE_LABELS.get(cost_type, cost_type)
+    async def _name(uid: Any) -> str:
+        try:
+            usr = await db.get_user_optional(int(uid))
+        except Exception:
+            usr = None
+        if usr and usr.full_name:
+            return html.quote(usr.full_name)
+        return await get_initiator_label(db, int(uid))
+
+    sid = (p or {}).get("sender_id") or t.get("created_by")
+    sender = await _name(sid) if sid else "—"
+    who = await _name(actor_id)
+    gd_id = t.get("assigned_to")
+    if gd_id and int(gd_id) != int(actor_id):
+        await notifier.safe_send(
+            int(gd_id),
+            f"🗑 Снят счёт на оплату №{html.quote(num)} · {mt} · {a_s} ₽ "
+            f"(от {sender}, {d}) — оплачен из кредит-кошелька {wl}, "
+            f"внёс {who}.",
+        )
+    return f"{a_s} ₽ от {d}"
+
+
 async def apply_credit_wallet_spend(
     db: "Database",
     integrations: Any,

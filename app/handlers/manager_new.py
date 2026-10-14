@@ -100,7 +100,7 @@ from ..states import (
     SelfReminderSG,
     ZameryRequestSG,
 )
-from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, build_funds_card, build_invoice_section, card_num as _card_num, close_condition_core_rows, compute_plan_profit, credit_wallet_label, fmt_money, format_card, format_card_section, format_invoice_card_standard, format_manager_invoices_overview, format_manager_recalc_card, format_materials_list, get_initiator_label, invoice_end_fin_rows, manager_zp_net_payout, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_after_wallet_spend, try_json_loads, credit_zp_montazh_unpaid
+from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, close_gd_invoice_task_after_wallet_spend, find_open_gd_invoice_tasks, gd_invoice_task_brief, build_funds_card, build_invoice_section, card_num as _card_num, close_condition_core_rows, compute_plan_profit, credit_wallet_label, fmt_money, format_card, format_card_section, format_invoice_card_standard, format_manager_invoices_overview, format_manager_recalc_card, format_materials_list, get_initiator_label, invoice_end_fin_rows, manager_zp_net_payout, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_after_wallet_spend, try_json_loads, credit_zp_montazh_unpaid
 from ._mirror import collect_attachment
 from .auth import RoleFilter, require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
@@ -4634,8 +4634,12 @@ async def cw_purpose(message: Message, state: FSMContext) -> None:
     )
 
 
-async def _cw_show_confirm(target: Message, state: FSMContext) -> None:
-    """Экран подтверждения расхода кредита (§B: + пометка вложения)."""
+async def _cw_show_confirm(target: Message, state: FSMContext, db: Database | None = None) -> None:
+    """Экран подтверждения расхода кредита (§B: + пометка вложения).
+
+    owner 14.10: если у ГД ждёт оплаты счёт на этот же расход (счёт + статья +
+    сумма), экран говорит, что после записи траты он будет снят.
+    """
     import html as _html
     await state.set_state(CreditWalletSpendSG.confirm)
     data = await state.get_data()
@@ -4650,6 +4654,28 @@ async def _cw_show_confirm(target: Message, state: FSMContext) -> None:
     else:
         bind_s = "Без привязки → «Баланс компании»"
     file_line = "\n  📎 Вложение приложено" if data.get("attach_file_id") else ""
+    gd_line = ""
+    if db is not None and data.get("mode") == "bound" and data.get("invoice_id") \
+            and data.get("cost_type") and data.get("cost_type") != "montazh":
+        try:
+            _gd = await find_open_gd_invoice_tasks(
+                db, data.get("invoice_id"), str(data.get("cost_type")), amount=amount,
+            )
+            if _gd:
+                _ga, _gdd = gd_invoice_task_brief(_gd[0])
+                _gp = try_json_loads(_gd[0].get("payload_json")) or {}
+                _sid = _gp.get("sender_id") or _gd[0].get("created_by")
+                _su = await db.get_user_optional(int(_sid)) if _sid else None
+                _who = f" ({_html.escape(_su.full_name)})" if (_su and _su.full_name) else ""
+                _mt = _CREDIT_COST_LABELS.get(str(data.get("cost_type")), "").lower()
+                _gas = f"{_ga:,.0f}".replace(",", " ")
+                gd_line = (
+                    "\n\n  ⚠️ У ГД ждёт оплаты этот же расход:\n"
+                    f"     счёт на {_mt} {_gas} ₽ от {_gdd}{_who}\n"
+                    "  После записи он будет снят — оплачено из кошелька."
+                )
+        except Exception:
+            log.debug("cw confirm: gd invoice lookup failed", exc_info=True)
     b = InlineKeyboardBuilder()
     b.button(text="✅ Записать", callback_data="cwspend:confirm")
     b.button(text="❌ Отмена", callback_data="cwspend:cancel")
@@ -4660,7 +4686,7 @@ async def _cw_show_confirm(target: Message, state: FSMContext) -> None:
         f"  {bind_s}\n"
         f"  Сумма: <b>{amount:,.0f}</b> ₽\n"
         f"  Назначение: {_html.escape(desc)}"
-        f"{file_line}",
+        f"{file_line}{gd_line}",
         reply_markup=b.as_markup(),
     )
 
@@ -4732,11 +4758,11 @@ async def rp_start_credit_to_manager(
         )
     except Exception:
         pass
-    await _cw_show_confirm(cb.message, state)  # type: ignore[arg-type]
+    await _cw_show_confirm(cb.message, state, db)  # type: ignore[arg-type]
 
 
 @router.callback_query(F.data == "cwspend:attach:skip", CreditWalletSpendSG.attach)
-async def cw_attach_skip(cb: CallbackQuery, state: FSMContext) -> None:
+async def cw_attach_skip(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """§B: «Пропустить» вложение → экран подтверждения."""
     await state.update_data(attach_file_id=None, attach_file_type=None)
     await cb.answer()
@@ -4744,7 +4770,7 @@ async def cw_attach_skip(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
     except Exception:
         pass
-    await _cw_show_confirm(cb.message, state)  # type: ignore[arg-type]
+    await _cw_show_confirm(cb.message, state, db)  # type: ignore[arg-type]
 
 
 @router.message(CreditWalletSpendSG.attach)
@@ -4771,7 +4797,7 @@ async def cw_attach_file(message: Message, state: FSMContext, db: Database) -> N
         )
         return
     await state.update_data(attach_file_id=file_id, attach_file_type=file_type)
-    await _cw_show_confirm(message, state)
+    await _cw_show_confirm(message, state, db)
 
 
 @router.callback_query(F.data == "cwspend:cancel")
@@ -4967,6 +4993,19 @@ async def _cw_confirm_impl(
                     spend_id, exc_info=True,
                 )
 
+        # Счёт ГД на этот же расход (owner 14.10): трата хозяина его оплатила — снять,
+        # иначе ГД оплатил бы расход второй раз.
+        gd_closed: str | None = None
+        if mode == "bound" and inv_id:
+            try:
+                gd_closed = await close_gd_invoice_task_after_wallet_spend(
+                    db, notifier, invoice_id=int(inv_id), cost_type=cost_type,
+                    amount=amount, wallet_role=wallet_role, actor_id=u.id,
+                    spend_id=spend_id,
+                )
+            except Exception:
+                log.warning("cw_confirm: gd invoice close failed spend=%s", spend_id, exc_info=True)
+
         # Триггер наёмной ЗП — раньше срабатывал ПОСЛЕ ✅ГД, в chat_proxy
         # (_credit_spend_finalize). Со снятием гейта этот путь сюда больше не
         # доходит, поэтому хук переносится вместе с ним: без него оплата стекла/
@@ -5003,7 +5042,7 @@ async def _cw_confirm_impl(
                         ("Привязка", bind_line),
                         ("Назначение", _html.escape(purpose)),
                         ("№ расхода", f"#{spend_id}"),
-                    ],
+                    ] + ([("Счёт ГД", f"снят — {gd_closed}")] if gd_closed else []),
                     total=fmt_money(amount), width=38, compact=True,
                 ),
                 reply_markup=_cw_edit_actions_kb(int(spend_id)),

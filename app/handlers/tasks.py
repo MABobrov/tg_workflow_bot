@@ -827,6 +827,16 @@ async def task_actions_part2(
         await cb.answer("Эта задача назначена другому человеку", show_alert=True)
         return
 
+    # Счёт, снятый ботом (owner 14.10: заменён новым / оплачен из кошелька), — старые
+    # кнопки карточки ГД отвечают причиной, а не «Этот счёт уже принят».
+    if (action in {"inv_received", "inv_pay", "inv_hold", "inv_reject"}
+            and task.get("type") == TaskType.INVOICE_PAYMENT
+            and task.get("status") not in active_statuses):
+        _closed_note = (try_json_loads(task.get("payload_json")) or {}).get("closed_note")
+        if _closed_note:
+            await cb.answer(str(_closed_note), show_alert=True)
+            return
+
     project = None
     if task.get("project_id"):
         try:

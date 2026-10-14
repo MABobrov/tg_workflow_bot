@@ -43,7 +43,7 @@ from ..services.notifier import Notifier
 from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..states import ChatProxySG, CreditPaymentExecuteSG, CreditPaymentReceiptSG, CreditTaskRejectSG, CreditTaskSG, CreditWalletSpendSG, GdTaskCreateSG, InvoicePaymentSG, ReplyToGDSG
-from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card_ex, build_gd_task_labels, credit_wallet_label, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_after_wallet_spend, utcnow, to_iso
+from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card_ex, close_gd_invoice_task_after_wallet_spend, build_gd_task_labels, credit_wallet_label, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_after_wallet_spend, utcnow, to_iso
 from ._mirror import collect_attachment, mirror_attachment
 
 log = logging.getLogger(__name__)
@@ -1513,6 +1513,19 @@ async def _finalize_credit_execution(
                 "credit_exec: installer-zp anti-double hook failed tid=%s", tid, exc_info=True
             )
 
+    # Счёт ГД на этот же расход (owner 14.10): кошелёк его оплатил — снять, иначе ГД
+    # оплатил бы расход второй раз. Монтаж закрывает хук выше.
+    gd_closed: str | None = None
+    if p.get("mode") == "bound" and p.get("invoice_id"):
+        try:
+            gd_closed = await close_gd_invoice_task_after_wallet_spend(
+                db, notifier, invoice_id=p.get("invoice_id"), cost_type=p.get("cost_type"),
+                amount=float(p.get("amount") or 0), wallet_role=p.get("wallet_role") or "",
+                actor_id=int(actor_id), spend_id=spend_id,
+            )
+        except Exception:
+            log.warning("credit_exec: gd invoice close failed tid=%s", tid, exc_info=True)
+
     # Кредитная ветка того же триггера, что в tasks._invoice_pp_finalize_core:
     # оплачены стекло/доп.материалы по НАЁМНОМУ счёту → задача ГД на ЗП монтаж
     # (owner 06.08). Ставится РЯДОМ с montazh-хуком выше, а не внутри него: тот
@@ -1571,7 +1584,7 @@ async def _finalize_credit_execution(
             ("Назначение", _html.escape(p.get("purpose") or "—")),
             ("Инициатор", _html.escape(initiator_name)),
             ("Исполнил", _html.escape(executor_name)),
-        ],
+        ] + ([("Счёт ГД", f"снят — {gd_closed}")] if gd_closed else []),
         total=fmt_money(amount), width=38, compact=True,
     )
     recipients: list[int] = []
@@ -1821,10 +1834,23 @@ async def _credit_spend_finalize(
             log.debug("cw_gd finalize: audit failed", exc_info=True)
         wlabel = credit_wallet_label(p.get("wallet_role") or "")
         amount = float(p.get("amount") or 0)
+        # Счёт ГД на этот же расход (owner 14.10) — трата его оплатила, снять.
+        gd_closed: str | None = None
+        if p.get("mode") == "bound" and p.get("invoice_id"):
+            try:
+                gd_closed = await close_gd_invoice_task_after_wallet_spend(
+                    db, notifier, invoice_id=p.get("invoice_id"), cost_type=p.get("cost_type"),
+                    amount=amount, wallet_role=p.get("wallet_role") or "",
+                    actor_id=cb.from_user.id, spend_id=spend_id,
+                )
+            except Exception:
+                log.warning("cw_gd finalize: gd invoice close failed tid=%s", tid, exc_info=True)
         _items = [
             ("Назначение", _html.escape(p.get("purpose") or "—")),
             ("№ расхода", f"#{spend_id}" if spend_id else "—"),
         ]
+        if gd_closed:
+            _items.append(("Счёт ГД", f"снят — {gd_closed}"))
         if pp_files:
             _items.append(("Вложение", f"{len(pp_files)} файл(ов)"))
         _done = format_card_section(
