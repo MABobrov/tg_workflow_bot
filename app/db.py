@@ -7140,7 +7140,7 @@ class Database:
         счета (status=ended) считаются с CX=CV → residual=0.
         """
         cur = await self.conn.execute(
-            "SELECT created_at FROM invoices WHERE id = ? AND is_credit = 1",
+            "SELECT created_at, creator_role FROM invoices WHERE id = ? AND is_credit = 1",
             (invoice_id,),
         )
         row = await cur.fetchone()
@@ -7148,12 +7148,15 @@ class Database:
             return 0.0
         current_created = row["created_at"]
 
+        # Только счета ТОГО ЖЕ кошелька (creator_role): у каждого менеджера свой
+        # котёл. Без фильтра первый кредит-счёт НПН («НПН 1», 13.10) унаследовал
+        # остаток КВ 15 = 94 500 из кошелька КВ (owner 14.10: «верно 193»).
         cur = await self.conn.execute(
             "SELECT id, amount, outstanding_debt, status, montazh_stage "
             "FROM invoices "
-            "WHERE is_credit = 1 AND id != ? AND created_at < ? "
+            "WHERE is_credit = 1 AND id != ? AND created_at < ? AND creator_role IS ? "
             "ORDER BY created_at ASC",
-            (invoice_id, current_created),
+            (invoice_id, current_created, row["creator_role"]),
         )
         rows = [dict(r) for r in await cur.fetchall()]
 
