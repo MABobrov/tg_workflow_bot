@@ -1289,10 +1289,12 @@ async def _invoice_create_finalize(
 
     # Грузчики — без дедлайна (owner 09.09): суммы поданы, а не сумма важна,
     # а срочность, которую напоминание всё равно создавало ложным шумом ночью.
+    # urgency нужна и грузчикам: ниже по ней строка «Срочность» в сообщении ГД —
+    # без неё UnboundLocalError ронял отправку уже ПОСЛЕ создания задачи.
+    urgency = data.get("urgency", "1h")
     if material_type == MaterialType.LOADERS:
         due_at_iso = None
     else:
-        urgency = data.get("urgency", "1h")
         _URGENCY_DELTA = {"1h": timedelta(hours=1), "7h": timedelta(hours=7), "24h": timedelta(hours=24)}
         due = utcnow() + _URGENCY_DELTA.get(urgency, timedelta(hours=1))
         due_at_iso = to_iso(due)
@@ -1377,7 +1379,10 @@ async def _invoice_create_finalize(
     if comment:
         msg += f"💬 {comment}\n"
     _URGENCY_LABEL = {"1h": "⚡ В течение 1 часа", "7h": "🕐 В течение 7 часов", "24h": "📅 В течение 24 часов"}
-    msg += f"⏰ Срочность: {_URGENCY_LABEL.get(urgency, urgency)}\n"
+    if due_at_iso:
+        msg += f"⏰ Срочность: {_URGENCY_LABEL.get(urgency, urgency)}\n"
+    else:
+        msg += "⏰ Срочность: без срока\n"
 
     from ..keyboards import task_actions_kb
     await notifier.safe_send(int(gd_id), msg, reply_markup=task_actions_kb(task))
