@@ -57,6 +57,12 @@ def _compute_expense_total_new(row: dict[str, Any]) -> float:
     return float(cashless or 0) + float(other or 0)
 
 
+# 🔴 Скрытая запись «Баланса компании» (owner 14.10: «Снятие САБ» на лист БК не пишется — фиксируется
+# только в кредит-кошельке). Запись НЕ удаляется: лист круговой (БК → «Затраты» → IMPORTRANGE → «Импорт ОП»),
+# и без живой записи `_strip_own_echo` не узнаёт её эхо — оно печатается вечно как «строка офиса»
+# (удаление 02.09 → восстановление 09.09). Скрытая запись гасит своё эхо, но на лист и в итоги не идёт.
+OP_ENTRY_SOURCE_HIDDEN = "hidden_echo_guard"
+
 # ── РП оклад → аванс (A2): маркеры взаимоисключения «один оклад в месяц» ──
 RP_SALARY_MONTHLY = 66_000  # оклад РП/мес (синхронно td.py:42, rp.py RP_SALARY_MONTHLY_AMOUNT)
 # Вторая форма выплаты (owner 12.08): наличными платится ТЕЛО, без надбавки на налог —
@@ -2727,24 +2733,32 @@ class Database:
 
     async def list_op_company_entries(
         self, year: int | None = None, month: int | None = None,
+        *, include_hidden: bool = False,
     ) -> list[dict[str, Any]]:
-        """Все записи (опц. фильтр по году/месяцу), сортировка по дате."""
+        """Все записи (опц. фильтр по году/месяцу), сортировка по дате.
+
+        Скрытые (`OP_ENTRY_SOURCE_HIDDEN`) по умолчанию не отдаются; include_hidden=True —
+        только для вычитания эха в sheets (там их отфильтровывают сразу после).
+        """
+        hid = "" if include_hidden else " AND source != ?"
+        hp: tuple = () if include_hidden else (OP_ENTRY_SOURCE_HIDDEN,)
         if year is not None and month is not None:
             cur = await self.conn.execute(
-                "SELECT * FROM op_company_entries WHERE year = ? AND month = ? "
+                "SELECT * FROM op_company_entries WHERE year = ? AND month = ?" + hid + " "
                 "ORDER BY COALESCE(date_iso, date_display), id",
-                (year, month),
+                (year, month) + hp,
             )
         elif year is not None:
             cur = await self.conn.execute(
-                "SELECT * FROM op_company_entries WHERE year = ? "
+                "SELECT * FROM op_company_entries WHERE year = ?" + hid + " "
                 "ORDER BY year, month, COALESCE(date_iso, date_display), id",
-                (year,),
+                (year,) + hp,
             )
         else:
             cur = await self.conn.execute(
-                "SELECT * FROM op_company_entries "
+                "SELECT * FROM op_company_entries WHERE 1 = 1" + hid + " "
                 "ORDER BY year, month, COALESCE(date_iso, date_display), id",
+                hp,
             )
         return [dict(r) for r in await cur.fetchall()]
 
@@ -2766,9 +2780,9 @@ class Database:
                 COALESCE(SUM(loan), 0)           AS loan,
                 COALESCE(SUM(other_amount), 0)   AS other
             FROM op_company_entries
-            WHERE year = ? AND month = ?
+            WHERE year = ? AND month = ? AND source != ?
             """,
-            (year, month),
+            (year, month, OP_ENTRY_SOURCE_HIDDEN),
         )
         r = await cur.fetchone()
         if r is None or (r["cnt"] or 0) == 0:

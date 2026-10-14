@@ -12,6 +12,8 @@ from typing import Any
 import gspread
 from google.oauth2.service_account import Credentials
 
+from ..db import OP_ENTRY_SOURCE_HIDDEN
+
 from ..utils import (
     PROFIT_TAX_RATE,
     compute_profit_recalc,
@@ -2870,12 +2872,14 @@ class GoogleSheetsService:
         # ДВАЖДЫ: сначала как основа для вычитания эха, потом как второе
         # слагаемое итога.
         try:
-            db_rows = await db.list_op_company_entries()
+            db_rows = await db.list_op_company_entries(include_hidden=True)
         except Exception as ex:
             log.warning("op_monthly: list_op_company_entries failed (table missing?): %s", ex)
             db_rows = []
 
         sheet_journal, _ = self._strip_own_echo(sheet_journal, db_rows)
+        # Скрытые записи (owner 14.10, «Снятие САБ») только гасят своё эхо — в итог месяца не входят.
+        db_rows = [r for r in db_rows if r.get("source") != OP_ENTRY_SOURCE_HIDDEN]
         sheet_journal, _ = self._collapse_moneyless_twins(sheet_journal)
         sheet_journal, _ = self._drop_stray_rows(sheet_journal)
 
@@ -3280,6 +3284,12 @@ class GoogleSheetsService:
                 drop = False
                 if not _cr_money(row) and dm2 is not None and dm2 != blk:
                     drop = True                                   # R1
+                elif _cr_money(row) and not d2 and not has_desc2:
+                    # R2 и для кредит-половины (owner 14.10 «да, убирать»): до этого правило
+                    # стояло только у б/н, и связка копила безымянные суммы — Авг 47 000 → 94 000,
+                    # Сен 42 684 → 185 368 (итог месяца вернулся строкой). Замер журнала 14.10:
+                    # таких кредит-половин ровно 4, настоящих среди них нет.
+                    drop = True                                   # R2
                 elif (_cr_money(row) and dm2 is not None and dm2 != blk
                       and (dm2, d2, cls._echo_norm_amount(row.get("amount_other"))) in home_cr):
                     drop = True                                   # R3
@@ -3413,6 +3423,13 @@ class GoogleSheetsService:
                 cr_idx.setdefault((y, m, cls._echo_norm_desc(r.get("description_credit"))), []).append(
                     (cls._echo_norm_amount(r.get("other_amount")),
                      str(r.get("date_other_display") or "").strip()))
+        # Займ записи по (год, месяц, дата, сумма) — для эха, потерявшего описание (см. ниже).
+        ln_idx = {
+            (int(r.get("year") or 0), int(r.get("month") or 0),
+             str(r.get("date_display") or "").strip(), cls._echo_norm_amount(r.get("loan")))
+            for r in db_entries
+            if r.get("loan") not in (None, "") and str(r.get("date_display") or "").strip()
+        }
 
         def _hit(idx: dict[tuple, list[tuple]], key: tuple,
                  j_amount: Any, j_date: Any) -> bool:
@@ -3447,6 +3464,16 @@ class GoogleSheetsService:
                     row["taxes"] = None
                     row["loan"] = None
                     killed += 1
+            elif (row.get("loan") not in (None, "")
+                  and row.get("amount_cashless") in (None, "")
+                  and (y, m, str(row.get("date_cashless") or "").strip(),
+                       cls._echo_norm_amount(row.get("loan"))) in ln_idx):
+                # Эхо займа, потерявшее описание в зеркале (14.10: 24.06 −98 000 «Снятие САБ»
+                # пришло в журнал без текста). По описанию его не узнать — узнаём по точным
+                # месяцу, дате и сумме займа; без даты не гасим.
+                row["date_cashless"] = ""
+                row["loan"] = None
+                killed += 1
             if str(row.get("description_credit") or "").strip():
                 k = (y, m, cls._echo_norm_desc(row.get("description_credit")))
                 if _hit(cr_idx, k, row.get("amount_other"), row.get("date_other")):
@@ -3487,7 +3514,7 @@ class GoogleSheetsService:
 
         # БД-записи из op_company_entries, формат same-as read_op_journal_rows_sync
         try:
-            db_entries = await db.list_op_company_entries()
+            db_entries = await db.list_op_company_entries(include_hidden=True)
         except Exception as ex:
             log.warning("balance_company: list_op_company_entries failed: %s", ex)
             db_entries = []
@@ -3496,6 +3523,8 @@ class GoogleSheetsService:
         # (круговая связка owner). Без этого выход = вход + записи БД, то есть
         # по копии каждой записи за синк. Подробности — в _strip_own_echo.
         sheet_journal, _echo_killed = self._strip_own_echo(sheet_journal, db_entries)
+        # Скрытые записи (owner 14.10, «Снятие САБ») гасят своё эхо выше, но на лист не печатаются.
+        db_entries = [r for r in db_entries if r.get("source") != OP_ENTRY_SOURCE_HIDDEN]
         sheet_journal, _twin_killed = self._collapse_moneyless_twins(sheet_journal)
         sheet_journal, _stray_killed = self._drop_stray_rows(sheet_journal)
         _twin_killed += _stray_killed
