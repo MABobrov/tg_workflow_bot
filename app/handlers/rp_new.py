@@ -371,6 +371,18 @@ async def _rp_sent_invoice_tasks(db: Database, user_id: int) -> list[dict[str, A
         if isinstance(payload, dict) and payload.get("kind"):
             continue  # кредит-флоу — не счёт поставщику
         out.append(t)
+    # Порядок — по категориям затрат (как разделы экрана ГД «Счета на оплату»,
+    # порядок CATS), внутри категории — прежний. Сортировка ЗДЕСЬ, а не в
+    # карточке: блоки карточки и кнопки «✖️» (`_sent_folder_btn`) обязаны идти
+    # одним порядком, иначе кнопка не соответствует блоку (owner 14.10).
+    from ..rp_start_card import CATS, _mt_to_cat
+    _rank = {k: i for i, (k, *_rest) in enumerate(CATS)}
+
+    def _cat_rank(t: dict[str, Any]) -> int:
+        p = try_json_loads(t.get("payload_json") or "{}") or {}
+        return _rank.get(_mt_to_cat(p.get("material_type") or ""), len(_rank))
+
+    out.sort(key=_cat_rank)
     return out
 
 
@@ -383,15 +395,17 @@ async def _build_rp_sent_invoices_card(
     Зеркало ГД-карточки (`_build_gd_invoices_view` в gd.py): те же задачи
     INVOICE_PAYMENT и тот же дизайн, но выборка по СОЗДАТЕЛЮ, а не по
     исполнителю (задача создаётся РП с created_by=РП, assigned_to=ГД —
-    rp.py invoice_finalize). Блок = 3 строки:
+    rp.py invoice_finalize). С 14.10 (owner: «с распределением по группам
+    затрат металл стекло и т.д.») — по категориям, как экран ГД: сверху сводка
+    «категория — сумма» + «Итого», ниже разделы с заголовком категории, блок =
+    2 строки:
 
-        {иконка} {Категория}                {сумма}
-        №{номер счёта} · {улица}
+        №{номер счёта} · {улица}              {сумма}
         {статус} · мен. {КВ/КИА/НПН}
 
-    У ГД третья строка — «от: {инициатор} ({роль})»; для РП инициатор всегда
+    У ГД вторая строка — «от: {инициатор} ({роль})»; для РП инициатор всегда
     он сам, поэтому на её месте статус задачи. Формулировки — существующий
-    generic `task_status_label` (Новая / В работе), user 15.07. Внизу «Итого».
+    generic `task_status_label` (Новая / В работе), user 15.07.
 
     ⚠️ `tasks` принимает УЖЕ ОТФИЛЬТРОВАННЫЙ список — только из
     `_rp_sent_invoice_tasks`. Сама выборку не делает намеренно: свой запрос
@@ -417,7 +431,7 @@ async def _build_rp_sent_invoices_card(
     if not tasks:
         return None
 
-    # Потолок показа — модульный `_SENT_MAX_BLOCKS`. Блок = 3 строки (~46 знаков),
+    # Потолок показа — модульный `_SENT_MAX_BLOCKS`. Блок = 2–3 строки (~40 знаков),
     # сообщение Telegram — 4096 символов на ВСЁ, включая шапку дашборда. Выборка
     # идёт с limit=100, и без потолка на трёх десятках счетов сообщение перестало
     # бы отправляться целиком: _answer_or_edit (:170) глотает падение edit_text и
@@ -432,19 +446,27 @@ async def _build_rp_sent_invoices_card(
 
     _money = _sent_money
 
+    # Разделы по категориям затрат — как у ГД («Счета на оплату», gdcats 15.08),
+    # owner 14.10: «с распределением по группам затрат металл стекло и т.д.».
+    # Сверху сводка «категория — сумма» + «Итого» (по ВСЕМ задачам, вкл. скрытые
+    # потолком), ниже разделы: заголовок категории, блок = 2 строки:
+    #     №{номер счёта} · {улица}              {сумма}
+    #     {статус} · мен. {КВ/КИА/НПН}
+    # Порядок задач уже по категориям (`_rp_sent_invoice_tasks`) — разделы идут
+    # подряд, и кнопки «✖️» стоят тем же порядком.
     INDENT = "   "
-    blocks: list[list[tuple[str, str]]] = []  # блок = [(label, value)]; value="" → без right-align
-    total = 0.0
+    cat_total: dict[str, float] = {}
+    sections: list[tuple[str, list[list[tuple[str, str]]]]] = []
+    shown = 0
     for t in tasks:
         payload = try_json_loads(t.get("payload_json") or "{}") or {}
         inv_num = payload.get("invoice_number") or f"#{t['id']}"
         amount = float(payload.get("amount") or 0)
-        total += amount
-        if len(blocks) >= _MAX_BLOCKS:
-            continue  # деньги в «Итого» уже посчитаны, блок не рисуем
         cat = _mt_to_cat(payload.get("material_type") or "")
-        icon = icon_by_cat.get(cat, "🧱")
-        cat_title = title_by_cat.get(cat, "Прочее")
+        cat_total[cat] = cat_total.get(cat, 0.0) + amount
+        if shown >= _MAX_BLOCKS:
+            continue  # деньги в сводке уже посчитаны, блок не рисуем
+        shown += 1
         inv_id = payload.get("invoice_id") or payload.get("parent_invoice_id")
         addr = ""
         if inv_id:
@@ -452,41 +474,52 @@ async def _build_rp_sent_invoices_card(
             addr = (inv or {}).get("object_address") or ""
         street = _street(addr, 14) if addr else "—"
         mgr = "КИА" if "КИА" in inv_num else ("НПН" if "НПН" in inv_num else "КВ")
-        blocks.append([
-            (f"{icon} {cat_title}", _money(amount)),
-            (f"№{html.escape(str(inv_num))} · {html.escape(street)}", ""),
+        if not sections or sections[-1][0] != cat:
+            sections.append((cat, []))
+        sections[-1][1].append([
+            (f"№{html.escape(str(inv_num))} · {html.escape(street)}", _money(amount)),
             (f"{html.escape(task_status_label(t.get('status')))} · мен. {mgr}", ""),
         ])
 
-    foot = [("Итого", _money(total))]
+    def _cat_title(k: str) -> str:
+        return f"{icon_by_cat.get(k, '🧱')} {title_by_cat.get(k, 'Прочее')}"
+
+    cats = [k for (k, *_rest) in CATS if k in cat_total]
+    sum_rows = [(_cat_title(k), _money(cat_total[k])) for k in cats]
+    foot = [("Итого", _money(sum(cat_total.values())))]
 
     # Динамическая ширина: max визуальная по всем right-align и левым строкам —
-    # чтобы суммы и footer сходились в один столбец (идентично ГД).
+    # чтобы суммы сводки, разделов и footer сходились в один столбец.
     raw: list[int] = []
-    for blk in blocks:
-        for lbl, val in blk:
-            raw.append(vw(INDENT) + vw(lbl) + (1 + vw(val) if val else 0))
-    for lbl, val in foot:
+    for lbl, val in sum_rows + foot:
         raw.append(vw(INDENT) + vw(lbl) + 1 + vw(val))
+    for k, blocks in sections:
+        raw.append(vw(INDENT) + vw(_cat_title(k)))
+        for blk in blocks:
+            for lbl, val in blk:
+                raw.append(vw(INDENT) + vw(lbl) + (1 + vw(val) if val else 0))
     width = max(raw) if raw else 30
 
     def _rline(lbl: str, val: str) -> str:
         pad = max(1, width - vw(INDENT) - vw(lbl) - vw(val))
         return f"{INDENT}{lbl}{' ' * pad}{val}"
 
-    body_lines: list[str] = []
-    for i, blk in enumerate(blocks):
-        if i:
-            body_lines.append("")  # пустая строка-разделитель между блоками
-        for lbl, val in blk:
-            body_lines.append(_rline(lbl, val) if val else f"{INDENT}{lbl}")
-    _hidden = len(tasks) - len(blocks)
+    rule = INDENT + "━" * max(3, width - vw(INDENT))
+    body_lines: list[str] = [_rline(lbl, val) for lbl, val in sum_rows]
+    body_lines.append(rule)
+    body_lines += [_rline(lbl, val) for lbl, val in foot]
+    for k, blocks in sections:
+        body_lines.append("")
+        body_lines.append(f"{INDENT}{_cat_title(k)}")
+        for j, blk in enumerate(blocks):
+            if j:
+                body_lines.append("")  # пустая строка-разделитель между блоками
+            for lbl, val in blk:
+                body_lines.append(_rline(lbl, val) if val else f"{INDENT}{lbl}")
+    _hidden = len(tasks) - shown
     if _hidden > 0:
         body_lines.append("")
         body_lines.append(f"{INDENT}…и ещё {_hidden} — в «Итого» они учтены")
-    body_lines.append(INDENT + "━" * max(3, width - vw(INDENT)))
-    for lbl, val in foot:
-        body_lines.append(_rline(lbl, val))
 
     body = "\n".join(body_lines)
     return f"<b>💰  Отправлено в оплату</b>\n<pre>{body}</pre>"
