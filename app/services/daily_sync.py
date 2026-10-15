@@ -7,13 +7,14 @@ Also sends deadline notifications for approaching/overdue invoices.
 from __future__ import annotations
 
 import asyncio
+import calendar
 import html
 import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..db import Database
+from ..db import GD_SALARY_END_AMOUNT, GD_SALARY_MID_AMOUNT, Database
 from ..enums import MANAGER_ROLES, Role
 from ..utils import (
     build_gd_sync_card_text,
@@ -84,6 +85,15 @@ async def _run_sync(
     integrations: IntegrationHub,
 ) -> None:
     """Execute one full sync cycle."""
+
+    # --- 0. Авто-ЗП гендиректора в «Баланс компании» (owner 15.10) ---
+    # ДО шага 1: export_to_sheets синкает лист БК — новая строка ляжет на лист в этом же прогоне.
+    try:
+        gz = await _maybe_add_gd_salary(db, notifier)
+        if gz:
+            log.info("daily_sync: auto gd salary added %d entries", gz)
+    except Exception:
+        log.exception("daily_sync: auto gd salary failed")
 
     # --- 1. Google Sheets import/export ---
     # NOTE: import runs first, then export. Manual edits in ОП are preserved
@@ -241,6 +251,74 @@ async def _run_sync(
             log.info("daily_sync: server-pay reminder sent to %d GD/TD users", spr)
     except Exception:
         log.exception("daily_sync: server-pay reminder failed")
+
+
+# Авто-ЗП гендиректора в «Баланс компании» (owner 15.10, ТЗ 20261014 §5: «да / да / да»).
+# Срок «середина» — 15-е (12 362), срок «конец» — последнее число месяца (12 180), б/н.
+# Смотрим сроки текущего И прошлого месяца, чья дата (МСК) уже наступила: если бот лежал в день
+# выплаты, строка допишется первым прогоном после — как у напоминания об оплате сервера ниже.
+# Закрытый срок (вставлен или найден готовым) помечается флагом в settings и больше НЕ
+# пересматривается: ГД удалил строку («ЗП в этот раз не платилась») — бот её не вернёт.
+_GD_SALARY_FLAG = "gd_salary_auto_{y:04d}{m:02d}_{slot}"
+
+
+def _gd_salary_due_slots(today: date) -> list[tuple[int, int, int, float, str]]:
+    """Наступившие сроки ЗП ГД за прошлый и текущий месяц: (год, месяц, день, сумма, срок)."""
+    prev = today.replace(day=1) - timedelta(days=1)
+    out: list[tuple[int, int, int, float, str]] = []
+    for y, m in ((prev.year, prev.month), (today.year, today.month)):
+        last = calendar.monthrange(y, m)[1]
+        for day, amount, slot in ((15, GD_SALARY_MID_AMOUNT, "mid"),
+                                  (last, GD_SALARY_END_AMOUNT, "end")):
+            if date(y, m, day) <= today:
+                out.append((y, m, day, amount, slot))
+    return out
+
+
+async def _maybe_add_gd_salary(
+    db: Database,
+    notifier: Notifier,
+    today: date | None = None,
+) -> int:
+    """Дописать ЗП гендиректора в БК за наступившие сроки; о каждой новой строке — ГД."""
+    today = today or datetime.now(_MSK).date()
+    added: list[tuple[str, float]] = []
+    for y, m, day, amount, slot in _gd_salary_due_slots(today):
+        flag = _GD_SALARY_FLAG.format(y=y, m=m, slot=slot)
+        if await db.get_setting(flag):
+            continue
+        entry_id, inserted = await db.add_gd_salary_if_missing(
+            year=y, month=m, day=day, amount=amount,
+        )
+        await db.set_setting(flag, f"{'added' if inserted else 'found'}:{entry_id}")
+        if inserted:
+            added.append((date(y, m, day).strftime("%d.%m.%Y"), amount))
+    if not added:
+        return 0
+
+    gds = await db.find_users_by_role(Role.GD, limit=10)
+    for d_disp, amount in added:
+        card = format_card_section(
+            emoji="🧑‍💼",
+            title="ЗП Директор внесена",
+            items=[
+                ("Дата", d_disp),
+                ("Сумма б/н", fmt_money(amount)),
+                ("Куда", "Баланс компании"),
+            ],
+            width=40, compact=True,
+        )
+        text = (
+            f"{card}\n"
+            "Внесено автоматически — вручную вносить не нужно. Если ЗП в этот раз "
+            "не платилась, удалите строку через «➖ Удалить расход» — бот её не вернёт."
+        )
+        for u in gds:
+            try:
+                await notifier.safe_send(u.telegram_id, text)
+            except Exception:
+                log.exception("daily_sync: gd salary notify failed for user %s", u.telegram_id)
+    return len(added)
 
 
 # Разовое напоминание ГД об оплате сервера (owner 21.07). Срабатывает в первый

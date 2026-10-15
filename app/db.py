@@ -63,6 +63,14 @@ def _compute_expense_total_new(row: dict[str, Any]) -> float:
 # (удаление 02.09 → восстановление 09.09). Скрытая запись гасит своё эхо, но на лист и в итоги не идёт.
 OP_ENTRY_SOURCE_HIDDEN = "hidden_echo_guard"
 
+# ── Авто-ЗП гендиректора в «Баланс компании» (owner 15.10: «да» на ТЗ 20261014 §5) ──
+# 15-е число — 12 362, последнее число месяца — 12 180; б/н, подпись как у ручного пресета ГД
+# (синхронно gd.py DIRECTOR_ZP_DESC). Пишет daily_sync._maybe_add_gd_salary.
+OP_ENTRY_SOURCE_AUTO_GD_SALARY = "auto_gd_salary"
+GD_SALARY_DESC = "ЗП Директор"
+GD_SALARY_MID_AMOUNT = 12_362.0
+GD_SALARY_END_AMOUNT = 12_180.0
+
 # ── РП оклад → аванс (A2): маркеры взаимоисключения «один оклад в месяц» ──
 RP_SALARY_MONTHLY = 66_000  # оклад РП/мес (синхронно td.py:42, rp.py RP_SALARY_MONTHLY_AMOUNT)
 # Вторая форма выплаты (owner 12.08): наличными платится ТЕЛО, без надбавки на налог —
@@ -2730,6 +2738,64 @@ class Database:
         )
         await self.conn.commit()
         return cur.lastrowid or 0
+
+    async def add_gd_salary_if_missing(
+        self, *, year: int, month: int, day: int, amount: float,
+    ) -> tuple[int, bool]:
+        """ЗП гендиректора в «Баланс компании», если её ещё нет — проверка и вставка АТОМАРНО.
+
+        Дедуп (owner 15.10): тот же год+месяц, та же сумма, подпись «ЗП директор» без учёта
+        регистра и пробелов — в б/н-половине (description/cashless_amount) ИЛИ в кред-половине
+        (description_credit/other_amount). Так ловятся и ручной пресет ГД (`manual_bot_entry`,
+        дата любая — 13-е/17-е), и записи по выписке. Скрытые строки не в счёт — на лист они не идут.
+        ⚠️ Регистр сворачиваем в Python: SQLite lower()/LIKE кириллицу не сворачивает.
+        НЕ использует add_op_company_entry (тот коммитит сам — разрыв атомарности).
+
+        Возвращает (id строки, True) — вставлена; (id найденной строки, False) — уже была.
+        audit — после commit, только для вставки.
+        """
+        want = " ".join(GD_SALARY_DESC.split()).casefold()
+        amt = round(float(amount), 2)
+        d = date(int(year), int(month), int(day))
+        date_iso = d.strftime("%Y-%m-%d")
+        date_display = d.strftime("%d.%m.%Y")
+        try:
+            cur = await self.conn.execute(
+                "SELECT id, description, cashless_amount, description_credit, other_amount "
+                "FROM op_company_entries WHERE year = ? AND month = ? AND source != ? ORDER BY id",
+                (int(year), int(month), OP_ENTRY_SOURCE_HIDDEN),
+            )
+            for r in await cur.fetchall():
+                for desc, val in ((r["description"], r["cashless_amount"]),
+                                  (r["description_credit"], r["other_amount"])):
+                    if (" ".join((desc or "").split()).casefold() == want
+                            and val is not None and round(float(val), 2) == amt):
+                        return int(r["id"]), False  # только SELECT — транзакции нет, откатывать нечего
+            cur = await self.conn.execute(
+                "INSERT INTO op_company_entries "
+                "(year, month, date_iso, date_display, cashless_amount, description, "
+                " source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (int(year), int(month), date_iso, date_display, amt, GD_SALARY_DESC,
+                 OP_ENTRY_SOURCE_AUTO_GD_SALARY, to_iso(utcnow())),
+            )
+            entry_id = int(cur.lastrowid)
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
+        try:
+            await self.audit(
+                actor_id=None,
+                action="op_company_expense_added",
+                entity="op_company_entries",
+                entity_id=str(entry_id),
+                payload={"type": "cashless", "auto": OP_ENTRY_SOURCE_AUTO_GD_SALARY,
+                         "year": int(year), "month": int(month), "date_display": date_display,
+                         "cashless_amount": amt, "description": GD_SALARY_DESC},
+            )
+        except Exception:
+            log.exception("add_gd_salary_if_missing: audit failed entry_id=%s", entry_id)
+        return entry_id, True
 
     async def list_op_company_entries(
         self, year: int | None = None, month: int | None = None,
