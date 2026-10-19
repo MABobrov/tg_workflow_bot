@@ -1713,7 +1713,9 @@ class GoogleSheetsService:
         cells[135] = invoice.get("closing_originals_comment") or ""
         cells[136] = invoice.get("closing_docs_status") or ""
         cells[137] = self._fmt_sheet_date(invoice.get("edo_signed_at"))
-        cells[138] = self._fmt_sheet_date(invoice.get("no_debts_at"))
+        # EI «Дата долгов нет» — печатаем пустой (owner 13.10: «есть дата финального
+        # платежа, эта дублирует»). Колонку физически не удаляем: сдвинет ER/ES/ET и BG.
+        cells[138] = ""
         cells[139] = "Есть" if invoice.get("zp_installer_payment_file_id") else "Нет"
         _edo = invoice.get("_edo_stats") or {}
         cells[140] = _edo.get("total", 0) or ""
