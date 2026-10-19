@@ -325,7 +325,8 @@ async def _build_gd_invoices_view(db: Database, user_id: int):
             "amount": amount,
             "street": street,
             "has_addr": bool(addr),
-            "mgr": "КИА" if "КИА" in inv_num else ("НПН" if "НПН" in inv_num else "КВ"),
+            "mgr": ("КИА" if "КИА" in inv_num else "НПН" if "НПН" in inv_num
+                    else "САБ" if "САБ" in inv_num else "КВ"),
             "who": await _creator(t),
         })
 

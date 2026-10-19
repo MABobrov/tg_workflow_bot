@@ -473,7 +473,8 @@ async def _build_rp_sent_invoices_card(
             inv = await db.get_invoice(int(inv_id))
             addr = (inv or {}).get("object_address") or ""
         street = _street(addr, 14) if addr else "—"
-        mgr = "КИА" if "КИА" in inv_num else ("НПН" if "НПН" in inv_num else "КВ")
+        mgr = ("КИА" if "КИА" in inv_num else "НПН" if "НПН" in inv_num
+               else "САБ" if "САБ" in inv_num else "КВ")
         if not sections or sections[-1][0] != cat:
             sections.append((cat, []))
         sections[-1][1].append([
@@ -2539,6 +2540,11 @@ async def _do_montazh_assign(
         mgr_label = "НПН"
         lead_name = inv.get("lead_npn_name") or ""
         lead_phone = inv.get("lead_npn_phone") or ""
+    elif "САБ" in num:
+        # Счёт ГД: лид-колонок у САБ нет — ниже fallback на client_name.
+        mgr_label = "САБ"
+        lead_name = ""
+        lead_phone = ""
     else:
         mgr_label = "КВ"
         lead_name = inv.get("lead_kv_name") or ""

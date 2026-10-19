@@ -2700,8 +2700,10 @@ async def _build_gd_debts_section(db: "Database") -> str:
             return "НПН"
         if "КВ" in u:
             return "КВ"
+        if "САБ" in u:
+            return "САБ"
         return {"manager_kv": "КВ", "manager_kia": "КИА",
-                "manager_npn": "НПН"}.get(role or "", "?")
+                "manager_npn": "НПН", "gd": "САБ"}.get(role or "", "?")
 
     def _street_dot(addr: Any, w: int) -> str:
         """Адрес ровно w симв: длинный обрезать, короткий добить точками.
@@ -2781,7 +2783,7 @@ async def _build_gd_debts_section(db: "Database") -> str:
         lines.append(_row(obj, stage, typ, date, _k(debt)))
 
     lines.append(sep)
-    for mk in ("КВ", "КИА", "НПН"):
+    for mk in ("КВ", "КИА", "НПН", "САБ"):
         if mk in per_mgr:
             lines.append(_foot(f"Итого {mk}", _k(per_mgr[mk])))
     lines.append(_foot("Итого", _k(total)))
@@ -3835,7 +3837,7 @@ def format_ended_invoice_compact(inv: dict[str, Any], pf: dict[str, Any]) -> str
     num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
     addr = (inv.get("object_address") or "—")[:25]
     role_label = {
-        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+        "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН", "gd": "САБ",
     }.get(inv.get("creator_role", ""), "Менеджер")
 
     def _k(v: float) -> str:

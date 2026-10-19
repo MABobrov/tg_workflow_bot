@@ -782,9 +782,10 @@ async def _field_reassign_manager(
     invoice: dict, new_manager_marker: str, db: Database, config: Any,
     notifier: Any, source: str,
 ) -> str | None:
-    """Reassign invoice to a different manager by marker (КВ/КИА/НПН)."""
+    """Reassign invoice to a different manager by marker (КВ/КИА/НПН; САБ — ГД)."""
     marker = str(new_manager_marker).strip().upper()
-    role_map = {"КВ": Role.MANAGER_KV, "КИА": Role.MANAGER_KIA, "НПН": Role.MANAGER_NPN}
+    role_map = {"КВ": Role.MANAGER_KV, "КИА": Role.MANAGER_KIA, "НПН": Role.MANAGER_NPN,
+                "САБ": Role.GD}
     role = role_map.get(marker)
     if not role:
         return None
@@ -1365,7 +1366,7 @@ async def _cmd_stats_by_manager(
         for r in rows:
             name = r["full_name"] or "—"
             role_short = {"manager_kv": "КВ", "manager_kia": "КИА",
-                          "manager_npn": "НПН"}.get(r["role"] or "", "")
+                          "manager_npn": "НПН", "gd": "САБ"}.get(r["role"] or "", "")
             mgr_id = r["telegram_id"]
             # Open tasks for this manager
             tasks_cur = await db.conn.execute(
@@ -1425,7 +1426,7 @@ async def _cmd_stats_issued_invoices(
     for r in rows:
         mgr = r["mgr_name"] or "—"
         role_short = {"manager_kv": "КВ", "manager_kia": "КИА",
-                      "manager_npn": "НПН"}.get(r["mgr_role"] or "", "")
+                      "manager_npn": "НПН", "gd": "САБ"}.get(r["mgr_role"] or "", "")
         key = f"{mgr} ({role_short})" if role_short else mgr
         if key not in mgr_stats:
             mgr_stats[key] = {"total": 0, "prim_edo": 0, "clos_edo": 0,

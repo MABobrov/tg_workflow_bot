@@ -278,10 +278,12 @@ async def _finance(db):
     for r in await cur.fetchall():
         by[(r["role"] or "")] = float(r["debt"] or 0)
     kv, kia, npn = by.get("manager_kv", 0), by.get("manager_kia", 0), by.get("manager_npn", 0)
+    sab = by.get("gd", 0)  # счета «САБ» ведёт ГД (owner 19.10)
     return format_card_section(
         emoji="💰", title=f"Финансы · долги · {_month_now()}",
-        items=[("КВ", f"{_money(kv)}₽"), ("КИА", f"{_money(kia)}₽"), ("НПН", f"{_money(npn)}₽")],
-        footer=("Итого", f"{_money(kv + kia + npn)}₽"))
+        items=[("КВ", f"{_money(kv)}₽"), ("КИА", f"{_money(kia)}₽"), ("НПН", f"{_money(npn)}₽"),
+               ("САБ", f"{_money(sab)}₽")],
+        footer=("Итого", f"{_money(kv + kia + npn + sab)}₽"))
 
 
 async def _paid_invoices_this_month(db):

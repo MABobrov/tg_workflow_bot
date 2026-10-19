@@ -795,6 +795,7 @@ class GoogleSheetsService:
     ) -> dict[int, Any]:
         _ROLE_LABELS = {
             "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+            "gd": "САБ",  # счета «САБ» ведёт ГД (owner 19.10)
         }
         _c = cost or {}
         _li = invoice.get("_lead_info") or {}

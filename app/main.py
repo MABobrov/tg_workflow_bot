@@ -106,6 +106,7 @@ async def main() -> None:
         ("КИА", config.default_manager_kia_id, "manager_kia"),
         ("КВ", config.default_manager_kv_id, "manager_kv"),
         ("НПН", config.default_manager_npn_id, "manager_npn"),
+        ("САБ", config.default_gd_id, "gd"),  # счета «САБ» — ГД (owner 19.10)
     ]:
         if env_id:
             marker_map[marker] = env_id

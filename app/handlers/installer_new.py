@@ -1806,6 +1806,11 @@ def _inst_card_header(inv: dict) -> tuple[str, str, str, str]:
         mgr = "НПН"
         name = inv.get("lead_npn_name") or ""
         phone = inv.get("lead_npn_phone") or ""
+    elif "САБ" in inv_num:
+        # Счёт ГД: лид-колонок у САБ нет — ниже fallback на client_name.
+        mgr = "САБ"
+        name = ""
+        phone = ""
     else:
         mgr = "КВ"
         name = inv.get("lead_kv_name") or ""
@@ -3322,10 +3327,12 @@ async def installer_work_view_card(
         mgr_label = "КИА"
     elif "НПН" in inv_num:
         mgr_label = "НПН"
+    elif "САБ" in inv_num:
+        mgr_label = "САБ"
     else:
         mgr_label = "КВ"
 
-    # Имя и телефон лида (по типу счёта: КВ/КИА/НПН)
+    # Имя и телефон лида (по типу счёта: КВ/КИА/НПН; у САБ лид-колонок нет)
     lead_name = ""
     lead_phone = ""
     if "КИА" in inv_num:
@@ -3334,6 +3341,8 @@ async def installer_work_view_card(
     elif "НПН" in inv_num:
         lead_name = inv.get("lead_npn_name") or ""
         lead_phone = inv.get("lead_npn_phone") or ""
+    elif "САБ" in inv_num:
+        pass
     else:
         lead_name = inv.get("lead_kv_name") or ""
         lead_phone = inv.get("lead_kv_phone") or ""

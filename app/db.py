@@ -5373,6 +5373,10 @@ class Database:
 
     def _infer_invoice_creator_role(self, invoice_number: str) -> str:
         number_upper = (invoice_number or "").upper()
+        # Счета «САБ» ведёт ГД (owner 15.10/19.10): та же статистика и процессы, что у
+        # материнских счетов менеджеров, но ЗП менеджера по ним не начисляется.
+        if "САБ" in number_upper:
+            return Role.GD
         if "КИА" in number_upper:
             return Role.MANAGER_KIA
         if "КВ" in number_upper:

@@ -228,7 +228,7 @@ async def _format_acc_card(inv: dict[str, Any], db: Database) -> str:
     if inv.get("created_by"):
         base = await get_initiator_label(db, int(inv["created_by"]))
         role_short = {
-            "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН",
+            "manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН", "gd": "САБ",
         }.get(inv.get("creator_role", ""), "")
         creator_label = f"{base} ({role_short})" if role_short else base
 
@@ -592,7 +592,7 @@ async def build_acc_start_card_text(db: Database, user_id: int) -> str:
             if r["status"] in ("open", "in_progress"):
                 req_open.add(iid)
 
-    _ROLE_CODE = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}
+    _ROLE_CODE = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН", "gd": "САБ"}
 
     def _mgr(inv: dict[str, Any]) -> str:
         cb = inv.get("created_by")
