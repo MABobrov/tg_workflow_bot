@@ -3116,6 +3116,51 @@ class Database:
         npn_10pct = float(inv.get("npn_amount") or 0)
         # Зачёт аванса монтажника (нужен ниже для монтаж-факта прибыли = BS).
         installer_advance_offset = await self.get_installer_advance_for_invoice(invoice_id)
+        # ── BS «Монтаж факт» считается ЗДЕСЬ, до НДС/налога (owner 19.10): «в расчёте
+        # прибыли участвует только колонка BS» → и налог на прибыль берёт монтаж из BS,
+        # а не из fact_installation (тот при «approved» отдаёт остаток К ВЫПЛАТЕ и не видит
+        # аванс: Лобня 26324-1НПН — 49 026 ₽ монтажа выпадали из базы налога). Ниже блок
+        # перенесён без изменений; дальше его читают BG и «Ожидает оплаты».
+        _agreed = float(inv.get("montazh_agreed_amount") or 0)
+        _mfo_bs = float(inv.get("montazh_fact_op") or 0)
+        _inv_credit_bs = bool(inv.get("is_credit")) or str(inv.get("invoice_number") or "").upper().startswith("ЗМ")
+        # Аванс ТЕКУЩЕЙ монтажной группы: аванс прошлых групп (montazh_adv_prev, снимок
+        # при переброске — rp_new.py::_finalize_naem/_finalize_regroup) уже внутри
+        # paid_prev через DR, второй раз в «Выплачено» входить не должен. Канон бота —
+        # installer_new.py::_advance_raw_cur. ⚠️ Само installer_advance_offset НЕ трогаем:
+        # оно уходит в cost-card и кормит колонку CG «Аванс монтажника» (sheets.py:1378),
+        # а там аванс по счёту ЦЕЛИКОМ [[feedback_no_unauthorized_column_logic]].
+        # adv_prev = 0 → поведение прежнее.
+        _adv_raw_cur = max(0.0, installer_advance_offset - float(inv.get("montazh_adv_prev") or 0))
+        _adv_cg = _adv_raw_cur * 1.10 \
+            if (_adv_raw_cur > 0 and not _inv_credit_bs) else _adv_raw_cur
+        _bot_paid = float(inv.get("zp_installer_amount") or 0) \
+            if inv.get("zp_installer_status") in ("payment_sent", "confirmed") else 0.0
+        # Нога прошлых групп (paid_prev) — зеркало sheets._invoice_cells: складывается
+        # с текущей ногой, с AN конкурирует по max. paid_prev=0 → формула прежняя.
+        _paid_prev_bs = float(inv.get("montazh_paid_prev") or 0)
+        # Канал DR «Затр. Монтаж» (cost_montazh) — канон integrations/sheets.py:1274,
+        # добавлен туда 28.07 и до 01.08 в это зеркало НЕ попал. ЗП наёмной монтажной
+        # группе может идти НЕСКОЛЬКИМИ платежами; DR — их накопитель по МАТЕРИНСКОМУ
+        # счёту (create_supplier_payment/bump_invoice_cost при material_type='montazh'),
+        # тогда как zp_installer_amount хранит только ПОСЛЕДНИЙ платёж, а
+        # montazh_paid_prev — снимок DR на момент назначения НОВОЙ группы. Без DR
+        # реконструкция «paid_prev + последний платёж» не складывала транши ОДНОЙ
+        # группе: BS на листе стоял, а здесь _montazh_bs падал в 0 → bg_cost занижался
+        # и прибыль ЗАВЫШАЛАСЬ (BG и BL на одной строке противоречили друг другу).
+        # Через max, НЕ сумму: DR уже включает выплаты, учтённые другими каналами —
+        # сложение задвоило бы [[feedback_montazh_zp_multi_payment_sum]].
+        _dr_paid_bs = float(inv.get("cost_montazh") or 0)
+        if bool(inv.get("zp_installer_remainder")) and _bot_paid > 0:
+            _paid = max(_mfo_bs, _paid_prev_bs + _adv_cg + _bot_paid, _dr_paid_bs)
+        else:
+            _paid = max(_mfo_bs, _paid_prev_bs + max(_adv_cg, _bot_paid), _dr_paid_bs)
+        if _agreed > 0:
+            _montazh_bs = _paid if _paid >= _agreed - 0.001 else 0.0
+        elif _mfo_bs > 0:
+            _montazh_bs = _mfo_bs
+        else:
+            _montazh_bs = 0.0
 
         # Итого расходы (СТАРАЯ база) — оставлена ТОЛЬКО для НДС/налога факт.
         # ЗП не входит — используем только факт из ОП
@@ -3142,8 +3187,10 @@ class Database:
             # пока офис не пересчитает свою колонку. Это ожидаемо, а не дефект.
             if _v2_rdate >= NDS_V2_CUTOFF and (_v2_metal > 0 or _v2_glass > 0) and invoice_amount:
                 nds_fact = (invoice_amount - _v2_metal - _v2_glass) * 22 / 122
+                # Монтаж — BS, а не AN (owner 19.10: «налог тоже от BS»); при полной
+                # выплате BS = max(AN, выплачено), до неё BS = 0, как на листе.
                 _az_costs = (float(inv.get("materials_fact_op") or 0)
-                             + float(inv.get("montazh_fact_op") or 0)
+                             + _montazh_bs
                              + float(inv.get("loaders_fact_op") or 0)
                              + float(inv.get("logistics_fact_op") or 0))
                 profit_tax_fact = (invoice_amount - _az_costs - nds_fact) * PROFIT_TAX_RATE
@@ -3161,7 +3208,9 @@ class Database:
                 # без изменений — агентское ненулевое всего у двух счетов.
                 # ⛔ Саму total_cost НЕ трогаем: она уходит в cost-card как «Себест-ть
                 # факт» и в карточки ролей — правка касается ТОЛЬКО базы налога.
-                _tax_base_costs = total_cost - agent_payout
+                # owner 19.10: монтаж в базе налога — BS, а не montazh_combined
+                # (fact_installation = остаток к выплате без аванса). total_cost не трогаем.
+                _tax_base_costs = total_cost - agent_payout - montazh_combined + _montazh_bs
                 profit_tax_fact = max(0.0, (invoice_amount - _tax_base_costs - nds_fact) * PROFIT_TAX_RATE) \
                     if invoice_amount else 0.0
 
@@ -3210,46 +3259,6 @@ class Database:
             _bt = _own_mat_bt
         _bu = float(inv.get("logistics_fact_op") or 0)
         _br = float(inv.get("loaders_fact_op") or 0)
-        _agreed = float(inv.get("montazh_agreed_amount") or 0)
-        _mfo_bs = float(inv.get("montazh_fact_op") or 0)
-        _inv_credit_bs = bool(inv.get("is_credit")) or str(inv.get("invoice_number") or "").upper().startswith("ЗМ")
-        # Аванс ТЕКУЩЕЙ монтажной группы: аванс прошлых групп (montazh_adv_prev, снимок
-        # при переброске — rp_new.py::_finalize_naem/_finalize_regroup) уже внутри
-        # paid_prev через DR, второй раз в «Выплачено» входить не должен. Канон бота —
-        # installer_new.py::_advance_raw_cur. ⚠️ Само installer_advance_offset НЕ трогаем:
-        # оно уходит в cost-card и кормит колонку CG «Аванс монтажника» (sheets.py:1378),
-        # а там аванс по счёту ЦЕЛИКОМ [[feedback_no_unauthorized_column_logic]].
-        # adv_prev = 0 → поведение прежнее.
-        _adv_raw_cur = max(0.0, installer_advance_offset - float(inv.get("montazh_adv_prev") or 0))
-        _adv_cg = _adv_raw_cur * 1.10 \
-            if (_adv_raw_cur > 0 and not _inv_credit_bs) else _adv_raw_cur
-        _bot_paid = float(inv.get("zp_installer_amount") or 0) \
-            if inv.get("zp_installer_status") in ("payment_sent", "confirmed") else 0.0
-        # Нога прошлых групп (paid_prev) — зеркало sheets._invoice_cells: складывается
-        # с текущей ногой, с AN конкурирует по max. paid_prev=0 → формула прежняя.
-        _paid_prev_bs = float(inv.get("montazh_paid_prev") or 0)
-        # Канал DR «Затр. Монтаж» (cost_montazh) — канон integrations/sheets.py:1274,
-        # добавлен туда 28.07 и до 01.08 в это зеркало НЕ попал. ЗП наёмной монтажной
-        # группе может идти НЕСКОЛЬКИМИ платежами; DR — их накопитель по МАТЕРИНСКОМУ
-        # счёту (create_supplier_payment/bump_invoice_cost при material_type='montazh'),
-        # тогда как zp_installer_amount хранит только ПОСЛЕДНИЙ платёж, а
-        # montazh_paid_prev — снимок DR на момент назначения НОВОЙ группы. Без DR
-        # реконструкция «paid_prev + последний платёж» не складывала транши ОДНОЙ
-        # группе: BS на листе стоял, а здесь _montazh_bs падал в 0 → bg_cost занижался
-        # и прибыль ЗАВЫШАЛАСЬ (BG и BL на одной строке противоречили друг другу).
-        # Через max, НЕ сумму: DR уже включает выплаты, учтённые другими каналами —
-        # сложение задвоило бы [[feedback_montazh_zp_multi_payment_sum]].
-        _dr_paid_bs = float(inv.get("cost_montazh") or 0)
-        if bool(inv.get("zp_installer_remainder")) and _bot_paid > 0:
-            _paid = max(_mfo_bs, _paid_prev_bs + _adv_cg + _bot_paid, _dr_paid_bs)
-        else:
-            _paid = max(_mfo_bs, _paid_prev_bs + max(_adv_cg, _bot_paid), _dr_paid_bs)
-        if _agreed > 0:
-            _montazh_bs = _paid if _paid >= _agreed - 0.001 else 0.0
-        elif _mfo_bs > 0:
-            _montazh_bs = _mfo_bs
-        else:
-            _montazh_bs = 0.0
         # ── Поданные к ГД, но ещё НЕ ОПЛАЧЕННЫЕ затраты (owner 2026-09-03).
         # Дословно: «если менеджер пытается изменить статус счёта на Счёт End, но
         # затраты по материнскому счёту на материалы или услуги ещё не оплачены, но
