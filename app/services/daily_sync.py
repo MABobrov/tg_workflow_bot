@@ -379,6 +379,10 @@ async def _send_debt_summaries(
     invoices = await db.list_invoices(limit=10000)
     by_manager: dict[int, list[tuple[str, float]]] = {}
     for inv in invoices:
+        # Счета «САБ» ведёт ГД (creator_role='gd') — утреннюю сводку долгов по ним
+        # не шлём (owner 19.10: «сводку долгов по САБ — убрать»).
+        if inv.get("creator_role") == Role.GD:
+            continue
         debt = float(inv.get("outstanding_debt") or 0)
         status = str(inv.get("status") or "")
         if debt > 0 and inv.get("created_by") and status not in ("ended", "cancelled"):
