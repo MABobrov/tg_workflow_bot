@@ -296,10 +296,13 @@ async def export_to_sheets(
             # руками у четырёх счетов ([[project-20260728-fact-columns-stale-daily-sync]]).
             # Y «Рент-ть факт» от этого НЕ зависит: она зеркалит «Импорт ОП» W
             # и пишется в _invoice_cells безусловно (feedback_fact_columns_sources).
+            # 5) «closing» (менеджер запросил «Счет End»), owner 19.10: без него у таких
+            # счетов BL/BO/НДС/ET каждое утро пустели, а точечный sync_invoice_row их
+            # заполнял — строка мигала (26721-1НПН, closing с 29.08).
             _need_cost = (
                 include_invoice_cost
                 or bool(invoice.get("is_credit"))
-                or invoice.get("status") in ("ended", "credit", "in_progress")
+                or invoice.get("status") in ("ended", "credit", "in_progress", "closing")
             ) and not invoice.get("parent_invoice_id")
             if _need_cost:
                 try:
