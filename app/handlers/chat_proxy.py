@@ -844,12 +844,13 @@ async def _cw_exit_to_channel(message: Message, state: FSMContext) -> None:
         CreditWalletSpendSG.pick_mode,
         CreditWalletSpendSG.pick_invoice,
         CreditWalletSpendSG.pick_category,
+        CreditWalletSpendSG.pick_rp_task,
         CreditWalletSpendSG.confirm,
     ),
     F.text == "⬅️ Назад",
 )
 async def cw_back_from_picker(message: Message, state: FSMContext) -> None:
-    """«⬅️ Назад» на шагах режим/счёт/категория/подтверждение кредит-расхода → меню канала."""
+    """«⬅️ Назад» на шагах режим/счёт/категория/счёт РП/подтверждение кредит-расхода → меню канала."""
     await _cw_exit_to_channel(message, state)
 
 
@@ -1473,6 +1474,7 @@ async def _finalize_credit_execution(
                 invoice_id=p.get("invoice_id"),
                 cost_type=p.get("cost_type"),
                 invoice_number=p.get("invoice_number") or "",
+                rp_task_id=p.get("rp_task_id"),
             )
             spend_id = res.get("spend_id")
         except Exception:
@@ -1791,6 +1793,7 @@ async def _credit_spend_finalize(
                     invoice_id=p.get("invoice_id"),
                     cost_type=p.get("cost_type"),
                     invoice_number=p.get("invoice_number") or "",
+                    rp_task_id=p.get("rp_task_id"),
                 )
                 spend_id = res.get("spend_id")
             except Exception:

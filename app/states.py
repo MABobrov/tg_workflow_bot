@@ -782,7 +782,9 @@ class CreditWalletSpendSG(StatesGroup):
     Доступ: менеджер (свой кошелёк), РП (выбор кошелька inline), ГД (кошелёк=канал).
     Flow: [РП: pick_wallet] → pick_mode →
       • привязка:  pick_invoice (счета «в работе» владельца кошелька) → pick_category
-                   (Металл/Стекло/Монтаж/Грузчики/Логистика/Доп.мат/Доп.услуги) → amount → purpose
+                   (Металл/Стекло/Монтаж/Грузчики/Логистика/Доп.мат/Доп.услуги) →
+                   [металл: pick_rp_task — счёт РП для правила «полная сумма с первого
+                   платежа» (owner 31.10), без счетов РП шаг пропускается] → amount → purpose
       • без привязки: amount → purpose
       → confirm.
     На confirm: add_credit_spend(wallet) +
@@ -796,6 +798,7 @@ class CreditWalletSpendSG(StatesGroup):
     pick_mode = State()      # 🔗 С привязкой / 📄 Без привязки
     pick_invoice = State()   # привязка: счёт «в работе» владельца кошелька
     pick_category = State()  # привязка: категория затрат → cost_type
+    pick_rp_task = State()   # металл (owner 31.10): счёт РП (invoice_payment) для привязки платежа
     amount = State()         # сумма ₽ (float > 0)
     purpose = State()        # назначение (3-200 символов)
     attach = State()         # §B: опц. вложение (фото/документ) или «Пропустить»

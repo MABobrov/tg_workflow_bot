@@ -4424,7 +4424,7 @@ async def cw_pick_wallet(cb: CallbackQuery, state: FSMContext, db: Database) -> 
 # --- Режим ---
 @router.callback_query(F.data == "cwspend:mode:free", CreditWalletSpendSG.pick_mode)
 async def cw_mode_free(cb: CallbackQuery, state: FSMContext) -> None:
-    await state.update_data(mode="free", invoice_id=None, invoice_number="", cost_type=None)
+    await state.update_data(mode="free", invoice_id=None, invoice_number="", cost_type=None, rp_task_id=None, rp_label="")
     await state.set_state(CreditWalletSpendSG.amount)
     await cb.answer()
     try:
@@ -4440,7 +4440,7 @@ async def cw_mode_withdraw(cb: CallbackQuery, state: FSMContext) -> None:
     # заказу owner 02.09 — та же функция) — как «Без привязки», но запись ТОЛЬКО
     # в кредит-баланс (не на «Баланс компании»). Привязки/категории нет; дальше —
     # сумма → назначение.
-    await state.update_data(mode="withdraw", invoice_id=None, invoice_number="", cost_type=None)
+    await state.update_data(mode="withdraw", invoice_id=None, invoice_number="", cost_type=None, rp_task_id=None, rp_label="")
     await state.set_state(CreditWalletSpendSG.amount)
     await cb.answer()
     try:
@@ -4489,7 +4489,7 @@ async def cw_mode_bound(cb: CallbackQuery, state: FSMContext, db: Database) -> N
         await cb.answer()
         await cb.message.answer(empty_msg)  # type: ignore[union-attr]
         return
-    await state.update_data(mode="bound")
+    await state.update_data(mode="bound", rp_task_id=None, rp_label="")
     await state.set_state(CreditWalletSpendSG.pick_invoice)
     b = InlineKeyboardBuilder()
     for inv in invoices[:30]:
@@ -4543,12 +4543,70 @@ async def cw_pick_invoice(cb: CallbackQuery, state: FSMContext, db: Database) ->
 
 
 @router.callback_query(F.data.startswith("cwspend:cat:"), CreditWalletSpendSG.pick_category)
-async def cw_pick_category(cb: CallbackQuery, state: FSMContext) -> None:
+async def cw_pick_category(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     ct = cb.data.split(":")[-1]  # type: ignore[union-attr]
     if ct not in _CREDIT_COST_LABELS:
         await cb.answer("Некорректная категория", show_alert=True)
         return
     await state.update_data(cost_type=ct)
+    await cb.answer()
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+    except Exception:
+        pass
+    # Металл (owner 31.10): перед суммой — счёт РП (invoice_payment) этого счёта.
+    # Правило owner 19.10: DP «Металл» = ПОЛНАЯ сумма счёта РП при первом платеже —
+    # поэтому кошельковая металлотрата привязывается к конкретному счёту РП.
+    data = await state.get_data()
+    if ct in ("metal", "profile") and data.get("mode") == "bound" and data.get("invoice_id"):
+        tasks = await db.list_metal_rp_tasks(int(data["invoice_id"]))
+        if tasks:
+            await state.set_state(CreditWalletSpendSG.pick_rp_task)
+            b = InlineKeyboardBuilder()
+            for t in tasks[:10]:
+                num = t["invoice_number"] or f"#{t['id']}"
+                amt = f"{t['amount']:,.0f}".replace(",", " ")
+                mark = " (уже частично оплачен)" if t["paid"] else ""
+                b.button(
+                    text=f"🏗 {num} · {amt} ₽{mark}",
+                    callback_data=f"cwspend:rp:{t['id']}",
+                )
+            b.button(text="➖ Без счёта РП (по сумме платежа)", callback_data="cwspend:rp:none")
+            b.button(text="❌ Отмена", callback_data="cwspend:cancel")
+            b.adjust(1)
+            await cb.message.answer(  # type: ignore[union-attr]
+                "🏗 Это оплата счёта РП на металл? Выберите счёт — затраты «Металл» "
+                "будут внесены полной суммой счёта:",
+                reply_markup=b.as_markup(),
+            )
+            return
+    await state.update_data(rp_task_id=None, rp_label="")
+    await state.set_state(CreditWalletSpendSG.amount)
+    await cb.message.answer("Введите сумму расхода ₽ (например: <code>15000</code>):")  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data.startswith("cwspend:rp:"), CreditWalletSpendSG.pick_rp_task)
+async def cw_pick_rp_task(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    raw = cb.data.split(":")[-1]  # type: ignore[union-attr]
+    if raw == "none":
+        await state.update_data(rp_task_id=None, rp_label="")
+    else:
+        try:
+            tid = int(raw)
+        except ValueError:
+            await cb.answer("Некорректный счёт РП", show_alert=True)
+            return
+        task = await db.get_task(tid)
+        try:
+            p = try_json_loads(task.get("payload_json")) or {}
+        except Exception:
+            p = {}
+        num = str(p.get("invoice_number") or f"#{tid}")
+        amt = float(p.get("amount") or 0)
+        await state.update_data(
+            rp_task_id=tid,
+            rp_label=f"№{num} · {amt:,.0f}".replace(",", " ") + " ₽ (полной суммой)",
+        )
     await state.set_state(CreditWalletSpendSG.amount)
     await cb.answer()
     try:
@@ -4649,6 +4707,8 @@ async def _cw_show_confirm(target: Message, state: FSMContext, db: Database | No
     if data.get("mode") == "bound":
         cat = _CREDIT_COST_LABELS.get(data.get("cost_type") or "", "—")
         bind_s = f"Счёт №{data.get('invoice_number')} · {cat}"
+        if data.get("rp_label"):
+            bind_s += f"\n  🏗 Счёт РП: {data['rp_label']}"
     elif data.get("mode") == "withdraw":
         bind_s = "Снятие САБ → только кредитный баланс"
     else:
@@ -4884,6 +4944,7 @@ async def _cw_confirm_impl(
     inv_id = data.get("invoice_id")
     cost_type = data.get("cost_type")
     inv_num = data.get("invoice_number") or ""
+    rp_task_id = data.get("rp_task_id")
     attach_file_id = data.get("attach_file_id")
     attach_file_type = data.get("attach_file_type")
     if wallet_role not in CREDIT_WALLET_ROLES or amount <= 0 or not purpose:
@@ -4962,6 +5023,7 @@ async def _cw_confirm_impl(
                 purpose=purpose, entered_by=u.id,
                 invoice_id=int(inv_id) if inv_id else None,
                 cost_type=cost_type, invoice_number=inv_num,
+                rp_task_id=int(rp_task_id) if rp_task_id else None,
             )
         except Exception:
             log.exception("cw_confirm: apply_credit_wallet_spend failed (own spend)")
@@ -5076,6 +5138,7 @@ async def _cw_confirm_impl(
                 "mode": mode,
                 "invoice_id": int(inv_id) if inv_id else None,
                 "cost_type": cost_type,
+                "rp_task_id": int(rp_task_id) if rp_task_id else None,
                 "initiator_id": u.id,
                 "initiator_file_id": attach_file_id,
                 "initiator_file_type": attach_file_type,

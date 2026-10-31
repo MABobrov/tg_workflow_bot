@@ -4952,6 +4952,7 @@ async def apply_credit_wallet_spend(
     cost_type: str | None = None,
     invoice_number: str = "",
     existing_supplier_payment_id: int | None = None,
+    rp_task_id: int | None = None,
 ) -> dict[str, Any]:
     """Записать трату кредит-кошелька: вся БД-запись + синки (TZ 04.06 §C).
 
@@ -4991,6 +4992,7 @@ async def apply_credit_wallet_spend(
                 parent_invoice_id=int(invoice_id), amount=amount,
                 material_type=cost_type or "extra_mat",
                 invoice_number=invoice_number, created_by=entered_by,
+                rp_task_id=rp_task_id,
             )
         spend_id = await db.add_credit_spend(
             wallet_role, amount, entered_by,

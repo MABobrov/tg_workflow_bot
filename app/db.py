@@ -2547,6 +2547,43 @@ class Database:
             return None
         return int(rp_id)
 
+    async def list_metal_rp_tasks(self, parent_invoice_id: int) -> list[dict[str, Any]]:
+        """Счета РП (invoice_payment, металл) материнского счёта — для UI-привязки
+        кошельковых металл-трат (owner 31.10: DP = полная сумма счёта РП при
+        первом платеже). Неотклонённые, новые сверху; paid = есть ≥1 привязанный платёж.
+        """
+        cur = await self.conn.execute(
+            "SELECT id, status, payload_json FROM tasks "
+            "WHERE type = 'invoice_payment' ORDER BY id DESC"
+        )
+        rows = await cur.fetchall()
+        result: list[dict[str, Any]] = []
+        for r in rows:
+            if str(r["status"]) == "rejected":
+                continue
+            try:
+                p = json.loads(r["payload_json"] or "{}")
+            except (ValueError, TypeError):
+                continue
+            if p.get("parent_invoice_id") != int(parent_invoice_id) \
+                    and p.get("invoice_id") != int(parent_invoice_id):
+                continue
+            if (p.get("material_type") or "") not in self._METAL_TYPES:
+                continue
+            cur2 = await self.conn.execute(
+                "SELECT 1 FROM supplier_payments WHERE rp_task_id = ? LIMIT 1",
+                (int(r["id"]),),
+            )
+            paid = await cur2.fetchone() is not None
+            result.append({
+                "id": int(r["id"]),
+                "status": str(r["status"]),
+                "invoice_number": str(p.get("invoice_number") or ""),
+                "amount": float(p.get("amount") or 0),
+                "paid": paid,
+            })
+        return result
+
     async def recompute_metal_cost(self, parent_invoice_id: int) -> float:
         """Пересчитать DP «Металл» материнского счёта по правилу owner 19.10.
 
