@@ -1025,6 +1025,10 @@ class Database:
             # чистой таблицу теперь создаёт сам CREATE TABLE выше.
             ("supplier_payments", "payment_date", "TEXT"),
             ("supplier_payments", "payment_number", "TEXT"),
+            # Привязка металлоплатежа к счёту РП (задача invoice_payment):
+            # по правилу owner 19.10 DP «Металл» = ПОЛНАЯ сумма счёта РП,
+            # как только по счёту есть хотя бы один платёж (даже частичный).
+            ("supplier_payments", "rp_task_id", "INTEGER"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -2505,6 +2509,89 @@ class Database:
         "sandwich": "cost_extra_mat", "other": "cost_extra_mat",
     }
 
+    # Типы, попадающие в DP «Металл» (owner 19.10: DP = ПОЛНАЯ сумма счёта РП
+    # при хотя бы одном платеже по счёту, а не сумма частичных оплат).
+    _METAL_TYPES: tuple[str, ...] = ("metal", "profile")
+
+    async def _resolve_rp_task_for_metal_payment(
+        self, task_id: int | None,
+    ) -> int | None:
+        """Счёт РП (invoice_payment), к которому относится металлоплатёж.
+
+        Оплата ГД по задаче РП создаёт авто-задачу SUPPLIER_PAYMENT с payload
+        auto_from_invoice_payment = id задачи-счёта РП; payment.task_id ссылается
+        на эту авто-задачу — по ней и строится цепочка. Прочие пути (трата
+        кошелька, ручная оплата ГД) задачи не знают → None (вносится как есть,
+        полной суммой назвать счёт может только РП при формировании задачи).
+        """
+        if not task_id:
+            return None
+        cur = await self.conn.execute(
+            "SELECT payload_json FROM tasks WHERE id = ?", (int(task_id),)
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (ValueError, TypeError):
+            return None
+        rp_id = payload.get("auto_from_invoice_payment")
+        if not rp_id:
+            return None
+        cur = await self.conn.execute(
+            "SELECT type FROM tasks WHERE id = ?", (int(rp_id),)
+        )
+        rp = await cur.fetchone()
+        if not rp or rp["type"] != "invoice_payment":
+            return None
+        return int(rp_id)
+
+    async def recompute_metal_cost(self, parent_invoice_id: int) -> float:
+        """Пересчитать DP «Металл» материнского счёта по правилу owner 19.10.
+
+        DP = Σ полных сумм счетов РП (invoice_payment, металл), по которым есть
+        хотя бы один платёж, + Σ металлоплатежей без привязки к счёту РП
+        (каждый считается самостоятельным счётом — полной суммой платежа).
+        Идемпотентно: безопасно звать после каждой металлоплатёжной операции.
+        """
+        cur = await self.conn.execute(
+            "SELECT id, amount, rp_task_id FROM supplier_payments "
+            "WHERE parent_invoice_id = ? AND material_type IN (?, ?)",
+            (int(parent_invoice_id), *self._METAL_TYPES),
+        )
+        payments = await cur.fetchall()
+        linked_task_ids: dict[int, list[float]] = {}
+        total = 0.0
+        for p in payments:
+            amt = float(p["amount"] or 0)
+            rp_id = p["rp_task_id"]
+            if rp_id:
+                linked_task_ids.setdefault(int(rp_id), []).append(amt)
+            else:
+                total += amt
+        for rp_id, amts in linked_task_ids.items():
+            cur = await self.conn.execute(
+                "SELECT payload_json FROM tasks WHERE id = ?", (rp_id,)
+            )
+            row = await cur.fetchone()
+            full: float | None = None
+            if row:
+                try:
+                    payload = json.loads(row["payload_json"] or "{}")
+                    if payload.get("amount"):
+                        full = float(payload["amount"])
+                except (ValueError, TypeError):
+                    full = None
+            # Счёт РП исчез (удалён) — fallback: максимум из оплат группы,
+            # чтобы не потерять затрату совсем.
+            total += full if full is not None else max(amts, default=0.0)
+        await self.conn.execute(
+            "UPDATE invoices SET cost_metal = ? WHERE id = ?",
+            (round(total, 2), int(parent_invoice_id)),
+        )
+        return round(total, 2)
+
     async def create_supplier_payment(
         self,
         parent_invoice_id: int,
@@ -2516,6 +2603,7 @@ class Database:
         created_by: int | None = None,
         update_cost: bool = True,
         payment_date: str | None = None,
+        rp_task_id: int | None = None,
     ) -> int:
         """Insert a row into supplier_payments table + update cost_* in invoices.
 
@@ -2526,6 +2614,13 @@ class Database:
         update_cost=False — только строка платежа, БЕЗ прибавки к cost_*. Нужно
         для DS «Затр. Грузчики» (owner 25.07): столбец заполняется при ПРИНЯТИИ
         задачи ГД в работу, поэтому на шаге оплаты прибавлять второй раз нельзя.
+
+        rp_task_id — счёт РП (invoice_payment) для металлоплатежа: явная привязка
+        (трата кошелька/ручная оплата, owner 19.10) поверх авто-цепочки по task_id.
+
+        Металл (owner 19.10): DP = ПОЛНАЯ сумма счёта РП при первом платеже;
+        частичные оплаты того же счёта DP не увеличивают — поэтому вместо
+        прибавки суммы платежа DP пересчитывается целиком (recompute_metal_cost).
         """
         now = datetime.now(timezone.utc).isoformat()
         cur = await self.conn.execute(
@@ -2536,15 +2631,26 @@ class Database:
             (parent_invoice_id, invoice_number, amount, material_type, supplier,
              task_id, created_by, now, payment_date),
         )
+        sp_id = cur.lastrowid  # type: ignore[assignment]
+        is_metal = material_type in self._METAL_TYPES
+        if is_metal:
+            resolved_rp = rp_task_id or await self._resolve_rp_task_for_metal_payment(task_id)
+            if resolved_rp:
+                await self.conn.execute(
+                    "UPDATE supplier_payments SET rp_task_id = ? WHERE id = ?",
+                    (int(resolved_rp), sp_id),
+                )
         # Update aggregated cost column in parent invoice
         cost_col = self._COST_COL_MAP.get(material_type) if update_cost else None
-        if cost_col:
+        if is_metal and update_cost:
+            await self.recompute_metal_cost(int(parent_invoice_id))
+        elif cost_col:
             await self.conn.execute(
                 f"UPDATE invoices SET {cost_col} = COALESCE({cost_col}, 0) + ? WHERE id = ?",
                 (amount, parent_invoice_id),
             )
         await self.conn.commit()
-        return cur.lastrowid  # type: ignore[return-value]
+        return sp_id  # type: ignore[return-value]
 
     async def bump_invoice_cost(
         self, invoice_id: int, material_type: str, amount: float,
@@ -7863,13 +7969,20 @@ class Database:
             sp = await cur.fetchone()
             if sp:
                 sp_amount = float(sp["amount"] or 0)
-                cost_col = self._COST_COL_MAP.get(sp["material_type"] or "")
-                if cost_col and sp["parent_invoice_id"]:
+                sp_parent = sp["parent_invoice_id"]
+                is_metal = (sp["material_type"] or "") in self._METAL_TYPES
+                cost_col = None if is_metal else self._COST_COL_MAP.get(sp["material_type"] or "")
+                if cost_col and sp_parent:
                     await self.conn.execute(
                         f"UPDATE invoices SET {cost_col} = COALESCE({cost_col}, 0) - ? WHERE id = ?",
-                        (sp_amount, sp["parent_invoice_id"]),
+                        (sp_amount, sp_parent),
                     )
                     reversed_cost_col = cost_col
+                elif is_metal and sp_parent:
+                    # Металл: DP пересчитывается по правилу (полная сумма счёта
+                    # при ≥1 оплате) — минус конкретного платежа здесь неверен.
+                    await self.recompute_metal_cost(int(sp_parent))
+                    reversed_cost_col = "cost_metal"
             await self.conn.execute("DELETE FROM supplier_payments WHERE id = ?", (sp_id,))
         elif op_id:
             await self.conn.execute("DELETE FROM op_company_entries WHERE id = ?", (op_id,))
@@ -7999,14 +8112,18 @@ class Database:
             sp = await cur.fetchone()
             if sp:
                 sp_amount = float(sp["amount"] or 0)
-                cost_col = self._COST_COL_MAP.get(sp["material_type"] or "")
                 old_parent = sp["parent_invoice_id"]
+                old_is_metal = (sp["material_type"] or "") in self._METAL_TYPES
+                cost_col = None if old_is_metal else self._COST_COL_MAP.get(sp["material_type"] or "")
                 if cost_col and old_parent:
                     await self.conn.execute(
                         f"UPDATE invoices SET {cost_col} = COALESCE({cost_col}, 0) - ? WHERE id = ?",
                         (sp_amount, old_parent),
                     )
                     old_cost_col = cost_col
+                elif old_is_metal and old_parent:
+                    await self.recompute_metal_cost(int(old_parent))
+                    old_cost_col = "cost_metal"
             await self.conn.execute("DELETE FROM supplier_payments WHERE id = ?", (old_sp_id,))
         elif old_op_id:
             await self.conn.execute("DELETE FROM op_company_entries WHERE id = ?", (old_op_id,))
@@ -8020,6 +8137,7 @@ class Database:
         if bound:
             new_parent = int(new_invoice_id)  # type: ignore[arg-type]
             material_type = new_cost_type or "extra_mat"
+            new_is_metal = material_type in self._METAL_TYPES
             cur = await self.conn.execute(
                 "INSERT INTO supplier_payments "
                 "(parent_invoice_id, invoice_number, amount, material_type, supplier, "
@@ -8027,7 +8145,11 @@ class Database:
                 (new_parent, new_invoice_number, amount, material_type, "", None, actor_id, now_iso),
             )
             new_sp_id = cur.lastrowid
-            if new_cost_col:
+            if new_is_metal:
+                # Металл: DP по правилу (полная сумма счёта РП при ≥1 оплате).
+                await self.recompute_metal_cost(new_parent)
+                new_cost_col = "cost_metal"
+            elif new_cost_col:
                 await self.conn.execute(
                     f"UPDATE invoices SET {new_cost_col} = COALESCE({new_cost_col}, 0) + ? WHERE id = ?",
                     (amount, new_parent),
