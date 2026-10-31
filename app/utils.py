@@ -6312,6 +6312,54 @@ def fmt_task_card(
 
 RP_OKLAD_CARD_SEP = "   ━━━━━━━━━━━━━━━━"
 
+RP_OKLAD_HIST_KINDS = {
+    "gd_bn": "б/н ГД",
+    "gd_cash": "нал ГД",
+    "wallet": "кошелёк",
+    "to_advance": "в аванс",
+}
+
+
+def format_rp_oklad_history(history: list[dict[str, Any]], year: int) -> str:
+    """Карточка «📜 Оклад РП — история оплат» (owner 31.10): помесячно закрыто /
+    остаток + каждая оплата (дата, сумма, канал). Тот же стиль, что карточки
+    оклада (pre-блок, разделитель, суммы с пробелом тысяч).
+    history — db.get_rp_oklad_history(year). Display-only.
+    """
+    def _r(v: Any) -> str:
+        return f"{float(v or 0):,.0f}".replace(",", " ")
+
+    months_ru = (
+        "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+    )
+    marks = {"paid": "✅", "partial": "◐", "open": "⬛"}
+    lines = [f"<pre>📜 <b>Оклад РП {year} — история оплат</b>"]
+    for row in history:
+        m = int(row["month"])
+        st = row["state"]
+        if not row["payments"] and st == "paid" and float(row["closed"]) >= 60000 \
+                and m <= 6 and int(year) == 2026:
+            continue  # янв–июнь 2026: константа «вне бота», покажем одной строкой ниже
+        mark = marks.get(st, "⬛")
+        if st == "open":
+            lines.append(f"   {mark} {months_ru[m - 1]:<10} открыт   {_r(row['remaining']):>9s} ₽")
+        else:
+            lines.append(
+                f"   {mark} {months_ru[m - 1]:<10} закрыт {_r(row['closed']):>9s} ₽"
+                + (f"  ост. {_r(row['remaining'])} ₽" if st == "partial" else "")
+            )
+        for p in row["payments"]:
+            kind = RP_OKLAD_HIST_KINDS.get(str(p["kind"]), p["kind"])
+            lines.append(
+                f"      {str(p['date'] or '—'):<10} {_r(p['amount']):>9s} ₽  {kind}"
+            )
+    lines.append(RP_OKLAD_CARD_SEP)
+    if int(year) == 2026:
+        lines.append("   Янв–Июн 2026: по 60 000, вне бота")
+    lines.append("</pre>")
+    return "\n".join(lines)
+
 
 def format_rp_oklad_lines(calc: dict[str, float] | None, oklad: float) -> list[str]:
     """Строки суммы для карточек оклада РП — с зачётом выданного аванса или без него.

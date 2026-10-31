@@ -115,19 +115,6 @@ async def _show_main_menu(
     )
 
 
-async def _send_zamery_stats(message: Message, db: Database, for_user: int | None = None) -> None:
-    """Шлёт ОТДЕЛЬНЫМ сообщением «👔 Замеры по менеджерам» (2 мес.) следом за стартовой
-    картой РП/ГД/замерщика (owner 25.06). for_user=<id> — его замеры; None — агрегат
-    всех замерщиков. Тихо при пусто/ошибке — не роняет основной поток."""
-    try:
-        from ..zamery_start_card import build_zamery_manager_stats_card
-        txt = await build_zamery_manager_stats_card(db, for_user=for_user)
-        if txt:
-            await answer_service(message, txt, delay_seconds=0)
-    except Exception:
-        log.exception("zamery manager-stats followup failed")
-
-
 def _new_user_admin_kb(user_id: int) -> InlineKeyboardBuilder:
     b = InlineKeyboardBuilder()
     for role, label in (
@@ -401,7 +388,6 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
             await answer_service(message, await build_rp_start_card_text(db, config, u.id), delay_seconds=0)
         except Exception:
             log.exception("cmd_start: rp welcome-card failed")
-        await _send_zamery_stats(message, db)
     elif (active_role_post_start or role) == Role.INSTALLER:
         try:
             metrics = await db.get_installer_dashboard_metrics(u.id)
@@ -421,7 +407,6 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
             await answer_service(message, await build_zamery_start_card_text(db, config, u.id), delay_seconds=0)
         except Exception:
             log.exception("cmd_start: zamery welcome-card failed")
-        await _send_zamery_stats(message, db, for_user=u.id)
 
     if existed is None and not role and not is_admin:
         await _notify_admins_new_user_without_role(message, config)
@@ -531,7 +516,6 @@ async def cmd_menu(message: Message, state: FSMContext, db: Database, config: Co
                     main_menu(active_role or role, is_admin=is_admin, **menu_context),
                 ),
             )
-            await _send_zamery_stats(message, db, for_user=u.id)
             return
         except Exception:
             log.exception("cmd_menu: zamery welcome-card build failed, falling back")
@@ -1131,7 +1115,6 @@ async def sync_data_non_gd(
                 ),
             ),
         )
-        await _send_zamery_stats(message, db)
         return
 
     # Монтажник — карточка с Счёт End / В работе / ЗП помесячно / Баланс аванса.
@@ -1219,7 +1202,6 @@ async def sync_data_non_gd(
                 ),
             ),
         )
-        await _send_zamery_stats(message, db, for_user=message.from_user.id)
         return
 
     await answer_service(

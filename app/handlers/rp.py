@@ -38,7 +38,7 @@ from ..states import (
     RpZpRequestSG,
     TintingRequestSG,
 )
-from ..utils import fmt_project_card, format_rp_oklad_lines, get_initiator_label, parse_amount, parse_date, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
+from ..utils import fmt_project_card, format_rp_oklad_history, format_rp_oklad_lines, get_initiator_label, parse_amount, parse_date, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, to_iso, utcnow
 from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
@@ -2294,7 +2294,8 @@ async def _render_oklad_month_picker(
         lines.append("\nВыберите месяц, остаток оклада которого запросить у ГД:")
     else:
         lines.append("\nВыберите месяц, который закрыть списанием из кошелька аванса:")
-    b.adjust(2)
+    b.button(text="📜 История оплат", callback_data="rp_hub:oklad_hist")
+    b.adjust(2, 1)
     return "\n".join(lines), b.as_markup()
 
 
@@ -2307,6 +2308,28 @@ async def rp_hub_b5_oklad(cb: CallbackQuery, state: FSMContext, db: Database) ->
     await state.clear()
     text, kb = await _render_oklad_month_picker(db, action="req")
     await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "rp_hub:oklad_hist")
+async def rp_oklad_history(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Пикер → карточка «📜 История оплат» оклада за текущий год (owner 31.10)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    await state.clear()
+    now_msk = datetime.now(ZoneInfo("Europe/Moscow")) if ZoneInfo else datetime.now()
+    year = now_msk.year
+    try:
+        hist = await db.get_rp_oklad_history(year)
+    except Exception:
+        log.exception("rp_oklad_history: get_rp_oklad_history(%s) failed", year)
+        await cb.message.answer("Не удалось собрать историю оклада. Попробуйте позже.")  # type: ignore[union-attr]
+        return
+    text = format_rp_oklad_history(hist, year)
+    b = InlineKeyboardBuilder()
+    b.button(text="🔙 К выбору месяца", callback_data="rp_hub:b5")
+    b.adjust(1)
+    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 @router.callback_query(RpOkladMonthCb.filter(F.action == "req"))

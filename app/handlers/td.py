@@ -27,7 +27,7 @@ from ..services.integration_hub import IntegrationHub
 from ..services.menu_scope import resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import GdZpInstAdjustSG, GdZpPaymentSG, InvoicePaymentSG, RpSalaryPaySG, RpSalaryRejectSG, SupplierPaymentSG
-from ..utils import answer_service, fmt_project_card, format_card_section, format_plan_fact_card, format_rp_oklad_lines, parse_amount, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
+from ..utils import answer_service, fmt_project_card, format_card_section, format_plan_fact_card, format_rp_oklad_history, format_rp_oklad_lines, parse_amount, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
 from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
@@ -2474,6 +2474,7 @@ def _render_rp_salary_confirm(
             text="📎 С платёжкой",
             callback_data=RpSalaryCb(rp_id=rp_id, action="attach").pack(),
         )
+    b.button(text="📜 История оплат", callback_data="td_okl_hist")
     b.button(text="❌ Отмена", callback_data=f"rp_salary_cancel:{rp_id}")
     b.adjust(1)
     return text, b.as_markup()
@@ -2495,6 +2496,25 @@ async def _rp_salary_advances(
             rp_id, mode="cash", oklad_override=round(float(remaining), 2),
         ),
     )
+
+
+@router.callback_query(F.data == "td_okl_hist")
+async def td_oklad_history(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Экран выплаты оклада → карточка «📜 История оплат» за текущий год (owner 31.10)."""
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    await cb.answer()
+    await state.clear()
+    now_msk = datetime.now(ZoneInfo("Europe/Moscow")) if ZoneInfo else datetime.now()
+    year = now_msk.year
+    try:
+        hist = await db.get_rp_oklad_history(year)
+    except Exception:
+        log.exception("td_oklad_history: get_rp_oklad_history(%s) failed", year)
+        await cb.message.answer("Не удалось собрать историю оклада. Попробуйте позже.")  # type: ignore[union-attr]
+        return
+    text = format_rp_oklad_history(hist, year)
+    await cb.message.answer(text)  # type: ignore[union-attr]
 
 
 @router.callback_query(RpSalaryCb.filter(F.action == "start"))

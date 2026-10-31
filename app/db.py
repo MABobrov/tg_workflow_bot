@@ -10735,6 +10735,73 @@ class Database:
         state = "paid" if remaining <= 0 else ("partial" if closed > 0 else "open")
         return {"closed": closed, "remaining": remaining, "state": state}
 
+    async def get_rp_oklad_history(self, year: int) -> list[dict[str, Any]]:
+        """История оплат оклада РП по месяцам года (owner 31.10, read-only).
+
+        Для каждого месяца 1..12: state/closed/remaining из get_rp_oklad_month_state
+        + список оплат payments[{date, amount, kind}]. kind: 'gd_bn' (ГД б/н),
+        'gd_cash' (ГД наличные), 'wallet' (списание из кошелька аванса),
+        'to_advance' (перевод в кошелёк аванса, канал A2). Месяцы ≤ константы
+        (янв–июнь 2026) — payments пустой: платили вне бота, деталей в журнале нет.
+        Кошелёк-списания распознаём по oklad_offset-заявкам месяца (тот же канал
+        пишет кред-строку «Оклад РП …» + заявку 'Зачёт аванса в оклад РП YYYY-MM').
+        """
+        y = int(year)
+        pre_y, pre_m = RP_OKLAD_PREBOT_CLOSED_THROUGH
+        out: list[dict[str, Any]] = []
+        for m in range(1, 13):
+            st = await self.get_rp_oklad_month_state(y, m)
+            payments: list[dict[str, Any]] = []
+            if (y, m) > (pre_y, pre_m):
+                # Заявки-гашения кошелька за месяц: {amount} — маркер «кошелёк».
+                cur = await self.conn.execute(
+                    "SELECT total_amount FROM installer_advance_requests "
+                    "WHERE request_type = ? AND status = 'paid' AND comment LIKE ?",
+                    (RP_OKLAD_OFFSET_TYPE, f"{RP_OKLAD_OFFSET_DESC} {y:04d}-{m:02d}%"),
+                )
+                wallet_amounts = [round(float(r[0] or 0), 2) for r in await cur.fetchall()]
+                cur = await self.conn.execute(
+                    "SELECT COALESCE(cashless_amount, 0), COALESCE(other_amount, 0), "
+                    "COALESCE(date_display, date_other_display, ''), "
+                    "COALESCE(description, ''), COALESCE(description_credit, '') "
+                    f"FROM op_company_entries WHERE year = ? AND month = ? AND {_OKLAD_PAID_WHERE}",
+                    (y, m),
+                )
+                for cashless, other, date_disp, descr, descr_cred in await cur.fetchall():
+                    amount = round(float(cashless) + float(other), 2)
+                    if descr == RP_OKLAD_ADVANCE_DESC:
+                        kind = "to_advance"
+                    elif float(other) > 0 and amount in wallet_amounts:
+                        kind = "wallet"
+                        wallet_amounts.remove(amount)
+                    elif float(cashless) > 0:
+                        kind = "gd_bn"
+                    else:
+                        kind = "gd_cash"
+                    payments.append({
+                        "date": str(date_disp), "amount": amount, "kind": kind,
+                    })
+                # Переводы в аванс (канал A2) — отдельные строки RP_OKLAD_ADVANCE_DESC.
+                cur = await self.conn.execute(
+                    "SELECT COALESCE(cashless_amount, 0), COALESCE(other_amount, 0), "
+                    "COALESCE(date_display, date_other_display, '') "
+                    "FROM op_company_entries WHERE year = ? AND month = ? AND description = ?",
+                    (y, m, RP_OKLAD_ADVANCE_DESC),
+                )
+                for cashless, other, date_disp in await cur.fetchall():
+                    payments.append({
+                        "date": str(date_disp),
+                        "amount": round(float(cashless) + float(other), 2),
+                        "kind": "to_advance",
+                    })
+                payments.sort(key=lambda p: (p["date"] or "99", p["amount"]))
+            out.append({
+                "month": m, "state": st["state"],
+                "closed": st["closed"], "remaining": st["remaining"],
+                "payments": payments,
+            })
+        return out
+
     async def get_rp_oklad_advance_status(
         self, year: int, month: int,
     ) -> dict[str, Any]:
