@@ -103,6 +103,13 @@ RP_OKLAD_ADVANCE_GROSSUP = 1.1
 RP_OKLAD_OFFSET_TYPE = "oklad_offset"
 RP_OKLAD_OFFSET_DESC = "Зачёт аванса в оклад РП"  # + ' {YYYY-MM}' — маркер идемпотентности
 
+# ── Оклад РП: выбор месяца (owner 31.10) ──
+# Оклад месяца = 60 000 ТЕЛОМ без надбавки (owner 31.10 п.1); б/н-форма = тело ×1,1.
+RP_OKLAD_MONTHLY = 60_000
+# Месяцы ≤ (2026, 6) закрыты целиком БЕЗ записей в БД: янв–апр — журнал офиса
+# («Импорт ОП» строки «Нижельченко»), май–июнь — платили вне бота (слово owner 31.10).
+RP_OKLAD_PREBOT_CLOSED_THROUGH = (2026, 6)
+
 
 class OkladAlreadyPaidError(Exception):
     """Оклад за месяц уже выплачен ГД (есть op_company_entries 'Оклад РП%')."""
@@ -10695,6 +10702,39 @@ class Database:
             log.exception("credit_rp_zp_to_advance: audit failed req_id=%s", req_id)
         return (req_id, total, credited)
 
+    async def get_rp_oklad_month_state(
+        self, year: int, month: int,
+    ) -> dict[str, Any]:
+        """Статус оклада РП за месяц по модели выбора месяца (owner 31.10).
+
+        Оклад месяца = RP_OKLAD_MONTHLY (60 000, тело без надбавки). closed_amount:
+          • месяцы ≤ RP_OKLAD_PREBOT_CLOSED_THROUGH (янв–июнь 2026) — закрыт целиком
+            константой: янв–апр журнал офиса, май–июнь слово owner («платили вне бота»);
+          • Σ «Оклад РП%» в op_company_entries (cashless + other): выплаты ГД
+            (payout + зачёт-аванса в кред) и списания из кошелька («Оклад получен»);
+          • + Σ RP_OKLAD_ADVANCE_DESC — переводы оклада в аванс (канал A2).
+        remaining = 60 000 − closed; state: paid | partial | open. read-only.
+        """
+        y, m = int(year), int(month)
+        if (y, m) <= RP_OKLAD_PREBOT_CLOSED_THROUGH:
+            return {"closed": float(RP_OKLAD_MONTHLY), "remaining": 0.0, "state": "paid"}
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(COALESCE(cashless_amount, 0) + COALESCE(other_amount, 0)), 0) "
+            f"FROM op_company_entries WHERE year = ? AND month = ? AND {_OKLAD_PAID_WHERE}",
+            (y, m),
+        )
+        closed = float((await cur.fetchone())[0] or 0)
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(cashless_amount), 0) FROM op_company_entries "
+            "WHERE year = ? AND month = ? AND description = ?",
+            (y, m, RP_OKLAD_ADVANCE_DESC),
+        )
+        closed += float((await cur.fetchone())[0] or 0)
+        closed = round(closed, 2)
+        remaining = round(max(0.0, float(RP_OKLAD_MONTHLY) - closed), 2)
+        state = "paid" if remaining <= 0 else ("partial" if closed > 0 else "open")
+        return {"closed": closed, "remaining": remaining, "state": state}
+
     async def get_rp_oklad_advance_status(
         self, year: int, month: int,
     ) -> dict[str, Any]:
@@ -10723,9 +10763,13 @@ class Database:
         return {"gd_paid": gd_paid, "to_advance": to_advance, "remaining": remaining}
 
     async def get_rp_oklad_advance_offset(
-        self, rp_id: int, mode: str = "bn",
+        self, rp_id: int, mode: str = "bn", oklad_override: float | None = None,
     ) -> dict[str, float]:
         """Сколько выданного аванса РП зачитывается в оклад и что остаётся к выплате.
+
+        oklad_override (owner 31.10) — оклад месяца при ЧАСТИЧНОМ закрытии: не полный
+        66 000/60 000, а остаток месяца × форма (тело-остаток ×1,1 для б/н). None —
+        прежнее поведение (полный оклад месяца).
 
         ТЗ owner 31.07: «аванс РП должен автоматически вычитаться из оклада, и ГД должна
         приходить карточка задачи с суммой остатка». read-only, ничего не пишет.
@@ -10750,7 +10794,10 @@ class Database:
         отношения не имеет [[feedback_rp_npn_separate_wallets]].
         """
         cash = (mode == "cash")
-        oklad = float(RP_SALARY_MONTHLY_CASH if cash else RP_SALARY_MONTHLY)
+        oklad = (
+            float(oklad_override) if oklad_override is not None
+            else float(RP_SALARY_MONTHLY_CASH if cash else RP_SALARY_MONTHLY)
+        )
         grossup = 1.0 if cash else RP_OKLAD_ADVANCE_GROSSUP
         raw = await self.get_advance_balance(int(rp_id), "rp")
         gross = round(raw * grossup, 2)
@@ -10806,20 +10853,27 @@ class Database:
         now_iso = to_iso(utcnow())
         date_iso = datetime.strptime(date_display, "%d.%m.%Y").strftime("%Y-%m-%d")
         description = f"Оклад РП {rp_label} {month_str}"
+        description_adv = f"Оклад РП {rp_label} {month_str} (аванс)"
         offset_comment = f"{RP_OKLAD_OFFSET_DESC} {month_str}"
         try:
-            cur = await self.conn.execute(
-                "SELECT COUNT(*) FROM op_company_entries "
-                f"WHERE year = ? AND month = ? AND {_OKLAD_PAID_WHERE}",
-                (int(year), int(month)),
-            )
-            if int((await cur.fetchone())[0] or 0) > 0:
+            # Модель выбора месяца (owner 31.10): оклад месяца = остаток тела
+            # (60 000 − закрытое). Гард — остаток ≤ 0 (месяц выплачен целиком),
+            # а не «есть любая запись»: частичная запись (◐) больше НЕ закрывает
+            # месяц, ГД может доплатить остаток.
+            mst = await self.get_rp_oklad_month_state(int(year), int(month))
+            base = float(mst["remaining"])
+            if base <= 0:
                 raise OkladAlreadyPaidError()
             # Считаем ВНУТРИ транзакции: между показом карточки и кликом ГД аванс мог
-            # измениться (новый топап от ГД / зачёт РП в ЗП по счёту).
-            calc = await self.get_rp_oklad_advance_offset(int(rp_id), mode=mode)
+            # измениться (новый топап от ГД / зачёт РП в ЗП по счёту). Форма б/н —
+            # тело-остаток ×1,1 (owner 31.10 п.6), наличные — тело-остаток как есть.
+            calc = await self.get_rp_oklad_advance_offset(
+                int(rp_id), mode=mode,
+                oklad_override=round(base * (1.0 if cash else RP_OKLAD_ADVANCE_GROSSUP), 2),
+            )
             payout = float(calc["payout"])
             body = float(calc["body"])
+            deduct = float(calc["deduct"])
             if cash:
                 cur = await self.conn.execute(
                     "INSERT INTO op_company_entries "
@@ -10839,6 +10893,22 @@ class Database:
                      description, now_iso),
                 )
             entry_id = int(cur.lastrowid)
+            # Зачёт аванса теперь ТОЖЕ расход в БК «кред» (owner 31.10 п.8): правая
+            # половина «Расходы кред», отдельной строкой — суммарный расход БК по
+            # месяцу = полный остаток (payout + зачёт). Раньше зачёт в БК не попадал
+            # вовсе. Подпись «(аванс)» — тот же префикс «Оклад РП%», месяц закрывается
+            # суммой обеих строк (get_rp_oklad_month_state).
+            adv_entry_id: int | None = None
+            if deduct > 0:
+                cur = await self.conn.execute(
+                    "INSERT INTO op_company_entries "
+                    "(year, month, date_iso, date_other_display, other_amount, "
+                    " description_credit, source, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'manual_bot_entry', ?)",
+                    (int(year), int(month), date_iso, date_display, deduct,
+                     description_adv, now_iso),
+                )
+                adv_entry_id = int(cur.lastrowid)
             offset_req_id: int | None = None
             if body > 0:
                 cur = await self.conn.execute(
@@ -10856,11 +10926,13 @@ class Database:
             raise
         result = {
             "entry_id": entry_id,
+            "adv_entry_id": adv_entry_id,
             "offset_req_id": offset_req_id,
             "mode": mode,
-            "oklad": float(RP_SALARY_MONTHLY_CASH if cash else RP_SALARY_MONTHLY),
+            "oklad": round(base * (1.0 if cash else RP_OKLAD_ADVANCE_GROSSUP), 2),
+            "base": base,
             "payout": payout,
-            "deduct": float(calc["deduct"]),
+            "deduct": deduct,
             "body": body,
             "raw": float(calc["raw"]),
             "carry": float(calc["carry"]),
@@ -11028,6 +11100,97 @@ class Database:
         except Exception:
             log.exception("record_rp_oklad_received: audit failed entry=%s", entry_id)
         return (entry_id, 0.0)
+
+    async def record_rp_oklad_from_wallet(
+        self, rp_id: int, year: int, month: int, month_str: str,
+        date_display: str, rp_label: str, actor_id: int,
+    ) -> dict[str, Any]:
+        """РП списывает оклад за выбранный месяц из кошелька аванса — АТОМАРНО
+        (модель выбора месяца, owner 31.10). РП сам закрывает месяц своим авансом,
+        минуя ГД-выплату и канал A2 (credit_rp_oklad_to_advance).
+
+        В ОДНОЙ транзакции:
+          (1) кред-строка op_company_entries: date_other_display + other_amount +
+              description_credit=f"Оклад РП {label} {YYYY-MM}" — подпись матчится
+              _OKLAD_PAID_WHERE → closed месяца растёт в get_rp_oklad_month_state;
+          (2) строка гашения кошелька installer_advance_requests(request_type=
+              RP_OKLAD_OFFSET_TYPE, wallet_role='rp', status='paid',
+              total_amount=amount, comment=f"Зачёт аванса в оклад РП {YYYY-MM}")
+              — вычитается из get_advance_balance через _sum_rp_oklad_offset.
+
+        amount = min(кошелёк raw, remaining месяца) — кошелёк в ТЕЛЕ (без ×1,1),
+        оклад тоже тело (RP_OKLAD_MONTHLY), зачёт 1:1 (owner 31.10 п.7).
+        Внутри транзакции — повторная проверка remaining (анти-гонка/двойной клик):
+        remaining ≤ 0 → OkladAlreadyPaidError; кошелёк ≤ 0 → ValueError.
+        НЕ использует add_op_company_entry (коммитит сам — разрыв атомарности).
+        Возвращает {entry_id, req_id, amount, remaining_after, wallet_after}.
+        audit после commit.
+        """
+        now_iso = to_iso(utcnow())
+        date_iso = datetime.strptime(date_display, "%d.%m.%Y").strftime("%Y-%m-%d")
+        description = f"Оклад РП {rp_label} {month_str}"
+        offset_comment = f"Зачёт аванса в оклад РП {month_str}"
+        try:
+            mst = await self.get_rp_oklad_month_state(int(year), int(month))
+            remaining = float(mst["remaining"])
+            if remaining <= 0:
+                raise OkladAlreadyPaidError()
+            wallet_before = await self.get_advance_balance(int(rp_id), wallet_role="rp")
+            if wallet_before <= 0:
+                raise ValueError(
+                    f"wallet balance is {wallet_before}, nothing to offset"
+                )
+            amount = round(min(wallet_before, remaining), 2)
+            if amount <= 0:
+                raise ValueError(f"amount must be positive, got {amount}")
+            cur = await self.conn.execute(
+                "INSERT INTO op_company_entries "
+                "(year, month, date_iso, date_other_display, other_amount, "
+                " description_credit, source, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'manual_bot_entry', ?)",
+                (int(year), int(month), date_iso, date_display, amount,
+                 description, now_iso),
+            )
+            entry_id = int(cur.lastrowid)
+            cur = await self.conn.execute(
+                "INSERT INTO installer_advance_requests "
+                "(installer_id, total_amount, status, comment, requested_at, paid_at, "
+                " paid_by, initiator, request_type, wallet_role) "
+                "VALUES (?, ?, 'paid', ?, ?, ?, ?, 'rp', ?, 'rp')",
+                (int(rp_id), amount, offset_comment, now_iso, now_iso,
+                 int(actor_id), RP_OKLAD_OFFSET_TYPE),
+            )
+            req_id = int(cur.lastrowid)
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
+        remaining_after = round(max(0.0, remaining - amount), 2)
+        try:
+            wallet_after = await self.get_advance_balance(int(rp_id), wallet_role="rp")
+        except Exception:
+            log.exception("record_rp_oklad_from_wallet: wallet_after failed rp=%s", rp_id)
+            wallet_after = round(max(0.0, wallet_before - amount), 2)
+        result = {
+            "entry_id": entry_id,
+            "req_id": req_id,
+            "amount": amount,
+            "remaining_after": remaining_after,
+            "wallet_after": wallet_after,
+        }
+        try:
+            await self.audit(
+                actor_id=int(actor_id),
+                action="rp_oklad_from_wallet",
+                entity="op_company_entries",
+                entity_id=str(entry_id),
+                payload={"rp_id": int(rp_id), "month": month_str, **result},
+            )
+        except Exception:
+            log.exception(
+                "record_rp_oklad_from_wallet: audit failed entry_id=%s", entry_id
+            )
+        return result
 
     async def list_rp_advance_distribute_invoices(self) -> list[dict[str, Any]]:
         """Счета для РАСПРЕДЕЛЕНИЯ аванса РП: непокрытая ЗП-10% (npn) (user 2026-06-13).

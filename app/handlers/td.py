@@ -2404,20 +2404,23 @@ async def supplier_pay_finalize(
 
 def _render_rp_salary_confirm(
     rp_id: int, rp_label: str, month_str: str, has_receipt: bool,
+    remaining: float,
     adv_bn: dict[str, float] | None = None,
     adv_cash: dict[str, float] | None = None,
 ) -> tuple[str, Any]:
     """Экран подтверждения выплаты оклада РП (платёжка опциональна).
 
     С 12.08 (owner) экран показывает ОБЕ формы выплаты и спрашивает КАЖДЫЙ раз:
-      💳 б/н самозанятому — 66 000 ₽, аванс зачитывается приведённым ×1,1;
-      💵 наличными        — 60 000 ₽, аванс зачитывается 1:1 (налога нет ни там, ни там).
+      💳 б/н самозанятому — остаток тела ×1,1 (налог), аванс зачитывается приведённым ×1,1;
+      💵 наличными        — остаток тела как есть, аванс зачитывается 1:1.
     Обе пишутся в «Баланс компании», но в РАЗНЫЕ половины листа: б/н в C/E «Сумма б/н» /
     «Расходы б/н», наличные в I/J «Сумма» / «Расходы кред» (db.record_rp_salary_payment).
 
-    adv_bn / adv_cash — db.get_rp_oklad_advance_offset(mode='bn'|'cash'): выданный аванс
-    зачитывается в оклад, ГД видит остаток к выплате (ТЗ owner 31.07). Аванса нет → у
-    каждого варианта одна строка суммы [[feedback_card_compact_means_height]].
+    remaining (owner 31.10) — остаток ТЕЛА месяца (60 000 − закрытое): месяцы
+    могут закрываться частично (списание из кошелька РП), ГД доплачивает остаток.
+    adv_bn / adv_cash — db.get_rp_oklad_advance_offset(mode='bn'|'cash',
+    oklad_override=остаток×форма): выданный аванс зачитывается в оклад.
+    Аванса нет → у каждого варианта одна строка суммы [[feedback_card_compact_means_height]].
     """
     receipt_line = "  Платёжка: <b>прикреплена</b>\n" if has_receipt else ""
     tail = (
@@ -2425,6 +2428,9 @@ def _render_rp_salary_confirm(
         if has_receipt
         else "запись в «Баланс компании», РП получит уведомление."
     )
+    remaining = round(max(0.0, float(remaining)), 2)
+    oklad_bn = round(remaining * 1.1, 2)
+    oklad_cash = remaining
 
     def _block(title: str, oklad: float, calc: dict[str, float] | None) -> str:
         deduct = float((calc or {}).get("deduct") or 0)
@@ -2441,16 +2447,17 @@ def _render_rp_salary_confirm(
         payout = (calc or {}).get("payout")
         return float(oklad if payout is None else payout)
 
-    pay_bn = _btn_sum(RP_SALARY_MONTHLY, adv_bn)
-    pay_cash = _btn_sum(RP_SALARY_MONTHLY_CASH, adv_cash)
+    pay_bn = _btn_sum(oklad_bn, adv_bn)
+    pay_cash = _btn_sum(oklad_cash, adv_cash)
 
     text = (
         f"💼 <b>Выплата оклада РП</b>\n\n"
         f"  Сотрудник: <b>{html.escape(rp_label)}</b>\n"
         f"  Месяц: <b>{month_str}</b>\n"
+        f"  Остаток оклада (тело): <b>{_fmt_rub_td(remaining)} ₽</b>\n"
         f"{receipt_line}\n"
-        f"{_block('💳 Б/н (самозанятый)', RP_SALARY_MONTHLY, adv_bn)}"
-        f"{_block('💵 Наличными', RP_SALARY_MONTHLY_CASH, adv_cash)}"
+        f"{_block('💳 Б/н (самозанятый)', oklad_bn, adv_bn)}"
+        f"{_block('💵 Наличными', oklad_cash, adv_cash)}"
         f"\nВыберите форму выплаты. После подтверждения: {tail}"
     )
     b = InlineKeyboardBuilder()
@@ -2472,11 +2479,21 @@ def _render_rp_salary_confirm(
     return text, b.as_markup()
 
 
-async def _rp_salary_advances(db: Database, rp_id: int) -> tuple[dict, dict]:
-    """Зачёт аванса РП в обеих формах выплаты — для экрана подтверждения."""
+async def _rp_salary_advances(
+    db: Database, rp_id: int, remaining: float,
+) -> tuple[dict, dict]:
+    """Зачёт аванса РП в обеих формах выплаты — для экрана подтверждения.
+
+    remaining (owner 31.10) — остаток тела месяца: оклад формы = остаток×1,1 (б/н)
+    или остаток (наличные), передаётся в get_rp_oklad_advance_offset как override.
+    """
     return (
-        await db.get_rp_oklad_advance_offset(rp_id, mode="bn"),
-        await db.get_rp_oklad_advance_offset(rp_id, mode="cash"),
+        await db.get_rp_oklad_advance_offset(
+            rp_id, mode="bn", oklad_override=round(float(remaining) * 1.1, 2),
+        ),
+        await db.get_rp_oklad_advance_offset(
+            rp_id, mode="cash", oklad_override=round(float(remaining), 2),
+        ),
     )
 
 
@@ -2497,11 +2514,12 @@ async def rp_salary_start(
     rp_label = rp.full_name or (f"@{rp.username}" if rp.username else f"id{rp.telegram_id}")
     now_msk = datetime.now(ZoneInfo("Europe/Moscow")) if ZoneInfo else datetime.now()
     month_str = now_msk.strftime("%Y-%m")
-    # A2 взаимоисключение «один оклад в месяц»: если оклад уже переведён РП в аванс — запрет
-    okl_st = await db.get_rp_oklad_advance_status(now_msk.year, now_msk.month)
-    if okl_st.get("to_advance", 0) > 0:
+    # Модель выбора месяца (owner 31.10): гард — остаток тела месяца > 0
+    mst = await db.get_rp_oklad_month_state(now_msk.year, now_msk.month)
+    remaining = float(mst["remaining"])
+    if remaining <= 0:
         await cb.answer(
-            "Оклад за этот месяц уже переведён РП в аванс — выплата невозможна.",
+            "Оклад за этот месяц уже закрыт — выплата невозможна.",
             show_alert=True,
         )
         return
@@ -2513,14 +2531,15 @@ async def rp_salary_start(
         month=month_str,
         year=now_msk.year,
         month_num=now_msk.month,
+        okl_remaining=remaining,
         date_display=now_msk.strftime("%d.%m.%Y"),
         receipt_file_id=None,
         receipt_file_type=None,
     )
-    adv_bn, adv_cash = await _rp_salary_advances(db, callback_data.rp_id)
+    adv_bn, adv_cash = await _rp_salary_advances(db, callback_data.rp_id, remaining)
     text, kb = _render_rp_salary_confirm(
         callback_data.rp_id, rp_label, month_str, has_receipt=False,
-        adv_bn=adv_bn, adv_cash=adv_cash,
+        remaining=remaining, adv_bn=adv_bn, adv_cash=adv_cash,
     )
     await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
     await cb.answer()
@@ -2550,13 +2569,15 @@ async def rp_salary_receipt(message: Message, state: FSMContext, db: Database) -
     rp_id = int(data.get("rp_id") or 0)
     rp_label = data.get("rp_label") or "РП"
     month_str = data.get("month") or ""
+    remaining = float(data.get("okl_remaining") or 0)
     await state.update_data(receipt_file_id=file_id, receipt_file_type=file_type)
     await state.set_state(RpSalaryPaySG.confirm)
     adv_bn, adv_cash = (
-        await _rp_salary_advances(db, rp_id) if rp_id else (None, None)
+        await _rp_salary_advances(db, rp_id, remaining) if rp_id else (None, None)
     )
     text, kb = _render_rp_salary_confirm(
-        rp_id, rp_label, month_str, has_receipt=True, adv_bn=adv_bn, adv_cash=adv_cash,
+        rp_id, rp_label, month_str, has_receipt=True,
+        remaining=remaining, adv_bn=adv_bn, adv_cash=adv_cash,
     )
     await message.answer(text, reply_markup=kb)
 
@@ -2657,20 +2678,20 @@ async def rp_salary_confirm(
                 return
         except KeyError:
             log.warning("rp_salary_confirm: task %s not found (race-guard)", task_id_close)
-    # A2 взаимоисключение «один оклад в месяц» (финал, обязательный барьер): если РП уже
-    # перевёл оклад в аванс за этот месяц — выплату не проводим (последняя линия защиты).
-    okl_st = await db.get_rp_oklad_advance_status(year, month_num)
-    if okl_st.get("gd_paid"):
-        # Оклад за этот месяц уже выплачен (есть запись «Оклад РП%» в op_company_entries) —
-        # анти-двойная-выплата 66К. Завершает инвариант «один оклад в месяц» на стороне
-        # ВЫПЛАТЫ (раньше барьер ловил только перевод-в-аванс, не повторную выплату ГД —
-        # двойной тап pre-card давал второй op_company_entry; ревью 30.06).
+    # Модель выбора месяца (owner 31.10) — финальный барьер: остаток тела месяца
+    # считается живьём ВНУТРИ record_rp_salary_payment, здесь — ранний отсев.
+    # Частичная запись (◐, списание из кошелька РП) больше НЕ блокирует доплату:
+    # блокирует только остаток 0 (месяц выплачен целиком).
+    mst = await db.get_rp_oklad_month_state(year, month_num)
+    if float(mst["remaining"]) <= 0:
         await cb.answer(
-            "Оклад за этот месяц уже выплачен — повторная выплата невозможна.",
+            "Оклад за этот месяц уже закрыт — повторная выплата невозможна.",
             show_alert=True,
         )
         await state.clear()
         return
+    # A2: если РП перевёл оклад этого месяца в аванс — выплата невозможна (канал A2)
+    okl_st = await db.get_rp_oklad_advance_status(year, month_num)
     if okl_st.get("to_advance", 0) > 0:
         await cb.answer(
             "Оклад за этот месяц уже переведён РП в аванс — выплата невозможна.",
@@ -2856,11 +2877,14 @@ async def rp_salary_task_open(
         return
     now_msk = datetime.now(ZoneInfo("Europe/Moscow")) if ZoneInfo else datetime.now()
     date_display = now_msk.strftime("%d.%m.%Y")
-    # A2 взаимоисключение «один оклад в месяц»: если оклад уже переведён РП в аванс — запрет
-    okl_st = await db.get_rp_oklad_advance_status(year_n, month_num)
-    if okl_st.get("to_advance", 0) > 0:
+    # Модель выбора месяца (owner 31.10): гард — остаток тела месяца > 0 (месяц может
+    # быть уже закрыт ГД-выплатой или частично закрыт списанием из кошелька РП).
+    # Частичное закрытие НЕ блокирует: ГД доплачивает остаток.
+    mst = await db.get_rp_oklad_month_state(year_n, month_num)
+    remaining = float(mst["remaining"])
+    if remaining <= 0:
         await cb.answer(
-            "Оклад за этот месяц уже переведён РП в аванс — выплата невозможна.",
+            f"Оклад за {month_str} уже закрыт (остаток 0) — выплата невозможна.",
             show_alert=True,
         )
         return
@@ -2872,14 +2896,16 @@ async def rp_salary_task_open(
         month=month_str,
         year=year_n,
         month_num=month_num,
+        okl_remaining=remaining,
         date_display=date_display,
         task_id=callback_data.task_id,
         receipt_file_id=None,
         receipt_file_type=None,
     )
-    adv_bn, adv_cash = await _rp_salary_advances(db, rp_id)
+    adv_bn, adv_cash = await _rp_salary_advances(db, rp_id, remaining)
     text, kb = _render_rp_salary_confirm(
-        rp_id, rp_label, month_str, has_receipt=False, adv_bn=adv_bn, adv_cash=adv_cash,
+        rp_id, rp_label, month_str, has_receipt=False,
+        remaining=remaining, adv_bn=adv_bn, adv_cash=adv_cash,
     )
     await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
     await cb.answer()

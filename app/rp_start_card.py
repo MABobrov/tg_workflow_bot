@@ -513,19 +513,24 @@ async def _block_profit(db, config, uid):
         active = [datetime.now(ZoneInfo("Europe/Moscow")).month]
     active = sorted(active, reverse=True)         # текущий/новые сверху, Январь снизу
     to_pay = await _rp_to_pay_monthly(db, year)   # AP где AR=0, по receipt_date месяцу
-    oklad_paid = await _oklad_paid_months(config)  # месяцы со строкой «ЗП РП Нижельченко»
-    oklad_bot = await _oklad_bot_months(db, year)  # то же, но из выплат САМОГО бота
+    # Оклад месяца — из db.get_rp_oklad_month_state (owner 31.10): янв–июнь закрыты
+    # константой, июль+ — Σ записей БК «Оклад РП%» (+ переводы в аванс). Показываем
+    # ФАКТИЧЕСКИ закрытое (closed), не фикс. 66 000: месяцы могут закрываться частично
+    # (списание из кошелька РП). Источники-журналы офиса (oklad_paid/oklad_bot) здесь
+    # больше не участвуют [[feedback_db_is_source_of_truth]].
+    oklad_closed: dict[int, float] = {}
+    for mo in active:
+        try:
+            st = await db.get_rp_oklad_month_state(year, mo)
+            if float(st["closed"]) > 0:
+                oklad_closed[mo] = float(st["closed"])
+        except Exception:
+            logger.exception("RP card: get_rp_oklad_month_state(%s, %s) упал", year, mo)
     # Шапка столбцов (Мес-колонка без заголовка).
     body = [_profit_row("", "Оклад", "10% РП", "К выпл.")]
     for mo in active:
-        # Оклад: есть строка за месяц → фикс. сумма по форме выплаты; иначе пусто.
-        # Два источника: журнал офиса (oklad_paid, всегда б/н 66 000) и выплаты самого
-        # бота (oklad_bot, знает про наличные 60 000). Бот приоритетнее — он источник
-        # истины по своим записям [[feedback_db_is_source_of_truth]].
-        if mo in oklad_bot:
-            okl_cell = _money(oklad_bot[mo])
-        else:
-            okl_cell = _money(OKLAD_MONTHLY) if mo in oklad_paid else ""
+        # Оклад: closed за месяц > 0 → показываем закрытую сумму; иначе пусто.
+        okl_cell = _money(oklad_closed[mo]) if mo in oklad_closed else ""
         pay = float(to_pay.get(mo) or 0)
         pay_cell = _money(pay) if pay > 0 else ""
         body.append(_profit_row(mn[mo - 1], okl_cell, _money(rpm.get(mo)), pay_cell))

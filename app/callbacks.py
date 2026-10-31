@@ -183,3 +183,14 @@ class RpOkladRecvCb(CallbackData, prefix="rp_okl_recv"):
     action: attach (приложить платёжку) | submit (зафиксировать) | cancel
     """
     action: str  # attach | submit | cancel
+
+
+class RpOkladMonthCb(CallbackData, prefix="rp_okl_m"):
+    """Выбор месяца оклада РП (модель выбора месяца, owner 31.10).
+
+    Один колбэк на оба флоу: РП списывает из кошелька (action='recv') и РП
+    запрашивает остаток у ГД (action='req'). Кнопки только ⬛/◐ (открыт/частично).
+    """
+    action: str  # recv | req
+    year: int
+    month: int

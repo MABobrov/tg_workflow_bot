@@ -15,7 +15,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
-from ..callbacks import ProjectCb, RpOkladAdvCb, RpOkladRecvCb, RpSalaryRequestCb, RpSalaryTaskCb, TaskCb
+from ..callbacks import ProjectCb, RpOkladAdvCb, RpOkladMonthCb, RpOkladRecvCb, RpSalaryRequestCb, RpSalaryTaskCb, TaskCb
 from ..config import Config
 from ..db import Database, OkladAlreadyPaidError, OkladAmountExceedsRemainingError
 from ..enums import ProjectStatus, Role, TaskStatus, TaskType
@@ -2013,19 +2013,32 @@ async def rp_salary_request_start(message: Message, state: FSMContext, db: Datab
     # Confirm card
     await state.clear()
     await state.set_state(RpSalaryRequestSG.confirm)
-    await state.update_data(month=month_str)
+    # Модель выбора месяца (owner 31.10): остаток тела месяца, не фикс. 66 000
+    try:
+        _mst = await db.get_rp_oklad_month_state(next_year, next_month)
+        remaining = round(float(_mst["remaining"]), 2)
+    except Exception:
+        remaining = float(RP_SALARY_MONTHLY_AMOUNT)
+    if remaining <= 0:
+        await message.answer(
+            f"❌ Оклад за <b>{month_str}</b> уже закрыт. Запрос невозможен."
+        )
+        return
+    await state.update_data(month=month_str, okl_remaining=remaining)
     b = InlineKeyboardBuilder()
     b.button(text="✅ Да", callback_data=RpSalaryRequestCb(action="submit").pack())
     b.button(text="❌ Отмена", callback_data=RpSalaryRequestCb(action="cancel").pack())
     b.adjust(2)
     # ТЗ owner 31.07: выданный ГД аванс зачитывается в оклад — РП видит остаток сразу,
     # ещё до отправки запроса. Аванса нет → карточка ровно как была.
-    calc = await db.get_rp_oklad_advance_offset(user_id)
+    calc = await db.get_rp_oklad_advance_offset(
+        user_id, mode="bn", oklad_override=round(remaining * 1.1, 2),
+    )
     await message.answer(
         f"<pre>💼 <b>Запрос оклада</b>\n"
         f"   Месяц                {month_str}\n"
         f"   ━━━━━━━━━━━━━━━━\n"
-        + "\n".join(format_rp_oklad_lines(calc, RP_SALARY_MONTHLY_AMOUNT))
+        + "\n".join(format_rp_oklad_lines(calc, round(remaining * 1.1, 2)))
         + "</pre>\n\n"
         f"Отправить запрос ГД?",
         reply_markup=b.as_markup(),
@@ -2071,16 +2084,31 @@ async def rp_salary_request_submit(
         await state.clear()
         await cb.answer()
         return
-    # Зачёт аванса (ТЗ owner 31.07). Снимок кладём в payload только для аудита — карточка
-    # ГД пересчитывает величину живьём (tasks.send_task_open_card), т.к. между запросом и
-    # выплатой аванс может измениться.
-    calc = await db.get_rp_oklad_advance_offset(user_id)
+    # Модель выбора месяца (owner 31.10): оклад месяца = ОСТАТОК тела (60 000 −
+    # закрытое), а не фиксированные 66 000. Карточка ГД пересчитывает зачёт живьём
+    # на момент выплаты (rp_salary_task_open), payload — снимок для аудита.
+    try:
+        _ys, _ms = month_str.split("-")
+        _mst = await db.get_rp_oklad_month_state(int(_ys), int(_ms))
+        remaining = round(float(_mst["remaining"]), 2)
+    except Exception:
+        remaining = float(RP_SALARY_MONTHLY_AMOUNT)
+    if remaining <= 0:
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"❌ Оклад за <b>{month_str}</b> уже закрыт. Запрос невозможен."
+        )
+        await state.clear()
+        await cb.answer()
+        return
+    calc = await db.get_rp_oklad_advance_offset(
+        user_id, mode="bn", oklad_override=round(remaining * 1.1, 2),
+    )
     pre_card = (
         f"<pre>💼 <b>Запрос оклада</b>\n"
         f"   От                   {rp_label}\n"
         f"   Месяц                {month_str}\n"
         f"   ━━━━━━━━━━━━━━━━\n"
-        + "\n".join(format_rp_oklad_lines(calc, RP_SALARY_MONTHLY_AMOUNT))
+        + "\n".join(format_rp_oklad_lines(calc, round(remaining * 1.1, 2)))
         + "</pre>"
     )
     created = 0
@@ -2096,12 +2124,15 @@ async def rp_salary_request_submit(
                 due_at_iso=None,
                 payload={
                     "month": month_str,
-                    "amount": RP_SALARY_MONTHLY_AMOUNT,
+                    # amount = остаток ТЕЛА месяца (owner 31.10). «amount» читает метка
+                    # кнопки «Прочие ЗП»; б/н-форма = remaining ×1.1 — отдельно.
+                    "amount": remaining,
+                    "amount_bn": round(remaining * 1.1, 2),
+                    "oklad_remaining": remaining,
                     "rp_id": user_id,
                     "rp_name": rp_label,
                     "source": "rp_salary_request",
-                    # Снимок на момент запроса (аудит). Смысл "amount" НЕ меняем — его
-                    # читают карточка ГД и метка кнопки «Прочие ЗП».
+                    # Снимок на момент запроса (аудит). ГД пересчитает живьём.
                     "advance_offset": calc["deduct"],
                     "advance_raw": calc["raw"],
                     "payout": calc["payout"],
@@ -2147,16 +2178,17 @@ async def rp_salary_request_submit(
             action="rp_salary_requested",
             entity="user",
             entity_id=str(user_id),
-            payload={"month": month_str, "amount": RP_SALARY_MONTHLY_AMOUNT, "rp_name": rp_label, "gd_count": created},
+            payload={"month": month_str, "amount": remaining, "amount_bn": round(remaining * 1.1, 2), "rp_name": rp_label, "gd_count": created},
         )
     except Exception:
         log.exception("rp_salary_request_submit: audit failed")
     await state.clear()
+    oklad_bn = round(remaining * 1.1, 2)
     try:
         await cb.message.edit_text(  # type: ignore[union-attr]
             f"✅ Запрос оклада за <b>{month_str}</b> отправлен ГД.\n"
             f"Сумма: <b>{_fmt_rub(calc['payout'])} ₽</b>"
-            + (f" (оклад {_fmt_rub(RP_SALARY_MONTHLY_AMOUNT)} − аванс {_fmt_rub(calc['deduct'])})"
+            + (f" (оклад {_fmt_rub(oklad_bn)} − аванс {_fmt_rub(calc['deduct'])})"
                if calc["deduct"] > 0 else "")
         )
     except Exception:
@@ -2195,7 +2227,7 @@ async def rp_salary_hub_start(message: Message, state: FSMContext, db: Database)
     from .gd import EMPLOYEE_DEPOSIT_WHITELIST
     _in_wl = user_id in {tid for tid in EMPLOYEE_DEPOSIT_WHITELIST.values() if tid}
     b = InlineKeyboardBuilder()
-    b.button(text="💼 Оклад 66К (на следующий месяц)", callback_data="rp_hub:b5")
+    b.button(text="💼 Оклад (выбор месяца)", callback_data="rp_hub:b5")
     b.button(text="✅ Оклад получен (фиксация факта)", callback_data="rp_hub:oklad_recv")
     b.button(text="💰 ЗП от завершённых счетов", callback_data="rp_hub:b2")
     # «💵 Аванс (забрать ЗП по счетам)» ОТКЛЮЧЕНО 2026-06-30: кошелёк наполняет
@@ -2210,62 +2242,113 @@ async def rp_salary_hub_start(message: Message, state: FSMContext, db: Database)
     await message.answer(text, reply_markup=b.as_markup())
 
 
+# ── Оклад РП: выбор месяца (owner 31.10) ──
+# Модель: оклад месяца = тело 60 000 (RP_OKLAD_MONTHLY). Янв–июнь 2026 закрыты
+# константой (платили вне бота), июль+ — по записям БК. РП выбирает ЛЮБОЙ месяц
+# года: запросить остаток у ГД ('req') или списать из кошелька ('recv').
+# Кнопки только ⬛ (открыт) / ◐ (частично) по 2 в ряд; ✅-месяцы без кнопки.
+
+_MONTHS_RU = (
+    "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+)
+
+
+async def _render_oklad_month_picker(
+    db: Database, action: str, extra_line: str = "",
+) -> tuple[str, Any]:
+    """Пикер месяцев оклада РП: статусы из get_rp_oklad_month_state (owner 31.10).
+
+    action 'req' — запрос остатка у ГД; 'recv' — списание из кошелька аванса.
+    Месяцы: январь текущего года … следующий месяц (оклад платится «авансом»).
+    """
+    now_msk = datetime.now(ZoneInfo("Europe/Moscow")) if ZoneInfo else datetime.now()
+    cy = now_msk.year
+    last = (cy + 1, 1) if now_msk.month == 12 else (cy, now_msk.month + 1)
+    lines = [f"<pre>💼 <b>Оклад РП — выбор месяца</b>"]
+    if extra_line:
+        lines.append(extra_line.rstrip("\n"))
+    b = InlineKeyboardBuilder()
+    for m in range(1, 13):
+        if (cy, m) > last:
+            break
+        month_str = f"{cy:04d}-{m:02d}"
+        st = await db.get_rp_oklad_month_state(cy, m)
+        if st["state"] == "paid":
+            lines.append(f"   ✅ {_MONTHS_RU[m - 1]:<12s} закрыт")
+            continue
+        rem = float(st["remaining"])
+        mark = "◐" if st["state"] == "partial" else "⬛"
+        label = (
+            f"◐ {_MONTHS_RU[m - 1]} — ост. {_fmt_rub(rem)} ₽"
+            if st["state"] == "partial"
+            else f"⬛ {_MONTHS_RU[m - 1]}"
+        )
+        lines.append(f"   {mark} {_MONTHS_RU[m - 1]:<12s} остаток {_fmt_rub(rem):>10s} ₽")
+        b.button(
+            text=label,
+            callback_data=RpOkladMonthCb(action=action, year=cy, month=m).pack(),
+        )
+    lines.append("   ━━━━━━━━━━━━━━━━</pre>")
+    if action == "req":
+        lines.append("\nВыберите месяц, остаток оклада которого запросить у ГД:")
+    else:
+        lines.append("\nВыберите месяц, который закрыть списанием из кошелька аванса:")
+    b.adjust(2)
+    return "\n".join(lines), b.as_markup()
+
+
 @router.callback_query(F.data == "rp_hub:b5")
 async def rp_hub_b5_oklad(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Хаб → B5 v2 оклад на следующий месяц (логика rp_salary_request_start)."""
+    """Хаб → пикер месяцев оклада: РП запрашивает остаток месяца у ГД (owner 31.10)."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
+    await state.clear()
+    text, kb = await _render_oklad_month_picker(db, action="req")
+    await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
+
+
+@router.callback_query(RpOkladMonthCb.filter(F.action == "req"))
+async def rp_okl_month_req(
+    cb: CallbackQuery,
+    callback_data: RpOkladMonthCb,
+    state: FSMContext,
+    db: Database,
+) -> None:
+    """РП выбрал месяц → confirm-карточка запроса остатка оклада у ГД (owner 31.10)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
     user_id = cb.from_user.id
-    now_msk = datetime.now(ZoneInfo("Europe/Moscow")) if ZoneInfo else datetime.now()
-    next_year = now_msk.year + (1 if now_msk.month == 12 else 0)
-    next_month = 1 if now_msk.month == 12 else now_msk.month + 1
-    month_str = f"{next_year:04d}-{next_month:02d}"
-    # A2: оклад «один на месяц» — если переведён в аванс / выплачен ГД, запрос недоступен
-    okl_st = await db.get_rp_oklad_advance_status(next_year, next_month)
-    if okl_st["gd_paid"] or okl_st["to_advance"] > 0:
-        await cb.message.answer(  # type: ignore[union-attr]
-            f"❌ Оклад за <b>{month_str}</b> уже "
-            f"{'выплачен ГД' if okl_st['gd_paid'] else 'переведён в аванс'}. Запрос недоступен."
+    month_str = f"{callback_data.year:04d}-{callback_data.month:02d}"
+    st = await db.get_rp_oklad_month_state(callback_data.year, callback_data.month)
+    remaining = float(st["remaining"])
+    if remaining <= 0:
+        await cb.answer("Этот месяц уже закрыт.", show_alert=True)
+        return
+    if await _has_pending_rp_salary(db, user_id, month_str):
+        await cb.answer(
+            f"По окладу за {month_str} уже есть запрос у ГД — дождитесь решения.",
+            show_alert=True,
         )
         return
-    existing = await db.list_tasks_by_creator_and_type(
-        created_by=user_id,
-        type_filter=TaskType.RP_SALARY.value,
-        statuses=[TaskStatus.OPEN.value, TaskStatus.IN_PROGRESS.value, TaskStatus.DONE.value],
-        limit=20,
-    )
-    for t in existing:
-        try:
-            payload = json.loads(t.get("payload_json") or "{}")
-        except (json.JSONDecodeError, TypeError):
-            payload = {}
-        if payload.get("month") == month_str:
-            status = t.get("status") or ""
-            if status == TaskStatus.DONE.value:
-                await cb.message.answer(  # type: ignore[union-attr]
-                    f"❌ Оклад за <b>{month_str}</b> уже выплачен.\n"
-                    f"Если нужно повторить запрос — обратитесь к ГД."
-                )
-            else:
-                await cb.message.answer(  # type: ignore[union-attr]
-                    f"❌ Запрос оклада за <b>{month_str}</b> уже отправлен и ожидает решения ГД."
-                )
-            return
+    await cb.answer()
     await state.clear()
     await state.set_state(RpSalaryRequestSG.confirm)
-    await state.update_data(month=month_str)
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Да", callback_data=RpSalaryRequestCb(action="submit").pack())
-    kb.button(text="❌ Отмена", callback_data=RpSalaryRequestCb(action="cancel").pack())
-    kb.adjust(2)
+    await state.update_data(month=month_str, okl_remaining=remaining)
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Да", callback_data=RpSalaryRequestCb(action="submit").pack())
+    b.button(text="❌ Отмена", callback_data=RpSalaryRequestCb(action="cancel").pack())
+    b.adjust(2)
     await cb.message.answer(  # type: ignore[union-attr]
         f"<pre>💼 <b>Запрос оклада</b>\n"
         f"   Месяц                {month_str}\n"
-        f"   ━━━━━━━━━━━━━━━━\n"
-        f"   Итого  {_fmt_rub(RP_SALARY_MONTHLY_AMOUNT)} ₽</pre>\n\n"
-        f"Отправить запрос ГД?",
-        reply_markup=kb.as_markup(),
+        f"   Остаток (тело)       {_fmt_rub(remaining):>10s} ₽\n"
+        f"   К выплате б/н        {_fmt_rub(round(remaining * 1.1, 2)):>10s} ₽\n"
+        f"   К выплате наличными  {_fmt_rub(remaining):>10s} ₽\n"
+        f"   ━━━━━━━━━━━━━━━━</pre>\n\n"
+        f"Отправить запрос ГД на остаток оклада за {month_str}?",
+        reply_markup=b.as_markup(),
     )
 
 
@@ -2815,118 +2898,122 @@ async def rp_oklad_adv_submit(
         log.exception("rp_oklad_adv_submit: GD lookup failed")
 
 
-# ============ ХАБ → «✅ ОКЛАД ПОЛУЧЕН»: ФИКСАЦИЯ ФАКТА ОПЛАТЫ (user 2026-06-14) ============
-# РП отмечает, что оклад за ТЕКУЩИЙ месяц получен (выплачен вне бота). Эффект = как
-# ГД-выплата: маркер «Оклад РП …» в «Баланс компании» (расход) → месяц закрыт
-# (блокирует b5-запрос и перевод-в-аванс). Сумма = остаток (66К − ушедшее в аванс):
-# итог по месяцу = 66К без двойного учёта. Платёжка опциональна. Финальный submit под
-# @money_confirm_guard (анти-двойной-клик). db.record_rp_oklad_received — БЕЗ topup
-# кошелька (в отличие от перевода-в-аванс): деньги пришли вне бота, РП лишь отмечает факт.
+# ============ ХАБ → «✅ ОКЛАД ПОЛУЧЕН»: СПИСАНИЕ ИЗ КОШЕЛЬКА АВАНСА (owner 31.10) ============
+# Модель выбора месяца: РП закрывает выбранный месяц списанием из кошелька аванса
+# (db.record_rp_oklad_from_wallet): кред-строка БК «Оклад РП …» + гашение кошелька
+# (installer_advance_requests type='oklad_offset'). amount = min(кошелёк, остаток
+# месяца), зачёт 1:1 телом. Прежний флоу «фиксация факта получения вне бота с
+# платёжкой» (record_rp_oklad_received) заменён этим экраном.
 
 
 def _render_rp_oklad_recv_confirm(
-    amount: float, month_str: str, has_receipt: bool,
+    amount: float, month_str: str,
+    wallet_before: float, remaining_before: float,
 ) -> tuple[str, Any]:
-    """Карточка подтверждения фиксации факта получения оклада."""
-    receipt_line = "   Платёжка             приложена\n" if has_receipt else ""
+    """Карточка подтверждения списания оклада из кошелька аванса (owner 31.10)."""
+    remaining_after = round(max(0.0, remaining_before - amount), 2)
     text = (
-        f"<pre>✅ <b>Оклад получен</b>\n"
-        f"   Месяц                {month_str}\n"
-        f"{receipt_line}"
+        f"<pre>✅ <b>Оклад из кошелька аванса</b>\n"
+        f"   Месяц                 {month_str}\n"
+        f"   Кошелёк аванса        {_fmt_rub(wallet_before):>10s} ₽\n"
+        f"   Остаток оклада        {_fmt_rub(remaining_before):>10s} ₽\n"
         f"   ━━━━━━━━━━━━━━━━\n"
-        f"   Итого  {_fmt_rub(amount)} ₽</pre>\n\n"
-        f"Зафиксировать получение оклада за {month_str}?\n"
-        f"Запись уйдёт в «Баланс компании», месяц закроется для запроса у ГД и перевода в аванс."
+        f"   Списывается           {_fmt_rub(amount):>10s} ₽\n"
+        f"   Остаток после         {_fmt_rub(remaining_after):>10s} ₽\n"
+        f"   Кошелёк после         {_fmt_rub(round(max(0.0, wallet_before - amount), 2)):>10s} ₽</pre>\n\n"
+        f"Списать {_fmt_rub(amount)} ₽ из кошелька аванса в счёт оклада за {month_str}?\n"
+        f"Запись уйдёт в «Баланс компании» (кред), месяц закроется на списанную сумму."
     )
     b = InlineKeyboardBuilder()
-    b.button(text="✅ Зафиксировать", callback_data=RpOkladRecvCb(action="submit").pack())
-    if not has_receipt:
-        b.button(text="📎 С платёжкой", callback_data=RpOkladRecvCb(action="attach").pack())
-    b.button(text="✖️ Отмена", callback_data=RpOkladRecvCb(action="cancel").pack())
+    b.button(text="✅ Списать", callback_data=RpOkladRecvCb(action="submit").pack())
+    b.button(text="❌ Отмена", callback_data=RpOkladRecvCb(action="cancel").pack())
     b.adjust(1)
     return text, b.as_markup()
 
 
 @router.callback_query(F.data == "rp_hub:oklad_recv")
 async def rp_oklad_recv_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Открыть фиксацию факта получения оклада за ТЕКУЩИЙ месяц."""
+    """Открыть пикер месяцев для списания оклада из кошелька аванса (owner 31.10)."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
     await state.clear()
     user_id = cb.from_user.id
-    cy, cm, month_str = _current_month_msk()
-    st = await db.get_rp_oklad_advance_status(cy, cm)
-    # Гейт 1: месяц уже закрыт ГД-выплатой или предыдущей фиксацией («Оклад РП%»)
-    if st["gd_paid"]:
-        await cb.message.answer(  # type: ignore[union-attr]
-            f"❌ Оклад за {month_str} уже отмечен как полученный (или выплачен ГД)."
-        )
-        return
-    # Гейт 2: открыт запрос оклада у ГД за этот месяц → иначе двойной учёт при выплате
-    if await _has_pending_rp_salary(db, user_id, month_str):
-        await cb.message.answer(  # type: ignore[union-attr]
-            f"❌ По окладу за {month_str} открыт запрос у ГД. Дождитесь решения ГД "
-            f"(или отмените запрос) — иначе возможен двойной учёт."
-        )
-        return
-    # Гейт 3: остаток оклада исчерпан (весь переведён в аванс)
-    remaining = float(st["remaining"])
-    if remaining <= 0:
-        await cb.message.answer(  # type: ignore[union-attr]
-            f"❌ Оклад за {month_str} уже закрыт (полностью переведён в аванс)."
-        )
-        return
-    now_msk = datetime.now(ZoneInfo("Europe/Moscow")) if ZoneInfo else datetime.now()
-    await state.set_state(RpOkladReceivedSG.confirm)
-    await state.update_data(
-        okl_year=cy, okl_month=cm, okl_month_str=month_str,
-        okl_amount=remaining, okl_date=now_msk.strftime("%d.%m.%Y"),
-        recv_file_id=None, recv_file_type=None,
-    )
-    text, kb = _render_rp_oklad_recv_confirm(remaining, month_str, has_receipt=False)
+    try:
+        wallet = await db.get_advance_balance(user_id, wallet_role="rp")
+    except Exception:
+        wallet = 0.0
+    extra = f"   Кошелёк аванса        {_fmt_rub(wallet):>10s} ₽\n"
+    text, kb = await _render_oklad_month_picker(db, action="recv", extra_line=extra)
     await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
 
 
-@router.callback_query(RpOkladRecvCb.filter(F.action == "attach"), RpOkladReceivedSG.confirm)
-async def rp_oklad_recv_attach(cb: CallbackQuery, state: FSMContext) -> None:
-    """РП выбрал приложить платёжку → ждём фото/документ."""
-    await cb.answer()
-    await state.set_state(RpOkladReceivedSG.attach_receipt)
-    b = InlineKeyboardBuilder()
-    b.button(text="✖️ Отмена", callback_data=RpOkladRecvCb(action="cancel").pack())
-    await _edit_or_send(
-        cb,
-        "📎 Пришлите платёжку (фото или документ) одним сообщением.",
-        b.as_markup(),
-    )
-
-
-@router.message(RpOkladReceivedSG.attach_receipt, F.photo | F.document)
-async def rp_oklad_recv_receipt(message: Message, state: FSMContext) -> None:
-    """Принять файл платёжки → вернуться к подтверждению (теперь с платёжкой)."""
-    if message.photo:
-        file_id = message.photo[-1].file_id
-        file_type = "photo"
-    elif message.document:
-        file_id = message.document.file_id
-        file_type = "document"
-    else:  # pragma: no cover — отфильтровано F.photo | F.document
-        await message.answer("📎 Пришлите фото или документ платёжки.")
+@router.callback_query(RpOkladMonthCb.filter(F.action == "recv"))
+async def rp_okl_month_recv(
+    cb: CallbackQuery,
+    callback_data: RpOkladMonthCb,
+    state: FSMContext,
+    db: Database,
+) -> None:
+    """РП выбрал месяц → гейты → confirm-карточка списания из кошелька (owner 31.10)."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
-    data = await state.get_data()
-    amount = float(data.get("okl_amount") or 0)
-    month_str = data.get("okl_month_str") or ""
-    await state.update_data(recv_file_id=file_id, recv_file_type=file_type)
+    user_id = cb.from_user.id
+    month_str = f"{callback_data.year:04d}-{callback_data.month:02d}"
+    st = await db.get_rp_oklad_month_state(callback_data.year, callback_data.month)
+    remaining = float(st["remaining"])
+    # Гейт 1: месяц уже закрыт (кнопки ⬛/◐, но могли закрыть после открытия пикера)
+    if remaining <= 0:
+        await cb.answer(f"Оклад за {month_str} уже закрыт.", show_alert=True)
+        return
+    # Гейт 2: открыт запрос оклада у ГД за этот месяц → двойной учёт при выплате
+    if await _has_pending_rp_salary(db, user_id, month_str):
+        await cb.answer(
+            f"По окладу за {month_str} открыт запрос у ГД. Дождитесь решения ГД.",
+            show_alert=True,
+        )
+        return
+    # Гейт 3: кошелёк пуст → списывать нечем, направляем к ГД
+    try:
+        wallet = await db.get_advance_balance(user_id, wallet_role="rp")
+    except Exception:
+        wallet = 0.0
+    if wallet <= 0:
+        await cb.answer(
+            "В кошельке аванса нет средств. Запросите остаток оклада у ГД "
+            "(«💼 Оклад (выбор месяца)»).",
+            show_alert=True,
+        )
+        return
+    await cb.answer()
+    await state.clear()
+    amount = round(min(wallet, remaining), 2)
+    now_msk = datetime.now(ZoneInfo("Europe/Moscow")) if ZoneInfo else datetime.now()
     await state.set_state(RpOkladReceivedSG.confirm)
-    text, kb = _render_rp_oklad_recv_confirm(amount, month_str, has_receipt=True)
-    await message.answer(text, reply_markup=kb)
+    await state.update_data(
+        okl_year=callback_data.year, okl_month=callback_data.month,
+        okl_month_str=month_str, okl_amount=amount,
+        okl_wallet=wallet, okl_remaining=remaining,
+        okl_date=now_msk.strftime("%d.%m.%Y"),
+    )
+    text, kb = _render_rp_oklad_recv_confirm(amount, month_str, wallet, remaining)
+    await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
 
 
-@router.message(RpOkladReceivedSG.attach_receipt)
-async def rp_oklad_recv_receipt_invalid(message: Message) -> None:
-    """Некорректный ввод вместо платёжки."""
-    await message.answer("📎 Пришлите фото или документ платёжки, либо нажмите «✖️ Отмена».")
+@router.callback_query(RpOkladRecvCb.filter(F.action == "attach"))
+async def rp_oklad_recv_attach_stale(cb: CallbackQuery) -> None:
+    """Кнопка «📎 С платёжкой» из сообщений ДО 31.10 — флоу изменился, отбить.
+
+    Раньше «Оклад получен» фиксировал факт получения вне бота с опц. платёжкой
+    (record_rp_oklad_received). Теперь этот экран списывает оклад из кошелька
+    аванса (owner 31.10), платёжка не нужна. Регистрируется БЕЗ StateFilter
+    намеренно — у старых кнопок состояния уже нет [[feedback_fsm_old_buttons_trap]].
+    """
+    await cb.answer(
+        "Флоу изменился: «Оклад получен» теперь списывает оклад из кошелька аванса "
+        "за выбранный месяц. Откройте меню РП заново.",
+        show_alert=True,
+    )
 
 
 @router.callback_query(RpOkladRecvCb.filter(F.action == "cancel"))
@@ -2946,7 +3033,7 @@ async def rp_oklad_recv_submit(
     integrations: IntegrationHub,
     notifier: Notifier,
 ) -> None:
-    """Финал: record_rp_oklad_received (атомарно) + sync БК + карточка РП + инфо ГД (+опц. платёжка)."""
+    """Финал: record_rp_oklad_from_wallet (атомарно) + sync БК + карточка РП + инфо ГД (owner 31.10)."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
@@ -2956,12 +3043,9 @@ async def rp_oklad_recv_submit(
     cy = int(data.get("okl_year") or 0)
     cm = int(data.get("okl_month") or 0)
     month_str = data.get("okl_month_str") or ""
-    amount = round(float(data.get("okl_amount") or 0), 2)
     date_display = data.get("okl_date") or datetime.now().strftime("%d.%m.%Y")
-    file_id = data.get("recv_file_id")
-    file_type = data.get("recv_file_type")
-    if not cy or not cm or amount <= 0:
-        await _edit_or_send(cb, "❌ Данные фиксации потерялись, начните заново.")
+    if not cy or not cm or not month_str:
+        await _edit_or_send(cb, "❌ Данные списания потерялись, начните заново.")
         return
     # rp_label = тот же формат, что у ГД-выплаты (td.py:1534) → строки БК единообразны
     rp_user = await db.get_user_optional(rp_id)
@@ -2971,24 +3055,27 @@ async def rp_oklad_recv_submit(
         or f"id{rp_id}"
     )
     try:
-        entry_id, _rem_after = await db.record_rp_oklad_received(
-            rp_id, cy, cm, amount, month_str, date_display, rp_label,
-            pp_file_id=file_id, pp_file_type=file_type,
+        result = await db.record_rp_oklad_from_wallet(
+            rp_id, cy, cm, month_str, date_display, rp_label,
+            actor_id=rp_id,
         )
     except OkladAlreadyPaidError:
         await _edit_or_send(
-            cb, f"❌ Оклад за {month_str} уже отмечен/выплачен — повторная фиксация не нужна."
+            cb, f"❌ Оклад за {month_str} уже закрыт — списание не нужно."
         )
         return
-    except OkladAmountExceedsRemainingError as e:
+    except ValueError as e:
         await _edit_or_send(
-            cb, f"❌ Остаток оклада изменился до {_fmt_rub(e.remaining)} ₽. Откройте фиксацию заново."
+            cb, f"❌ Списание невозможно: {e}. Откройте «Оклад получен» заново."
         )
         return
     except Exception:
-        log.exception("rp_oklad_recv_submit: record_rp_oklad_received failed rp=%s", rp_id)
-        await _edit_or_send(cb, "❌ Не удалось зафиксировать получение оклада. Попробуйте позже.")
+        log.exception("rp_oklad_recv_submit: record_rp_oklad_from_wallet failed rp=%s", rp_id)
+        await _edit_or_send(cb, "❌ Не удалось списать оклад из кошелька. Попробуйте позже.")
         return
+    amount = round(float(result["amount"]), 2)
+    remaining_after = round(float(result["remaining_after"]), 2)
+    wallet_after = round(float(result["wallet_after"]), 2)
     # sync лист «Баланс компании» (счетов в операции нет — sync_invoice_row не нужен)
     sync_note = ""
     if integrations.sheets:
@@ -2997,35 +3084,34 @@ async def rp_oklad_recv_submit(
         except Exception as ex:
             log.warning("rp_oklad_recv_submit: sync_balance_company_sheet failed: %s", ex)
             sync_note = "\n⚠️ Лист «Баланс компании» не пересинхронизирован (ошибка)."
-    receipt_line = "   Платёжка             приложена\n" if file_id else ""
+    closed_note = (
+        "Месяц закрыт полностью." if remaining_after <= 0
+        else f"Остаток оклада за месяц: {_fmt_rub(remaining_after)} ₽ "
+             f"(можно запросить у ГД или дополнить позже)."
+    )
     rp_card = (
-        f"<pre>✅ <b>Оклад получен</b>\n"
+        f"<pre>✅ <b>Оклад списан из кошелька</b>\n"
         f"   Месяц                {month_str}\n"
-        f"{receipt_line}"
+        f"   Списано              {_fmt_rub(amount):>10s} ₽\n"
         f"   ━━━━━━━━━━━━━━━━\n"
-        f"   Итого  {_fmt_rub(amount)} ₽</pre>\n"
-        f"Месяц {month_str} закрыт для запроса у ГД и перевода в аванс."
+        f"   Кошелёк после        {_fmt_rub(wallet_after):>10s} ₽</pre>\n"
+        f"{closed_note}"
     )
     await _edit_or_send(cb, rp_card + sync_note)
-    # инфо-уведомление ГД (+ опц. платёжка вложением)
+    # инфо-уведомление ГД
     gd_text = (
-        f"<pre>ℹ️ <b>РП отметил получение оклада</b>\n"
+        f"<pre>ℹ️ <b>РП списал оклад из кошелька аванса</b>\n"
         f"   Кто                  {rp_label}\n"
         f"   Месяц                {month_str}\n"
-        f"   Платёжка             {'приложена' if file_id else 'нет'}\n"
-        f"   ━━━━━━━━━━━━━━━━\n"
-        f"   Итого  {_fmt_rub(amount)} ₽</pre>"
+        f"   Списано              {_fmt_rub(amount):>10s} ₽\n"
+        f"   Остаток оклада       {_fmt_rub(remaining_after):>10s} ₽\n"
+        f"   Кошелёк РП после     {_fmt_rub(wallet_after):>10s} ₽</pre>"
     )
     try:
         gd_users = await db.find_users_by_role(Role.GD, limit=10)
         for gd in gd_users:
             try:
                 await notifier.safe_send(int(gd.telegram_id), gd_text)
-                if file_id:
-                    await notifier.safe_send_media(
-                        int(gd.telegram_id), str(file_type or "document"), str(file_id),
-                        caption=f"💳 Платёжка по окладу РП ({month_str})",
-                    )
             except Exception:
                 log.exception("rp_oklad_recv_submit: notify ГД %s failed", gd.telegram_id)
     except Exception:
