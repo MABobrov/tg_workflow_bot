@@ -1309,6 +1309,8 @@ async def _montazh_zp_payment_to_dr(
             parent_invoice_id=invoice_id, amount=amount, material_type="montazh",
             invoice_number=str(inv.get("invoice_number") or ""),
             task_id=closed_task_ids[0], created_by=actor_id,
+            # Автодата оплаты ЗП монтажника при закрытии задачи ГД (owner 29.10)
+            payment_date=datetime.now().strftime("%d.%m.%Y"),
         )
     except Exception:
         log.warning(

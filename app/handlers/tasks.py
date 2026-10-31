@@ -1897,6 +1897,8 @@ async def _invoice_pp_finalize_core(
         _sp_supplier = payload.get("supplier") or ""
         _sp_inv_num = payload.get("invoice_number") or ""
         try:
+            from datetime import datetime as _dt
+            _pay_date = _dt.now().strftime("%d.%m.%Y")
             sp_task = await db.create_task(
                 project_id=int(task.get("project_id") or 0) or None,
                 type_=TaskType.SUPPLIER_PAYMENT,
@@ -1924,6 +1926,8 @@ async def _invoice_pp_finalize_core(
                 supplier=_sp_supplier,
                 task_id=sp_task["id"] if sp_task else None,
                 created_by=u.id,
+                # Автодата оплаты при закрытии «Счёт на оплату» ГД (owner 29.10)
+                payment_date=_pay_date,
                 # DS «Затр. Грузчики» уже записан при принятии задачи в работу
                 # (owner 25.07) — второй раз к cost_loaders не прибавляем.
                 update_cost=not bool(payload.get("ds_cost_applied")),

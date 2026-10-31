@@ -2508,8 +2508,13 @@ class Database:
         task_id: int | None = None,
         created_by: int | None = None,
         update_cost: bool = True,
+        payment_date: str | None = None,
     ) -> int:
         """Insert a row into supplier_payments table + update cost_* in invoices.
+
+        payment_date (dd.mm.yyyy) — дата оплаты при закрытии задачи ГД
+        (owner 29.10: автодата для «Счёт на оплату» и ЗП монтажника);
+        None — прочие вызовы, дата не заполняется.
 
         update_cost=False — только строка платежа, БЕЗ прибавки к cost_*. Нужно
         для DS «Затр. Грузчики» (owner 25.07): столбец заполняется при ПРИНЯТИИ
@@ -2518,9 +2523,11 @@ class Database:
         now = datetime.now(timezone.utc).isoformat()
         cur = await self.conn.execute(
             "INSERT INTO supplier_payments "
-            "(parent_invoice_id, invoice_number, amount, material_type, supplier, task_id, created_by, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (parent_invoice_id, invoice_number, amount, material_type, supplier, task_id, created_by, now),
+            "(parent_invoice_id, invoice_number, amount, material_type, supplier, "
+            "task_id, created_by, created_at, payment_date) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (parent_invoice_id, invoice_number, amount, material_type, supplier,
+             task_id, created_by, now, payment_date),
         )
         # Update aggregated cost column in parent invoice
         cost_col = self._COST_COL_MAP.get(material_type) if update_cost else None
