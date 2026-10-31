@@ -6092,6 +6092,10 @@ def _task_payload_items(task: dict[str, Any], *, for_gd: bool = False) -> list[t
         payload_items.append(("Уточнение", html.quote(str(payload["details"]))))
     if payload.get("comment"):
         payload_items.append(("Комментарий", html.quote(str(payload["comment"]))))
+    # Вопрос бухгалтерии (acc_question): owner 01.11 — текст задачи обязателен
+    # в карточке у получателя, раньше показывался только ГД в напоминаниях.
+    if payload.get("question_text"):
+        payload_items.append(("Вопрос", html.quote(str(payload["question_text"]))))
     # Назначение траты кредит-кошелька: у таких задач invoice_number пуст, и без
     # этой строки карточка из списка показывала «Счёт на оплату / Сумма 20 000 ₽»
     # и больше ничего — по задаче #426 полгода нельзя было понять, за что деньги.
@@ -6270,21 +6274,21 @@ def fmt_task_card(
 
     for_gd (owner 13.10): заголовок — суть задачи («Счёт на оплату»), а не «Задача #N»
     (номер ГД ни о чём не говорит); строка «Тип» тогда дублировала бы заголовок.
+
+    owner 01.11: правило распространено на ВСЕ роли — номер задачи убран из
+    карточек входящих задач у всех получателей; заголовок = тип (суть) задачи.
     """
-    tid = task["id"]
     ttype = html.quote(task_type_label(task.get("type")))
     status = html.quote(task_status_label(task.get("status")))
     due = format_dt_iso(task.get("due_at"), tz_name)
     created = format_dt_iso(task.get("created_at"), tz_name)
 
     main_items = [("Статус", status), ("Срок", due), ("Создана", created)]
-    if not for_gd:
-        main_items.insert(0, ("Тип", ttype))
     sections: list[str] = []
     sections.append(
         format_card_section(
             emoji="📋",
-            title=ttype if for_gd else f"Задача #{tid}",
+            title=ttype,
             items=main_items,
             compact=True,
         )
@@ -6699,8 +6703,9 @@ async def build_manager_task_card(
     if task.get("due_at"):
         task_items.append(("Срок", format_dt_iso(task.get("due_at"), tz_name)))
     task_items.append(("Создана", format_dt_iso(task.get("created_at"), tz_name)))
-    _tid = task.get("id")
-    _task_title = f"Задача #{_tid}" if _tid else "Задача"
+    # owner 01.11: номер задачи убран из карточек — заголовок секции = тип задачи
+    # (суть уже в шапке «Что сделать», номер получателю ни о чём не говорил).
+    _task_title = task_type_label(ttype) or "Задача"
     sections.append(
         format_card_section(emoji="📋", title=_task_title, items=task_items, compact=True)
     )

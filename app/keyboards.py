@@ -707,6 +707,28 @@ _ROLE_SHORT: dict[str, str] = {
 }
 
 
+def _task_essence_label(t: dict[str, Any]) -> str:
+    """Суть задачи для кнопки списка (owner 01.11): тип · счёт · текст задачи.
+
+    Номер задачи (#N) убран из входящих списков — получатель его не понимает
+    (обобщение решения ГД owner 13.10 на все роли). Текст = первый непустой
+    из comment/description/details/purpose/question_text, одной строкой.
+    """
+    p = try_json_loads(t.get("payload_json")) or {}
+    ttype = task_type_label(t.get("type"))
+    parts = [ttype]
+    inv = str(p.get("invoice_number") or "").strip()
+    if inv:
+        parts.append(inv)
+    essence = " ".join(str(
+        p.get("comment") or p.get("description") or p.get("details")
+        or p.get("purpose") or p.get("question_text") or ""
+    ).split())
+    if essence:
+        parts.append(essence if len(essence) <= 40 else essence[:39] + "…")
+    return " · ".join(parts)
+
+
 def tasks_kb(
     tasks: list[dict[str, Any]],
     *,
@@ -715,7 +737,8 @@ def tasks_kb(
     labels: dict[int, str] | None = None,
 ) -> InlineKeyboardMarkup:
     """labels — готовые подписи ГД (utils.build_gd_task_labels, owner 13.10): суть ·
-    счёт · сумма без «#N». Не передан — прежний вид для всех остальных ролей."""
+    счёт · сумма без «#N». Не передан — суть задачи без номера (owner 01.11):
+    тип · счёт · текст задачи · статус, вместо прежнего «#N • Тип • Статус»."""
     b = InlineKeyboardBuilder()
     for t in tasks:
         tid = int(t["id"])
@@ -724,11 +747,14 @@ def tasks_kb(
         else:
             role_short = _ROLE_SHORT.get(t.get("creator_role", ""), "")
             role_tag = f" ({role_short})" if role_short else ""
-            text = f"#{t['id']}{role_tag} • {task_type_label(t.get('type'))} • {task_status_label(t.get('status'))}"
+            text = (
+                f"{_task_essence_label(t)}{role_tag}"
+                f" • {task_status_label(t.get('status'))}"
+            )
         b.button(text=text[:64], callback_data=TaskCb(task_id=tid, action="open").pack())
         if show_delete:
             b.button(
-                text="🗑 Удалить" if labels is not None else f"🗑 #{t['id']}",
+                text="🗑 Удалить",
                 callback_data=TaskCb(task_id=tid, action="delete").pack(),
             )
     if back_callback:

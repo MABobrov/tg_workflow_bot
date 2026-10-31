@@ -333,8 +333,7 @@ async def _send_task_reminder(db: Database, notifier: Notifier, task: dict, tz_n
     except Exception:
         log.exception("reminder: build_task_reminder_card failed for task %s", task.get("id"))
         body = (
-            html.escape(task_type_label(task.get("type"))) if _for_gd
-            else f"Задача #{task.get('id')} ожидает обработки."
+            html.escape(task_type_label(task.get("type"))) + " — откройте задачу из списка задач."
         )
 
     return await _deliver(notifier, int(assigned_to), prefix + "\n\n" + body)
@@ -379,7 +378,10 @@ async def _reminder_with_card(
         body = await build_task_reminder_card(db, task, project, tz_name)
     except Exception:
         log.exception("reminder: build_task_reminder_card failed for task %s", task.get("id"))
-        body = f"Задача #{task.get('id')} ожидает обработки."
+        body = (
+            html.escape(task_type_label(task.get("type")))
+            + " — откройте задачу из списка задач."
+        )
     text = header + "\n\n" + body
     if hint:
         text += "\n\n" + hint

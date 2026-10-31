@@ -104,7 +104,8 @@ async def acc_inbox_tasks(message: Message, db: Database) -> None:
         req_text = str(payload.get("request_text") or payload.get("comment") or "")[:100]
 
         # #13: Структурированная карточка с суммой и долгом на одной строке
-        text = f"📋 <b>Задача #{tid}</b>\n"
+        # owner 01.11: номер задачи убран — суть в заголовке (счёт/текст запроса)
+        text = "📋 <b>Счёт на оплату</b>\n" if inv_num else "📋 <b>Задача</b>\n"
         if inv_num:
             text += f"📄 Счёт: <b>{inv_num}</b>\n"
         # Данные счёта из кеша
@@ -1276,9 +1277,9 @@ async def acc_question_send(cb: CallbackQuery, state: FSMContext, db: Database, 
     )
     new_tid = new_task["id"]
 
-    # Уведомление инициатору
+    # Уведомление инициатору (owner 01.11: без номера задачи — суть + текст)
     from ..keyboards import task_actions_kb
-    text = f"❓ <b>Вопрос от бухгалтерии</b>\nЗадача #{new_tid}"
+    text = "❓ <b>Вопрос от бухгалтерии</b>"
     if inv_num:
         text += f" · Счёт {inv_num}"
     text += f"\nОт: {acc_label}\n\n💬 {question_text}"
