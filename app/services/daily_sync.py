@@ -1039,14 +1039,6 @@ async def _send_gd_sync_cards(
             log.exception(
                 "daily_sync: gd sync card failed for user %s", user.telegram_id,
             )
-        # Статистика по менеджерам — отдельным сообщением (owner 25.06, агрегат).
-        try:
-            from ..zamery_start_card import build_zamery_manager_stats_card
-            _zstats = await build_zamery_manager_stats_card(db)
-            if _zstats:
-                await notifier.safe_send(user.telegram_id, _zstats)
-        except Exception:
-            log.exception("daily_sync: zamery stats followup failed for %s", user.telegram_id)
         await asyncio.sleep(0.3)
 
     if skipped_admins:

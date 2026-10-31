@@ -2945,17 +2945,6 @@ async def build_gd_sync_card_text(
         )
     )
 
-    # Замеры по менеджерам (сетка прошлый/текущий/следующий месяц, КВ/КИА/НПН + Всего) —
-    # ВНУТРИ карты между «Лиды» и «Кредитный баланс» (owner 14.07; прежде уходила
-    # ОТДЕЛЬНЫМ сообщением после карты). None если замерщиков нет.
-    try:
-        from .zamery_start_card import build_zamery_manager_stats_card
-        _zstats_sec = await build_zamery_manager_stats_card(db)
-        if _zstats_sec:
-            sections.append(_zstats_sec)
-    except Exception:
-        _log.warning("gd_sync_card: zamery manager-stats section failed", exc_info=True)
-
     # Кредитный баланс — Баланс (total DA) + разбивка по ролям из Invoices.DA с привязкой к B (Роль).
     # (owner 14.07: блок «Финансы» переименован в «Кредитный баланс».)
     _role_short = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}
