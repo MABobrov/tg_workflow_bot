@@ -7235,22 +7235,25 @@ async def manager_zp_confirm(
 
 
 async def _mgr_wallet_role(db: Database, user_id: int) -> str | None:
-    """Дискриминатор кошелька для менеджерского меню (TZ 2026-05-29 wallet-sep).
+    """Бренд-кошелёк менеджера для его записей авансов/депозитов (TZ 2026-05-29 wallet-sep).
 
-    Нужен только для двуролевого РП+Менеджер (Павел): его менеджерские записи
-    тегируются 'manager_npn', чтобы баланс/журнал не смешивались с кошельком РП.
-    Для single-role менеджеров (КВ/КИА/…) → None: их записи остаются NULL,
-    балансы считаются как раньше (без фильтра).
+    Двуролевой РП+Менеджер (Павел) → 'manager_npn' (раздельные кошельки с РП).
+    Single-role менеджер КВ/КИА → 'manager_kv'/'manager_kia' (fix 04.11: раньше
+    писался NULL и авансы КВ/КИА выпадали из EO/EP Гугл-листа и витрины ГД).
+    Не менеджер → None (балансы считаются как раньше, без фильтра).
     """
     try:
         u = await db.get_user_optional(user_id)
         # get_user_optional → UserRow (объект, не dict): берём .role через getattr.
         # Баг-фикс 02.06: было (u or {}).get("role") → AttributeError → всегда None
         # → кошельки Павла (РП+Менеджер НПН) смешивались. См. feedback_rp_npn_separate_wallets.
-        roles = [r.strip().lower() for r in str(getattr(u, "role", "") or "").split(",")]
+        role_raw = str(getattr(u, "role", "") or "").lower()
+        roles = [r.strip() for r in role_raw.split(",")]
     except Exception:
         roles = []
-    return "manager_npn" if "rp" in roles else None
+    if "rp" in roles:
+        return "manager_npn"
+    return next((r for r in CREDIT_WALLET_ROLES if r in roles), None)
 
 
 async def _mgr_role_key(db: Database, user_id: int) -> str | None:

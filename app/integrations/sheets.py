@@ -1604,15 +1604,11 @@ class GoogleSheetsService:
         cells[85] = self._fmt_sheet_date(_c.get("installer_advance_date")) if _advance_offset_for_bs > 0 else ""
 
         # EO «Аванс менеджера» (cells[144]) / EP «Дата аванса мен.» (cells[145]) —
-        # зеркало CG/CH для роли менеджер (user 2026-06-14). Сумма с надбавкой +10%
-        # на б/н (как монтажник), кредит как есть. Источник — get_manager_advance_for_invoice
-        # (role-guard владелец=менеджер, кошелёк != rp; двойная роль Павла rp+npn разделена).
+        # зеркало CG/CH для роли менеджер (user 2026-06-14). Owner 04.11: сумма КАК ЕСТЬ
+        # (без надбавки +10%, в отличие от монтажника CG). Источник — get_manager_advance_for_invoice
+        # (canonical, role-guard владелец=менеджер, кошелёк != rp; двойная роль Павла rp+npn разделена).
         _mgr_advance_offset = float(_c.get("manager_advance_offset") or 0)
-        _advance_mgr = (
-            _mgr_advance_offset * 1.10
-            if (_mgr_advance_offset > 0 and not _inv_is_credit)
-            else _mgr_advance_offset
-        )
+        _advance_mgr = _mgr_advance_offset
         cells[144] = self._fmt_amount(_advance_mgr) if _mgr_advance_offset > 0 else ""
         cells[145] = self._fmt_sheet_date(_c.get("manager_advance_date")) if _mgr_advance_offset > 0 else ""
 

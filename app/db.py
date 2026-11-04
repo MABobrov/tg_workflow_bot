@@ -10201,8 +10201,8 @@ class Database:
         row = await cur.fetchone()
         return float(row[0] or 0) if row else 0.0
 
-    async def get_manager_advance_for_invoice(self, invoice_id: int) -> float:
-        """Σ аванса менеджера, привязанного к счёту (open+closed items).
+    async def get_manager_advance_paid_for_invoice(self, invoice_id: int) -> float:
+        """Σ выданного аванса менеджера, привязанного к счёту (open+closed items).
 
         Для витрины «аванс уже выдан» в карточке и уведомлении выплаты ЗП менеджера
         (gd_zp_manager_pay / _finalize_zp_manager_pay). Считает И открытые, И закрытые
@@ -11835,6 +11835,28 @@ class Database:
             log.exception("credit_manager_zp_to_advance: audit failed req_id=%s", req_id)
         return (req_id, total, credited)
 
+    async def resolve_manager_wallet_role(self, employee_id: int) -> str | None:
+        """Бренд-кошелёк сотрудника по строке роли (fix NULL-wallet 04.11).
+
+        Двуролевой РП+Менеджер (Павел) → 'manager_npn' (раздельные кошельки).
+        Single-role менеджер КВ/КИА → 'manager_kv'/'manager_kia' (раньше писался
+        NULL и авансы КВ/КИА выпадали из EO/EP и витрины). Не менеджер (монтажник
+        и пр.) → None. Зеркало handlers._mgr_wallet_role + CREDIT_WALLET_ROLES.
+        """
+        cur = await self.conn.execute(
+            "SELECT COALESCE(role, '') FROM users WHERE telegram_id = ?",
+            (employee_id,),
+        )
+        urow = await cur.fetchone()
+        role_str = str(urow[0] if urow else "").lower()
+        roles = [x.strip() for x in role_str.split(",")]
+        if "rp" in roles:
+            return "manager_npn"
+        return next(
+            (r for r in ("manager_kv", "manager_kia", "manager_npn") if r in roles),
+            None,
+        )
+
     async def sweep_manager_overpay_to_advance(self) -> list[dict[str, Any]]:
         """Перенос ПЕРЕПЛАТЫ ЗП менеджера на баланс аванса (owner 2026-06-23).
 
@@ -11893,16 +11915,9 @@ class Database:
             total = round(sum(float(i["delta"]) for i in invs), 2)
             if total <= 0:
                 continue
-            # wallet_role: Павел (rp+менеджер) → 'manager_npn' (раздельные кошельки),
-            # иначе NULL (single-role КВ/КИА). Зеркало _mgr_wallet_role (handlers).
-            cur = await self.conn.execute(
-                "SELECT COALESCE(role, '') FROM users WHERE telegram_id = ?",
-                (manager_id,),
-            )
-            urow = await cur.fetchone()
-            role_str = str(urow[0] if urow else "").lower()
-            roles = [x.strip() for x in role_str.split(",")]
-            wallet_role = "manager_npn" if "rp" in roles else None
+            # wallet_role: бренд-кошелёк менеджера (manager_kv/manager_kia/
+            # manager_npn), не-менеджер → NULL. Зеркало _mgr_wallet_role (handlers).
+            wallet_role = await self.resolve_manager_wallet_role(manager_id)
             nums = ", ".join(f"№{i['invoice_number']}" for i in invs)
             inv_payload = [{"invoice_id": i["invoice_id"],
                             "invoice_number": i["invoice_number"],
@@ -12284,6 +12299,10 @@ class Database:
         """
         if amount <= 0:
             raise ValueError(f"Advance topup amount must be positive, got {amount}")
+        # wallet_role не передан (single-role поток без суффикса) → резолвим бренд-кошелёк
+        # сотрудника, чтобы авансы КВ/КИА не писались NULL (fix 04.11).
+        if wallet_role is None:
+            wallet_role = await self.resolve_manager_wallet_role(employee_id)
         now = to_iso(utcnow())
         cur = await self.conn.execute(
             "INSERT INTO installer_advance_requests "

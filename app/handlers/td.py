@@ -1810,7 +1810,7 @@ async def gd_zp_manager_pay(
     # ранее) + остаток наличными. Display-only: деньги-логику не трогаем —
     # zp_manager_payout фиксируется ПОЛНОЙ суммой в _finalize, а зачёт аванса
     # закрывает кошелёк. Правка нужна лишь чтобы ГД перевёл нетто и не заплатил дважды.
-    adv_paid = min(await db.get_manager_advance_for_invoice(invoice_id), amt)
+    adv_paid = min(await db.get_manager_advance_paid_for_invoice(invoice_id), amt)
     net_pay = max(0.0, amt - adv_paid)
     # Переиспользуем generic-сборщик файлов InvoicePaymentSG.attaching_pp
     # (tasks.invoice_pp_collect: копит pp_files/pp_comment). Финал —
@@ -1940,10 +1940,10 @@ async def _finalize_zp_manager_pay(
     # Уведомить менеджера + переслать платёжку (если есть).
     requested_by = inv.get("zp_manager_requested_by")
     if requested_by:
-        # Тот же вычет аванса, что в карточке ГД (get_manager_advance_for_invoice):
+        # Тот же вычет аванса, что в карточке ГД (get_manager_advance_paid_for_invoice):
         # менеджер видит полную ЗП, сколько выдано авансом ранее и сколько переведено
         # сейчас. Display-only — суммой платежа управляет _finalize выше.
-        adv_paid = min(await db.get_manager_advance_for_invoice(invoice_id), amt)
+        adv_paid = min(await db.get_manager_advance_paid_for_invoice(invoice_id), amt)
         note = (
             f"💳 <b>ЗП выплачена</b>\n\n"
             f"Счёт №: <code>{inv['invoice_number']}</code>\n"
