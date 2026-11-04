@@ -3429,6 +3429,13 @@ class GoogleSheetsService:
             for r in db_entries
             if r.get("loan") not in (None, "") and str(r.get("date_display") or "").strip()
         }
+        # Даты кредит-половин записей БД — для эха «только дата» (см. ниже).
+        cr_dates = {
+            (int(r.get("year") or 0), int(r.get("month") or 0),
+             str(r.get("date_other_display") or "").strip())
+            for r in db_entries
+            if str(r.get("date_other_display") or "").strip()
+        }
 
         def _hit(idx: dict[tuple, list[tuple]], key: tuple,
                  j_amount: Any, j_date: Any) -> bool:
@@ -3480,6 +3487,16 @@ class GoogleSheetsService:
                     row["amount_other"] = None
                     row["description_credit"] = ""
                     killed += 1
+            elif (not str(row.get("description_credit") or "").strip()
+                  and row.get("amount_other") in (None, "")
+                  and str(row.get("date_other") or "").strip()
+                  and (y, m, str(row.get("date_other") or "").strip()) in cr_dates):
+                # Эхо кредит-половины «только дата» (owner 04.11, H149 «Затраты»):
+                # 10.08 20 000 «Зп замерщик» вернулось одной датой 10.08.2026 без
+                # суммы и описания. По описанию не узнать — узнаём по точным месяцу
+                # и дате живой записи БД. Денег в половине нет — итоги не задеты.
+                row["date_other"] = ""
+                killed += 1
             out.append(row)
         return out, killed
 
