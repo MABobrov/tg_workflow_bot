@@ -3355,21 +3355,26 @@ class Database:
                 # Старая база (счета до отсечки и без металла/стекла, напр. 26423) —
                 # воспроизводит «Налоги факт» AZ строк 1–20.
                 # НДС = (Сумма − mat_and_suppliers) × 22/122; налог как было (с max(0)).
-                nds_fact = (invoice_amount * 22 / 122) - (mat_and_suppliers * 22 / 122) if invoice_amount else 0.0
-                # owner 24.09: агентское АМ из базы налога НЕ вычитается — ровно как в
-                # ветке v2 выше («БЕЗ агентского») и как в самой формуле офиса AZ, где
-                # агентского нет. Ветки расходились: old вычитала его через total_cost.
-                # Замер 24.09 по 23 счетам с заполненной AZ: расхождение 26119-1КВ
-                # объясняется этим ДО РУБЛЯ (agent 29 700 × 0.25 = 7 425; было 33 768
-                # против AZ 41 193, стало 41 192). Починилось 1, сломалось 0, прочие 17
-                # без изменений — агентское ненулевое всего у двух счетов.
-                # ⛔ Саму total_cost НЕ трогаем: она уходит в cost-card как «Себест-ть
-                # факт» и в карточки ролей — правка касается ТОЛЬКО базы налога.
-                # owner 19.10: монтаж в базе налога — BS, а не montazh_combined
-                # (fact_installation = остаток к выплате без аванса). total_cost не трогаем.
-                _tax_base_costs = total_cost - agent_payout - montazh_combined + _montazh_bs
-                profit_tax_fact = max(0.0, (invoice_amount - _tax_base_costs - nds_fact) * PROFIT_TAX_RATE) \
-                    if invoice_amount else 0.0
+                # owner 04.11 «чинить»: старая ветка приведена к формуле офиса AZ v2.1
+                # (замер 04.11: на 26324-1НПН сходится ДО РУБЛЯ, на 26331-1НПН Δ6,4):
+                #   НДС   = (Сумма − МатериалыФакт AM) × 22/122
+                #   Налог = (Сумма − AM − Монтаж BS − Грузчики AQ − Логистика AO − НДС) × rate
+                # Прежняя база (НДС от mat_and_suppliers — ВСЕ supplier_payments вкл.
+                # монтаж/логистику/грузчиков; налог от total_cost с ЗП/pending) расходилась
+                # с офисом на −35 943 (26331-1НПН) / −14 263 (26324-1НПН). total_cost НЕ
+                # тронута — она уходит в cost-card как «Себест-ть факт». База налога —
+                # та же _az_costs, что в ветке v2 (AM + BS + AQ + AO, без агентского).
+                if invoice_amount:
+                    _am_raw = float(inv.get("materials_fact_op") or 0)
+                    nds_fact = (invoice_amount - _am_raw) * 22 / 122
+                    _az_costs = (_am_raw
+                                 + _montazh_bs
+                                 + float(inv.get("loaders_fact_op") or 0)
+                                 + float(inv.get("logistics_fact_op") or 0))
+                    profit_tax_fact = (invoice_amount - _az_costs - nds_fact) * PROFIT_TAX_RATE
+                else:
+                    nds_fact = 0.0
+                    profit_tax_fact = 0.0
 
         # ── Прибыль факт (user 2026-06-17): затраты = «факт»-столбцы листа
         #    BG = BR+BS+BT+BU (Грузчики+Монтаж+Материалы+Логистика факт) + агентское АМ.
