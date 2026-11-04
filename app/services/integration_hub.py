@@ -156,6 +156,27 @@ class IntegrationHub:
                         except Exception:
                             log.debug("Failed to get installer_id for invoice %s", inv_id, exc_info=True)
                             inv["_installer_id"] = None
+                        # BV «Статус лида» / BZ «Расчет vs Факт» гасли в каждом точечном
+                        # синке до утреннего экспорта 09:00 (ТЗ 20261019 §7): полный синк
+                        # (sheets_sync) обогащает _lead_info/_zamery_info/_plan_fact_label,
+                        # а этот per-row путь — нет. Обогащаем так же, как sheets_sync.
+                        try:
+                            inv["_lead_info"] = await self.db.get_lead_info_for_invoice(inv)
+                        except Exception:
+                            log.debug("Failed to get lead_info for invoice %s", inv_id, exc_info=True)
+                            inv["_lead_info"] = {}
+                        _project_id = inv.get("project_id")
+                        if _project_id:
+                            try:
+                                inv["_zamery_info"] = await self.db.get_zamery_info_for_project(int(_project_id))
+                            except Exception:
+                                log.debug("Failed to get zamery_info for project %s", _project_id, exc_info=True)
+                                inv["_zamery_info"] = ""
+                        try:
+                            _hold = float(inv.get("zp_manager_hold") or 0)
+                        except (TypeError, ValueError):
+                            _hold = 0.0
+                        inv["_plan_fact_label"] = "Перерасчет прибыли" if _hold != 0 else "Расчет ОК"
                         if inv.get("is_credit"):
                             try:
                                 inv["_credit_expenses"] = await self.db.get_credit_expenses_summary(inv_id)
