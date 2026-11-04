@@ -2239,6 +2239,11 @@ def _gd_zp_request_card(
         ("Адрес", street),
         ("Счёт", f"№{num}"),
     ]
+    # «Выплачено ранее» — выплаченное прошлым монтажным группам (ТЗ §3.2 13.10);
+    # только при paid_prev>0, на «чистом» счёте строки нет.
+    _paid_prev = float(inv.get("montazh_paid_prev") or 0)
+    if _paid_prev > 0:
+        items.append(("Выплачено ранее", _f(_paid_prev)))
 
     footer: tuple[str, str] | None = None
     total: str | None = None
@@ -3299,6 +3304,80 @@ async def installer_in_work(message: Message, state: FSMContext, db: Database, c
     )
 
 
+def _price_ok_target(inv: dict) -> float:
+    """Сумма, которую запишет кнопка «🔨 В работу» (согласие с расчётной ценой).
+
+    paid_prev = 0 — прежнее поведение: existing montazh_agreed_amount или смета.
+    paid_prev > 0 (объединение платежей, owner 15.07) — доля монтажника
+    ДОПОЛНЯЕТ выплаченное прошлым группам, калька installer_price_confirm:
+      • existing > paid_prev (повторное согласование) → own = existing − paid_prev,
+        итог не меняется (повторный клик идемпотентен);
+      • existing == paid_prev (смена группы на нашу: rp_new._finalize_regroup
+        пишет agreed = paid_prev + 0) → own = смета _calc_est_montazh.
+    """
+    existing = float(inv.get("montazh_agreed_amount") or 0)
+    paid_prev = float(inv.get("montazh_paid_prev") or 0)
+    if paid_prev <= 0:
+        return existing or float(_calc_est_montazh(inv))
+    own = max(0.0, existing - paid_prev)
+    if own <= 0:
+        own = float(_calc_est_montazh(inv))
+    return float(round(paid_prev + own))
+
+
+def _gd_montazh_accept_card(inv: dict, advance: float = 0.0) -> str:
+    """Карточка ГД «Монтажник принял в работу» — макет owner 13.10 22:41 (ТЗ §2.2).
+
+    «🔨 Монтажник принял в работу / Счёт / Согласовано всего / Согласовано с +10% /
+    Выплачено ранее / Аванс / ━ / Не выплачено / К выплате с +10%».
+
+    Арифметика — по примеру owner (базы): Согласовано всего = agreed/1.10 (б/н;
+    agreed хранится УЖЕ с +10% — CG-конвенция advbase), Не выплачено =
+    база − Выплачено ранее (paid_prev) − Аванс, К выплате с +10% =
+    Не выплачено ×1.10. Кредит: строк надбавки нет, Не выплачено =
+    agreed − paid_prev − аванс, к выплате = Не выплачено (без ×1.10).
+    """
+    def _f(n: float) -> str:
+        return f"{float(n):,.0f}₽".replace(",", " ")
+
+    agreed = float(inv.get("montazh_agreed_amount") or 0)
+    paid_prev = float(inv.get("montazh_paid_prev") or 0)
+    credit = _is_credit(inv)
+    base_total = agreed / 1.10 if (agreed > 0 and not credit) else agreed
+
+    num = inv.get("invoice_number") or f"#{inv.get('id', '?')}"
+    items: list[tuple[str, str]] = [("Счёт", f"№{num}")]
+    # «Расчётная» — смета монтажа (owner 04.11: строка сразу после «Счёт»),
+    # тот же источник, что «Расчётная» в _gd_zp_request_card.
+    _est = float(_calc_est_montazh(inv))
+    if _est > 0:
+        items.append(("Расчётная", _f(_est)))
+    if agreed > 0:
+        items.append(("Согласовано всего", _f(base_total)))
+        if not credit:
+            items.append(("Согласовано с +10%", _f(agreed)))
+    if paid_prev > 0:
+        items.append(("Выплачено ранее", _f(paid_prev)))
+    if advance > 0:
+        items.append(("Аванс", _f(advance)))
+
+    remaining = max(0.0, base_total - paid_prev - advance)
+    pay = remaining * 1.10 if not credit else remaining
+    total_label = "К выплате с +10%" if not credit else "К выплате"
+
+    _rows = items + [("Не выплачено", _f(remaining)), (total_label, _f(pay))]
+    _w = max(30, max(3 + len(lbl) + len(val) for lbl, val in _rows) + 1)
+    return format_card_section(
+        emoji="🔨",
+        title="Монтажник принял в работу",
+        items=items,
+        width=_w,
+        footer=("Не выплачено", _f(remaining)),
+        total=_f(pay),
+        total_label=total_label,
+    )
+
+
 @router.callback_query(F.data.startswith("inst_work:view:"))
 async def installer_work_view_card(
     cb: CallbackQuery, db: Database, config: Config,
@@ -3413,7 +3492,10 @@ async def installer_work_view_card(
     ))
 
     b = InlineKeyboardBuilder()
-    b.button(text=f"🔨 В работу ({est_total:,}₽)", callback_data=f"inst_work:price_ok:{invoice_id}")
+    # Подпись = что запишется (ТЗ §3.2): при paid_prev>0 кнопка дописывает долю
+    # монтажника К выплаченному прошлым группам — смета в подписи врала бы.
+    _target = int(round(_price_ok_target(inv)))
+    b.button(text=f"🔨 В работу ({_target:,}₽)", callback_data=f"inst_work:price_ok:{invoice_id}")
     b.button(text="✏️ Изменить сумму", callback_data=f"inst_work:price_edit:{invoice_id}")
     b.adjust(1)
 
@@ -3468,7 +3550,11 @@ async def installer_price_ok(
     # _calc_est_montazh писать ТОЛЬКО если ещё не задана. Раньше кнопка «Согласен
     # с расчётной ценой» безусловно затирала ручной ввод (напр. 32 200) обратно на
     # смету (R×0.95=51 000) — рассинхрон с instok:price_ok, баг user 2026-06-17.
-    agreed = float(inv.get("montazh_agreed_amount") or 0) or _calc_est_montazh(inv)
+    # Объединение платежей (owner 15.07): доля монтажника ДОПОЛНЯЕТ выплаченное
+    # прошлым группам — калька installer_price_confirm, иначе после смены группы
+    # на нашу (rp_new._finalize_regroup пишет agreed=paid_prev) кнопка съедала
+    # долю нового монтажника: BJ = paid_prev − paid_prev = 0 (ТЗ §3.2 13.10).
+    agreed = _price_ok_target(inv)
     await db.conn.execute(
         "UPDATE invoices SET montazh_agreed_amount = ?, assigned_to = ?, updated_at = ? WHERE id = ?",
         (agreed, u.id, datetime.now().isoformat(), invoice_id),
@@ -3483,15 +3569,21 @@ async def installer_price_ok(
         f"🔨 Счёт №{inv['invoice_number']} принят в работу."
     )
 
-    # Уведомление ГД
+    # Уведомление ГД — карточка по макету owner 13.10 22:41 (ТЗ §2.2/§3.2)
+    # inv снят ДО записи → карточке нужна копия с НОВЫМ agreed.
     if config.default_gd_id:
         try:
+            _inv_now = dict(inv)
+            _inv_now["montazh_agreed_amount"] = agreed
+            _adv = max(
+                0.0,
+                await db.get_installer_advance_for_invoice(invoice_id)
+                - float(inv.get("montazh_adv_prev") or 0),
+            )
             await cb.bot.send_message(
                 config.default_gd_id,
-                f"✅ ЗП монтаж согласовано: ок\n"
-                f"Монтажник <b>@{u.username or u.full_name}</b>: "
-                f"№{inv['invoice_number']} — <b>{agreed:,}₽</b>\n"
-                f"📍 {inv.get('object_address', '')}",
+                _gd_montazh_accept_card(_inv_now, _adv)
+                + f"\n👤 Монтажник: <b>@{u.username or u.full_name}</b>",
             )
         except Exception:
             pass
@@ -3644,15 +3736,21 @@ async def installer_price_confirm(
         f"🔨 Счёт №{inv['invoice_number']} принят в работу."
     )
 
-    # Уведомление ГД
+    # Уведомление ГД — карточка по макету owner 13.10 22:41 (ТЗ §2.2/§3.2)
+    # inv снят ДО записи → карточке нужна копия с НОВЫМ agreed.
     if config.default_gd_id:
         try:
+            _inv_now = dict(inv)
+            _inv_now["montazh_agreed_amount"] = agreed
+            _adv = max(
+                0.0,
+                await db.get_installer_advance_for_invoice(invoice_id)
+                - float(inv.get("montazh_adv_prev") or 0),
+            )
             await cb.bot.send_message(  # type: ignore[union-attr]
                 config.default_gd_id,
-                f"✅ ЗП монтаж согласовано: ок\n"
-                f"Монтажник <b>@{u.username or u.full_name}</b>: "
-                f"№{inv['invoice_number']} — <b>{agreed:,}₽</b>\n"
-                f"📍 {inv.get('object_address', '')}",
+                _gd_montazh_accept_card(_inv_now, _adv)
+                + f"\n👤 Монтажник: <b>@{u.username or u.full_name}</b>",
             )
         except Exception:
             pass

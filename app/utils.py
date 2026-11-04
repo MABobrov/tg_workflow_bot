@@ -4136,8 +4136,12 @@ def format_card_section(
     width: int = 32,
     compact: bool = False,
     sep_ratio: float = 1.0,
+    total_label: str = "Итого",
 ) -> str:
     """Рендер одной секции карточки в эталонном дизайне.
+
+    total_label — подпись строки total (default «Итого» — прежний вид всех
+    карточек; кастом только у карточек, которым owner задал свою подпись).
 
     Эталон: docs/rules/feedback_card_template_standard.md (assets/card_etalon.png).
 
@@ -4182,7 +4186,7 @@ def format_card_section(
     if footer is not None:
         foot_rows.append(footer)
     if total is not None:
-        foot_rows.append(("Итого", total))
+        foot_rows.append((total_label, total))
     if foot_rows:
         # sep_ratio<1.0 укорачивает разделитель (━ ≈ 2 симв., user 2026-06-10);
         # default 1.0 сохраняет прежнюю длину для всех прочих карточек.
