@@ -757,6 +757,9 @@ async def task_cancel_with_reason(
         )
         return
 
+    project = await db.get_project(int(task["project_id"])) if task.get("project_id") else None
+    await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
+
     await state.clear()
 
     initiator = await get_initiator_label(db, message.from_user.id)
