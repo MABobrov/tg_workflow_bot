@@ -5862,8 +5862,16 @@ class Database:
                 _inv_dp = dict(existing)
                 if not _inv_dp.get("is_credit") and updates.get("is_credit"):
                     _inv_dp["is_credit"] = updates["is_credit"]
+                # Дата прихода доплаты — ОП AA «Дата Финал.пл.» (тот же импорт
+                # мог принести её тем же апдейтом, что ↓долга; иначе — прошлый
+                # снимок). Пусто → метод возьмёт «сейчас».
+                _paid_date = (
+                    updates.get("final_surcharge_date")
+                    or existing.get("final_surcharge_date")
+                )
                 await self.record_credit_debt_payment(
-                    _inv_dp, _dd.get("old"), _dd.get("new"), source="op_import",
+                    _inv_dp, _dd.get("old"), _dd.get("new"),
+                    source="op_import", paid_date=_paid_date,
                 )
                 # ч.3.2: гашение долга через импорт ОП → авто-закрыть fixup «no_debts»
                 await self.resolve_invoice_end_fixups(int(existing["id"]))
@@ -7716,6 +7724,7 @@ class Database:
         kind: str | None = None,
         description: str | None = None,
         entered_by: int | None = None,
+        created_at: str | None = None,
     ) -> int:
         """Записать приход кредит-кошелька (гашение долга/оконч.доплата) — п.3 2026-06-12.
 
@@ -7725,8 +7734,11 @@ class Database:
         (он = Σ(amount−долг) − Σ credit_spends и растёт сам при ↓долга), а лишь
         даёт DISTINCT строку в истории движений (list_all_credit_events разбивает
         агрегатный «приход» счёта на base + per-доплату; Σ строк = amount−долг).
+
+        created_at — дата фактического прихода денег (ОП AA «Дата Финал.пл.»);
+        None → сейчас (прежнее поведение, ручные пути).
         """
-        now = to_iso(utcnow())
+        now = created_at or to_iso(utcnow())
         cur = await self.conn.execute(
             "INSERT INTO credit_incomes "
             "(wallet_role, invoice_id, amount, kind, description, entered_by, created_at) "
@@ -7736,6 +7748,22 @@ class Database:
         await self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
 
+    @staticmethod
+    def _credit_income_paid_ts(paid_date: str | None) -> str | None:
+        """Дата прихода доплаты (ОП AA, «YYYY-MM-DD») → ISO-метка 12:00 МСК того дня.
+
+        12:00 МСК (09:00 UTC) — середина дня прихода: траты из доплаты в ленте
+        кошелька идут позже того же дня → минусов (расход раньше прихода) нет.
+        Непарсящаяся/пустая дата → None (вызывающий возьмёт «сейчас»).
+        """
+        if not paid_date:
+            return None
+        try:
+            d = datetime.strptime(str(paid_date).strip()[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+        return to_iso(d.replace(hour=9, tzinfo=timezone.utc))
+
     async def record_credit_debt_payment(
         self,
         inv: dict[str, Any],
@@ -7743,6 +7771,7 @@ class Database:
         new_debt: Any,
         *,
         source: str = "",
+        paid_date: str | None = None,
     ) -> int | None:
         """Отразить изменение долга кредит-счёта в кошельке менеджера (п.3 + авто-сверка 15.06).
 
@@ -7775,11 +7804,15 @@ class Database:
 
         inc_id: int | None = None
         if delta >= 1:
-            # долг ↓ → доплата: приход в историю движений
+            # долг ↓ → доплата: приход в историю движений; дата прихода —
+            # ОП AA «Дата Финал.пл.» (owner 14.10: доплата датируется днём
+            # ПРИХОДА денег, не днём, когда крон заметил ↓долга — иначе в ленте
+            # кошелька расхождение раньше прихода = минусы)
             inc_id = await self.add_credit_income(
                 str(role), int(inv["id"]), delta,
                 kind="debt_payment",
                 description="Оконч. доплата (гашение долга)",
+                created_at=self._credit_income_paid_ts(paid_date),
             )
         else:
             # долг ↑ → откат/исправление: снять ранее записанный приход по счёту
