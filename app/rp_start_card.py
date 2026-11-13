@@ -387,6 +387,8 @@ async def _rp_to_pay_monthly(db, year):
     """«К выплате» помесячно: Invoices.AP (npn_amount) при AR (rp_payout_op)=0 И
     не забрано в аванс (rp_payout_advance_at пусто, гард 07.06).
 
+    owner 13.11: у закрытых счетов с факт-пересчётом (rp_zp_fact) берём
+    min(npn_amount, rp_zp_fact) — ЗП РП считается от ФАКТИЧЕСКОЙ прибыли.
     Невыплаченная ЗП РП (10%). Те же фильтры и группировка по receipt_date, что и
     «10% РП» (get_rp_dashboard_metrics), + условие невыплаты + исключение забранного
     в аванс (иначе налитая ЗП осталась бы в «к выплате»). Read-only трансляция —
@@ -395,7 +397,10 @@ async def _rp_to_pay_monthly(db, year):
     cur = await db.conn.execute(
         """
         SELECT CAST(strftime('%m', receipt_date) AS INTEGER) AS m,
-               COALESCE(SUM(npn_amount), 0) AS s
+               COALESCE(SUM(
+                   MIN(COALESCE(npn_amount, 0),
+                       COALESCE(rp_zp_fact, COALESCE(npn_amount, 0)))
+               ), 0) AS s
         FROM invoices
         WHERE parent_invoice_id IS NULL
           AND COALESCE(npn_amount, 0) > 0

@@ -4051,6 +4051,59 @@ def compute_profit_recalc(inv: dict[str, Any], cost: dict[str, Any] | None) -> f
     return value if value else 0.0
 
 
+def compute_fact_profit(inv: dict[str, Any]) -> dict[str, Any]:
+    """Прибыль ФАКТ и ЗП РП 10% по факту — правило owner 13.11 [[pavel_rp_10pct]].
+
+    ЗП РП = 10% от прибыли счёта. Пока счёт не закрыт — от расчётной (план,
+    compute_plan_profit); при получении статуса End (для кредитных —
+    is_credit AND montazh_stage='invoice_end') — от ФАКТИЧЕСКОЙ прибыли и
+    фактических налогов. Формула факт-стороны:
+      факт-прибыль = Сумма счёта
+                     − материалы факт (ОП AM, materials_fact_op)
+                     − монтаж факт (ОП AN, montazh_fact_op)
+                     − грузчики факт (ОП AQ, loaders_fact_op)
+                     − логистика факт (ОП AO, logistics_fact_op)
+                     − НДС факт (ОП R, nds_amount)
+                     − налоги факт (ОП AZ, taxes_fact_op)
+                     − агентское (ОП AE, agent_payout_op, fallback agent_fee)
+    ЗП РП факт = факт-прибыль × 0.10, не ниже 0 (при убытке ЗП нет).
+
+    Кредитные счета — те же правила: прибыль/налоги по факту считаются так же
+    (решение owner 13.11); если каких-то факт-полей нет (NULL) — считаем 0 и
+    помечаем в incompleteness (пересчёт можно повторить, когда ОП донесёт факт).
+    """
+    amount = float(inv.get("amount") or 0)
+    fields = {
+        "materials_fact": inv.get("materials_fact_op"),
+        "montazh_fact": inv.get("montazh_fact_op"),
+        "loaders_fact": inv.get("loaders_fact_op"),
+        "logistics_fact": inv.get("logistics_fact_op"),
+        "nds_fact": inv.get("nds_amount"),
+        "taxes_fact": inv.get("taxes_fact_op"),
+    }
+    # Агентское: ОП AE приоритет, fallback своё поле (как в cost-card).
+    agent_raw = inv.get("agent_payout_op")
+    if agent_raw is None:
+        agent_raw = inv.get("agent_fee")
+    incompleteness = [k for k, v in fields.items() if v is None]
+    if agent_raw is None:
+        incompleteness.append("agent")
+    vals = {k: float(v or 0) for k, v in fields.items()}
+    agent = float(agent_raw or 0)
+    costs = (vals["materials_fact"] + vals["montazh_fact"]
+             + vals["loaders_fact"] + vals["logistics_fact"]
+             + vals["nds_fact"] + vals["taxes_fact"] + agent)
+    fact_profit = amount - costs
+    zp_fact = max(0.0, fact_profit * 0.10)
+    return {
+        "amount": amount,
+        "fact_costs": costs,
+        "fact_profit": fact_profit,
+        "zp_fact": zp_fact,
+        "incompleteness": incompleteness,  # факт-поля, которых не было (NULL → 0)
+    }
+
+
 def manager_zp_net_payout(inv: dict[str, Any]) -> float:
     """ЗП менеджера К ВЫПЛАТЕ с учётом удержания (переплаты CN/zp_manager_hold).
 

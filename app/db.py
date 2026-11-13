@@ -12,6 +12,7 @@ from .enums import INVOICE_END_READY_STAGES, InvoiceStatus, Role
 from .utils import (
     PROFIT_TAX_RATE,
     ZP_FACT_STATUSES,
+    compute_fact_profit,
     compute_plan_profit,
     fact_installation,
     manager_zp_net_payout,
@@ -102,6 +103,16 @@ RP_OKLAD_ADVANCE_GROSSUP = 1.1
 # счёта нет; сентинелы -1/-2 из сумм зачётов исключены и баланс не гасят вовсе.
 RP_OKLAD_OFFSET_TYPE = "oklad_offset"
 RP_OKLAD_OFFSET_DESC = "Зачёт аванса в оклад РП"  # + ' {YYYY-MM}' — маркер идемпотентности
+
+# ── Пересчёт ЗП РП 10% по ФАКТУ при закрытии счёта (правило owner 13.11) ──
+# ЗП РП = 10% от прибыли; до закрытия счёта — от расчётной (план), при получении
+# статуса End — от ФАКТИЧЕСКОЙ прибыли и фактических налогов. Если факт < плана:
+# ЗП не выплачена → авто-уменьшение (корзины/«К выплате» считают min(план, факт));
+# ЗП выплачена → переплата фиксируется (rp_overpay) и АВТО-СПИСАЕТСЯ из авансового
+# кошелька РП (wallet_role='rp') отдельной строкой-списанием. Образец строки-гашения
+# без счёта — oklad_offset выше (items не подходят: invoice_id NOT NULL, а списание
+# привязано к счёту только через аудит/комментарий).
+RP_OVERPAY_OFFSET_TYPE = "rp_overpay_offset"
 
 # ── Оклад РП: выбор месяца (owner 31.10) ──
 # Оклад месяца = 60 000 ТЕЛОМ без надбавки (owner 31.10 п.1); б/н-форма = тело ×1,1.
@@ -1029,6 +1040,19 @@ class Database:
             # по правилу owner 19.10 DP «Металл» = ПОЛНАЯ сумма счёта РП,
             # как только по счёту есть хотя бы один платёж (даже частичный).
             ("supplier_payments", "rp_task_id", "INTEGER"),
+            # --- Пересчёт ЗП РП 10% по факту при End (правило owner 13.11) ---
+            # Все поля БОТ-локальные (НЕ в sheet_fields/_OP_COL_MAP → реимпорт
+            # ОП не затирает, по образцу rp_payout_advance_at/zp_hold_advanced):
+            #   rp_zp_fact        — ЗП РП по ФАКТУ после закрытия (10% от факт-прибыли);
+            #   rp_overpay        — переплата, ещё НЕ списанная из кошелька (остаток);
+            #   rp_fact_recalc_at — дата последнего пересчёта (идемпотентность/журнал);
+            #   rp_overpay_offset — сколько переплаты уже СПИСАНО из авансового кошелька
+            #                       РП (трекер дельты, по образцу zp_hold_advanced —
+            #                       повторный End не списывает вторично).
+            ("invoices", "rp_zp_fact", "REAL"),
+            ("invoices", "rp_overpay", "REAL DEFAULT 0"),
+            ("invoices", "rp_fact_recalc_at", "TEXT"),
+            ("invoices", "rp_overpay_offset", "REAL DEFAULT 0"),
         ]
         async def _column_exists(table: str, column: str) -> bool:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
@@ -6115,6 +6139,18 @@ class Database:
             )
         except Exception:
             log.exception("update_invoice_status: audit() failed for invoice_id=%s", invoice_id)
+        # Хук пересчёта ЗП РП по факту при закрытии счёта (правило owner 13.11).
+        # ЕДИНАЯ точка: все три пути закрытия (tasks.py, manager_new.py,
+        # _auto_close_credit_invoice) идут через update_invoice_status. Повторный
+        # End безопасен — recalc идемпотентен (трекер rp_overpay_offset).
+        if new_status == "ended":
+            try:
+                await self.recalc_rp_zp_on_end(invoice_id)
+            except Exception:
+                log.exception(
+                    "update_invoice_status: rp_zp fact recalc failed for invoice_id=%s",
+                    invoice_id,
+                )
 
     async def update_invoice(
         self, invoice_id: int, **fields: Any
@@ -10637,6 +10673,27 @@ class Database:
         )
         return float((await cur.fetchone())[0] or 0)
 
+    async def _sum_rp_overpay_offset(
+        self, employee_id: int, wallet_role: str | None = None,
+    ) -> float:
+        """Σ списаний переплаты ЗП РП из авансового кошелька (rp_overpay_offset).
+
+        Зеркало _sum_rp_oklad_offset: авто-списание переплаты при закрытии счёта
+        (правило owner 13.11) оформлено ОТДЕЛЬНОЙ строкой requests
+        (request_type='rp_overpay_offset', initiator='system', status='paid'),
+        а не item'ом. Вычитается в get_advance_balance и
+        get_advance_outstanding_unallocated — иначе те же деньги ушли бы
+        второй раз через распределение аванса.
+        """
+        wclause, wparams = self._wallet_clause(wallet_role, "r")
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(r.total_amount), 0) FROM installer_advance_requests r "
+            "WHERE r.installer_id = ? AND r.status = 'paid' "
+            "  AND r.request_type = ?" + wclause,
+            (employee_id, RP_OVERPAY_OFFSET_TYPE, *wparams),
+        )
+        return float((await cur.fetchone())[0] or 0)
+
     async def get_deposit_balance(
         self, installer_id: int, wallet_role: str | None = None,
     ) -> float:
@@ -10712,7 +10769,9 @@ class Database:
         total_to_zp = float((await cur.fetchone())[0] or 0)
         # Зачёт аванса в оклад РП (31.07) — отдельной строкой, не item'ом (см. _sum_rp_oklad_offset).
         total_oklad = await self._sum_rp_oklad_offset(employee_id, wallet_role)
-        return max(0.0, total_in - total_to_zp - total_oklad)
+        # Авто-списание переплаты ЗП РП при End (owner 13.11) — той же строкой-гашением.
+        total_overpay = await self._sum_rp_overpay_offset(employee_id, wallet_role)
+        return max(0.0, total_in - total_to_zp - total_oklad - total_overpay)
 
     async def get_unpaid_zp_for_summary(self, emp_id: int, role_key: str) -> float:
         """Σ невыплаченной ЗП сотрудника по его счетам — для столбца «Зачислено из ЗП»
@@ -10898,6 +10957,161 @@ class Database:
         except Exception:
             log.exception("credit_rp_zp_to_advance: audit failed req_id=%s", req_id)
         return (req_id, total, credited)
+
+    async def recalc_rp_zp_on_end(self, invoice_id: int) -> dict[str, Any] | None:
+        """Пересчёт ЗП РП 10% по ФАКТУ при закрытии счёта — правило owner 13.11.
+
+        Вызывается автоматически при переходе счёта в 'ended' (хук в
+        update_invoice_status покрывает все три точки закрытия: tasks.py,
+        manager_new.py и _auto_close_credit_invoice; для кредитных «закрытие» =
+        status='ended' + montazh_stage='invoice_end', обе ставятся одним путём).
+
+        Что делает (идемпотентно, бот-локальными полями — реимпорт ОП их не
+        затирает):
+          1. Считает факт-прибыль/факт-ЗП единым helper'ом utils.compute_fact_profit
+             и пишет rp_zp_fact + rp_fact_recalc_at (обновляется при каждом
+             пересчёте — факт может доноситься ОП и после закрытия).
+          2. ЗП НЕ выплачена (гарды как в _list_rp_zp_eligible_invoices: AR=0,
+             AQ=0, rp_payout_advance_at NULL, нет rp-offset) и факт < плана →
+             ничего не списываем: корзина запроса и «К выплате» сами берут
+             min(план, rp_zp_fact) (npn_amount НЕ трогаем — sheet-owned).
+          3. ЗП выплачена (ЛЮБОЙ канал: AR>0 | налив в аванс | rp-offset-зачёты)
+             и Σ выплат > факт-ЗП → переплата = Σ_выплат − факт-ЗП: пишем
+             rp_overpay (неот списанного остатка) и АВТО-СПИСЫВАЕМ из авансового
+             кошелька РП (wallet_role='rp', request_type='rp_overpay_offset',
+             initiator='system', status='paid' — по образцу oklad_offset).
+             Гард: не списывать больше баланса; баланс < переплаты → списать
+             сколько есть, остаток оставить в rp_overpay и пометить в аудите.
+             Трекер rp_overpay_offset (суммарно уже списанное) даёт дельту —
+             повторный End НЕ списывает вторично.
+
+        Возвращает сводку пересчёта (для аудита/тестов) или None, если счёт
+        не найден/ещё не закрыт.
+        """
+        inv = await self.get_invoice(invoice_id)
+        if not inv:
+            return None
+        # «Закрыт» = status='ended' ИЛИ кредитный, добравшийся до invoice_end
+        # (зеркало _credit_fully_closed, utils.compute_profit_recalc).
+        credit_closed = bool(inv.get("is_credit")) and \
+            inv.get("montazh_stage") == "invoice_end"
+        if inv.get("status") != "ended" and not credit_closed:
+            return None
+
+        fact = compute_fact_profit(inv)
+        zp_fact = round(fact["zp_fact"], 2)
+        now_iso = to_iso(utcnow())
+        invoice_number = str(inv.get("invoice_number") or "")
+
+        npn = float(inv.get("npn_amount") or 0)
+        ar = float(inv.get("rp_payout_op") or 0)
+        req_op = float(inv.get("rp_request_op") or 0)
+        advance_at = inv.get("rp_payout_advance_at")
+        # rp-offset-зачёты аванса по этому счёту (wallet_role='rp').
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(it.offset_amount), 0) FROM installer_advance_items it "
+            "JOIN installer_advance_requests r ON r.id = it.request_id "
+            "WHERE it.invoice_id = ? AND r.wallet_role = 'rp' "
+            "  AND it.offset_zp_id IS NOT NULL",
+            (int(invoice_id),),
+        )
+        rp_offset = float((await cur.fetchone())[0] or 0)
+        # Σ выплат по ВСЕМ каналам (решение owner 13.11 п.2).
+        paid_sum = ar + (npn if advance_at else 0.0) + rp_offset
+        offset_done = float(inv.get("rp_overpay_offset") or 0)
+
+        overpay_gross = 0.0
+        offset_amount = 0.0
+        overpay_remaining = 0.0
+        balance_before: float | None = None
+        if paid_sum > 0 and zp_fact < paid_sum - 0.009:
+            overpay_gross = round(paid_sum - zp_fact, 2)
+            # дельта: gross − уже списанное (идемпотентность повторного End)
+            overpay_remaining = max(0.0, round(overpay_gross - offset_done, 2))
+            if overpay_remaining > 0.009:
+                rp_users = await self.find_users_by_role(Role.RP, limit=5)
+                if rp_users:
+                    rp_id = int(rp_users[0].telegram_id)
+                    balance_before = await self.get_advance_balance(rp_id, "rp")
+                    offset_amount = round(min(overpay_remaining, balance_before), 2)
+
+        try:
+            # 1) факт-ЗП + дата пересчёта — всегда (бот-локальные поля).
+            # rp_overpay = переплата МИНОС текущее авто-списание (неот списанного).
+            await self.conn.execute(
+                "UPDATE invoices SET rp_zp_fact = ?, rp_fact_recalc_at = ?, "
+                "rp_overpay = ?, updated_at = ? WHERE id = ?",
+                (zp_fact, now_iso, round(overpay_remaining - offset_amount, 2),
+                 now_iso, int(invoice_id)),
+            )
+            # 2) авто-списание переплаты из авансового кошелька РП.
+            if offset_amount > 0.009:
+                rp_users = await self.find_users_by_role(Role.RP, limit=5)
+                rp_id = int(rp_users[0].telegram_id)  # не None: проверено выше
+                cur = await self.conn.execute(
+                    "INSERT INTO installer_advance_requests "
+                    "(installer_id, total_amount, status, comment, requested_at, "
+                    " paid_at, initiator, request_type, wallet_role) "
+                    "VALUES (?, ?, 'paid', ?, ?, ?, 'system', ?, 'rp')",
+                    (rp_id, offset_amount,
+                     f"Списание переплаты ЗП РП: счёт №{invoice_number}",
+                     now_iso, now_iso, RP_OVERPAY_OFFSET_TYPE),
+                )
+                req_id = int(cur.lastrowid)
+                await self.conn.execute(
+                    "UPDATE invoices SET "
+                    "rp_overpay_offset = COALESCE(rp_overpay_offset, 0) + ?, "
+                    "updated_at = ? WHERE id = ?",
+                    (offset_amount, now_iso, int(invoice_id)),
+                )
+                overpay_remaining = round(overpay_remaining - offset_amount, 2)
+            else:
+                req_id = 0
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            log.exception("recalc_rp_zp_on_end: failed invoice_id=%s", invoice_id)
+            raise
+
+        summary = {
+            "invoice_id": int(invoice_id),
+            "invoice_number": invoice_number,
+            "zp_fact": zp_fact,
+            "fact_profit": round(fact["fact_profit"], 2),
+            "incompleteness": fact["incompleteness"],
+            "paid_sum": round(paid_sum, 2),
+            "paid_channels": {
+                "rp_payout_op": round(ar, 2),
+                "advance_fill": round(npn if advance_at else 0.0, 2),
+                "rp_offset": round(rp_offset, 2),
+            },
+            "unpaid": paid_sum <= 0 and req_op == 0,
+            "overpay_gross": overpay_gross,
+            "overpay_remaining": round(overpay_remaining, 2),
+            "offset_amount": offset_amount,
+            "offset_req_id": req_id,
+            "balance_before": balance_before,
+            "shortfall": bool(overpay_gross) and offset_amount < overpay_gross - offset_done - 0.009,
+        }
+        try:
+            await self.audit(
+                actor_id=None,
+                action="rp_zp_fact_recalc",
+                entity="invoice",
+                entity_id=str(invoice_id),
+                payload=summary,
+            )
+            if overpay_gross > 0:
+                await self.audit(
+                    actor_id=None,
+                    action="rp_zp_overpay",
+                    entity="invoice",
+                    entity_id=str(invoice_id),
+                    payload=summary,
+                )
+        except Exception:
+            log.exception("recalc_rp_zp_on_end: audit failed invoice_id=%s", invoice_id)
+        return summary
 
     async def get_rp_oklad_month_state(
         self, year: int, month: int,
@@ -12553,6 +12767,8 @@ class Database:
         # Зачёт аванса в оклад РП (31.07): свободный остаток тоже обязан упасть, иначе
         # distribute UI предложит потратить уже погашенные деньги второй раз.
         unalloc -= await self._sum_rp_oklad_offset(installer_id, wallet_role)
+        # Авто-списание переплаты ЗП РП (owner 13.11) — те же деньги не выдаём дважды.
+        unalloc -= await self._sum_rp_overpay_offset(installer_id, wallet_role)
         return max(0.0, unalloc)
 
     async def get_open_advance_items_for_installer(

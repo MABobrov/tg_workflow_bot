@@ -1519,6 +1519,20 @@ def _render_rp_zp_cart(invoices: list[dict[str, Any]], cart: dict[int, float]) -
     return "\n".join(lines), b.as_markup()
 
 
+def _rp_zp_capped(inv: dict[str, Any], base: float) -> float:
+    """min(план, факт-ЗП) при закрытом счёте с пересчитанной факт-ЗП — owner 13.11.
+
+    После End счёта ЗП РП считается от ФАКТИЧЕСКОЙ прибыли (db.recalc_rp_zp_on_end
+    пишет бот-локальное rp_zp_fact). Пока ЗП не выплачена и факт < плана —
+    авто-уменьшение: все экраны запроса показывают min(план, rp_zp_fact).
+    npn_amount НЕ трогаем (sheet-owned). Нет пересчёта (rp_zp_fact NULL) → план.
+    """
+    fact = inv.get("rp_zp_fact")
+    if fact is None:
+        return base
+    return min(base, float(fact))
+
+
 def _build_rp_zp_cart_from_source(
     invoices: list[dict[str, Any]],
 ) -> tuple[dict[int, float], int]:
@@ -1530,7 +1544,8 @@ def _build_rp_zp_cart_from_source(
     cart: dict[int, float] = {}
     skipped = 0
     for inv in invoices:
-        amount = float(inv.get("rp_10_pct_op") or 0)
+        # owner 13.11: закрытый счёт с факт-пересчётом → кап min(план, факт-ЗП).
+        amount = _rp_zp_capped(inv, float(inv.get("rp_10_pct_op") or 0))
         if amount > 0:
             cart[int(inv["id"])] = round(amount, 2)
         else:
@@ -1558,7 +1573,8 @@ def _split_rp_zp_by_type(
     """eligible-счета с 10%>0, разбитые на кредитные / б/н (по is_credit)."""
     out: dict[str, list[dict[str, Any]]] = {PAY_TYPE_CREDIT: [], PAY_TYPE_BEZNAL: []}
     for inv in invoices:
-        if float(inv.get("rp_10_pct_op") or 0) <= 0:
+        # owner 13.11: кап min(план, факт-ЗП) при закрытом счёте (см. _rp_zp_capped).
+        if _rp_zp_capped(inv, float(inv.get("rp_10_pct_op") or 0)) <= 0:
             continue
         key = PAY_TYPE_CREDIT if inv.get("is_credit") else PAY_TYPE_BEZNAL
         out[key].append(inv)
@@ -1570,8 +1586,8 @@ def _render_rp_zp_type_menu(invoices: list[dict[str, Any]]) -> tuple[str, Any]:
     groups = _split_rp_zp_by_type(invoices)
     cr = groups[PAY_TYPE_CREDIT]
     bn = groups[PAY_TYPE_BEZNAL]
-    cr_total = sum(float(i.get("rp_10_pct_op") or 0) for i in cr)
-    bn_total = sum(float(i.get("rp_10_pct_op") or 0) for i in bn)
+    cr_total = sum(_rp_zp_capped(i, float(i.get("rp_10_pct_op") or 0)) for i in cr)
+    bn_total = sum(_rp_zp_capped(i, float(i.get("rp_10_pct_op") or 0)) for i in bn)
     lines = ["<pre>💰 <b>Запрос ЗП РП</b>"]
     lines.append(f"   🏦 Кредитные  {len(cr):>2d} сч  {_fmt_rub(cr_total):>10s} ₽")
     lines.append(f"   💳 Б/н        {len(bn):>2d} сч  {_fmt_rub(bn_total):>10s} ₽")
@@ -1600,7 +1616,7 @@ def _render_rp_zp_type_cart(
     for inv in type_invoices:
         inv_id = int(inv["id"])
         num = inv.get("invoice_number") or "?"
-        amount = float(inv.get("rp_10_pct_op") or 0)
+        amount = _rp_zp_capped(inv, float(inv.get("rp_10_pct_op") or 0))
         mark = "✓" if inv_id in cart else " "
         lines.append(f" {mark} №{num:<14s} {_fmt_rub(amount):>10s} ₽")
     total = sum(float(v) for v in cart.values())
@@ -1612,7 +1628,7 @@ def _render_rp_zp_type_cart(
     for inv in type_invoices:
         inv_id = int(inv["id"])
         num = inv.get("invoice_number") or "?"
-        amount = float(inv.get("rp_10_pct_op") or 0)
+        amount = _rp_zp_capped(inv, float(inv.get("rp_10_pct_op") or 0))
         mark = "✓ " if inv_id in cart else "▫️ "
         b.button(text=f"{mark}№{num} — {_fmt_rub(amount)}₽",
                  callback_data=f"rpzp:pick:{inv_id}")
