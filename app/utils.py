@@ -4123,11 +4123,44 @@ def manager_zp_net_payout(inv: dict[str, Any]) -> float:
     """
     blank = float(inv.get("manager_zp_blank") or 0)
     if abs(float(inv.get("outstanding_debt") or 0)) >= 1:
-        return blank  # есть долг → удержание пока не применяется
-    hold = float(inv.get("zp_manager_hold") or 0)
-    advanced = float(inv.get("zp_hold_advanced") or 0)
-    # hold ≤ 0; advanced ≥ 0 — возвращает перенесённую в аванс часть удержания.
-    return max(0.0, blank + hold + min(advanced, abs(hold)))
+        net = blank  # есть долг → удержание пока не применяется
+    else:
+        hold = float(inv.get("zp_manager_hold") or 0)
+        advanced = float(inv.get("zp_hold_advanced") or 0)
+        # hold ≤ 0; advanced ≥ 0 — возвращает перенесённую в аванс часть удержания.
+        net = max(0.0, blank + hold + min(advanced, abs(hold)))
+    # owner 14.11: закрытый счёт с факт-пересчётом → кап min(net, факт-ЗП
+    # менеджера). mgr_zp_fact пишется ТОЛЬКО при закрытии (recalc_manager_zp_on_end),
+    # поэтому его наличие = «счёт закрыт и факт уже пересчитан» (по образцу
+    # мин(план, rp_zp_fact) у РП). Пока ЗП не выплачена и факт < плана —
+    # авто-уменьшение во всех точках, где берётся net (карточки, зачёт аванса).
+    fact = inv.get("mgr_zp_fact")
+    if fact is not None:
+        net = min(net, float(fact))
+    return net
+
+
+def manager_zp_fact_from_profit(
+    inv: dict[str, Any], fact: dict[str, Any],
+) -> float:
+    """ЗП менеджера по ФАКТУ при закрытии счёта — правило owner 14.11.
+
+    База — доля от факт-прибыли (решение owner 14.11, зеркало план-сплита
+    compute_plan_profit, но от факт-прибыли и факт-налогов):
+      ЗП менеджера факт = (факт-прибыль − ЗП РП факт 10%) × 25% (лид ГД)
+                        = (факт-прибыль − ЗП РП факт 10%) × 50% (свой клиент)
+    Флор 0: при убытке/нулевом остатке ЗП нет. client_source — как в план-сплите.
+    До закрытия счёта ЗП менеджера = бланк ОП AJ (manager_zp_blank), НЕ сплит
+    (owner 27.06 «Правильно: aj») — факт-доля включается ТОЛЬКО при End.
+    Действует для ВСЕХ менеджеров (КВ, КИА, НПН) — слово owner 14.11.
+    """
+    fact_profit = float(fact.get("fact_profit") or 0)
+    rp_zp_fact = float(fact.get("zp_fact") or 0)
+    share = 0.25 if inv.get("client_source") == "gd_lead" else 0.50
+    remaining = fact_profit - rp_zp_fact
+    if remaining <= 0:
+        return 0.0
+    return round(remaining * share, 2)
 
 
 def format_estimated_summary(inv: dict[str, Any]) -> str:
