@@ -10453,6 +10453,17 @@ class Database:
             entity_id=str(request_id),
             payload={"payment_file_id": payment_file_id},
         )
+        # №21 (owner 14.11, вариант А): пополнение авансового кошелька менеджера
+        # запускает авто-списание остатка его переплаты (mgr_overpay).
+        rowr = await self.conn.execute(
+            "SELECT installer_id, request_type FROM installer_advance_requests WHERE id = ?",
+            (request_id,),
+        )
+        rr = await rowr.fetchone()
+        if rr and rr["request_type"] == "request":
+            await self._maybe_auto_offset_overpay_after_topup(
+                int(rr["installer_id"]), actor_id=paid_by,
+            )
         # Auto-offset на pay: если item привязан к invoice с zp=approved → сразу
         # offset. Закрывает root-cause «item создан ПОСЛЕ approve» (КВ 4 кейс).
         items = await self.get_advance_request_items(request_id)
@@ -11778,6 +11789,113 @@ class Database:
         except Exception:
             log.exception("recalc_manager_zp_on_end: audit failed invoice_id=%s", invoice_id)
         return summary
+
+    async def auto_offset_manager_overpay_on_topup(
+        self, manager_id: int, *, actor_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """№21 (owner 14.11, вариант А): авто-списание остатка переплаты менеджера.
+
+        Срабатывает при пополнении авансового кошелька менеджера (оплата заявки
+        аванса / перевод депозита в аванс). Пробегает ended-счета менеджера с
+        живым остатком mgr_overpay (старые первым) и списывает min(остаток,
+        свободный баланс) тем же механизмом, что recalc_manager_zp_on_end:
+        строка-гашение request_type=manager_overpay_offset (paid, system),
+        mgr_overpay −= amount, mgr_overpay_offset += amount, audit на каждый счёт.
+        Идемпотентно: остаток mgr_overpay после списания 0 → повтор ничего не делает.
+        Возвращает список {invoice_id, invoice_number, amount}.
+        """
+        wallet_tag = await self._manager_wallet_tag(manager_id)
+        available = await self.get_advance_balance(manager_id, wallet_tag)
+        results: list[dict[str, Any]] = []
+        if available <= 0.009:
+            return results
+        cur = await self.conn.execute(
+            "SELECT id, invoice_number, COALESCE(mgr_overpay, 0) AS resid "
+            "FROM invoices WHERE created_by = ? AND COALESCE(mgr_overpay, 0) > 0.009 "
+            "ORDER BY created_at ASC",
+            (int(manager_id),),
+        )
+        rows = await cur.fetchall()
+        now_iso = to_iso(utcnow())
+        for r in rows:
+            if available <= 0.009:
+                break
+            resid = round(float(r["resid"]), 2)
+            amount = round(min(resid, available), 2)
+            if amount <= 0.009:
+                continue
+            try:
+                cur2 = await self.conn.execute(
+                    "INSERT INTO installer_advance_requests "
+                    "(installer_id, total_amount, status, comment, requested_at, "
+                    " paid_at, initiator, request_type, wallet_role) "
+                    "VALUES (?, ?, 'paid', ?, ?, ?, 'system', ?, ?)",
+                    (int(manager_id), amount,
+                     f"Авто-списание переплаты ЗП менеджера (пополнение кошелька): "
+                     f"счёт №{r['invoice_number']}",
+                     now_iso, now_iso, MGR_OVERPAY_OFFSET_TYPE, wallet_tag),
+                )
+                await self.conn.execute(
+                    "UPDATE invoices SET "
+                    "mgr_overpay = ROUND(COALESCE(mgr_overpay, 0) - ?, 2), "
+                    "mgr_overpay_offset = COALESCE(mgr_overpay_offset, 0) + ?, "
+                    "updated_at = ? WHERE id = ?",
+                    (amount, amount, now_iso, int(r["id"])),
+                )
+                await self.conn.commit()
+            except Exception:
+                await self.conn.rollback()
+                log.exception(
+                    "auto_offset_manager_overpay_on_topup: failed invoice_id=%s", r["id"],
+                )
+                continue
+            available = round(available - amount, 2)
+            results.append({
+                "invoice_id": int(r["id"]),
+                "invoice_number": str(r["invoice_number"]),
+                "amount": amount,
+            })
+            try:
+                await self.audit(
+                    actor_id=actor_id,
+                    action="manager_overpay_auto_offset_on_topup",
+                    entity="invoice",
+                    entity_id=str(r["id"]),
+                    payload={
+                        "manager_id": int(manager_id),
+                        "amount": amount,
+                        "residual_before": resid,
+                        "offset_req_id": int(cur2.lastrowid),
+                        "wallet_role": wallet_tag,
+                    },
+                )
+            except Exception:
+                log.exception(
+                    "auto_offset_manager_overpay_on_topup: audit failed invoice_id=%s", r["id"],
+                )
+        return results
+
+    async def _maybe_auto_offset_overpay_after_topup(
+        self, employee_id: int, *, actor_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """№21: после пополнения кошелька — авто-списание, если сотрудник менеджер.
+
+        Не-менеджерам (монтажник/замерщик/прочие) ничего не делает. Ошибки
+        списания не ломают пополнение — только лог.
+        """
+        user = await self.get_user(int(employee_id))
+        role = str(getattr(user, "role", "") or "")
+        if "manager" not in role:
+            return []
+        try:
+            return await self.auto_offset_manager_overpay_on_topup(
+                int(employee_id), actor_id=actor_id,
+            )
+        except Exception:
+            log.exception(
+                "auto-offset overpay after topup failed for %s", employee_id,
+            )
+            return []
 
     async def get_rp_oklad_month_state(
         self, year: int, month: int,
@@ -13290,6 +13408,11 @@ class Database:
                 "comment": comment,
                 "deposit_balance_before": depo,
             },
+        )
+        # №21 (owner 14.11, вариант А): пополнение аванса из депозита менеджера
+        # тоже запускает авто-списание остатка переплаты.
+        await self._maybe_auto_offset_overpay_after_topup(
+            int(employee_id), actor_id=actor_id,
         )
         return req_id
 
