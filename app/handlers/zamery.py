@@ -1645,7 +1645,8 @@ async def zamery_book_pick_time(cb: CallbackQuery, db: Database) -> None:
     b = InlineKeyboardBuilder()
     for interval in _BOOK_INTERVALS:
         if interval in busy_intervals:
-            b.button(text=f"🔴 {interval}", callback_data=f"zamsched:booktime:{ds}:{interval}:{week_offset}")
+            # №99: занятый слот — некликабельный, alert вместо записи
+            b.button(text=f"🔴 {interval}", callback_data="zamsched:bookbusy")
         else:
             b.button(text=f"🟢 {interval}", callback_data=f"zamsched:booktime:{ds}:{interval}:{week_offset}")
     b.button(text="⬅️ Назад к неделе", callback_data=f"zamsched:week:{week_offset}")
@@ -1655,6 +1656,12 @@ async def zamery_book_pick_time(cb: CallbackQuery, db: Database) -> None:
         await cb.message.edit_text(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
     except Exception:
         await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "zamsched:bookbusy")
+async def zamery_book_busy_alert(cb: CallbackQuery) -> None:
+    """№99: клик по занятому 🔴 слоту самозаписи — отказ."""
+    await cb.answer("❌ Интервал уже занят другим замером.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("zamsched:booktime:"))
@@ -1668,6 +1675,13 @@ async def zamery_book_enter_address(cb: CallbackQuery, state: FSMContext, db: Da
     ds = parts[2]
     interval = parts[3]
     week_offset = int(parts[4])
+
+    # №99: гард занятости — слот мог стать занятым после показа клавиатуры
+    # (или кликнули старое сообщение с прежней разметкой).
+    summary = await db.get_zamery_schedule_summary(cb.from_user.id, ds, ds)
+    if interval in summary["busy"].get(ds, []):
+        await cb.answer("❌ Интервал уже занят другим замером. Выберите свободный.", show_alert=True)
+        return
 
     d = date.fromisoformat(ds)
     wd = _RU_WEEKDAYS[d.weekday()]
@@ -1890,6 +1904,25 @@ async def _finalize_schedule_book(
     # Resolve zamery user
     zamery_uid = await resolve_default_assignee(db, config, Role.ZAMERY)
     assigned_to = int(zamery_uid) if zamery_uid else uid
+
+    # №99: речек занятости перед записью — слот мог быть занят, пока вводились данные.
+    book_summary = await db.get_zamery_schedule_summary(uid, ds, ds)
+    if interval in book_summary["busy"].get(ds, []):
+        msg_target = event.message if isinstance(event, CallbackQuery) else event
+        await msg_target.answer(  # type: ignore[union-attr]
+            f"❌ Интервал {interval} на {ds} уже занят другим замером.\n"
+            "Запись отменена — выберите свободный слот в графике."
+        )
+        await state.clear()
+        return
+    # №99: blackout-день (выходной/занятый) — запись невозможна.
+    if await db.list_zamery_blackout_dates(uid, ds, ds):
+        msg_target = event.message if isinstance(event, CallbackQuery) else event
+        await msg_target.answer(  # type: ignore[union-attr]
+            f"🚫 {ds} — выходной/занятый день в графике. Запись отменена."
+        )
+        await state.clear()
+        return
 
     # Determine requester role
     user = await db.get_user_optional(uid)
