@@ -1721,6 +1721,9 @@ async def installer_zp_price_ok(
         return
     # Помечаем что монтажник согласен с ценой
     from ..utils import utcnow, to_iso
+    # Аудит №34: уравнять пути с полной фиксацией «Счёт ОК» (:538) —
+    # без installer_ok счёт получает стадию invoice_ok, но End заблокирован.
+    await db.set_invoice_installer_ok(inv_id, True)
     await db.update_invoice(inv_id, montazh_stage="invoice_ok", montazh_invoice_ok_at=to_iso(utcnow()))
     try:
         await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
