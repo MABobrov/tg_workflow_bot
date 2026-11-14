@@ -773,6 +773,16 @@ async def invoice_ok_price_ok(
                 (agreed, invoice_id),
             )
             await db.conn.commit()
+            # №50 (owner 15.11): аудит правки цены монтажником — раньше сумма
+            # писалась прямым UPDATE без следа, кто/когда согласовал.
+            try:
+                await db.audit(
+                    actor_id=int(u.id), action="installer_price_agreed",
+                    entity="invoice", entity_id=str(invoice_id),
+                    payload={"agreed": agreed, "old": 0.0, "path": "instok:price_ok"},
+                )
+            except Exception:
+                log.debug("instok price_ok: audit failed inv=%s", invoice_id, exc_info=True)
 
     # №43: «Согласовано» изменилось — пересчитать открытую заявку ЗП, если она есть.
     await sync_open_zp_installer_request(
@@ -852,6 +862,16 @@ async def invoice_ok_price_input(
         (agreed, invoice_id),
     )
     await db.conn.commit()
+    # №50 (owner 15.11): аудит правки цены монтажником (ручной ввод суммы).
+    try:
+        await db.audit(
+            actor_id=int(message.from_user.id), action="installer_price_agreed",
+            entity="invoice", entity_id=str(invoice_id),
+            payload={"agreed": agreed, "old": float((inv or {}).get("montazh_agreed_amount") or 0),
+                     "path": "instok:price_input"},
+        )
+    except Exception:
+        log.debug("instok price_input: audit failed inv=%s", invoice_id, exc_info=True)
 
     # №43: «Согласовано» изменилось — пересчитать открытую заявку ЗП, если она есть.
     await sync_open_zp_installer_request(
@@ -3196,11 +3216,25 @@ async def zpadj_finalize(
     # База — актуальное значение; если на счёте ещё 0, снимок нёс fallback-смету
     # (_calc_est_montazh) — тогда база она, иначе «Согласовано» схлопнулось бы в одну надбавку.
     _base = montazh_agreed_now if montazh_agreed_now > 0 else agreed_old
+    _agreed_written = None
     if _delta > 0.5:
-        await db.update_invoice(invoice_id, montazh_agreed_amount=_base + _delta)
+        _agreed_written = _base + _delta
+        await db.update_invoice(invoice_id, montazh_agreed_amount=_agreed_written)
     elif montazh_agreed_now <= 0 and target_agreed > 0:
         # Фиксация fallback-сметы, когда «Согласовано» на счёте ещё не задано.
+        _agreed_written = target_agreed
         await db.update_invoice(invoice_id, montazh_agreed_amount=target_agreed)
+    # №50 (owner 15.11): аудит правки цены монтажником (рост через запрос ЗП).
+    if _agreed_written is not None:
+        try:
+            await db.audit(
+                actor_id=int(u.id), action="installer_price_agreed",
+                entity="invoice", entity_id=str(invoice_id),
+                payload={"agreed": _agreed_written, "old": montazh_agreed_now,
+                         "path": "instzpadj"},
+            )
+        except Exception:
+            log.debug("instzpadj: audit failed inv=%s", invoice_id, exc_info=True)
 
     # Обновить статус + флаг «заявка = остаток» → additive «Выплачено» на листе (2.2).
     await db.set_invoice_zp_installer_status(
@@ -3722,6 +3756,16 @@ async def installer_price_ok(
         (agreed, u.id, datetime.now().isoformat(), invoice_id),
     )
     await db.conn.commit()
+    # №50 (owner 15.11): аудит правки цены монтажником (принятие в работу).
+    try:
+        await db.audit(
+            actor_id=int(u.id), action="installer_price_agreed",
+            entity="invoice", entity_id=str(invoice_id),
+            payload={"agreed": agreed, "old": float(inv.get("montazh_agreed_amount") or 0),
+                     "path": "inst_work:price_ok"},
+        )
+    except Exception:
+        log.debug("inst_work price_ok: audit failed inv=%s", invoice_id, exc_info=True)
     await db.update_montazh_stage(invoice_id, MontazhStage.IN_WORK)
     await integrations.sync_invoice_row(invoice_id)
 
@@ -3915,6 +3959,16 @@ async def installer_price_confirm(
         (agreed, u.id, datetime.now().isoformat(), invoice_id),
     )
     await db.conn.commit()
+    # №50 (owner 15.11): аудит правки цены монтажником (ручная сумма при принятии).
+    try:
+        await db.audit(
+            actor_id=int(u.id), action="installer_price_agreed",
+            entity="invoice", entity_id=str(invoice_id),
+            payload={"agreed": agreed, "old": float(inv.get("montazh_agreed_amount") or 0),
+                     "path": "inst_work:price_confirm"},
+        )
+    except Exception:
+        log.debug("inst_work price_confirm: audit failed inv=%s", invoice_id, exc_info=True)
     await db.update_montazh_stage(invoice_id, MontazhStage.IN_WORK)
     await integrations.sync_invoice_row(invoice_id)
 
