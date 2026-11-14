@@ -89,6 +89,7 @@ from ..states import (
     RpMontazhAssignSG,
     RpMontazhNaemSG,
     RpMontazhRegroupSG,
+    RpMontazhTrancheSG,
     RpMontazhZpSG,
     RpRazmerySG,
     RpSupplierInvoiceSG,
@@ -1708,6 +1709,11 @@ async def _build_montazh_zp_card(
     )
     b = InlineKeyboardBuilder()
     b.button(text="✏️ Внести сумму ЗП монтаж", callback_data=f"rp_montazh:zp_edit:{invoice_id}")
+    # №55 (owner 15.11): доплата той же наёмной группе — после первой выплаты
+    # «Внести сумму» блокируется навсегда, и доплата требовала полной смены
+    # группы. Кнопка транша доступна только когда по счёту уже платили.
+    if _montazh_payout_done(inv):
+        b.button(text="➕ Доплата наёмной группе", callback_data=f"rp_montazh:tranche:{invoice_id}")
     b.adjust(1)
     return card_text, b.as_markup()
 
@@ -1799,6 +1805,159 @@ async def rp_montazh_zp_amount(
     x = amount
     await _finalize_zp_edit(
         db, integrations, invoice_id, x, message, message.from_user.id, base=amount,
+    )
+
+
+# ---------------------------------------------------------------------------
+# №55 (owner 15.11): «➕ Доплата наёмной группе» — транш ТОЙ ЖЕ группе без
+# смены группы. Раньше доплата требовала полного «Изменить Монтажников»
+# (сброс стадии/ЗП) либо кредит-кошелька. Механика — объединение платежей
+# (merge 15.07): выплаченное уходит в montazh_paid_prev, Согласовано =
+# выплаченное + доплата, ЗП сбрасывается и СРАЗУ подаётся заявка ГД на доплату.
+# Стадию и группу НЕ трогаем — работы продолжаются, счёт не откатывается.
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data.regexp(r"^rp_montazh:tranche:\d+$"))
+async def rp_montazh_tranche_start(
+    cb: CallbackQuery, db: Database, state: FSMContext,
+) -> None:
+    """РП нажал «➕ Доплата наёмной группе» — вход в FSM ввода суммы доплаты."""
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
+    await cb.answer()
+    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    if inv.get("edo_task_id") != 2:
+        await cb.answer(
+            "⚠️ Доплата доступна только по наёмной монтажной группе.",
+            show_alert=True,
+        )
+        return
+    if not _montazh_payout_done(inv):
+        await cb.answer(
+            "⚠️ По счёту ещё не было выплат — внесите сумму обычной кнопкой.",
+            show_alert=True,
+        )
+        return
+    await state.set_state(RpMontazhTrancheSG.amount)
+    await state.update_data(tranche_invoice_id=invoice_id)
+    paid, _adv = await _montazh_money_state(db, inv)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"➕ <b>Счёт №{inv.get('invoice_number', '?')} — доплата наёмной группе</b>\n\n"
+        f"💰 Выплачено по счёту: <b>{paid:,.0f}₽</b>\n"
+        f"Введите <b>сумму доплаты</b> (₽) — она будет добавлена к выплаченному:",
+    )
+
+
+@router.message(RpMontazhTrancheSG.amount)
+async def rp_montazh_tranche_amount(
+    message: Message, state: FSMContext, db: Database, config: Config,
+    notifier: Notifier, integrations: IntegrationHub,
+) -> None:
+    """РП ввёл сумму доплаты → merge-механика + заявка ЗП ГД на доплату."""
+    if not message.from_user:
+        return
+    text = (message.text or "").strip().replace(" ", "").replace(",", "")
+    try:
+        amount = int(float(text))
+    except (ValueError, TypeError):
+        await message.answer("❌ Введите число:")
+        return
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть больше 0:")
+        return
+
+    data = await state.get_data()
+    invoice_id = data.get("tranche_invoice_id")
+    if not invoice_id:
+        await state.clear()
+        await message.answer("❌ Счёт не найден, начните заново.")
+        return
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await state.clear()
+        await message.answer("❌ Счёт не найден.")
+        return
+    # Гонка/старая кнопка: группа могла смениться, выплата — уйти.
+    if inv.get("edo_task_id") != 2:
+        await state.clear()
+        await message.answer("❌ Счёт больше не за наёмной группой — доплата не записана.")
+        return
+    await state.clear()
+
+    from ..enums import TaskStatus, TaskType
+    from ..utils import to_iso, utcnow
+
+    paid, _adv = await _montazh_money_state(db, inv)
+    agreed_total = int(round(paid + amount))
+    _adv_prev_col = await db.get_installer_advance_for_invoice(int(invoice_id))
+    _now = to_iso(utcnow())
+    # Merge-механика: выплаченное → paid_prev, Согласовано = выплаченное + доплата.
+    # ЗП-ячейка освобождается под доплату (amount=0 обязателен — stale-сумма
+    # не должна остаться в расчёте «Выплачено» как нога текущей группы).
+    await db.conn.execute(
+        "UPDATE invoices SET montazh_agreed_amount = ?, montazh_paid_prev = ?, "
+        "montazh_adv_prev = ?, zp_installer_status = 'not_requested', "
+        "zp_installer_amount = 0, zp_installer_remainder = 0, "
+        "zp_installer_requested_by = NULL, updated_at = ? WHERE id = ?",
+        (agreed_total, paid, _adv_prev_col, _now, invoice_id),
+    )
+    await db.conn.commit()
+    await db.close_tasks_by_invoice(int(invoice_id), TaskType.ZP_INSTALLER)
+    try:
+        await db.audit(
+            actor_id=message.from_user.id, action="rp_montazh_tranche",
+            entity="invoice", entity_id=str(invoice_id),
+            payload={"tranche": amount, "paid_prev": paid, "agreed": agreed_total},
+        )
+    except Exception:
+        log.debug("tranche: audit failed inv=%s", invoice_id, exc_info=True)
+    if integrations:
+        await integrations.sync_invoice_row(int(invoice_id))
+
+    # Заявка ЗП на доплату — сразу ГД (как naem-триггер, но руками РП).
+    rp_id = message.from_user.id
+    await db.set_invoice_zp_installer_status(
+        int(invoice_id), "requested", amount=float(amount), requested_by=int(rp_id),
+    )
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
+    if gd_id:
+        await db.create_task(
+            project_id=None,
+            type_=TaskType.ZP_INSTALLER,
+            status=TaskStatus.OPEN,
+            created_by=int(rp_id),
+            assigned_to=int(gd_id),
+            due_at_iso=None,
+            payload={
+                "invoice_id": int(invoice_id),
+                "invoice_number": inv.get("invoice_number") or "—",
+                "amount": float(amount),
+                "source": "rp_montazh_tranche",
+            },
+        )
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{invoice_id}")
+        b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{invoice_id}")
+        b.adjust(2)
+        await notifier.safe_send(
+            int(gd_id),
+            f"💰 <b>Запрос ЗП монтажника (доплата)</b>\n\n"
+            f"📄 Счёт №{inv.get('invoice_number', '?')}\n"
+            f"🔗 Выплачено ранее: <b>{paid:,.0f}₽</b>\n"
+            f"➕ Доплата: <b>{amount:,.0f}₽</b>\n"
+            f"💰 Согласовано по счёту: <b>{agreed_total:,.0f}₽</b>",
+            reply_markup=b.as_markup(),
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+    await message.answer(
+        f"✅ Доплата наёмной группе записана.\n\n"
+        f"🔗 Выплачено ранее: {paid:,.0f}₽\n"
+        f"➕ Доплата: {amount:,.0f}₽\n"
+        f"💰 Согласовано по счёту: {agreed_total:,.0f}₽\n"
+        f"📤 Заявка на доплату отправлена ГД."
     )
 
 

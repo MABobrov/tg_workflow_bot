@@ -669,6 +669,11 @@ class RpMontazhZpSG(StatesGroup):
     amount = State()             # ввод суммы ЗП (₽)
 
 
+class RpMontazhTrancheSG(StatesGroup):
+    """РП: «➕ Доплата наёмной группе» — транш той же группе без смены (№55)."""
+    amount = State()             # ввод суммы доплаты (₽)
+
+
 class AccRequestToManagerSG(StatesGroup):
     """Бухгалтерия: запрос/задача менеджеру счёта."""
     text = State()               # текст запроса

@@ -873,6 +873,25 @@ async def invoice_ok_price_input(
     except Exception:
         log.debug("instok price_input: audit failed inv=%s", invoice_id, exc_info=True)
 
+    # №54 (owner 15.11): ручной ввод суммы на «Счёт ок» раньше не уведомлял ГД
+    # вовсе — согласование на финальном этапе проходило мимо ГД.
+    try:
+        _gd54 = await resolve_default_assignee(db, config, Role.GD)
+        if _gd54:
+            _init54 = await get_initiator_label(db, int(message.from_user.id))
+            _inv54 = inv or {}
+            _paid54 = float(_inv54.get("montazh_paid_prev") or 0)
+            await notifier.safe_send(
+                int(_gd54),
+                f"💲 <b>Монтажник ввёл сумму на «Счёт ок»</b>\n"
+                f"📄 Счёт №{_inv54.get('invoice_number', '?')}\n"
+                f"💰 Согласовано всего: <b>{agreed:,.0f}₽</b>\n"
+                f"➡️ К выплате этой группе: <b>{max(0.0, agreed - _paid54):,.0f}₽</b>\n"
+                f"👤 {_init54}",
+            )
+    except Exception:
+        log.warning("instok price_input: gd notify failed inv=%s", invoice_id, exc_info=True)
+
     # №43: «Согласовано» изменилось — пересчитать открытую заявку ЗП, если она есть.
     await sync_open_zp_installer_request(
         db, invoice_id, actor_id=message.from_user.id, reason="счёт ОК: новая сумма",
@@ -1823,10 +1842,21 @@ async def installer_zp_price_ok(
         if not u:
             return
         initiator = await get_initiator_label(db, u.id)
+        # №54 (owner 15.11): ГД видит СУММУ — раньше уведомление уходило без неё,
+        # и согласование цены на финальном этапе проходило мимо ГД.
+        _agreed54 = float(inv.get("montazh_agreed_amount") or 0)
+        _paid_prev54 = float(inv.get("montazh_paid_prev") or 0)
+        _due54 = max(0.0, _agreed54 - _paid_prev54)
+        _sum_line = (
+            f"💰 Согласовано всего: <b>{_agreed54:,.0f}₽</b>\n"
+            f"➡️ К выплате этой группе: <b>{_due54:,.0f}₽</b>\n"
+            if _agreed54 > 0 else ""
+        )
         await notifier.safe_send(
             int(gd_id),
             f"💲 <b>Цена подтверждена монтажником</b>\n"
             f"📄 Счёт №{inv.get('invoice_number', '?')}\n"
+            f"{_sum_line}"
             f"👤 {initiator}",
         )
 
@@ -2330,6 +2360,17 @@ def _gd_zp_request_card(
     _paid_prev = float(inv.get("montazh_paid_prev") or 0)
     if _paid_prev > 0:
         items.append(("Выплачено ранее", _f(_paid_prev)))
+
+    # №57 (owner 15.11): сводка траншей — zp_installer_amount держит только
+    # ПОСЛЕДНИЙ платёж, и при мульти-платежах (несколько траншей/групп) карточка
+    # теряла итог. Накопители DR (cost_montazh) и AN (montazh_fact_op) знают
+    # ВСЁ выплаченное по счёту — показываем итог, когда он больше ног, которые
+    # уже в карточке (paid_prev + зачтённый аванс).
+    _dr57 = float(inv.get("cost_montazh") or 0)
+    _an57 = float(inv.get("montazh_fact_op") or 0)
+    _paid_all57 = max(_dr57, _an57)
+    if _paid_all57 > 0.001 and _paid_all57 > _paid_prev + float(advance_cg or 0) + 0.001:
+        items.append(("Всего выплачено", _f(_paid_all57)))
 
     footer: tuple[str, str] | None = None
     total: str | None = None
