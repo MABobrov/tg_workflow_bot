@@ -27,6 +27,7 @@ from ..enums import (
     MATERIAL_TYPE_LABELS,
     InvoiceStatus,
     MaterialType,
+    MONTAZH_STAGE_LABELS,
     MontazhStage,
     Role,
     TaskStatus,
@@ -3307,6 +3308,24 @@ async def installer_in_work(message: Message, state: FSMContext, db: Database, c
     )
 
 
+def _montazh_price_accept_error(inv: dict, user_id: int) -> str | None:
+    """№51: гард кнопок «🔨 В работу» / «✅ Согласовать» (price_ok/price_confirm).
+
+    1) Стадия: приём в работу легален только ДО IN_WORK — клик по живой старой
+    кнопке после IN_WORK/INVOICE_OK не должен перезаписывать agreed и слать ГД
+    вторую карточку [[feedback_fsm_old_buttons_trap]].
+    2) Чужой монтажник: если счёт уже назначен другому (assigned_to), его карточку
+    чужой клик перехватить не должен. Переназначение — только через смену группы
+    (rp_new), которая сама пишет paid_prev."""
+    stage = str(inv.get("montazh_stage") or MontazhStage.NONE)
+    if stage != MontazhStage.NONE and stage != MontazhStage.ASSIGNED:
+        return f"⚠️ Счёт №{inv.get('invoice_number')} уже принят в работу ({MONTAZH_STAGE_LABELS.get(stage, stage)}) — кнопка устарела."
+    assigned = inv.get("assigned_to")
+    if assigned and int(assigned) != int(user_id):
+        return f"⚠️ Счёт №{inv.get('invoice_number')} назначен другому монтажнику."
+    return None
+
+
 def _price_ok_target(inv: dict) -> float:
     """Сумма, которую запишет кнопка «🔨 В работу» (согласие с расчётной ценой).
 
@@ -3549,6 +3568,11 @@ async def installer_price_ok(
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
+    _guard_err = _montazh_price_accept_error(inv, u.id)
+    if _guard_err:
+        await cb.message.answer(_guard_err)  # type: ignore[union-attr]
+        return
+
     # Зафиксировать сумму: СОХРАНИТЬ уже заданную ручную сумму, смету
     # _calc_est_montazh писать ТОЛЬКО если ещё не задана. Раньше кнопка «Согласен
     # с расчётной ценой» безусловно затирала ручной ввод (напр. 32 200) обратно на
@@ -3713,6 +3737,10 @@ async def installer_price_confirm(
     inv = await db.get_invoice(invoice_id)
     if not inv:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+    _guard_err = _montazh_price_accept_error(inv, u.id)
+    if _guard_err:
+        await cb.message.answer(_guard_err)  # type: ignore[union-attr]
         return
     if agreed <= 0:
         agreed = _calc_est_montazh(inv)
