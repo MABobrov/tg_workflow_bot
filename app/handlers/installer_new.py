@@ -1629,8 +1629,36 @@ async def installer_zp_done(
             show_alert=True,
         )
         return
+    # №44 (owner 15.11): гард получателя — подтвердить получение может ТОЛЬКО
+    # монтажник, которому отправлена выплата (zp_installer_requested_by / assigned_to).
+    # Раньше роль INSTALLER пропускала ЛЮБОГО монтажника со старой пересланной
+    # кнопкой, и клик нигде не записывался — ретроспективно проверить было нельзя.
+    u = cb.from_user
+    _recipient = inv.get("zp_installer_requested_by") or inv.get("assigned_to")
+    if _recipient and int(_recipient) != int(u.id):
+        await cb.answer(
+            "⚠️ Эта выплата отправлена не вам — подтвердить может только получатель.",
+            show_alert=True,
+        )
+        try:
+            await db.audit(
+                actor_id=int(u.id), action="zp_installer_done_denied",
+                entity="invoice", entity_id=str(inv_id),
+                payload={"recipient": int(_recipient), "status": zp_st},
+            )
+        except Exception:
+            log.debug("zp_done denied: audit failed inv=%s", inv_id, exc_info=True)
+        return
     await cb.answer("✅ ЗП подтверждено")
     await db.set_invoice_zp_installer_status(inv_id, "confirmed")
+    try:
+        await db.audit(
+            actor_id=int(u.id), action="zp_installer_done_confirmed",
+            entity="invoice", entity_id=str(inv_id),
+            payload={"amount": float(inv.get("zp_installer_amount") or 0)},
+        )
+    except Exception:
+        log.debug("zp_done confirm: audit failed inv=%s", inv_id, exc_info=True)
     await integrations.sync_invoice_row(inv_id)
     try:
         await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
