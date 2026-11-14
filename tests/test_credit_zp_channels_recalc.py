@@ -197,3 +197,34 @@ def test_manager_dupe_excluded(tmp_path) -> None:
         finally:
             await db.close()
     asyncio.run(scenario())
+
+
+def test_dupe_date_iso_format_detected(tmp_path) -> None:
+    """Даты выплат в БД бывают ISO (реимпорт ОП) — анти-дубль обязан их читать."""
+    async def scenario() -> None:
+        db = await _mk_db(tmp_path)
+        try:
+            inv_id = await _mk_invoice(db, number="28008-1КВ",
+                                       created_by=MGR_TG_ID, role="manager_kv")
+            await db.update_invoice(inv_id, rp_payout_op=5_000.0,
+                                    rp_payout_date_op="2026-09-02")
+            await _add_credit_spend(db, wallet="manager_kv", amount=5_000.0,
+                                    desc="Снятие САБ. Отправь ЗП РП 28008-1КВ",
+                                    created_at="2026-09-02T08:27:19.707665+00:00")
+            await db.update_invoice(inv_id, status="ended")
+            summary = await db.recalc_rp_zp_on_end(inv_id)
+            assert len(summary["credit_zp_dupes"]) == 1
+            assert summary["paid_channels"]["credit_zp_extra"] == 0.0
+        finally:
+            await db.close()
+    asyncio.run(scenario())
+
+
+def test_number_in_desc_no_false_substring_match() -> None:
+    """«КВ 1» НЕ должно находиться внутри «КВ 10» — только отдельным номером."""
+    from app.db import Database as _Db
+    assert _Db._number_in_desc("КВ 1", "ЗП РП по счетам КВ 9, КВ 10, КВ 13") is False
+    assert _Db._number_in_desc("КВ 10", "ЗП РП по счетам КВ 9, КВ 10, КВ 13") is True
+    assert _Db._number_in_desc("КВ 9", "ЗП РП по счетам КВ 9, КВ 10") is True
+    assert _Db._number_in_desc("1КВ", "оплата 26112-1КВ") is False  # дефис перед
+    assert _Db._number_in_desc("КВ 1", "КВ 1") is True

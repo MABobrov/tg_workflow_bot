@@ -11284,10 +11284,30 @@ class Database:
     def _day_from_ddmmyyyy(value: str | None):
         if not value:
             return None
-        try:
-            return datetime.strptime(str(value)[:10], "%d.%m.%Y").date()
-        except ValueError:
-            return None
+        s = str(value)[:10]
+        # в БД два формата дат выплат: бот пишет dd.mm.YYYY, реимпорт ОП — ISO
+        for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _number_in_desc(number: str, desc: str) -> bool:
+        """Номер счёта в описании траты, без ложных вхождений («КВ 1» в «КВ 10»)."""
+        if not number:
+            return False
+        pos = desc.find(number)
+        while pos != -1:
+            end = pos + len(number)
+            after_ok = end >= len(desc) or not desc[end].isdigit()
+            before = desc[max(0, pos - 1)]
+            before_ok = pos == 0 or not (before.isdigit() or before == "-")
+            if after_ok and before_ok:
+                return True
+            pos = desc.find(number, pos + 1)
+        return False
 
     async def _zp_credit_spends_extra(
         self, invoice_id: int, invoice_number: str,
@@ -11340,9 +11360,8 @@ class Database:
                     continue
                 if not has_zp or rp_mark:
                     continue
-            attributed = (bound is not None and int(bound) == int(invoice_id)) or (
-                bool(num) and num in desc
-            )
+            attributed = (bound is not None and int(bound) == int(invoice_id)) or \
+                self._number_in_desc(num, desc)
             if not attributed:
                 continue
             candidates.append((cs_id, role, amount, desc, self._day_from_iso(created_at)))
