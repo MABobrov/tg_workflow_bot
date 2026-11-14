@@ -1725,6 +1725,16 @@ async def edo_respond_finalize(
     if response_type == "signed" and invoice_number:
         inv = await db.get_invoice_by_number(invoice_number)
         if inv:
+            # №65: закрыть ОТКРЫТЫЕ EDO_REQUEST-задачи по этому счёту — зеркало
+            # _notify_manager_doc_change, иначе запрос менеджеру висит выполненным.
+            try:
+                from ..enums import TaskType
+                await db.close_tasks_by_invoice(int(inv["id"]), TaskType.EDO_REQUEST)
+            except Exception:
+                log.exception(
+                    "edo_respond_finalize: close EDO_REQUEST tasks failed inv=%s",
+                    inv["id"],
+                )
             if edo_type == "sign_closing":
                 await db.set_invoice_edo_signed(inv["id"], True, actor_id=u.id)
             elif edo_type == "sign_invoice":
