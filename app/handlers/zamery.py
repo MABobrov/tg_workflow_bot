@@ -175,6 +175,11 @@ async def zamery_view_request(
     if not req:
         await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
         return
+    # №96: гард владельца — заявки адресные (входящий список фильтруется по
+    # assigned_to), чужую/пересланную карточку просмотреть/принять/отклонить нельзя.
+    if req.get("assigned_to") != cb.from_user.id:
+        await cb.answer("❌ Заявка адресована другому замерщику.", show_alert=True)
+        return
 
     initiator = await get_initiator_label(db, req["requested_by"])
     text = _format_request_card(req, initiator, with_schedule=False)
@@ -221,6 +226,10 @@ async def zamery_accept_request(
     req = await db.get_zamery_request(req_id)
     if not req:
         await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        return
+    # №96: гард владельца — принимать можно только свою заявку.
+    if req.get("assigned_to") != cb.from_user.id:
+        await cb.answer("❌ Заявка адресована другому замерщику.", show_alert=True)
         return
 
     await state.clear()
@@ -421,6 +430,10 @@ async def zamery_reject_request(
     req = await db.get_zamery_request(req_id)
     if not req:
         await cb.message.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
+        return
+    # №96: гард владельца — отклонять можно только свою заявку.
+    if req.get("assigned_to") != cb.from_user.id:
+        await cb.answer("❌ Заявка адресована другому замерщику.", show_alert=True)
         return
 
     await db.update_zamery_request(req_id, status="rejected")
