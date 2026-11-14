@@ -4402,6 +4402,22 @@ async def rp_edo_upd_create(
         await cb.message.answer("❌ Бухгалтер не назначен.")  # type: ignore[union-attr]
         return
 
+    # №81 (эхо №68): дедуп — не плодить повторные задачи «Подписать УПД»
+    # по счёту, пока открыт предыдущий sign_upd-запрос бухгалтеру.
+    existing = await db.list_tasks_by_invoice(inv_id, limit=30)
+    dup = any(
+        t.get("type") == TaskType.EDO_REQUEST
+        and t.get("status") in ("open", "in_progress")
+        and (try_json_loads(t.get("payload_json")) or {}).get("request_type") == "sign_upd"
+        for t in existing
+    )
+    if dup:
+        await cb.answer(
+            f"⚠️ Бухгалтеру уже отправлен открытый запрос «Подписать УПД» по счёту №{inv['invoice_number']}.",
+            show_alert=True,
+        )
+        return
+
     await db.create_task(
         project_id=None,
         type_=TaskType.EDO_REQUEST,
@@ -4417,7 +4433,7 @@ async def rp_edo_upd_create(
         },
     )
 
-    from .common import get_initiator_label, refresh_recipient_keyboard
+    from ..utils import get_initiator_label, refresh_recipient_keyboard
     initiator = await get_initiator_label(db, cb.from_user.id)
     msg = (
         f"📝 <b>Запрос: Подписать УПД</b>\n"
