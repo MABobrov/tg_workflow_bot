@@ -1902,8 +1902,13 @@ async def _finalize_schedule_book(
     wd = _RU_WEEKDAYS[d.weekday()]
 
     # Resolve zamery user
-    zamery_uid = await resolve_default_assignee(db, config, Role.ZAMERY)
-    assigned_to = int(zamery_uid) if zamery_uid else uid
+    # №100: самозапись из своего графика (book_source="zamery") — заявка адресуется
+    # самому записывающему замерщику, а не дефолтному.
+    if data.get("book_source") == "zamery":
+        assigned_to = uid
+    else:
+        zamery_uid = await resolve_default_assignee(db, config, Role.ZAMERY)
+        assigned_to = int(zamery_uid) if zamery_uid else uid
 
     # №99: речек занятости перед записью — слот мог быть занят, пока вводились данные.
     book_summary = await db.get_zamery_schedule_summary(uid, ds, ds)
