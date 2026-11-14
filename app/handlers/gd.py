@@ -2930,9 +2930,50 @@ async def op_del_start(cb: CallbackQuery, db: Database) -> None:
 async def op_del_pick(
     cb: CallbackQuery,
     db: Database,
+) -> None:
+    """№116: подтвердить удаление записи перед удалением (раньше — один клик)."""
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
+    try:
+        entry_id = int(cb.data.split(":")[-1])
+    except ValueError:
+        await cb.answer("Неверный ID", show_alert=True)
+        return
+
+    entries = await db.list_op_company_entries()
+    entry = next((e for e in entries if int(e["id"]) == entry_id), None)
+    if not entry:
+        await cb.answer("Запись не найдена", show_alert=True)
+        return
+
+    desc = (entry.get("description") or entry.get("description_credit") or "")[:50]
+    amt = (
+        entry.get("cashless_amount")
+        or entry.get("taxes")
+        or entry.get("loan")
+        or entry.get("other_amount")
+        or 0
+    )
+    b = InlineKeyboardBuilder()
+    b.button(text="🗑 Да, удалить", callback_data=f"op_del:confirm:{entry_id}")
+    b.button(text="❌ Отмена", callback_data="op_add:cancel")
+    b.adjust(1)
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"⚠️ <b>Удалить запись «Баланс компании»?</b>\n\n"
+        f"#{entry_id}: {html.escape(desc)} — {_fmt_rub(abs(float(amt)))} ₽\n\n"
+        f"<i>Действие необратимо (восстановить можно только вручную).</i>",
+        reply_markup=b.as_markup(),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("op_del:confirm:"))
+async def op_del_confirm(
+    cb: CallbackQuery,
+    db: Database,
     integrations: IntegrationHub,
 ) -> None:
-    """Удалить выбранную запись + sync + audit."""
+    """Удалить подтверждённую запись + sync + audit."""
     if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
         return
     try:
