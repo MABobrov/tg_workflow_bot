@@ -4582,10 +4582,16 @@ def _ended_invoices_kb(
 
 
 def _current_month_start() -> str:
-    """Return ISO date string for the 1st day of the current month."""
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc)
-    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    """Return ISO date string for the 1st day of the current month (MSK, не UTC).
+
+    UTC-полночь 1-го числа отстаёт от МСК на 3 часа: с 00:00 до 03:00 МСК
+    1-го числа UTC-дата ещё прошлый месяц → «Счет закрыт» показывал прошлый
+    месяц в начале дня (№85).
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now_msk = datetime.now(ZoneInfo("Europe/Moscow"))
+    return now_msk.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
 
 
 @router.message(lambda m: (m.text or "").strip().startswith(RP_BTN_INVOICE_CLOSED))
