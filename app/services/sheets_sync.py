@@ -329,12 +329,18 @@ async def export_to_sheets(
             # Расчет vs Факт ← связано с CN «Удержать из ЗП менеджера» (owner 2026-06-22).
             # Ручной CN (ОП CF → zp_manager_hold) управляет статусом BZ:
             #   есть удержание (≠0) → «Перерасчет прибыли», иначе → «Расчет ОК».
+            # №27 (owner 14.11): факт-пересчёт ЗП менеджера (mgr_fact_recalc_at от
+            # recalc_manager_zp_on_end) тоже ставит «Перерасчет прибыли» — раньше
+            # метка отражала только удержание CN и вводила в заблуждение.
             # Заменяет прежнее авто-сравнение план/факт себестоимости.
             try:
                 _hold = float(invoice.get("zp_manager_hold") or 0)
             except (TypeError, ValueError):
                 _hold = 0.0
-            invoice["_plan_fact_label"] = "Перерасчет прибыли" if _hold != 0 else "Расчет ОК"
+            _recalc_at = bool(invoice.get("mgr_fact_recalc_at"))
+            invoice["_plan_fact_label"] = (
+                "Перерасчет прибыли" if (_hold != 0 or _recalc_at) else "Расчет ОК"
+            )
 
             # Кредитные расходы (для столбцов CF-DJ)
             is_credit = bool(invoice.get("is_credit"))

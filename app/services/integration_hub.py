@@ -176,7 +176,11 @@ class IntegrationHub:
                             _hold = float(inv.get("zp_manager_hold") or 0)
                         except (TypeError, ValueError):
                             _hold = 0.0
-                        inv["_plan_fact_label"] = "Перерасчет прибыли" if _hold != 0 else "Расчет ОК"
+                        # №27 (owner 14.11): факт-пересчёт ЗП менеджера тоже ставит метку.
+                        _recalc_at = bool(inv.get("mgr_fact_recalc_at"))
+                        inv["_plan_fact_label"] = (
+                            "Перерасчет прибыли" if (_hold != 0 or _recalc_at) else "Расчет ОК"
+                        )
                         if inv.get("is_credit"):
                             try:
                                 inv["_credit_expenses"] = await self.db.get_credit_expenses_summary(inv_id)
