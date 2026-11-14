@@ -26,6 +26,7 @@ from .services.assignment import get_work_chat_id
 from .services.integration_hub import IntegrationHub
 from .services.notifier import Notifier
 from .services.daily_sync import daily_sync_loop
+from .services.half_state_watchdog import half_state_watchdog_loop
 from .services.lead_poller import lead_poller_loop
 from .services.reminders import (
     acceptance_reminders_loop,
@@ -360,6 +361,16 @@ async def main() -> None:
     )
     daily_sync_task.add_done_callback(_task_exception_cb)
     background_tasks.append(daily_sync_task)
+
+    # Сторож полу-состояний счёта (аудит №28, owner 14.11): раз в 6 часов —
+    # сведение ended+низкая стадия (безопасно, с audit) и уведомление ГД
+    # (1/сутки) по stage=invoice_end без статуса ended/closing.
+    half_state_watchdog_task: asyncio.Task = asyncio.create_task(
+        half_state_watchdog_loop(db=db, notifier=notifier),
+        name="half_state_watchdog_loop",
+    )
+    half_state_watchdog_task.add_done_callback(_task_exception_cb)
+    background_tasks.append(half_state_watchdog_task)
 
     lead_poller_task: asyncio.Task | None = None
     if config.amocrm_enabled and amocrm_service is not None:
