@@ -2834,22 +2834,39 @@ async def build_gd_sync_card_text(
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    s = await db.get_daily_summary()
+    # Тихие фолбэки данных (нули вместо данных) помечаем в шапку карточки
+    # (задача №71: раньше падение глоталось и секция/данные молча пропадали).
+    _degraded: list[str] = []
+
+    try:
+        s = await db.get_daily_summary()
+    except Exception:
+        _log.warning("gd_sync_card: daily summary failed", exc_info=True)
+        s = {"invoices_by_status": {}, "tasks_open": {}, "total_debt": 0}
+        _degraded.append("сводка дня")
     in_progress = s["invoices_by_status"].get("in_progress", 0)
     tasks_open = s["tasks_open"]
     inv_pay = tasks_open.get("invoice_payment", 0)
-    suppl_pay = await db.count_gd_supplier_pay_tasks(user_id)
+    try:
+        suppl_pay = await db.count_gd_supplier_pay_tasks(user_id)
+    except Exception:
+        _log.warning("gd_sync_card: supplier pay count failed", exc_info=True)
+        suppl_pay = 0
+        _degraded.append("платежи поставщикам")
     total_debt_bn = float(s["total_debt"] or 0)
 
     try:
         _xstats = await db.get_gd_inwork_extra_stats(user_id)
     except Exception:
+        _log.warning("gd_sync_card: inwork extra stats failed", exc_info=True)
         _xstats = {
             "paid_today_inv": 0, "paid_today_sup": 0,
             "inv_year": 0, "credit_year": 0, "unread_msgs": 0,
         }
+        _degraded.append("«В работе»")
 
     # Кредит — открытые is_credit=1 счета с DA>0.
+    _credit_role_short = {"manager_kv": "КВ", "manager_kia": "КИА", "manager_npn": "НПН"}
     _credit_total_da = 0.0
     _credit_visible_count = 0
     _credit_per_role: dict[str, float] = {}
@@ -2857,7 +2874,8 @@ async def build_gd_sync_card_text(
         try:
             _cs = await db.get_credit_balance_summary(_crole)
         except Exception:
-            _log.debug("gd_sync_card: credit block — %s load failed", _crole, exc_info=True)
+            _log.warning("gd_sync_card: credit block — %s load failed", _crole, exc_info=True)
+            _degraded.append(f"кредит {_credit_role_short.get(_crole, _crole)}")
             continue
         _open = [r for r in (_cs.get("invoices") or []) if not r.get("is_closed")]
         if not _open:
@@ -2879,7 +2897,8 @@ async def build_gd_sync_card_text(
         _row = await _cur.fetchone()
         total_debt_credit = float((_row[0] if _row else 0) or 0)
     except Exception:
-        _log.debug("gd_sync_card: total_debt_credit load failed", exc_info=True)
+        _log.warning("gd_sync_card: total_debt_credit load failed", exc_info=True)
+        _degraded.append("долг кредит")
 
     # Лиды: сегодня + за месяц, с разбивкой за месяц по менеджеру (колонка E
     # листа «Лиды» = responsible_user_id → config.amocrm_user_map) и по источнику
@@ -2914,7 +2933,8 @@ async def build_gd_sync_card_text(
                 _lead_src_rows.append((str(_s.get("src") or "—")[:16], str(_n)))
         _lead_src_rows = _lead_src_rows[:6]
     except Exception:
-        _log.debug("gd_sync_card: lead_stats_v2 failed", exc_info=True)
+        _log.warning("gd_sync_card: lead_stats_v2 failed", exc_info=True)
+        _degraded.append("лиды")
 
     _now_msk = _datetime.now(_ZoneInfo("Europe/Moscow"))
 
@@ -2952,6 +2972,10 @@ async def build_gd_sync_card_text(
         sections.append(await _rp_matrix(db, show_legend=False, empty="⬛"))
     except Exception:
         _log.warning("gd_sync_card: matrix block failed", exc_info=True)
+        sections.append(format_card_section(
+            emoji="⚠️", title="Этапы работы — ошибка",
+            items=[("статус", "блок недоступен")],
+        ))
 
     # Лиды в ОДНОМ <pre>-блоке. Подгруппы «Менеджеры»/«Источники» — маркер ◎ +
     # данные с увеличенным отступом (жирный/подчёркнутый внутри <pre> Telegram
@@ -2993,6 +3017,10 @@ async def build_gd_sync_card_text(
         )
     except Exception:
         _log.warning("gd_sync_card: balance b/n section failed", exc_info=True)
+        sections.append(format_card_section(
+            emoji="⚠️", title="Баланс б/н — ошибка",
+            items=[("статус", "блок недоступен")],
+        ))
     try:
         sections.append(
             await _build_gd_balance_section(
@@ -3002,6 +3030,10 @@ async def build_gd_sync_card_text(
         )
     except Exception:
         _log.warning("gd_sync_card: balance credit section failed", exc_info=True)
+        sections.append(format_card_section(
+            emoji="⚠️", title="Баланс (кред) — ошибка",
+            items=[("статус", "блок недоступен")],
+        ))
 
     # --- Долги: обзор счетов с непогашенным долгом (ТЗ 16.06) ---
     try:
@@ -3010,6 +3042,10 @@ async def build_gd_sync_card_text(
             sections.append(_debts_sec)
     except Exception:
         _log.warning("gd_sync_card: debts overview section failed", exc_info=True)
+        sections.append(format_card_section(
+            emoji="⚠️", title="Долги — ошибка",
+            items=[("статус", "блок недоступен")],
+        ))
 
     # --- Долги: трекинг финального платежа (ТЗ 14.06) ---
     # Фиксирует намеченную дату (📅) и просрочку (🔴) по счетам с НЕпогашенным долгом.
@@ -3049,6 +3085,10 @@ async def build_gd_sync_card_text(
             )
     except Exception:
         _log.warning("gd_sync_card: final-payment debts section failed", exc_info=True)
+        sections.append(format_card_section(
+            emoji="⚠️", title="Долги — фин.платёж — ошибка",
+            items=[("статус", "блок недоступен")],
+        ))
 
     # --- Задачи ролям: задачи (gd_task), которые ГД поставил другим ролям,
     # + статус выполнения каждой (ТЗ 17.06, вариант A — все недавние). ---
@@ -3058,13 +3098,25 @@ async def build_gd_sync_card_text(
             sections.append(_tasks_sec)
     except Exception:
         _log.warning("gd_sync_card: tasks section failed", exc_info=True)
+        sections.append(format_card_section(
+            emoji="⚠️", title="Задачи ролям — ошибка",
+            items=[("статус", "блок недоступен")],
+        ))
 
     # --- График замеров (календарь-окно) УБРАН из стартовой карты (owner 14.07):
     # теперь показывается при нажатии кнопки «Замеры» (handlers/gd.py::gd_chat_zamery),
     # сразу карточкой, ниже — пункты меню. build_zamery_calendar_section сохранён. ---
 
     # Заголовок-название карточки (user 28.05; разрядка+курсив 31.05).
-    return f"<b><i>Т в о я   А т м о с ф е р а</i></b>\n\n{format_card(sections)}"
+    # Задача №71: тихая деградация данных видна в шапке, падение секции —
+    # заглушкой ⚠️ в теле карточки.
+    _warn_line = ""
+    if _degraded:
+        _warn_line = f"\n⚠️ Данные неполные: {', '.join(_degraded)}"
+    return (
+        f"<b><i>Т в о я   А т м о с ф е р а</i></b>{_warn_line}\n\n"
+        f"{format_card(sections)}"
+    )
 
 
 async def _build_gd_tasks_section(db: "Database", user_id: int, limit: int = 9, for_user: int | None = None) -> str | None:
@@ -3111,8 +3163,10 @@ async def _build_gd_tasks_section(db: "Database", user_id: int, limit: int = 9, 
         else:
             rows = await db.list_recent_tasks_all(limit=LIMIT)
     except Exception:
-        log.debug("gd_tasks_section: recent-tasks query failed", exc_info=True)
-        rows = []
+        # Задача №71: ошибка загрузки задач НЕ глотается — пробрасываем, caller
+        # показывает заглушку ⚠️ (пустой список задач по-прежнему не секция).
+        log.exception("gd_tasks_section: recent-tasks query failed")
+        raise
     if not rows:
         return None
 
