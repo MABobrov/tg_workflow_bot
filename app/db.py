@@ -2802,6 +2802,48 @@ class Database:
             })
         return result
 
+    async def sum_supplier_payments_month(
+        self, year: int, month: int, *, only_regular: bool = False,
+    ) -> dict[str, Any]:
+        """Сумма оплат поставщикам за месяц (№128: кнопка «сумма оплаты за этот месяц»).
+
+        Дата платежа: payment_date (реквизиты платёжки, если заполнена — ISO
+        «YYYY-MM-DD…», бэкфиллы могли писать и «DD.MM.YYYY» — такие строки GLOB
+        отсекает, тогда берётся created_at), иначе created_at (UTC → МСК, +3ч).
+        only_regular=True исключает кредитные счета (кредит скрыт от бухгалтерии).
+        Read-only агрегат; границы месяца — по МСК.
+        """
+        ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+        start_d = f"{year:04d}-{month:02d}-01"
+        end_d = f"{ny:04d}-{nm:02d}-01"
+        credit_clause = "AND COALESCE(i.is_credit, 0) = 0" if only_regular else ""
+        cur = await self.conn.execute(
+            f"""
+            SELECT COUNT(*) AS n,
+                   COUNT(DISTINCT sp.parent_invoice_id) AS inv_n,
+                   COALESCE(SUM(sp.amount), 0) AS total
+            FROM supplier_payments sp
+            JOIN invoices i ON i.id = sp.parent_invoice_id
+            WHERE COALESCE(
+                    CASE WHEN sp.payment_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+                         THEN substr(sp.payment_date, 1, 10) END,
+                    date(sp.created_at, '+3 hours')
+                  ) >= ?
+              AND COALESCE(
+                    CASE WHEN sp.payment_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+                         THEN substr(sp.payment_date, 1, 10) END,
+                    date(sp.created_at, '+3 hours')
+                  ) < ? {credit_clause}
+            """,
+            (start_d, end_d),
+        )
+        r = dict(await cur.fetchone())
+        return {
+            "total": float(r.get("total") or 0),
+            "payments": int(r.get("n") or 0),
+            "invoices": int(r.get("inv_n") or 0),
+        }
+
     async def list_supplier_payments_grouped(
         self, invoice_id: int,
     ) -> dict[str, list[dict[str, Any]]]:

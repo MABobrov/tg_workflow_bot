@@ -316,6 +316,15 @@ async def urgent_gd_finalize(
             ),
         ),
     )  # type: ignore
+    if await _current_role(db, u.id) == Role.ACCOUNTING:
+        # №128: бухгалтер может приложить документ к УЖЕ созданной задаче
+        kb = InlineKeyboardBuilder()
+        kb.button(text="📎 Приложить документ", callback_data=f"acc_attach:start:{int(task['id'])}")
+        kb.adjust(1)
+        await cb.message.answer(
+            "📎 При необходимости приложите документ к задаче:",
+            reply_markup=kb.as_markup(),
+        )  # type: ignore
     await state.clear()
 
 
@@ -535,4 +544,13 @@ async def not_urgent_gd_finalize(
             ),
         ),
     )
+    if sender_role == Role.ACCOUNTING:
+        # №128: бухгалтер может приложить документ к УЖЕ созданной задаче
+        kb = InlineKeyboardBuilder()
+        kb.button(text="📎 Приложить документ", callback_data=f"acc_attach:start:{int(task['id'])}")
+        kb.adjust(1)
+        await cb.message.answer(
+            "📎 При необходимости приложите документ к задаче:",
+            reply_markup=kb.as_markup(),
+        )  # type: ignore[union-attr]
     await state.clear()

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from aiogram import Router, F
@@ -33,7 +33,13 @@ from ..keyboards import (
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import AccDocCommentSG, AccQuestionSG, AccRequestToManagerSG, EdoResponseSG
+from ..states import (
+    AccAttachDocSG,
+    AccDocCommentSG,
+    AccQuestionSG,
+    AccRequestToManagerSG,
+    EdoResponseSG,
+)
 from ..utils import answer_service, fmt_money, format_invoice_card_standard, get_initiator_label, private_only_reply_markup, tail_note
 from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
@@ -477,10 +483,45 @@ async def _show_acc_invoices_work(
     )
 
     footer = InlineKeyboardBuilder()
+    footer.button(text="💰 Оплата за месяц", callback_data="acc_pay:month")
     footer.button(text="🔄 Обновить", callback_data="acc_work:refresh")
     footer.button(text="⬅️ Назад", callback_data="nav:home")
     footer.adjust(2)
     await msg.answer("—", reply_markup=footer.as_markup())  # type: ignore[union-attr]
+
+
+# =====================================================================
+# 💰 ОПЛАТА ЗА МЕСЯЦ (№128): сумма оплат поставщикам за текущий месяц
+# =====================================================================
+
+_RU_MONTHS = [
+    "январь", "февраль", "март", "апрель", "май", "июнь",
+    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+]
+
+
+@router.callback_query(F.data == "acc_pay:month")
+async def acc_pay_month(cb: CallbackQuery, db: Database) -> None:
+    """Сумма оплат поставщикам за текущий месяц (МСК), кредитные скрыты (№128)."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    await cb.answer()
+    now_msk = datetime.utcnow() + timedelta(hours=3)
+    stats = await db.sum_supplier_payments_month(
+        now_msk.year, now_msk.month, only_regular=True,
+    )
+    title = f"💰 Оплата за этот месяц · {_RU_MONTHS[now_msk.month - 1]} {now_msk.year}"
+    lines = [
+        title,
+        "",
+        f"Сумма оплат:     {fmt_money(stats['total'])}",
+        f"Платежей:        {stats['payments']}",
+        f"Счетов оплачено: {stats['invoices']}",
+        "",
+        "🙈 Кредитные счета скрыты",
+    ]
+    await cb.answer()
+    await cb.message.answer("<pre>" + "\n".join(lines) + "</pre>")
 
 
 # =====================================================================
@@ -1334,10 +1375,141 @@ async def acc_question_send(cb: CallbackQuery, state: FSMContext, db: Database, 
                 creator_id, att["file_type"], att["file_id"], caption=att.get("caption"),
             )
         n_files = f" + {len(attachments)} файл." if attachments else ""
-        await cb.message.answer(f"✅ Задача #{new_tid} создана для инициатора.{n_files}")  # type: ignore[union-attr]
+        kb = InlineKeyboardBuilder()
+        kb.button(text="📎 Приложить документ", callback_data=f"acc_attach:start:{new_tid}")
+        kb.adjust(1)
+        await cb.message.answer(
+            f"✅ Задача #{new_tid} создана для инициатора.{n_files}",
+            reply_markup=kb.as_markup(),
+        )  # type: ignore[union-attr]
     except Exception:
         log.exception("Failed to send question task to user %s", creator_id)
         await cb.message.answer("❌ Не удалось отправить вопрос.")  # type: ignore[union-attr]
+
+
+# =====================================================================
+# 📎 ПРИЛОЖИТЬ ДОКУМЕНТ К УЖЕ СОЗДАННОЙ ЗАДАЧЕ (№128)
+# Бухгалтер после отправки задачи (Срочно/Не срочно/Вопрос) может
+# дозакрепить файлы. FSM: AccAttachDocSG.attachments.
+# =====================================================================
+
+def _acc_attach_button_is_stale(current_state: str | None) -> bool:
+    return current_state is not None and current_state != AccAttachDocSG.attachments.state
+
+
+def _acc_attach_kb() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Готово", callback_data="acc_attach:done")
+    kb.button(text="❌ Отмена", callback_data="acc_attach:cancel")
+    kb.adjust(1)
+    return kb
+
+
+@router.callback_query(F.data.regexp(r"^acc_attach:start:\d+$"))
+async def acc_attach_start(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Начать приём вложений для уже созданной задачи (№128)."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    if _acc_attach_button_is_stale(await state.get_state()):
+        await cb.answer("⚠️ Завершите текущее действие или отмените его.", show_alert=True)
+        return
+    await cb.answer()
+
+    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    task = await db.get_task(task_id)
+    if not task or int(task["created_by"]) != cb.from_user.id or task.get("status") in ("done", "rejected"):
+        await cb.message.answer("❌ К этой задаче приложить документ нельзя.")  # type: ignore[union-attr]
+        return
+
+    await state.clear()
+    await state.set_state(AccAttachDocSG.attachments)
+    await state.update_data(task_id=task_id, target_id=task.get("assigned_to"), attachments=[])
+    await cb.message.answer(  # type: ignore[union-attr]
+        "📎 Отправьте файлы (фото или документы) сообщениями.\n"
+        "Когда закончите — нажмите «✅ Готово».",
+        reply_markup=_acc_attach_kb().as_markup(),
+    )
+
+
+@router.message(AccAttachDocSG.attachments, F.content_type.in_({"photo", "document"}))
+async def acc_attach_files(
+    message: Message, state: FSMContext, db: Database, storage: MinioStorage | None = None,
+) -> None:
+    """Принять файл в режим приёма вложений (№128)."""
+    if not message.from_user:
+        return
+    if not await require_role_message(message, db, roles=[Role.ACCOUNTING]):
+        return
+    uid = message.from_user.id
+    att, count = await collect_attachment(
+        message, state, storage, prefix=f"acc_attach/{uid}",
+    )
+    if att is None:
+        await message.answer(
+            "📎 Не удалось принять файл. Отправьте фото или документ.",
+            reply_markup=_acc_attach_kb().as_markup(),
+        )
+        return
+    await message.answer(
+        f"📎 Файлов: <b>{count}</b>. Ещё файлы или «✅ Готово»:",
+        reply_markup=_acc_attach_kb().as_markup(),
+    )
+
+
+@router.callback_query(F.data == "acc_attach:done")
+async def acc_attach_done(
+    cb: CallbackQuery, state: FSMContext, db: Database, notifier: Notifier,
+) -> None:
+    """Закрепить принятые файлы за задачей и уведомить получателя (№128)."""
+    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
+        return
+    if _acc_attach_button_is_stale(await state.get_state()):
+        await cb.answer("⚠️ Кнопка недоступна.", show_alert=True)
+        return
+    await cb.answer()
+
+    data = await state.get_data()
+    attachments = data.get("attachments") or []
+    task_id = int(data.get("task_id") or 0)
+    target_id = data.get("target_id")
+    if not attachments or not task_id:
+        await cb.message.answer("❌ Нет принятых файлов — отправьте хотя бы один.")  # type: ignore[union-attr]
+        return
+
+    for att in attachments:
+        await db.add_attachment(
+            task_id=task_id,
+            file_id=att["file_id"],
+            file_unique_id=att.get("file_unique_id", ""),
+            file_type=att.get("file_type", "document"),
+            caption=att.get("caption"),
+        )
+    if target_id:
+        try:
+            await notifier.safe_send(
+                target_id,
+                f"📎 Бухгалтерия приложила {len(attachments)} файл(ов) к задаче #{task_id}.",
+            )
+            for att in attachments:
+                await notifier.safe_send_media(
+                    target_id, att.get("file_type", "document"), att["file_id"],
+                    caption=att.get("caption"),
+                )
+        except Exception:
+            log.exception("acc_attach: failed to notify target %s", target_id)
+    await state.clear()
+    await cb.message.answer(f"✅ Вложение добавлено к задаче #{task_id}.")  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "acc_attach:cancel")
+async def acc_attach_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    """Отменить приём вложений (№128)."""
+    if _acc_attach_button_is_stale(await state.get_state()):
+        await cb.answer("⚠️ Кнопка недоступна.", show_alert=True)
+        return
+    await cb.answer()
+    await state.clear()
+    await cb.message.answer("❌ Приём файлов отменён.")  # type: ignore[union-attr]
 
 
 # =====================================================================

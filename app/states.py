@@ -686,6 +686,11 @@ class AccQuestionSG(StatesGroup):
     attachments = State()        # вложения (фото/документ)
 
 
+class AccAttachDocSG(StatesGroup):
+    """Бухгалтерия: приложить документ к УЖЕ СОЗДАННОЙ задаче (№128, 14.11)."""
+    attachments = State()        # вложения (фото/документ)
+
+
 class TaskCancelReasonSG(StatesGroup):
     """#33: Отмена задачи с причиной (после подтверждения получателем)."""
     reason = State()             # текст причины
