@@ -3598,22 +3598,37 @@ async def installer_price_ok(
 
     # Уведомление ГД — карточка по макету owner 13.10 22:41 (ТЗ §2.2/§3.2)
     # inv снят ДО записи → карточке нужна копия с НОВЫМ agreed.
-    if config.default_gd_id:
+    # №90: резолв по роли (find_users_by_role), а не только config.default_gd_id —
+    # без ГД в конфиге уведомление молча не уходило; сбои отправки логируем, не глотаем.
+    try:
+        _inv_now = dict(inv)
+        _inv_now["montazh_agreed_amount"] = agreed
+        _adv = max(
+            0.0,
+            await db.get_installer_advance_for_invoice(invoice_id)
+            - float(inv.get("montazh_adv_prev") or 0),
+        )
+        _gd_card = (
+            _gd_montazh_accept_card(_inv_now, _adv)
+            + f"\n👤 Монтажник: <b>@{u.username or u.full_name}</b>"
+        )
+        gd_ids: list[int] = []
+        if config.default_gd_id:
+            gd_ids.append(int(config.default_gd_id))
         try:
-            _inv_now = dict(inv)
-            _inv_now["montazh_agreed_amount"] = agreed
-            _adv = max(
-                0.0,
-                await db.get_installer_advance_for_invoice(invoice_id)
-                - float(inv.get("montazh_adv_prev") or 0),
-            )
-            await cb.bot.send_message(
-                config.default_gd_id,
-                _gd_montazh_accept_card(_inv_now, _adv)
-                + f"\n👤 Монтажник: <b>@{u.username or u.full_name}</b>",
-            )
+            for gd in await db.find_users_by_role(Role.GD, limit=10):
+                gid = int(gd.telegram_id)
+                if gid not in gd_ids:
+                    gd_ids.append(gid)
         except Exception:
-            pass
+            log.exception("installer_price_ok: GD lookup failed")
+        for gid in gd_ids:
+            try:
+                await cb.bot.send_message(gid, _gd_card)
+            except Exception:
+                log.exception("installer_price_ok: notify ГД %s failed", gid)
+    except Exception:
+        log.exception("installer_price_ok: GD card build failed (invoice=%s)", invoice_id)
 
 
 @router.callback_query(F.data.startswith("inst_work:price_edit:"))
