@@ -267,29 +267,57 @@ async def zamery_acc_pick_date(cb: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(ZameryAcceptSG.pick_date, F.data.startswith("zam_date:"))
-async def zamery_acc_pick_time(cb: CallbackQuery, state: FSMContext) -> None:
-    """Показать интервалы времени (2 часа)."""
+async def zamery_acc_pick_time(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    """Показать интервалы времени (2 часа); занятые — 🔴 без клика (№98)."""
     await cb.answer()
     chosen_date = cb.data.split(":")[-1]  # type: ignore[union-attr]
+    try:
+        d = date.fromisoformat(chosen_date)
+    except ValueError:
+        await cb.message.answer("❌ Некорректная дата.")  # type: ignore[union-attr]
+        return
+    uid = cb.from_user.id
+    # №98: сверка с blackout (выходные/занятые дни) — в такую дату принять замер нельзя.
+    if await db.list_zamery_blackout_dates(uid, chosen_date, chosen_date):
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"🚫 {chosen_date} — выходной/занятый день в вашем графике.\n"
+            "Выберите другую дату."
+        )
+        await state.set_state(ZameryAcceptSG.pick_date)
+        await zamery_acc_pick_date(cb, state)
+        return
+    # №98: занятые интервалы (свой текущий запрос не считается занятым).
+    data = await state.get_data()
+    req_id = data.get("accept_req_id")
+    day_zamery = await db.list_zamery_for_schedule(uid, chosen_date, chosen_date)
+    busy = {
+        z.get("scheduled_time_interval")
+        for z in day_zamery
+        if z.get("scheduled_time_interval") and z.get("id") != req_id
+    }
     await state.update_data(scheduled_date=chosen_date)
     await state.set_state(ZameryAcceptSG.pick_time)
 
     b = InlineKeyboardBuilder()
     intervals = ["08:00-10:00", "10:00-12:00", "12:00-14:00", "14:00-16:00", "16:00-18:00"]
     for interval in intervals:
-        b.button(text=interval, callback_data=f"zam_time:{interval}")
+        if interval in busy:
+            b.button(text=f"🔴 {interval}", callback_data=f"zam_time_busy:{interval}")
+        else:
+            b.button(text=interval, callback_data=f"zam_time:{interval}")
     b.adjust(3, 2)
-    try:
-        d = date.fromisoformat(chosen_date)
-    except ValueError:
-        await cb.message.answer("❌ Некорректная дата.")  # type: ignore[union-attr]
-        return
     day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     await cb.message.answer(  # type: ignore[union-attr]
         f"📅 {day_names[d.weekday()]} {d.strftime('%d.%m.%Y')}\n\n"
         "⏰ Выберите временной интервал:",
         reply_markup=b.as_markup(),
     )
+
+
+@router.callback_query(ZameryAcceptSG.pick_time, F.data.startswith("zam_time_busy:"))
+async def zamery_acc_time_busy(cb: CallbackQuery) -> None:
+    """№98: клик по занятому 🔴 интервалу — отказ."""
+    await cb.answer("❌ Интервал уже занят другим замером.", show_alert=True)
 
 
 @router.callback_query(ZameryAcceptSG.pick_time, F.data.startswith("zam_time:"))
@@ -299,6 +327,28 @@ async def zamery_acc_time_chosen(
     """Время выбрано → финализировать принятие."""
     await cb.answer()
     interval = cb.data.split(":", 1)[-1]  # type: ignore[union-attr]
+    # №98: речек перед записью — дата могла стать blackout/занятой после показа клавиатуры.
+    data = await state.get_data()
+    chosen_date = data.get("scheduled_date")
+    req_id = data.get("accept_req_id")
+    if chosen_date:
+        if await db.list_zamery_blackout_dates(cb.from_user.id, chosen_date, chosen_date):
+            await cb.answer(
+                "❌ Эта дата стала выходной/занятой в графике. Выберите другую дату.",
+                show_alert=True,
+            )
+            return
+        day_zamery = await db.list_zamery_for_schedule(cb.from_user.id, chosen_date, chosen_date)
+        for z in day_zamery:
+            if (
+                z.get("scheduled_time_interval") == interval
+                and z.get("id") != req_id
+            ):
+                await cb.answer(
+                    "❌ Интервал уже занят другим замером. Выберите свободный.",
+                    show_alert=True,
+                )
+                return
     await state.update_data(scheduled_time_interval=interval)
     await _finalize_accept(cb, state, db, config, notifier)
 
