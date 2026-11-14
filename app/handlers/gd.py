@@ -3125,10 +3125,17 @@ async def gd_advance_pay_receipt_input(
     else:
         await message.answer("Пришлите фото/документ или «—» для оплаты без файла.")
         return
-    await db.pay_advance_request(
+    paid = await db.pay_advance_request(
         req_id, paid_by=message.from_user.id, payment_file_id=file_id,
     )
     await state.clear()
+    if not paid:
+        # №47: заявку уже оплатили/отклонили между стартом FSM и файлом —
+        # повторные уведомления и sync не проводим.
+        await message.answer(
+            f"⚠️ Запрос аванса #{req_id} не оплачен: он уже не в статусе «approved»."
+        )
+        return
     items = await db.get_advance_request_items(req_id)
     total = sum(float(i["amount"]) for i in items)
     # Sync invoices with new advance_paid columns + общий лист

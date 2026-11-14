@@ -10224,13 +10224,29 @@ class Database:
         request_id: int,
         paid_by: int,
         payment_file_id: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """№47: оплата только из статуса approved — атомарный условный UPDATE
+        (rowcount), повторный клик по живой кнопке/оплату rejected-заявки не
+        проводит. Возвращает True, если оплата прошла этим вызовом."""
         now = to_iso(utcnow())
-        await self.conn.execute(
+        cur = await self.conn.execute(
             "UPDATE installer_advance_requests SET status='paid', "
-            "paid_at=?, paid_by=?, payment_file_id=? WHERE id=?",
+            "paid_at=?, paid_by=?, payment_file_id=? "
+            "WHERE id=? AND status='approved'",
             (now, paid_by, payment_file_id, request_id),
         )
+        if cur.rowcount == 0:
+            row2 = await self.conn.execute(
+                "SELECT COALESCE(status, '') FROM installer_advance_requests WHERE id = ?",
+                (request_id,),
+            )
+            r2 = await row2.fetchone()
+            cur_status = str(r2[0] if r2 else "missing")
+            log.warning(
+                "pay_advance_request: skipped req=%s — status=%s (not approved)",
+                request_id, cur_status,
+            )
+            return False
         await self.conn.commit()
         await self.audit(
             actor_id=paid_by,
