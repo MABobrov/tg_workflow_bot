@@ -2270,13 +2270,20 @@ async def zamery_zp_cost(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(F.data.startswith("zamzp:same:"))
+@router.callback_query(ZameryZpSG.all_same_price, F.data.startswith("zamzp:same:"))
 async def zamery_zp_same_price(
     cb: CallbackQuery, state: FSMContext,
 ) -> None:
     """Zamery answers: same or different prices."""
     await cb.answer()
     answer = cb.data.split(":")[-1]  # type: ignore[union-attr]
+
+    # №101: гард состояния — кнопка «Да/Нет» легитимна только внутри флоу ЗП.
+    data = await state.get_data()
+    if not data.get("cost_per_zamery"):
+        await cb.answer("❌ Карточка устарела. Начните расчёт ЗП заново.", show_alert=True)
+        await state.clear()
+        return
 
     if answer == "yes":
         # Все по одной цене — спрашиваем количество замеров
@@ -2327,10 +2334,15 @@ async def zamery_zp_confirm_count(
         await message.answer("Введите положительное целое число (количество замеров):")
         return
 
-    cost = data["cost_per_zamery"]
+    cost = data.get("cost_per_zamery")
+    invoice_number = data.get("invoice_number")
+    invoice_id = data.get("invoice_id")
+    # №101: обязательные поля флоа могли не дойти (устаревшая карточка) — без KeyError.
+    if cost is None or invoice_number is None or invoice_id is None:
+        await message.answer("⚠️ Ошибка состояния: нет данных расчёта. Начните заново.")
+        await state.clear()
+        return
     total = cost * count
-    invoice_number = data["invoice_number"]
-    invoice_id = data["invoice_id"]
     address = data.get("address", "-")
 
     details = [{"description": f"Замер x{count}", "cost": cost, "count": count}]
