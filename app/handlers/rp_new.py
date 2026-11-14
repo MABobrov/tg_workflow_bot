@@ -189,6 +189,25 @@ async def _answer_or_edit(
     await target.answer(text, reply_markup=reply_markup)
 
 
+async def answer_long(
+    target: Message,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    chunk_size: int = 4000,
+) -> None:
+    """№79: послать длинный текст частями (лимит Telegram ~4096), клавиатура — на последней части."""
+    chunks: list[str] = []
+    rest = text
+    while rest:
+        chunks.append(rest[:chunk_size])
+        rest = rest[chunk_size:]
+    for i, chunk in enumerate(chunks):
+        await target.answer(
+            chunk,
+            reply_markup=reply_markup if i == len(chunks) - 1 else None,
+        )
+
+
 # =====================================================================
 # ВХОДЯЩИЕ ОТД.ПРОДАЖ
 # =====================================================================
@@ -1217,11 +1236,8 @@ async def rp_montazh_chat(message: Message, state: FSMContext, db: Database, con
         direction = m.get("direction", "")
         arrow = "→" if direction == "outgoing" else "←"
         lines.append(f"<b>{sender_label}</b> {arrow} ({ts}):\n{text_msg}")
-    shown = lines[-12:]
-    out = "\n\n".join(shown)
-    if len(lines) > 12:
-        out += tail_note(len(lines) - 1, 11)  # -1: строка-заголовок не считается
-    await message.answer(out)
+    # №79: печатаем ВСЕ полученные сообщения (до лимита конфига), а не lines[-12:]
+    await answer_long(message, "\n\n".join(lines))
 
 
 @router.message(ManagerChatProxySG.menu, F.text == "🔧 В работу")
@@ -2716,10 +2732,8 @@ async def rp_montazh_chat_cb(cb: CallbackQuery, db: Database, config: "Config") 
         lines.append(f"<b>{sender_label}</b> {arrow} ({ts}):\n{text_msg}")
     b = InlineKeyboardBuilder()
     b.button(text="⬅️ Назад", callback_data="rp_montazh:back_menu")
-    out = "\n\n".join(lines[-12:])
-    if len(lines) > 12:
-        out += tail_note(len(lines) - 1, 11)  # -1: строка-заголовок не считается
-    await cb.message.answer(out, reply_markup=b.as_markup())  # type: ignore[union-attr]
+    # №79: печатаем ВСЕ полученные сообщения (до лимита конфига), а не lines[-12:]
+    await answer_long(cb.message, "\n\n".join(lines), reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data == "rp_montazh:razmery")
