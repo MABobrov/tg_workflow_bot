@@ -3364,6 +3364,16 @@ async def search_invoice_query(
         return
 
     results = await db.search_invoices(query, limit=15)
+    # №64: кредит скрыт ТОЛЬКО у бухгалтерии — поиск (в отличие от списков без
+    # only_regular) не фильтровал кредит-счёта, и бухгалтерия видела их через поиск.
+    try:
+        _u = await db.get_user_optional(message.from_user.id)
+        _role_raw = str(getattr(_u, "role", "") or "").lower()
+        _roles = [r.strip() for r in _role_raw.split(",")]
+        if "accounting" in _roles:
+            results = [i for i in results if not i.get("is_credit")]
+    except Exception:
+        pass
     if not results:
         await message.answer(
             f"❌ По запросу «{query}» ничего не найдено.\n\n"
@@ -3405,6 +3415,15 @@ async def search_invoice_view(cb: CallbackQuery, db: Database) -> None:
     if not inv:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
+    # №64: кредит скрыт ТОЛЬКО у бухгалтерии — и в карточке из поиска тоже.
+    try:
+        _u = await db.get_user_optional(cb.from_user.id)
+        _role_raw = str(getattr(_u, "role", "") or "").lower()
+        if "accounting" in [r.strip() for r in _role_raw.split(",")] and inv.get("is_credit"):
+            await cb.message.answer("⛔ Кредит-счёта скрыты от бухгалтерии.")  # type: ignore[union-attr]
+            return
+    except Exception:
+        pass
 
     creator_label = "—"
     if inv.get("created_by"):
