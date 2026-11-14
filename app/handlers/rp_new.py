@@ -2427,6 +2427,15 @@ async def _finalize_regroup(
         # иначе старые 90 000 остались бы в расчёте «Выплачено» как нога текущей группы.
         await db.set_invoice_zp_installer_status(invoice_id, "not_requested", amount=0)
         await db.close_tasks_by_invoice(invoice_id, TaskType.ZP_INSTALLER)
+    elif zp_st_now == "approved":
+        # №43 (owner 14.11): одобренная, но НЕ выплаченная заявка при обычной смене
+        # (без объединения) — не сбрасываем, а ПЕРЕСЧИТЫВАЕМ под новое «Согласовано»:
+        # иначе ГД получил бы к выплате устаревший остаток старой договорённости.
+        from .installer_new import sync_open_zp_installer_request  # lazy: circular import
+        await sync_open_zp_installer_request(
+            db, invoice_id, actor_id=None, reason="смена монтажной группы",
+            integrations=integrations,
+        )
 
     if integrations:
         await integrations.sync_invoice_row(invoice_id)

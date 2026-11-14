@@ -774,6 +774,12 @@ async def invoice_ok_price_ok(
             )
             await db.conn.commit()
 
+    # №43: «Согласовано» изменилось — пересчитать открытую заявку ЗП, если она есть.
+    await sync_open_zp_installer_request(
+        db, invoice_id, actor_id=u.id, reason="счёт ОК: сумма согласована",
+        notifier=notifier, config=config, integrations=integrations,
+    )
+
     await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(f"✅ Стоимость: <b>{agreed:,.0f}₽</b>")  # type: ignore[union-attr]
     task_id = await _finalize_invoice_ok(
@@ -846,6 +852,12 @@ async def invoice_ok_price_input(
         (agreed, invoice_id),
     )
     await db.conn.commit()
+
+    # №43: «Согласовано» изменилось — пересчитать открытую заявку ЗП, если она есть.
+    await sync_open_zp_installer_request(
+        db, invoice_id, actor_id=message.from_user.id, reason="счёт ОК: новая сумма",
+        notifier=notifier, config=config, integrations=integrations,
+    )
 
     await _ensure_reply_kb_msg(message, db, config)
     await message.answer(f"✅ Стоимость: <b>{agreed:,}₽</b>")
@@ -2740,6 +2752,79 @@ async def _zp_remainder_for_invoice(db: Database, inv: dict) -> tuple[float, flo
     return max(0.0, agreed - advance_cg - paid_prev), agreed, advance_cg
 
 
+async def sync_open_zp_installer_request(
+    db: Database, invoice_id: int, actor_id: int | None, reason: str,
+    notifier: "Notifier | None" = None, config: "Config | None" = None,
+    integrations: "IntegrationHub | None" = None,
+) -> float | None:
+    """№43 (owner 14.11): пересчёт ОТКРЫТОЙ заявки ЗП монтажника при изменении
+    «Согласовано» (смена группы / ввод суммы монтажником / правка).
+
+    Заявка (requested/approved) хранит снимок остатка на момент отправки — без
+    пересчёта ГД утверждал бы УСТАРЕВШУЮ сумму после любого изменения «Согласовано».
+    Пересчёт — та же формула, что у заявки (_zp_remainder_for_invoice): остаток =
+    Согласовано − зачтённый аванс (×1.10 б/н) − выплаченное прошлым группам.
+
+    Обновляет zp_installer_amount (статус не трогаем), payload открытой задачи ГД,
+    пишет аудит и уведомляет ГД. Возвращаем новую сумму или None (заявка закрыта /
+    сумма не изменилась). Выплаченную ЗП (payment_sent/confirmed) НЕ трогаем —
+    деньги ушли, задним числом не пересчитываем.
+    """
+    try:
+        inv = await db.get_invoice(int(invoice_id))
+    except Exception:
+        log.warning("zp_sync: get_invoice failed inv=%s", invoice_id, exc_info=True)
+        return None
+    if not inv:
+        return None
+    zp_st = inv.get("zp_installer_status") or "not_requested"
+    if zp_st not in ("requested", "approved"):
+        return None
+    try:
+        remainder, _agreed, _adv = await _zp_remainder_for_invoice(db, inv)
+    except Exception:
+        log.warning("zp_sync: remainder failed inv=%s", invoice_id, exc_info=True)
+        return None
+    old = float(inv.get("zp_installer_amount") or 0)
+    new = float(round(remainder, 2))
+    if abs(new - old) < 0.01:
+        return None
+    await db.set_invoice_zp_installer_status(int(invoice_id), zp_st, amount=new)
+    try:
+        for _t in await db.list_open_tasks_by_invoice(int(invoice_id), TaskType.ZP_INSTALLER):
+            await db.update_task_payload(int(_t["id"]), {"amount": new, "zp_sync_reason": reason})
+    except Exception:
+        log.warning("zp_sync: task payload failed inv=%s", invoice_id, exc_info=True)
+    try:
+        await db.audit(
+            actor_id=actor_id, action="zp_installer_request_sync",
+            entity="invoice", entity_id=str(invoice_id),
+            payload={"old": old, "new": new, "reason": reason, "status": zp_st},
+        )
+    except Exception:
+        log.debug("zp_sync: audit failed inv=%s", invoice_id, exc_info=True)
+    if integrations:
+        try:
+            await integrations.sync_invoice_row(int(invoice_id))
+        except Exception:
+            log.warning("zp_sync: sync_invoice_row failed inv=%s", invoice_id, exc_info=True)
+    if notifier and config:
+        num = inv.get("invoice_number") or f"#{inv['id']}"
+        text = (
+            f"🔄 <b>Заявка ЗП монтажника пересчитана</b>\n\n"
+            f"Счёт №: <code>{num}</code>\n"
+            f"Было: {old:,.0f}₽ → стало: <b>{new:,.0f}₽</b>\n"
+            f"Причина: изменение «Согласовано» ({reason})"
+        )
+        try:
+            gd_id = await resolve_default_assignee(db, config, Role.GD)
+            if gd_id:
+                await notifier.safe_send(int(gd_id), text)
+        except Exception:
+            log.warning("zp_sync: gd notify failed inv=%s", invoice_id, exc_info=True)
+    return new
+
+
 def _is_work_done_for_zp(inv: dict) -> bool:
     """Готов ли счёт к запросу ЗП.
 
@@ -3612,6 +3697,13 @@ async def installer_price_ok(
     await db.update_montazh_stage(invoice_id, MontazhStage.IN_WORK)
     await integrations.sync_invoice_row(invoice_id)
 
+    # №43: «Согласовано» изменилось — пересчитать открытую заявку ЗП, если она есть
+    # (смена группы оставляет одобренную заявку со старой суммой).
+    await sync_open_zp_installer_request(
+        db, invoice_id, actor_id=u.id, reason="принятие в работу: сумма согласована",
+        notifier=notifier, config=config, integrations=integrations,
+    )
+
     await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ Стоимость монтажа согласована: <b>{agreed:,}₽</b>\n"
@@ -3748,7 +3840,7 @@ async def installer_price_input(
 
 @router.callback_query(F.data.startswith("inst_work:price_confirm:"))
 async def installer_price_confirm(
-    cb: CallbackQuery, db: Database, config: Config,
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
     """Монтажник нажал «Согласовать» → фиксация montazh_agreed_amount + В работу + ГД.
@@ -3797,6 +3889,13 @@ async def installer_price_confirm(
     await db.conn.commit()
     await db.update_montazh_stage(invoice_id, MontazhStage.IN_WORK)
     await integrations.sync_invoice_row(invoice_id)
+
+    # №43: «Согласовано» изменилось — пересчитать открытую заявку ЗП, если она есть
+    # (смена группы оставляет одобренную заявку со старой суммой).
+    await sync_open_zp_installer_request(
+        db, invoice_id, actor_id=u.id, reason="принятие в работу: новая сумма",
+        notifier=notifier, config=config, integrations=integrations,
+    )
 
     await _ensure_reply_kb(cb, db, config)
     await cb.message.answer(  # type: ignore[union-attr]
