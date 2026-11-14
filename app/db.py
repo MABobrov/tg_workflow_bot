@@ -6173,6 +6173,7 @@ class Database:
                     "update_invoice_status: rp_zp fact recalc failed for invoice_id=%s",
                     invoice_id,
                 )
+                await self._flag_recalc_failure_task(invoice_id, "rp_zp")
             # Хук пересчёта ЗП менеджеров по факту (правило owner 14.11) — та же
             # единая точка закрытия; идемпотентен (трекер mgr_overpay_offset).
             try:
@@ -6182,6 +6183,63 @@ class Database:
                     "update_invoice_status: manager_zp fact recalc failed for invoice_id=%s",
                     invoice_id,
                 )
+                await self._flag_recalc_failure_task(invoice_id, "manager_zp")
+
+    async def _flag_recalc_failure_task(self, invoice_id: int, recalc_kind: str) -> None:
+        """№29: recalc по факту упал при закрытии счёта — молчаливый log.exception
+        прятал потерю пересчёта ЗП. Ставим задачу ГД, чтобы провал был виден и
+        до-пересчитан, а не похоронен в логах. Идемпотентно: одна открытая задача
+        на (счёт, вид пересчёта)."""
+        from .enums import TaskStatus, TaskType
+        try:
+            open_tasks = await self.list_open_tasks_by_invoice(
+                invoice_id, TaskType.GD_TASK
+            )
+            for t in open_tasks:
+                pl = t.get("payload") or t.get("payload_json") or {}
+                if isinstance(pl, str):
+                    try:
+                        pl = json.loads(pl)
+                    except Exception:
+                        pl = {}
+                if pl.get("auto_recalc_failure") == recalc_kind:
+                    return
+            cur = await self.conn.execute(
+                "SELECT telegram_id FROM users WHERE is_active = 1 "
+                "AND role LIKE '%gd%' ORDER BY telegram_id LIMIT 1"
+            )
+            row = await cur.fetchone()
+            gd_id = (row["telegram_id"] if isinstance(row, dict) else row[0]) if row else None
+            inv = await self.get_invoice(invoice_id)
+            inv_num = str((inv or {}).get("invoice_number") or invoice_id)
+            await self.create_task(
+                project_id=None,
+                type_=TaskType.GD_TASK,
+                status=TaskStatus.OPEN,
+                created_by=None,
+                assigned_to=gd_id,
+                due_at_iso=to_iso(utcnow()),
+                payload={
+                    "auto_recalc_failure": recalc_kind,
+                    "title": f"⚠️ Упал пересчёт ЗП по факту (счёт №{inv_num})",
+                    "comment": (
+                        f"Пересчёт {recalc_kind} при закрытии счёта №{inv_num} упал "
+                        "с исключением. ЗП по факту НЕ пересчитана — проверьте и "
+                        "перезапустите пересчёт (детали в логах: "
+                        "update_invoice_status recalc failed)."
+                    ),
+                    "invoice_id": invoice_id,
+                },
+            )
+            log.warning(
+                "recalc_on_end failure flagged: task for GD created "
+                "inv=%s kind=%s", invoice_id, recalc_kind,
+            )
+        except Exception:
+            log.error(
+                "_flag_recalc_failure_task failed inv=%s kind=%s",
+                invoice_id, recalc_kind, exc_info=True,
+            )
 
     async def update_invoice(
         self, invoice_id: int, **fields: Any
