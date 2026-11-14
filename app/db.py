@@ -9946,11 +9946,30 @@ class Database:
         await self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
 
-    async def remove_zamery_blackout_date(self, blackout_id: int) -> None:
-        await self.conn.execute(
-            "DELETE FROM zamery_blackout_dates WHERE id = ?", (blackout_id,),
-        )
+    async def remove_zamery_blackout_date(
+        self, blackout_id: int, user_id: int | None = None, actor_id: int | None = None,
+    ) -> bool:
+        """№104: удаление отметки дня — только владельцу (WHERE id + user_id), с audit-следом."""
+        if user_id is not None:
+            cur = await self.conn.execute(
+                "DELETE FROM zamery_blackout_dates WHERE id = ? AND user_id = ?",
+                (blackout_id, user_id),
+            )
+        else:
+            cur = await self.conn.execute(
+                "DELETE FROM zamery_blackout_dates WHERE id = ?", (blackout_id,),
+            )
         await self.conn.commit()
+        deleted = cur.rowcount or 0
+        if deleted:
+            await self.audit(
+                actor_id or user_id,
+                "zamery_blackout_remove",
+                "zamery_blackout_dates",
+                str(blackout_id),
+                {"user_id": user_id},
+            )
+        return bool(deleted)
 
     async def get_zamery_schedule_summary(
         self,

@@ -2195,7 +2195,15 @@ async def zamery_blackout_remove(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
         return
 
-    await db.remove_zamery_blackout_date(bl_id)
+    # №104: удалять отметку дня может только владелец (WHERE id + user_id).
+    removed = await db.remove_zamery_blackout_date(
+        bl_id, user_id=cb.from_user.id, actor_id=cb.from_user.id,
+    )
+    if not removed:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "❌ Отметка дня не найдена или принадлежит другому замерщику."
+        )
+        return
 
     await cb.message.answer("✅ Отметка дня снята.")  # type: ignore[union-attr]
 
