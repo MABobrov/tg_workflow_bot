@@ -6845,7 +6845,23 @@ class Database:
                 and t.get("type") == TaskType.INVOICE_END_READY
                 and payload.get("ready_state") == ready_state
             ):
-                return True
+                # №38 (owner 14.11): отклонённое напоминание гасит повтор
+                # только 2 дня, потом счёт всё ещё готов → напоминаем снова
+                # (утренний догон daily_sync подхватит). Раньше отказ гасил
+                # навсегда до смены состояния счёта — случайное отклонение
+                # оставляло готовый счёт без напоминаний.
+                ts = str(t.get("updated_at") or t.get("created_at") or "")
+                if ts:
+                    try:
+                        from datetime import datetime as _dt, timedelta as _td
+                        rejected_at = _dt.fromisoformat(ts)
+                        if _dt.now(rejected_at.tzinfo) - rejected_at < _td(days=2):
+                            return True
+                    except ValueError:
+                        return True
+                # нет метки времени или отказ старше 2 дней → не гасит:
+                # смотрим остальные задачи (вдруг есть открытое напоминание)
+                continue
         return False
 
     async def count_invoices_ready_for_end(self, manager_id: int) -> int:
