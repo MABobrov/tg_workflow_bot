@@ -3416,10 +3416,13 @@ async def search_invoice_view(cb: CallbackQuery, db: Database) -> None:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
     # №64: кредит скрыт ТОЛЬКО у бухгалтерии — и в карточке из поиска тоже.
+    # Плюс: бухгалтерии не показываем строку «ЗП — утверждено» (упоминание выплат).
+    _is_acc = False
     try:
         _u = await db.get_user_optional(cb.from_user.id)
         _role_raw = str(getattr(_u, "role", "") or "").lower()
-        if "accounting" in [r.strip() for r in _role_raw.split(",")] and inv.get("is_credit"):
+        _is_acc = "accounting" in [r.strip() for r in _role_raw.split(",")]
+        if _is_acc and inv.get("is_credit"):
             await cb.message.answer("⛔ Кредит-счёта скрыты от бухгалтерии.")  # type: ignore[union-attr]
             return
     except Exception:
@@ -3446,7 +3449,7 @@ async def search_invoice_view(cb: CallbackQuery, db: Database) -> None:
         holder = "ГД" if closing_h == "gd" else "менеджера"
         extra_meta.append(f"📁 Оригиналы закрывающих: у {holder}")
 
-    section = await build_invoice_section(db, inv, invoice_id)
+    section = await build_invoice_section(db, inv, invoice_id, include_zp=not _is_acc)
     text = format_invoice_card_standard(
         inv=inv,
         creator_label=creator_label,
