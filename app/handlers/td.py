@@ -1324,23 +1324,35 @@ async def _montazh_zp_payment_to_dr(
     двигают — фантомный DR там недопустим.
     """
     amount = float(inv.get("zp_installer_amount") or 0)
-    if not closed_task_ids or amount <= 0:
+    if amount <= 0:
         return 0.0
     invoice_id = int(inv["id"])
     # Ключ идемпотентности — id закрытой задачи ЗП: один платёж на одну задачу.
     # money_confirm_guard держит двойной клик по ОДНОМУ сообщению, а кнопка живёт и в
     # карточке «Монтаж ЗП», и в push после «ЗП ОК» — два разных message_id мимо него
     # проходят и оба успевают снять ещё открытую задачу [[feedback_money_confirm_idempotent_gate]].
+    race_catchup = not closed_task_ids
     try:
-        cur = await db.conn.execute(
-            "SELECT id FROM supplier_payments WHERE parent_invoice_id = ? "
-            "AND material_type = 'montazh' AND task_id = ? LIMIT 1",
-            (invoice_id, closed_task_ids[0]),
-        )
+        if race_catchup:
+            # №42: гонка — задачу ЗП уже закрыл кошелёк (свой DR) или второй кликер
+            # (DR с task_id). Идемпотентность по счёту БЕЗ task_id: любой montazh-платёж
+            # по счёту означает, что DR уже написан, — дубль не создаём.
+            cur = await db.conn.execute(
+                "SELECT id FROM supplier_payments WHERE parent_invoice_id = ? "
+                "AND material_type = 'montazh' LIMIT 1",
+                (invoice_id,),
+            )
+        else:
+            cur = await db.conn.execute(
+                "SELECT id FROM supplier_payments WHERE parent_invoice_id = ? "
+                "AND material_type = 'montazh' AND task_id = ? LIMIT 1",
+                (invoice_id, closed_task_ids[0]),
+            )
         if await cur.fetchone():
             log.info(
-                "montazh zp→DR: платёж по задаче %s уже есть, пропуск inv=%s",
-                closed_task_ids[0], invoice_id,
+                "montazh zp→DR: платёж%s уже есть, пропуск inv=%s",
+                f" по задаче {closed_task_ids[0]}" if closed_task_ids else " по счёту",
+                invoice_id,
             )
             return 0.0
     except Exception:
@@ -1350,7 +1362,7 @@ async def _montazh_zp_payment_to_dr(
         sp_id = await db.create_supplier_payment(
             parent_invoice_id=invoice_id, amount=amount, material_type="montazh",
             invoice_number=str(inv.get("invoice_number") or ""),
-            task_id=closed_task_ids[0], created_by=actor_id,
+            task_id=closed_task_ids[0] if closed_task_ids else None, created_by=actor_id,
             # Автодата оплаты ЗП монтажника при закрытии задачи ГД (owner 29.10)
             payment_date=datetime.now().strftime("%d.%m.%Y"),
         )
@@ -1369,7 +1381,7 @@ async def _montazh_zp_payment_to_dr(
             entity="invoice", entity_id=str(invoice_id),
             payload={
                 "amount": amount, "supplier_payment_id": sp_id,
-                "closed_task_ids": closed_task_ids,
+                "closed_task_ids": closed_task_ids, "race_catchup": race_catchup,
             },
         )
     except Exception:
