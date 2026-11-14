@@ -3917,15 +3917,40 @@ class Database:
         сразу пишет AN/AO без ГД (apply_manager_advance_immediate).
         """
         cur = await self.conn.execute(
-            "SELECT * FROM invoices WHERE created_by = ? "
+            "SELECT * FROM invoices WHERE ( "
+            "  created_by = ? OR "
+            "  (COALESCE(creator_role, '') NOT IN ('manager', 'Manager', 'MANAGER') "
+            "   AND project_id IN (SELECT id FROM projects WHERE manager_id = ?)) "
+            ") "
             "AND status IN ('in_progress', 'paid', 'ended', 'credit') "
             "AND COALESCE(zp_manager_payout, 0) = 0 "
             "AND COALESCE(zp_manager_status, '') NOT IN ('confirmed', 'payment_sent') "
             "AND parent_invoice_id IS NULL "
             "ORDER BY created_at DESC LIMIT 15",
-            (user_id,),
+            (user_id, user_id),
         )
         return [dict(r) for r in await cur.fetchall()]
+
+    async def invoice_belongs_to_manager(
+        self, inv: dict[str, Any], manager_id: int,
+    ) -> bool:
+        """№20-а (owner 14.11): счёт — цель аванса менеджера, кто бы его ни создал.
+
+        Свой счёт (created_by == менеджер) — да. Счёт ГД/РП — да, если его проект
+        ведёт этот менеджер (projects.manager_id). Чужой менеджер — нет.
+        """
+        if int(inv.get("created_by") or 0) == int(manager_id):
+            return True
+        if (inv.get("creator_role") or "").lower() == "manager":
+            return False
+        pid = inv.get("project_id")
+        if not pid:
+            return False
+        cur = await self.conn.execute(
+            "SELECT manager_id FROM projects WHERE id = ?", (pid,)
+        )
+        row = await cur.fetchone()
+        return bool(row and row[0] and int(row[0]) == int(manager_id))
 
     async def list_installer_confirmed_invoices(self, user_id: int | None = None) -> list[dict[str, Any]]:
         """Счета «В работу» (montazh_stage >= IN_WORK).
@@ -13818,10 +13843,12 @@ class Database:
         inv = await self.get_invoice(invoice_id)
         if not inv:
             raise RuntimeError(f"invoice id={invoice_id} not found")
-        if int(inv.get("created_by") or 0) != int(manager_id):
+        if not await self.invoice_belongs_to_manager(inv, int(manager_id)):
+            # №20-а (owner 14.11): зачёт разрешён и по счетам ГД/РП, если проект
+            # ведёт этот менеджер; чужой менеджер по-прежнему нет.
             raise RuntimeError(
-                f"invoice {invoice_id} created_by={inv.get('created_by')} "
-                f"!= manager {manager_id}",
+                f"invoice {invoice_id} does not belong to manager {manager_id} "
+                f"(created_by={inv.get('created_by')}, creator_role={inv.get('creator_role')})",
             )
         # Гард: ЗП по счёту не должна быть уже выплачена/в оплате.
         if (inv.get("zp_manager_status") or "") in ("confirmed", "payment_sent"):

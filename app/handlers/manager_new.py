@@ -8390,7 +8390,8 @@ async def manager_adv_distribute_pick_invoice(
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     inv = await db.get_invoice(invoice_id)
-    if not inv or inv.get("created_by") != cb.from_user.id:
+    # №20-а (owner 14.11): свой счёт ИЛИ счёт ГД/РП по проекту этого менеджера.
+    if not inv or not await db.invoice_belongs_to_manager(inv, cb.from_user.id):
         await cb.message.answer("❌ Счёт не принадлежит вам.")  # type: ignore[union-attr]
         await state.clear()
         return
