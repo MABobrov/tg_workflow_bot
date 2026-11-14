@@ -1529,14 +1529,23 @@ async def _finalize_naem(
     )
     from datetime import datetime
     _now = datetime.now().isoformat()
-    await db.conn.execute(
+    # №83: оптимистичный гард в самом UPDATE (двойная проверка стадии —
+    # предчек выше не атомарен, гонка между get_invoice и UPDATE).
+    cur = await db.conn.execute(
         "UPDATE invoices SET montazh_agreed_amount = ?, montazh_base_amount = ?, "
         "montazh_paid_prev = ?, montazh_adv_prev = ?, edo_task_id = 2, assigned_to = NULL, "
-        "montazh_stage = 'assigned', montazh_assigned_at = ?, updated_at = ? WHERE id = ?",
+        "montazh_stage = 'assigned', montazh_assigned_at = ?, updated_at = ? "
+        "WHERE id = ? AND (montazh_stage IS NULL OR montazh_stage NOT IN "
+        "('in_work','razmery_ok','invoice_ok','invoice_end')) AND COALESCE(installer_ok, 0) = 0",
         (agreed_total, base if base is not None else agreed, dr, _adv_prev_col,
          _now, _now, invoice_id),
     )
     await db.conn.commit()
+    if cur.rowcount == 0:
+        await target_msg.answer(
+            f"⚠️ Счёт №{inv.get('invoice_number', '?')} уже в работе у монтажной группы — закрепление не выполнено.",
+        )
+        return
     try:
         await db.audit(
             actor_id=actor_id, action="rp_montazh_naem_amount_set",
@@ -1856,12 +1865,22 @@ async def _finalize_zp_edit(
     agreed = int(round(dr + x))
     from datetime import datetime
     _now = datetime.now().isoformat()
-    await db.conn.execute(
+    # №83: оптимистичный гард в самом UPDATE — предчеки выше (статус ЗП, группа)
+    # не атомарны; WHERE повторяет их, старая кнопка/гонка сумму не перезапишет.
+    cur = await db.conn.execute(
         "UPDATE invoices SET montazh_agreed_amount = ?, montazh_base_amount = ?, "
-        "montazh_paid_prev = ?, updated_at = ? WHERE id = ?",
+        "montazh_paid_prev = ?, updated_at = ? "
+        "WHERE id = ? AND edo_task_id = 2 "
+        "AND (zp_installer_status IS NULL OR zp_installer_status NOT IN "
+        "('requested','approved','payment_sent','confirmed'))",
         (agreed, base if base is not None else x, dr, _now, invoice_id),
     )
     await db.conn.commit()
+    if cur.rowcount == 0:
+        await target_msg.answer(
+            "⚠️ По счёту уже есть заявка ЗП (или счёт ушёл другой группе) — сумма не записана.",
+        )
+        return
     try:
         await db.audit(
             actor_id=actor_id, action="rp_montazh_zp_amount_set",
@@ -2555,12 +2574,21 @@ async def _do_montazh_assign(
     from datetime import datetime
     att_json = json.dumps(attachments, ensure_ascii=False) if attachments else None
     _now = datetime.now().isoformat()
-    await db.conn.execute(
+    # №83: оптимистичный гард стадии в самом UPDATE (зеркало фильтра списка
+    # «➕ Счёт в работу») — старая кнопка/гонка не перезапишет работающий счёт.
+    cur = await db.conn.execute(
         "UPDATE invoices SET assigned_to = ?, edo_task_id = NULL, montazh_stage = ?, "
-        "montazh_assign_attachments_json = ?, montazh_assigned_at = ?, updated_at = ? WHERE id = ?",
+        "montazh_assign_attachments_json = ?, montazh_assigned_at = ?, updated_at = ? "
+        "WHERE id = ? AND (montazh_stage IS NULL OR montazh_stage IN ('none','assigned'))",
         (installer_uid, MontazhStage.ASSIGNED, att_json, _now, _now, invoice_id),
     )
     await db.conn.commit()
+    if cur.rowcount == 0:
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"⚠️ Счёт №{inv.get('invoice_number', '?')} уже в работе у монтажной группы — "
+            "повторное назначение не выполнено."
+        )
+        return
     if integrations:
         await integrations.sync_invoice_row(invoice_id)
 
