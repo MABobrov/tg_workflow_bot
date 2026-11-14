@@ -10642,7 +10642,8 @@ class Database:
                 # AN/AO уже в _ZP_PAYOUT_PRESERVE → бот-выплата durable (пустой синк
                 # «Импорт ОП» не затрёт; ручной ввод owner'ом в ОП перезаписывает). Дату
                 # не перетираем, если уже проставлена. Паттерн 1:1 с выплатой ЗП РП (AR/AS).
-                pay_date = datetime.now().strftime("%d.%m.%Y")
+                # ISO — единый формат дат БД (owner 14.11), синк в ОП форматирует сам.
+                pay_date = datetime.now().date().isoformat()
                 await self.conn.execute(
                     "UPDATE invoices SET zp_manager_status='confirmed', "
                     "    zp_manager_payout=?, "
@@ -13828,7 +13829,8 @@ class Database:
         # AN = накопленный offset, cap по net (если задан).
         an_value = min(total_offset, net) if net > 0 else total_offset
         full_closed = net > 0 and total_offset >= net - 0.001
-        pay_date = datetime.now().strftime("%d.%m.%Y")
+        # ISO — единый формат дат БД (owner 14.11), синк в ОП форматирует сам.
+        pay_date = datetime.now().date().isoformat()
         if full_closed:
             # Полное покрытие → ЗП по счёту 'оплачено' (confirmed) + AN/AO.
             await self.conn.execute(

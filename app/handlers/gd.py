@@ -4840,7 +4840,9 @@ async def rp_zp_pay_submit(
     if not await _claim_rp_zp_group(db, group_id, task_id, TaskStatus.DONE.value):
         await cb.answer("Запрос уже обработан", show_alert=True)
         return
-    today_str = datetime.now().strftime("%d.%m.%Y")
+    # ISO: колонка rp_payout_date_op в БД ISO-единообразна (реимпорт ОП пишет
+    # ISO; синк в ОП сам форматирует через _fmt_sheet_date из ISO) — owner 14.11.
+    today_str = datetime.now().date().isoformat()
     # 1. Per-invoice UPDATE rp_payout_op + rp_payout_date_op + sync — ТОЛЬКО выбранные.
     paid_lines: list[str] = []
     paid_ids: set[int] = set()
