@@ -1382,6 +1382,11 @@ async def acc_work_request_attach(
     )
 
 
+def _acc_req_button_is_stale(current_state: str | None) -> bool:
+    """Кнопка запроса менеджеру пришла, когда человек находится в ЧУЖОМ потоке."""
+    return current_state is not None and current_state != AccRequestToManagerSG.attachments.state
+
+
 @router.callback_query(F.data == "acc_req:send")
 async def acc_work_request_send(
     cb: CallbackQuery,
@@ -1391,6 +1396,15 @@ async def acc_work_request_send(
     notifier: Notifier,
 ) -> None:
     """Отправить запрос менеджеру."""
+    # Тот же stale-гард, что у acc_q:send (см. _acc_q_button_is_stale): устаревшая
+    # кнопка «Отправить» не должна сносить чужой поток и слать пустой запрос.
+    if _acc_req_button_is_stale(await state.get_state()):
+        await cb.answer(
+            "Эта кнопка — от другого запроса менеджеру (устаревшее сообщение). "
+            "Текущий поток не тронут.",
+            show_alert=True,
+        )
+        return
     await cb.answer()
     data = await state.get_data()
     await state.clear()
@@ -1482,6 +1496,15 @@ async def acc_work_request_send(
 async def acc_work_request_cancel(
     cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
 ) -> None:
+    # Тот же stale-гард, что у acc_req:send: устаревшая «❌ Отмена» не должна
+    # чистить состояние ЧУЖОГО активного потока бухгалтера.
+    if _acc_req_button_is_stale(await state.get_state()):
+        await cb.answer(
+            "Эта кнопка — от другого запроса менеджеру (устаревшее сообщение). "
+            "Текущий поток не тронут.",
+            show_alert=True,
+        )
+        return
     await cb.answer("❌ Отменено")
     await state.clear()
     u = cb.from_user
@@ -1653,9 +1676,24 @@ async def edo_respond_finalize(
     if not u:
         return
 
+    # Stale-гард (класс acc_q:*/acc_req:*): кнопка «Отправить» валидна только
+    # внутри потока EdoResponseSG; вне потока data пуст — раньше data["task_id"]
+    # падал с KeyError, теперь вежливый отказ без разрушения чужого состояния.
+    if await state.get_state() != EdoResponseSG.attachments.state:
+        await cb.answer(
+            "Эта кнопка — от другого ответа ЭДО (устаревшее сообщение). "
+            "Текущий поток не тронут.",
+            show_alert=True,
+        )
+        return
+
     data = await state.get_data()
-    task_id = data["task_id"]
-    response_type = data["response_type"]
+    task_id = data.get("task_id")
+    response_type = data.get("response_type")
+    if not task_id or not response_type:
+        await cb.answer("⚠️ Ответ ЭДО устарел — начните заново.", show_alert=True)
+        await state.clear()
+        return
     comment = data.get("comment", "")
     attachments = data.get("attachments", [])
 
