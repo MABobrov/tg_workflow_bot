@@ -38,7 +38,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryQuickBookSG, ZameryZpSG
-from ..utils import answer_service, format_card_section, format_zamery_settlement_card, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard
+from ..utils import answer_service, format_card_section, format_zamery_settlement_card, get_initiator_label, maybe_truncated_note, private_only_reply_markup, refresh_recipient_keyboard, tail_note
 from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
@@ -146,6 +146,12 @@ async def zamery_inbox(message: Message, db: Database) -> None:
         items=items,
         footer=("Всего", str(len(all_reqs) + len(tasks))) if len(items) > 1 else None,
     )
+    _notes = []
+    if len(reqs) >= 30 or len(in_progress) >= 30:
+        _notes.append(maybe_truncated_note(len(all_reqs), 30))
+    if len(tasks) >= 30:
+        _notes.append(maybe_truncated_note(len(tasks), 30))
+    text += "".join(dict.fromkeys(_notes))
     await message.answer(
         text, reply_markup=zamery_incoming_kb(all_reqs, tasks=tasks, back_callback="nav:home"),
     )
@@ -505,6 +511,7 @@ async def zamery_my_invoices(cb: CallbackQuery, db: Database) -> None:
         "📋", "Счета в работе", items=items,
         footer=("Всего", str(len(active))), compact=True,
     )
+    text += tail_note(len(active), 20)
     await cb.message.answer(text)  # type: ignore[union-attr]
 
 
@@ -1055,7 +1062,7 @@ async def _render_payment_list(
         ],
         footer=("Сумма", _fmt_money(total_all)),
     )
-    await msg.answer(summary)  # type: ignore[union-attr]
+    await msg.answer(summary + tail_note(len(to_pay) + len(on_review) + len(paid_list), 30))  # type: ignore[union-attr]
 
     # --- Карточки: каждый замер отдельным сообщением (заголовок = адрес) ---
     for z in (to_pay + on_review + paid_list)[:30]:

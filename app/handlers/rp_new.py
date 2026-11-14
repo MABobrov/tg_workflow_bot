@@ -94,7 +94,7 @@ from ..states import (
     RpRazmerySG,
     RpSupplierInvoiceSG,
 )
-from ..utils import answer_service, build_invoice_section, close_condition_core_rows, fmt_money, format_invoice_card_standard, get_initiator_label, invoice_status_emoji, invoice_status_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
+from ..utils import answer_service, build_invoice_section, close_condition_core_rows, fmt_money, format_invoice_card_standard, get_initiator_label, invoice_status_emoji, invoice_status_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, tail_note, try_json_loads
 from ..rp_start_card import _matrix, _street
 from ._mirror import collect_attachment
 from .installer_new import (
@@ -1060,7 +1060,7 @@ async def rp_chat_mgr_kv(message: Message, state: FSMContext, db: Database) -> N
         b.adjust(1)
         await message.answer(
             "👤 <b>Менеджер 1 (КВ)</b>\n\n"
-            "Выберите счёт для привязки к переписке:",
+            "Выберите счёт для привязки к переписке:" + tail_note(len(kv_invoices), 10),
             reply_markup=b.as_markup(),
         )
     else:
@@ -1095,7 +1095,7 @@ async def rp_chat_mgr_kia(message: Message, state: FSMContext, db: Database) -> 
         b.adjust(1)
         await message.answer(
             "👤 <b>Менеджер 2 (КИА)</b>\n\n"
-            "Выберите счёт для привязки к переписке:",
+            "Выберите счёт для привязки к переписке:" + tail_note(len(kia_invoices), 10),
             reply_markup=b.as_markup(),
         )
     else:
@@ -1217,7 +1217,11 @@ async def rp_montazh_chat(message: Message, state: FSMContext, db: Database, con
         direction = m.get("direction", "")
         arrow = "→" if direction == "outgoing" else "←"
         lines.append(f"<b>{sender_label}</b> {arrow} ({ts}):\n{text_msg}")
-    await message.answer("\n\n".join(lines[-12:]))
+    shown = lines[-12:]
+    out = "\n\n".join(shown)
+    if len(lines) > 12:
+        out += tail_note(len(lines) - 1, 11)  # -1: строка-заголовок не считается
+    await message.answer(out)
 
 
 @router.message(ManagerChatProxySG.menu, F.text == "🔧 В работу")
@@ -2696,7 +2700,10 @@ async def rp_montazh_chat_cb(cb: CallbackQuery, db: Database, config: "Config") 
         lines.append(f"<b>{sender_label}</b> {arrow} ({ts}):\n{text_msg}")
     b = InlineKeyboardBuilder()
     b.button(text="⬅️ Назад", callback_data="rp_montazh:back_menu")
-    await cb.message.answer("\n\n".join(lines[-12:]), reply_markup=b.as_markup())  # type: ignore[union-attr]
+    out = "\n\n".join(lines[-12:])
+    if len(lines) > 12:
+        out += tail_note(len(lines) - 1, 11)  # -1: строка-заголовок не считается
+    await cb.message.answer(out, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data == "rp_montazh:razmery")
@@ -4328,7 +4335,7 @@ async def rp_edo_upd_list(cb: CallbackQuery, db: Database) -> None:
     b.button(text="⬅️ Назад", callback_data="rp_edo:refresh")
     b.adjust(1)
     await cb.message.answer(  # type: ignore[union-attr]
-        "📝 <b>Подписать УПД</b>\n\nВыберите счёт:",
+        "📝 <b>Подписать УПД</b>\n\nВыберите счёт:" + tail_note(len(invoices), 10),
         reply_markup=b.as_markup(),
     )
 

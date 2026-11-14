@@ -34,7 +34,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import AccDocCommentSG, AccQuestionSG, AccRequestToManagerSG, EdoResponseSG
-from ..utils import answer_service, fmt_money, format_invoice_card_standard, get_initiator_label, private_only_reply_markup
+from ..utils import answer_service, fmt_money, format_invoice_card_standard, get_initiator_label, private_only_reply_markup, tail_note
 from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 
@@ -72,7 +72,10 @@ async def acc_inbox_tasks(message: Message, db: Database) -> None:
         await answer_service(message, "📥 Нет новых задач ✅", delay_seconds=60)
         return
 
-    await message.answer(f"📥 <b>Входящие задачи</b> ({len(unconfirmed)}):")
+    await message.answer(
+        f"📥 <b>Входящие задачи</b> ({len(unconfirmed)}):"
+        + tail_note(len(unconfirmed), 15)
+    )
 
     # #13: Batch-загрузка счетов для карточек (вместо N+1 запросов)
     _payloads: list[dict] = []

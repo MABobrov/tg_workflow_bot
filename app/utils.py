@@ -148,6 +148,29 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def tail_note(total: int, shown: int) -> str:
+    """Аудит №69: счётчик хвоста для обрезанных списков.
+
+    Возвращает строку «Показано N из M», если список обрезан (total > shown),
+    иначе пустую строку — чтобы списки не теряли старые записи молча.
+    """
+    if total > shown:
+        return f"\n📃 Показано {shown} из {total}"
+    return ""
+
+
+def maybe_truncated_note(n: int, limit: int) -> str:
+    """Аудит №69: пометка для списков, обрезанных лимитом запроса к БД.
+
+    Точное «N из M» требует отдельного count-запроса; вместо него честная
+    пометка «показаны первые N», когда строк пришло ровно столько, сколько
+    разрешал лимит (значит, могли быть ещё).
+    """
+    if n >= limit:
+        return f"\n📃 Показаны первые {n} — возможно, есть ещё"
+    return ""
+
+
 def to_iso(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)

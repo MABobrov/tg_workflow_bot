@@ -66,7 +66,7 @@ from ..states import (
     InstallerZpInitSG,
     InstallerZpSG,
 )
-from ..utils import answer_service, build_advance_history_card, build_deposit_history_card, build_installer_advance_card, build_installer_zp_invoiceok_card, build_task_done_card, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, try_json_loads
+from ..utils import answer_service, build_advance_history_card, build_deposit_history_card, build_installer_advance_card, build_installer_zp_invoiceok_card, build_task_done_card, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, tail_note, try_json_loads
 from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
@@ -1531,10 +1531,10 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
 
     if cat == "archive":
         stats = _build_archive_stats(filtered)
-        await cb.message.answer(f"{title} ({len(filtered)})\n\n{stats}")  # type: ignore[union-attr]
+        await cb.message.answer(f"{title} ({len(filtered)})\n\n{stats}" + tail_note(len(filtered), 15))  # type: ignore[union-attr]
         card_fn = _build_archive_card
     else:
-        await cb.message.answer(f"{title} ({len(filtered)})")  # type: ignore[union-attr]
+        await cb.message.answer(f"{title} ({len(filtered)})" + tail_note(len(filtered), 15))  # type: ignore[union-attr]
         card_fn = _build_inst_detail_card
 
     for inv in filtered[:15]:

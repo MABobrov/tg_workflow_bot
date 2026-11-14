@@ -87,6 +87,8 @@ from ..utils import (
     get_initiator_label,
     parse_roles,
     private_only_reply_markup,
+    maybe_truncated_note,
+    tail_note,
     refresh_recipient_keyboard,
     task_status_label,
     task_type_label,
@@ -208,7 +210,7 @@ async def gd_inbox_all(message: Message, db: Database, config: Config, notifier:
         await send_task_open_card(message, db, config, task, viewer_role)
         attaches = await db.list_attachments(int(task["id"]))
         if attaches:
-            await message.answer(f"📎 Вложения: {len(attaches)}")
+            await message.answer(f"📎 Вложения: {len(attaches)}" + tail_note(len(attaches), 10))
             for a in attaches[:10]:
                 await notifier.safe_send_media(
                     user_id, a["file_type"], a["tg_file_id"], caption=a.get("caption"),
@@ -232,6 +234,7 @@ async def gd_inbox_all(message: Message, db: Database, config: Config, notifier:
         f"<b>📥 Входящие для ГД</b> ({len(all_tasks)})\n"
         f"{' | '.join(parts)}\n\n"
         "Выберите задачу:"
+        + maybe_truncated_note(len(all_tasks_raw), 50)
     )
 
     await message.answer(text, reply_markup=tasks_kb(
