@@ -67,7 +67,6 @@ from ..keyboards import (
     invoice_list_kb,
     invoices_work_list_kb,
     kp_issued_list_kb,
-    kp_payment_type_kb,
     kp_response_kb,
     kp_task_list_kb,
     lead_pick_manager_kb,
@@ -5447,10 +5446,8 @@ async def role_switch_already_active(message: Message, db: Database, config: Con
 # Callback prefixes:
 #   kp_review:\d+     — inline-кнопка из уведомления менеджера (открывает карточку)
 #   kp_resp:view:\d+  — просмотр карточки задачи
-#   kp_resp:yes:\d+   — Да → выбор типа оплаты
+#   kp_resp:yes:\d+   — Да → ветка б/н/кред по is_credit из payload (№84: отдельные bn/cred-колбэки удалены)
 #   kp_resp:no:\d+    — Нет → FSM reject_comment
-#   kp_resp:bn:\d+    — б/н → FSM documents
-#   kp_resp:cred:\d+  — Кред → FSM comment (без документов)
 #   kp_resp:back      — назад к списку CHECK_KP задач
 #   kp_resp:issued    — Выставленные счета
 #   kp_issued:view:\d+ — просмотр выставленного счёта
@@ -5651,26 +5648,8 @@ async def kp_resp_yes(cb: CallbackQuery, state: FSMContext, db: Database) -> Non
 
 
 # ---------- б/н (безналичный) → Документы → Комментарий ----------
-
-@router.callback_query(F.data.regexp(r"^kp_resp:bn:\d+$"))
-async def kp_resp_bn(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """б/н выбран → FSM: сбор документов (Счёт, Договор, Приложение)."""
-    if not await require_role_callback(cb, db, roles=[Role.RP]):
-        return
-    await cb.answer()
-
-    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    await state.set_state(KpReviewSG.documents)
-    await state.update_data(payment_type="bn", documents=[])
-
-    await cb.message.answer(  # type: ignore[union-attr]
-        "📋 <b>Ответ на КП (б/н)</b>\n\n"
-        "Прикрепите готовые документы:\n"
-        "• Счёт\n"
-        "• Договор\n"
-        "• Приложение к договору\n\n"
-        "Отправляйте файлы по одному.",
-    )
+# Легаси-хендлеры kp_resp:bn / kp_resp:cred удалены (№84): тип оплаты РП берёт
+# автоматически из payload задачи (kp_resp_yes), клавиатура выбора не строится.
 
 
 @router.message(KpReviewSG.documents)
@@ -5742,23 +5721,7 @@ async def kp_review_invoice_number(message: Message, state: FSMContext, db: Data
 
 
 # ---------- Кред (кредит) → Комментарий (без документов) ----------
-
-@router.callback_query(F.data.regexp(r"^kp_resp:cred:\d+$"))
-async def kp_resp_cred(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    """Кред выбран → FSM: номер счёта (документы не требуются)."""
-    if not await require_role_callback(cb, db, roles=[Role.RP]):
-        return
-    await cb.answer()
-
-    task_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    await state.set_state(KpReviewSG.invoice_number)
-    await state.update_data(payment_type="cred", documents=[])
-
-    await cb.message.answer(  # type: ignore[union-attr]
-        "🏦 <b>Ответ на КП (Кред)</b>\n\n"
-        "Документы не требуются (банк оформляет самостоятельно).\n\n"
-        "Введите <b>номер счёта</b>:",
-    )
+# Легаси-хендлер kp_resp:cred удалён (№84): кред-ветка открывается из kp_resp_yes.
 
 
 # ---------- Комментарий (Да — б/н или Кред) → Финализация ----------
@@ -5820,7 +5783,10 @@ async def kp_review_comment(
             inv_id = await db.create_invoice(
                 invoice_number=invoice_number,
                 project_id=project_id,
-                created_by=int(manager_id) if manager_id else message.from_user.id,
+                # Счёт физически создаёт РП: created_by = РП (фильтры по created_by
+                # не должны приписывать счёт менеджеру и двоить роли). Кошелёк
+                # менеджера остаётся в creator_role.
+                created_by=message.from_user.id,
                 creator_role=manager_role,
                 client_name=client_name,
                 object_address=address,

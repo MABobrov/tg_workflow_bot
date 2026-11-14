@@ -1610,16 +1610,6 @@ def kp_response_kb(task_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def kp_payment_type_kb(task_id: int) -> InlineKeyboardMarkup:
-    """Выбор системы оплаты: б/н (безналичный) или Кред (кредит)."""
-    b = InlineKeyboardBuilder()
-    b.button(text="💳 б/н (безналичный)", callback_data=f"kp_resp:bn:{task_id}")
-    b.button(text="🏦 Кред (кредит)", callback_data=f"kp_resp:cred:{task_id}")
-    b.button(text="⬅️ Назад", callback_data=f"kp_resp:view:{task_id}")
-    b.adjust(1)
-    return b.as_markup()
-
-
 def kp_issued_list_kb(
     invoices: list[dict[str, Any]],
 ) -> InlineKeyboardMarkup:
