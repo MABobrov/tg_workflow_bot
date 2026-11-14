@@ -2169,13 +2169,11 @@ async def gd_recalc_send(
     num = inv.get("invoice_number") or "—"
     gd_id = cb.from_user.id  # type: ignore[union-attr]
     try:
-        await db.create_task(
-            project_id=None,
-            type_=TaskType.RECALC_CONFIRM,
-            status=TaskStatus.OPEN,
+        # №115: атомарный CAS-дедуп — двойной быстрый клик не создаст две задачи.
+        task = await db.create_recalc_confirm_task_atomic(
+            invoice_id=inv_id,
             created_by=gd_id,
             assigned_to=int(manager_id),
-            due_at_iso=None,
             payload={
                 "invoice_id": inv_id,
                 "invoice_number": num,
@@ -2185,6 +2183,11 @@ async def gd_recalc_send(
         )
     except ValueError as e:
         await cb.message.answer(f"⚠️ Не удалось создать задачу: {e}")  # type: ignore[union-attr]
+        return
+    if task is None:
+        await cb.message.answer(  # type: ignore[union-attr]
+            "⏳ По этому счёту перерасчёт уже отправлен менеджеру — повторная "
+            "отправка отменена (дедуп).")
         return
     # Пуш карточки менеджеру + кнопка согласия.
     b = InlineKeyboardBuilder()

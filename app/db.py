@@ -6853,6 +6853,37 @@ class Database:
                 return True
         return False
 
+    async def create_recalc_confirm_task_atomic(
+        self,
+        invoice_id: int,
+        created_by: int | None,
+        assigned_to: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """№115: CAS-дедуп RECALC_CONFIRM — проверка «уже отправлено» и INSERT
+        в одной транзакции BEGIN IMMEDIATE (закрывает TOCTOU двойного клика ГД).
+        Возвращает созданную задачу или None, если открытая уже висит."""
+        now = to_iso(utcnow())
+        payload_json = _json_dumps(payload)
+        await self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            if await self.invoice_recalc_already_sent(invoice_id):
+                await self.conn.execute("COMMIT")
+                return None
+            cur = await self.conn.execute(
+                """
+                INSERT INTO tasks(project_id, type, status, created_by, assigned_to, due_at, payload_json, created_at, updated_at)
+                VALUES (NULL, 'recalc_confirm', 'open', ?, ?, NULL, ?, ?, ?)
+                """,
+                (created_by, assigned_to, payload_json, now, now),
+            )
+            tid = cur.lastrowid
+            await self.conn.execute("COMMIT")
+        except Exception:
+            await self.conn.execute("ROLLBACK")
+            raise
+        return await self.get_task(tid)
+
     async def list_invoices_ready_for_end(self) -> list[dict[str, Any]]:
         """ТЗ 18.06: все материнские счета (любых менеджеров), готовые к закрытию
         — монтаж «Счёт ОК» + долга нет + статус активный. Догоняющий проход
