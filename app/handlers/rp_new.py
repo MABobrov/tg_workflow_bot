@@ -1934,11 +1934,17 @@ def _montazh_payout_done(inv: dict[str, Any]) -> bool:
     а не закрытый платёж прошлой (owner 15.07: «если по данному материнскому счёту ЗП
     монтаж уже было выплачено — прибавить две эти суммы»). Иначе аванс Игоря попал бы
     в «Согласовано» вторым слагаемым и раздул бы его.
+
+    Ноги — те же, что считает _montazh_money_state (№86): выплата ботом
+    (payment_sent/confirmed), AN «Монтаж Факт», montazh_paid_prev и DR cost_montazh.
+    Раньше гард не знал DR: у счёта, где деньги шли только через затраты,
+    «объединить» не предлагалось, хотя money_state эти деньги в «Выплачено» брал.
     """
     return bool(
         (inv.get("zp_installer_status") or "not_requested") in ("payment_sent", "confirmed")
         or float(inv.get("montazh_fact_op") or 0) > 0
         or float(inv.get("montazh_paid_prev") or 0) > 0
+        or float(inv.get("cost_montazh") or 0) > 0
     )
 
 
@@ -1981,9 +1987,8 @@ async def _montazh_money_state(db: Database, inv: dict[str, Any]) -> tuple[float
     # теряло транши, ушедшие через затраты (класс инцидента 26331-1НПН).
     # Соседние ветки того же механизма DR уже берут напрямую: _finalize_naem
     # (agreed_total = dr + agreed) и _finalize_zp_edit — правка выравнивает с ними.
-    # ⚠️ Гард _montazh_payout_done (выше) про cost_montazh по-прежнему НЕ знает:
-    # у счёта, где деньги шли ТОЛЬКО через DR, развилка «объединить» не предложится.
-    # Расширение гарда owner не заказывал — вынесено вопросом.
+    # Гард _montazh_payout_done расширен до DR в №86: счета с выплатами только
+    # через затраты тоже получают развилку «объединить».
     dr = float(inv.get("cost_montazh") or 0)
     return max(an, paid_prev + leg, dr), adv_cg
 
