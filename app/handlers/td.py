@@ -1118,9 +1118,19 @@ async def gd_zp_installer_edit_start(
     if not inv:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
+    # Аудит №39: статус-гард — после выплаты (payment_sent/confirmed) сумму менять нельзя.
+    zp_st = inv.get("zp_installer_status") or "not_requested"
+    if zp_st in ("payment_sent", "confirmed", "not_applicable"):
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"⚠️ ЗП по счёту №{inv['invoice_number']} уже выплачена ({zp_st}) — изменение суммы недоступно.",
+        )
+        return
     cur_amt = float(inv.get("zp_installer_amount") or 0)
+    # Аудит №39: верхняя вилка — новая сумма не выше остатка к выплате.
+    from .installer_new import _zp_remainder_for_invoice
+    zp_max, _agreed, _cg = await _zp_remainder_for_invoice(db, inv)
     await state.clear()
-    await state.update_data(zpedit_invoice_id=invoice_id, zpedit_prev=cur_amt)
+    await state.update_data(zpedit_invoice_id=invoice_id, zpedit_prev=cur_amt, zpedit_max=zp_max)
     await state.set_state(GdZpInstAdjustSG.amount)
 
     b = InlineKeyboardBuilder()
@@ -1137,7 +1147,7 @@ async def gd_zp_installer_edit_start(
 
 
 @router.message(GdZpInstAdjustSG.amount)
-async def gd_zp_installer_edit_amount(message: Message, state: FSMContext) -> None:
+async def gd_zp_installer_edit_amount(message: Message, state: FSMContext, db: Database) -> None:
     """Шаг 2: парсинг суммы → confirm."""
     raw = (message.text or "").strip().replace(",", ".").replace(" ", "")
     try:
@@ -1151,7 +1161,15 @@ async def gd_zp_installer_edit_amount(message: Message, state: FSMContext) -> No
     data = await state.get_data()
     invoice_id = data.get("zpedit_invoice_id")
     prev_amt = float(data.get("zpedit_prev") or 0)
+    zp_max = float(data.get("zpedit_max") or 0)
     new_amt = int(val)
+    # Аудит №39: верхняя вилка — не выше остатка (Согласовано − аванс CG − выплачено прошлым группам).
+    if new_amt > zp_max:
+        await message.answer(
+            f"⚠️ Сумма выше остатка к выплате: <b>{zp_max:,.0f}₽</b>.\n"
+            f"Введите сумму не больше остатка:",
+        )
+        return
     await state.update_data(zpedit_new=new_amt)
     await state.set_state(GdZpInstAdjustSG.confirm)
 
@@ -1172,6 +1190,7 @@ async def gd_zp_installer_edit_amount(message: Message, state: FSMContext) -> No
 
 
 @router.callback_query(F.data == "gdzp_inst:edit:confirm", GdZpInstAdjustSG.confirm)
+@money_confirm_guard
 async def gd_zp_installer_edit_finalize(
     cb: CallbackQuery, state: FSMContext, db: Database, config: Config,
     notifier: Notifier, integrations: IntegrationHub,
@@ -1187,6 +1206,29 @@ async def gd_zp_installer_edit_finalize(
     prev_amt = float(data.get("zpedit_prev") or 0)
     if not invoice_id or new_amt is None:
         await cb.message.answer("⚠️ Данные сессии утеряны, начните заново.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+
+    # Аудит №39: повторная проверка на момент подтверждения — FSM-состояние могло
+    # устареть (выплата прошла между вводом и confirm, или гонка двух ГД).
+    inv_now = await db.get_invoice(int(invoice_id))
+    if not inv_now:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+    zp_st = inv_now.get("zp_installer_status") or "not_requested"
+    if zp_st in ("payment_sent", "confirmed", "not_applicable"):
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"⚠️ ЗП уже выплачена ({zp_st}) — изменение отменено.",
+        )
+        await state.clear()
+        return
+    from .installer_new import _zp_remainder_for_invoice
+    zp_max_now, _agreed, _cg = await _zp_remainder_for_invoice(db, inv_now)
+    if float(new_amt) > zp_max_now:
+        await cb.message.answer(  # type: ignore[union-attr]
+            f"⚠️ Сумма {float(new_amt):,.0f}₽ выше остатка к выплате {zp_max_now:,.0f}₽ — изменение отменено.",
+        )
         await state.clear()
         return
 
