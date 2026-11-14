@@ -2724,24 +2724,30 @@ async def rp_montazh_chat_cb(cb: CallbackQuery, db: Database, config: "Config") 
 
 @router.callback_query(F.data == "rp_montazh:razmery")
 async def rp_montazh_razmery_cb(cb: CallbackQuery, db: Database) -> None:
-    """Монтажная гр. → Размеры (inline) — показываем список запросов."""
+    """Монтажная гр. → Размеры (inline) — показываем список АКТИВНЫХ запросов.
+
+    Задача №78: раньше здесь был raw SQL «последние 15 ВСЕХ заявок» без фильтра
+    статуса (включая закрытые), тогда как подменю менеджер-прокси (rp_razmery_inbox)
+    показывало только активные. Теперь один источник — list_razmery_requests_for_rp.
+    """
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
     await cb.answer()
-    cur = await db.conn.execute(
-        "SELECT * FROM razmery_requests ORDER BY created_at DESC LIMIT 15",
-    )
-    rows = [dict(r) for r in await cur.fetchall()]
+    rows = await db.list_razmery_requests_for_rp()
     if not rows:
-        await cb.message.answer("📐 Нет запросов на размеры.")  # type: ignore[union-attr]
+        await cb.message.answer("📐 Нет активных заявок на размеры ✅")  # type: ignore[union-attr]
         return
+    _STATUS_LABEL = {
+        "pending": "🆕 Новый",
+        "rp_received": "📝 Ожидает формы",
+        "error": "❌ Ошибка → исправить",
+        "verification_sent": "📤 Отправлено",
+    }
     b = InlineKeyboardBuilder()
     for req in rows:
-        inv = await db.get_invoice(req["invoice_id"]) if req.get("invoice_id") else None
-        num = inv.get("invoice_number", "?") if inv else "?"
-        status_map = {"new": "🆕", "pending_form": "📝", "error": "❌", "sent": "📤", "ok": "✅"}
-        s = status_map.get(req.get("status", ""), "❓")
-        b.button(text=f"{s} №{num}"[:50], callback_data=f"razmok_rp:view:{req['id']}")
+        inv_num = req.get("invoice_number") or f"#{req['invoice_id']}"
+        sl = _STATUS_LABEL.get(req["status"], req["status"])
+        b.button(text=f"{sl}: №{inv_num}"[:55], callback_data=f"razmok_rp:view:{req['id']}")
     b.button(text="⬅️ Назад", callback_data="rp_montazh:back_menu")
     b.adjust(1)
     await cb.message.answer(  # type: ignore[union-attr]
