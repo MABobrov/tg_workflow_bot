@@ -6256,6 +6256,62 @@ class Database:
         )
         await self.conn.commit()
 
+    async def set_invoice_docs_paper_signed(
+        self, invoice_id: int, signed: bool = True, actor_id: int | None = None,
+    ) -> None:
+        """Toggle первичка-бумага с атрибуцией и audit-тропой (аудит №67)."""
+        fields: dict[str, Any] = {"docs_paper_signed": int(signed)}
+        await self.update_invoice(invoice_id, **fields)
+        try:
+            await self.audit(
+                actor_id=actor_id,
+                action="invoice_docs_paper_signed",
+                entity="invoice",
+                entity_id=str(invoice_id),
+                payload={"signed": bool(signed)},
+            )
+        except Exception:
+            log.exception("set_invoice_docs_paper_signed: audit() failed for invoice_id=%s", invoice_id)
+
+    async def set_invoice_no_debts(
+        self, invoice_id: int, flag: bool = True, actor_id: int | None = None,
+    ) -> None:
+        """Toggle no_debts с атрибуцией и audit-тропой (аудит №67)."""
+        fields: dict[str, Any] = {"no_debts": int(flag)}
+        if flag:
+            fields["no_debts_at"] = to_iso(utcnow())
+        else:
+            fields["no_debts_at"] = None
+        await self.update_invoice(invoice_id, **fields)
+        try:
+            await self.audit(
+                actor_id=actor_id,
+                action="invoice_no_debts",
+                entity="invoice",
+                entity_id=str(invoice_id),
+                payload={"no_debts": bool(flag), "no_debts_at": fields.get("no_debts_at")},
+            )
+        except Exception:
+            log.exception("set_invoice_no_debts: audit() failed for invoice_id=%s", invoice_id)
+
+    async def set_invoice_doc_text_field(
+        self, invoice_id: int, field: str, value: str | None, actor_id: int | None = None,
+    ) -> None:
+        """Комментарий/статус закр.док (текстовые doc-поля) с audit-тропой (аудит №67)."""
+        if field not in ("docs_originals_comment", "closing_originals_comment", "closing_docs_status"):
+            raise ValueError(f"set_invoice_doc_text_field: недопустимое поле {field}")
+        await self.update_invoice(invoice_id, **{field: value})
+        try:
+            await self.audit(
+                actor_id=actor_id,
+                action="invoice_doc_text_field",
+                entity="invoice",
+                entity_id=str(invoice_id),
+                payload={"field": field, "value": value},
+            )
+        except Exception:
+            log.exception("set_invoice_doc_text_field: audit() failed for invoice_id=%s", invoice_id)
+
     async def set_invoice_installer_ok(
         self, invoice_id: int, ok: bool = True
     ) -> None:

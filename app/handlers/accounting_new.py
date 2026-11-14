@@ -981,7 +981,7 @@ async def acc_doc_toggle_prim_paper(cb: CallbackQuery, db: Database, notifier: N
     if not inv:
         return
     new_val = 0 if inv.get("docs_paper_signed") else 1
-    await db.update_invoice(inv_id, docs_paper_signed=new_val)
+    await db.set_invoice_docs_paper_signed(inv_id, bool(new_val), actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     label = "✅ подписано" if new_val else "⏳ не подписано"
     await _notify_manager_doc_change(db, notifier, inv, "Первичка бумага", label)
@@ -1008,12 +1008,7 @@ async def acc_doc_toggle_no_debts(cb: CallbackQuery, db: Database, notifier: Not
     if not inv:
         return
     new_val = 0 if inv.get("no_debts") else 1
-    upd: dict[str, Any] = {"no_debts": new_val}
-    if new_val:
-        upd["no_debts_at"] = datetime.now().isoformat()
-    else:
-        upd["no_debts_at"] = None
-    await db.update_invoice(inv_id, **upd)
+    await db.set_invoice_no_debts(inv_id, bool(new_val), actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     label = "✅ долгов нет" if new_val else "❌ есть долги"
     await _notify_manager_doc_change(db, notifier, inv, "Долги", label)
@@ -1092,7 +1087,8 @@ async def acc_doc_comment_save(message: Message, state: FSMContext, db: Database
         return
     text = message.text.strip()  # type: ignore[union-attr]
     value = None if text == "—" else text
-    await db.update_invoice(int(inv_id), **{field: value})
+    actor_id = message.from_user.id if message.from_user else None
+    await db.set_invoice_doc_text_field(int(inv_id), field, value, actor_id=actor_id)
     inv = await db.get_invoice(int(inv_id))
     if inv:
         await message.answer(
