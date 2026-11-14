@@ -6499,6 +6499,31 @@ class Database:
         if status == "payment_sent":
             await self._auto_invoice_end_after_zp_payment(invoice_id)
 
+    async def reset_invoice_montazh_workflow(self, invoice_id: int) -> None:
+        """№82: сброс монтажного цикла при возврате ended-счёта в работу.
+
+        Без сброса счёт с montazh_stage='invoice_end'/'invoice_ok' не появлялся
+        в «➕ Счёт в работу», а installer_ok/zp_installer_status показывали
+        устаревшие состояния. zp_installer_status в payment_sent/confirmed НЕ
+        сбрасываем — деньги ушли, историю не фальсифицируем (ЗП можно запросить
+        заново только по свежему циклу). edo_task_id не трогаем — перезапишется
+        при новом назначении группы («Изменить Монтажников»/«Счёт в работу»).
+        """
+        now = to_iso(utcnow())
+        await self.conn.execute(
+            "UPDATE invoices SET "
+            "montazh_stage = NULL, "
+            "montazh_assigned_at = NULL, montazh_in_work_at = NULL, "
+            "montazh_razmery_ok_at = NULL, montazh_invoice_ok_at = NULL, "
+            "installer_ok = 0, "
+            "zp_installer_status = CASE WHEN zp_installer_status IN ('payment_sent','confirmed') "
+            "  THEN zp_installer_status ELSE 'not_requested' END, "
+            "updated_at = ? "
+            "WHERE id = ?",
+            (now, invoice_id),
+        )
+        await self.conn.commit()
+
     async def _auto_invoice_end_after_zp_payment(self, invoice_id: int) -> None:
         """«Счёт ОК» → «Счёт End» при выплате ЗП монтаж (owner 2026-07-26).
 

@@ -3704,6 +3704,10 @@ async def rp_work_return_ok(
         return
 
     await db.update_invoice_status(invoice_id, InvoiceStatus.IN_PROGRESS)
+    # №82 (+№93): сброс монтажного цикла — без него счёт с invoice_end/invoice_ok
+    # не появлялся в «➕ Счёт в работу», а installer_ok/ЗП-статусы показывали
+    # устаревшее. Выплаты (payment_sent/confirmed) не фальсифицируем.
+    await db.reset_invoice_montazh_workflow(invoice_id)
     await integrations.sync_invoice_status(inv["invoice_number"], InvoiceStatus.IN_PROGRESS)
 
     # Refresh the dashboard
