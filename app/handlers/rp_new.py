@@ -1617,6 +1617,16 @@ async def rp_montazh_naem_bonus(
         return
     # Owner 22.08: надбавки к сумме РП нет — старая кнопка «+10%? Да» (сообщения
     # до 17.07) больше не может её начислить, обе ветки дают введённое число.
+    # Задача №76: раньше это происходило молча — теперь РП явно видит, что
+    # записана сумма БЕЗ надбавки, и кнопка гасится (одноразовость).
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    _amt = f"{amount:,}₽".replace(",", " ")
+    await cb.message.answer(
+        f"ℹ️ Надбавка +10% к сумме РП отменена (22.08) — записана введённая сумма: {_amt}."
+    )
     agreed = amount
     await _finalize_naem(
         db, integrations, invoice_id, agreed, cb.message,  # type: ignore[arg-type]
@@ -1792,6 +1802,12 @@ async def rp_montazh_zp_bonus(
         await cb.message.edit_reply_markup(reply_markup=None)  # одноразовость кнопки
     except Exception:
         pass
+    # Задача №76: раньше сумма без надбавки писалась молча — теперь РП явно
+    # видит, что надбавка отменена и записана введённая сумма.
+    _amt = f"{amount:,}₽".replace(",", " ")
+    await cb.message.answer(
+        f"ℹ️ Надбавка +10% к сумме РП отменена (22.08) — записана введённая сумма: {_amt}."
+    )
     await _finalize_zp_edit(
         db, integrations, invoice_id, x, cb.message,  # type: ignore[arg-type]
         cb.from_user.id if cb.from_user else None,
