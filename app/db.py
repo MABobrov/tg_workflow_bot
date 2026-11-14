@@ -13625,6 +13625,22 @@ class Database:
                 f"amount={amount} > available={max_avail} "
                 f"(plan={plan_zp_snapshot}, taken={taken})",
             )
+        # №45 (owner 15.11): гард «счёт назначен этому монтажнику» — калька
+        # apply_advance_to_invoice_now, только для role='installer' (у менеджеров
+        # своя привязка: invoice_belongs_to_manager в apply_manager_advance_immediate).
+        # Раньше распределение проверяло только unallocated и план-снимок, и аванс
+        # можно было разложить по ЧУЖОМУ счёту — зачёт-путь guarding имел, этот нет.
+        if role == "installer":
+            cur = await self.conn.execute(
+                "SELECT assigned_to FROM invoices WHERE id = ?", (invoice_id,),
+            )
+            _a_row = await cur.fetchone()
+            if not _a_row:
+                raise RuntimeError(f"invoice id={invoice_id} not found")
+            if int(_a_row[0] or 0) != int(installer_id):
+                raise RuntimeError(
+                    f"invoice {invoice_id} assigned_to={_a_row[0]} != installer {installer_id}",
+                )
         wclause, wparams = self._wallet_clause(wallet_role, "r")
         cur = await self.conn.execute(
             "SELECT r.id FROM installer_advance_requests r "
@@ -13850,8 +13866,13 @@ class Database:
             # Заявка уже подана — аванс гасит её часть (owner 13.10). Канал тот же,
             # что у кнопки ГД «✏️ Изменить сумму»: меняется только zp_installer_amount.
             request_amount_after = round(max(0.0, request_amount_before - amount * k), 2)
+            # №49 (owner 15.11): zp_installer_remainder=1 — как в кошельковом пути
+            # (utils.py:resolve_installer_zp_by_wallet_payment), иначе «Выплачено»
+            # на листе считает аванс и выплату бота по максимуму, а не суммой, и
+            # частично зачтённый аванс теряется из «Выплачено».
             await self.conn.execute(
-                "UPDATE invoices SET zp_installer_amount = ? WHERE id = ?",
+                "UPDATE invoices SET zp_installer_amount = ?, zp_installer_remainder = 1 "
+                "WHERE id = ?",
                 (request_amount_after, invoice_id),
             )
         await self.conn.commit()

@@ -2393,10 +2393,11 @@ async def _finalize_regroup(
     _paid_prev_col = paid_prev if merged else float(inv.get("montazh_paid_prev") or 0)
     # База аванса: всё, что привязано к счёту СЕЙЧАС, относится к прошлым группам —
     # оно уже внутри paid_prev. Новой группе засчитываем только её собственные авансы.
-    _adv_prev_col = (
-        await db.get_installer_advance_for_invoice(invoice_id) if merged
-        else float(inv.get("montazh_adv_prev") or 0)
-    )
+    # №46 (owner 15.11): снимок снимаем ВСЕГДА, не только при объединении — при
+    # обычной смене группы аванс старой группы остаётся привязан к счёту, и без
+    # снимка get_installer_advance_for_invoice считал бы его авансом НОВОЙ группы
+    # (_advance_raw_cur вычитает adv_prev) — чужой earmark попадал в её остаток.
+    _adv_prev_col = await db.get_installer_advance_for_invoice(invoice_id)
     await db.conn.execute(
         "UPDATE invoices SET montazh_agreed_amount = ?, montazh_base_amount = ?, "
         "montazh_paid_prev = ?, "
