@@ -11238,6 +11238,159 @@ class Database:
             log.exception("credit_rp_zp_to_advance: audit failed req_id=%s", req_id)
         return (req_id, total, credited)
 
+    # --- Канал ЗП через кредитные кошельки КВ/КИА/НПН (решение owner 14.11 №122/№124) ---
+
+    CREDIT_ZP_WALLETS = ("manager_kv", "manager_kia", "manager_npn")
+
+    @staticmethod
+    def _spend_matches_journal(
+        spend_amount: float, spend_day, journal: list[tuple[float, Any]],
+        window_days: int = 2,
+    ) -> tuple[bool, float | None]:
+        """Анти-дубль №125: трата = источник, журнал-приёмник первичен.
+
+        Трата считается дублем, если её сумма совпадает (±0.01 ₽) с отдельной
+        записью журнала ИЛИ с суммой записей, датированных в окне ±window_days
+        от даты траты (групповая выплата одному счёту — кейс 02.09 25 684:
+        КВ-трата = Σ AR по 4 счетам).
+        """
+        if spend_day is None:
+            return False, None
+        for amount, day in journal:
+            if day is None:
+                continue
+            if abs(amount - spend_amount) <= 0.01 and \
+                    abs((day - spend_day).days) <= window_days:
+                return True, amount
+        # групповая сумма по окну (записи в ±window_days от даты траты)
+        window_sum = round(sum(
+            a for a, day in journal
+            if day is not None and abs((day - spend_day).days) <= window_days
+        ), 2)
+        if window_sum > 0 and abs(window_sum - spend_amount) <= 0.01:
+            return True, window_sum
+        return False, None
+
+    @staticmethod
+    def _day_from_iso(value: str | None):
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value)[:10]).date()
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _day_from_ddmmyyyy(value: str | None):
+        if not value:
+            return None
+        try:
+            return datetime.strptime(str(value)[:10], "%d.%m.%Y").date()
+        except ValueError:
+            return None
+
+    async def _zp_credit_spends_extra(
+        self, invoice_id: int, invoice_number: str,
+        *, target: str, wallet_tag: str | None = None,
+    ) -> dict[str, Any]:
+        """Канал выплат ЗП через кредитные кошельки КВ/КИА/НПН (owner 14.11).
+
+        Кредитные ЗП-траты НЕ пишут AN/rp_payout_op → до решения №122/№124 не
+        попадали в Σ выплат при факт-пересчёте. Включаем только траты,
+        привязанные к счёту явно (bound_invoice_id) или по номеру счёта в
+        описании; неразнесённые групповые траты НЕ приписываем счёту (их
+        разнесение — отдельное решение владельца).
+
+        target='rp': траты любого кредитного кошелька с маркером ЗП РП
+          («ЗП» + «РП»/«Павл»/«Паша» в описании).
+        target='manager': траты кредитного кошелька ЭТОГО менеджера
+          (wallet_tag ∈ CREDIT_ZP_WALLETS) с «ЗП» в описании и БЕЗ маркера РП.
+
+        Анти-дубль №125 (±2 дня, журнал-приёмник первичен):
+          rp       → rp_payout_op/AR (по дате rp_payout_date_op, в т.ч. суммарно
+                     по окну) + paid-пополнения аванс-кошелька РП (paid_at);
+          manager  → zp_manager_payout/AN (zp_manager_payout_date, в т.ч. суммарно).
+
+        Возвращает {"total": Σ новых выплат, "items": [...], "dupes": [...]}.
+        """
+        result: dict[str, Any] = {"total": 0.0, "items": [], "dupes": []}
+        cur = await self.conn.execute(
+            "SELECT id, wallet_role, amount, description, bound_invoice_id, "
+            "       created_at FROM credit_spends "
+            "WHERE wallet_role IN ('manager_kv', 'manager_kia', 'manager_npn')",
+        )
+        rows = await cur.fetchall()
+        num = (invoice_number or "").strip()
+        candidates = []
+        for r in rows:
+            cs_id, role, amount, desc, bound, created_at = (
+                int(r[0]), str(r[1]), float(r[2] or 0),
+                str(r[3] or ""), r[4], r[5],
+            )
+            if amount <= 0:
+                continue
+            desc_l = desc.lower()
+            has_zp = "зп" in desc_l
+            rp_mark = ("рп" in desc_l or "павл" in desc_l or "паша" in desc_l)
+            if target == "rp":
+                if not (has_zp and rp_mark):
+                    continue
+            else:  # manager
+                if wallet_tag not in self.CREDIT_ZP_WALLETS or role != wallet_tag:
+                    continue
+                if not has_zp or rp_mark:
+                    continue
+            attributed = (bound is not None and int(bound) == int(invoice_id)) or (
+                bool(num) and num in desc
+            )
+            if not attributed:
+                continue
+            candidates.append((cs_id, role, amount, desc, self._day_from_iso(created_at)))
+
+        if not candidates:
+            return result
+        # журнал-приёмник для анти-дубля
+        journal: list[tuple[float, Any]] = []
+        if target == "rp":
+            cur = await self.conn.execute(
+                "SELECT rp_payout_op, rp_payout_date_op FROM invoices "
+                "WHERE COALESCE(rp_payout_op, 0) > 0"
+            )
+            journal = [
+                (float(r[0]), self._day_from_ddmmyyyy(r[1])) for r in await cur.fetchall()
+            ]
+            cur = await self.conn.execute(
+                "SELECT total_amount, paid_at FROM installer_advance_requests "
+                "WHERE wallet_role = 'rp' AND status = 'paid' "
+                "  AND request_type IN ('request', 'transfer_depo_to_adv', 'deposit')"
+            )
+            journal += [
+                (float(r[0]), self._day_from_iso(r[1])) for r in await cur.fetchall()
+            ]
+        else:
+            cur = await self.conn.execute(
+                "SELECT zp_manager_payout, zp_manager_payout_date FROM invoices "
+                "WHERE COALESCE(zp_manager_payout, 0) > 0"
+            )
+            journal = [
+                (float(r[0]), self._day_from_ddmmyyyy(r[1])) for r in await cur.fetchall()
+            ]
+        for cs_id, role, amount, desc, day in candidates:
+            is_dup, matched = self._spend_matches_journal(amount, day, journal)
+            if is_dup:
+                result["dupes"].append({
+                    "credit_spend_id": cs_id, "wallet_role": role,
+                    "amount": round(amount, 2), "matched_journal_amount": matched,
+                    "description": desc[:80],
+                })
+                continue
+            result["total"] = round(result["total"] + amount, 2)
+            result["items"].append({
+                "credit_spend_id": cs_id, "wallet_role": role,
+                "amount": round(amount, 2), "description": desc[:80],
+            })
+        return result
+
     async def recalc_rp_zp_on_end(self, invoice_id: int) -> dict[str, Any] | None:
         """Пересчёт ЗП РП 10% по ФАКТУ при закрытии счёта — правило owner 13.11.
 
@@ -11255,7 +11408,9 @@ class Database:
              AQ=0, rp_payout_advance_at NULL, нет rp-offset) и факт < плана →
              ничего не списываем: корзина запроса и «К выплате» сами берут
              min(план, rp_zp_fact) (npn_amount НЕ трогаем — sheet-owned).
-          3. ЗП выплачена (ЛЮБОЙ канал: AR>0 | налив в аванс | rp-offset-зачёты)
+          3. ЗП выплачена (ЛЮБОЙ канал: AR>0 | налив в аванс | rp-offset-зачёты |
+             кредитная ЗП-трата кошелька КВ/КИА/НПН, привязанная к счёту —
+             решение owner 14.11 №122/№124, анти-дубль №125 ±2 дня)
              и Σ выплат > факт-ЗП → переплата = Σ_выплат − факт-ЗП: пишем
              rp_overpay (неот списанного остатка) и АВТО-СПИСЫВАЕМ из авансового
              кошелька РП (wallet_role='rp', request_type='rp_overpay_offset',
@@ -11296,8 +11451,14 @@ class Database:
             (int(invoice_id),),
         )
         rp_offset = float((await cur.fetchone())[0] or 0)
-        # Σ выплат по ВСЕМ каналам (решение owner 13.11 п.2).
-        paid_sum = ar + (npn if advance_at else 0.0) + rp_offset
+        # Канал ЗП через кредитные кошельки КВ/КИА/НПН (решение owner 14.11
+        # №122/№124): траты с маркером ЗП РП, привязанные к этому счёту,
+        # минус дубли (анти-дубль №125, ±2 дня, журнал-приёмник первичен).
+        credit_extra = await self._zp_credit_spends_extra(
+            int(invoice_id), invoice_number, target="rp",
+        )
+        # Σ выплат по ВСЕМ каналам (решение owner 13.11 п.2 + 14.11 №122/№124).
+        paid_sum = ar + (npn if advance_at else 0.0) + rp_offset + credit_extra["total"]
         offset_done = float(inv.get("rp_overpay_offset") or 0)
 
         overpay_gross = 0.0
@@ -11364,7 +11525,10 @@ class Database:
                 "rp_payout_op": round(ar, 2),
                 "advance_fill": round(npn if advance_at else 0.0, 2),
                 "rp_offset": round(rp_offset, 2),
+                "credit_zp_extra": round(credit_extra["total"], 2),
             },
+            "credit_zp_items": credit_extra["items"],
+            "credit_zp_dupes": credit_extra["dupes"],
             "unpaid": paid_sum <= 0 and req_op == 0,
             "overpay_gross": overpay_gross,
             "overpay_remaining": round(overpay_remaining, 2),
@@ -11404,8 +11568,9 @@ class Database:
              ((факт-прибыль − 10% РП факт) × 25% лид ГД / 50% свой). Пишем
              mgr_zp_fact + mgr_fact_recalc_at (бот-локальные, реимпорт ОП не
              затирает). Кап невыплаты — в manager_zp_net_payout: min(net, факт).
-          2. Σ выплат менеджера = AN (zp_manager_payout) — единственный канал
-             (ручная выплата ГД и зачёт аванса оба пишут AN).
+          2. Σ выплат менеджера = AN (zp_manager_payout: ручная выплата ГД и
+             зачёт аванса) + кредитные ЗП-траты своего кошелька, привязанные к
+             счёту (решение owner 14.11 №122/№124, анти-дубль №125 ±2 дня).
           3. Σ выплат > факт-ЗП → переплата: пишем mgr_overpay (остаток) и
              АВТО-СПИСЫВАЕМ из авансового кошелька менеджера (первичный кошелёк,
              wallet_role != 'rp', тег из _manager_wallet_tag; request_type=
@@ -11429,20 +11594,25 @@ class Database:
         now_iso = to_iso(utcnow())
         invoice_number = str(inv.get("invoice_number") or "")
 
-        # Σ выплат менеджера по счёту — AN (ручная выплата + зачёт аванса).
-        paid_sum = float(inv.get("zp_manager_payout") or 0)
+        # Σ выплат менеджера: AN (ручная выплата + зачёт аванса) + канал ЗП через
+        # кредитный кошелёк менеджера (решение owner 14.11 №122/№124: траты
+        # своего кредит-кошелька с «ЗП» без маркера РП, привязанные к счёту,
+        # минус дубли — анти-дубль №125, ±2 дня, журнал-приёмник первичен).
+        wallet_tag = await self._manager_wallet_tag(manager_id)
+        credit_extra = await self._zp_credit_spends_extra(
+            int(invoice_id), invoice_number, target="manager", wallet_tag=wallet_tag,
+        )
+        paid_sum = float(inv.get("zp_manager_payout") or 0) + credit_extra["total"]
         offset_done = float(inv.get("mgr_overpay_offset") or 0)
 
         overpay_gross = 0.0
         offset_amount = 0.0
         overpay_remaining = 0.0
         balance_before: float | None = None
-        wallet_tag: str | None = None
         if paid_sum > 0 and zp_fact < paid_sum - 0.009:
             overpay_gross = round(paid_sum - zp_fact, 2)
             overpay_remaining = max(0.0, round(overpay_gross - offset_done, 2))
             if overpay_remaining > 0.009:
-                wallet_tag = await self._manager_wallet_tag(manager_id)
                 balance_before = await self.get_advance_balance(manager_id, wallet_tag)
                 offset_amount = round(min(overpay_remaining, balance_before), 2)
 
@@ -11487,6 +11657,12 @@ class Database:
             "fact_profit": round(fact["fact_profit"], 2),
             "incompleteness": fact["incompleteness"],
             "paid_sum": round(paid_sum, 2),
+            "paid_channels": {
+                "zp_manager_payout": round(float(inv.get("zp_manager_payout") or 0), 2),
+                "credit_zp_extra": round(credit_extra["total"], 2),
+            },
+            "credit_zp_items": credit_extra["items"],
+            "credit_zp_dupes": credit_extra["dupes"],
             "unpaid": paid_sum <= 0,
             "overpay_gross": overpay_gross,
             "overpay_remaining": round(overpay_remaining, 2),
