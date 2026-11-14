@@ -355,6 +355,15 @@ async def _finalize_accept(
         await msg.answer("❌ Заявка не найдена.")  # type: ignore[union-attr]
         await state.clear()
         return
+    # №97: гард статуса — принять можно только заявку в статусе «Открыта».
+    if req.get("status") != "open":
+        msg = event.message if isinstance(event, CallbackQuery) else event
+        await msg.answer(  # type: ignore[union-attr]
+            f"❌ Заявка #{req_id} уже не в статусе «Открыта» "
+            f"(текущий статус: {req.get('status', '—')}). Принятие отменено."
+        )
+        await state.clear()
+        return
 
     update_fields: dict[str, Any] = {
         "status": "in_progress",
@@ -434,6 +443,13 @@ async def zamery_reject_request(
     # №96: гард владельца — отклонять можно только свою заявку.
     if req.get("assigned_to") != cb.from_user.id:
         await cb.answer("❌ Заявка адресована другому замерщику.", show_alert=True)
+        return
+    # №97: гард статуса — отклонять можно только открытую или принятую в работу заявку.
+    if req.get("status") not in ("open", "in_progress"):
+        await cb.answer(
+            f"❌ Заявка #{req_id} в статусе «{req.get('status', '—')}» — отклонить нельзя.",
+            show_alert=True,
+        )
         return
 
     await db.update_zamery_request(req_id, status="rejected")
