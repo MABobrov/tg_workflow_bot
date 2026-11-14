@@ -2798,12 +2798,17 @@ async def rp_montazh_work_view(cb: CallbackQuery, db: Database) -> None:
     else:
         text += "\n⏳ Монтажник — ожидание «Счет ОК»\n"
 
-    # ZP status
+    # ZP status. Задача №77: карточка монтажной группы показывает ЗП МОНТАЖНИКА
+    # (zp_installer_status), а не ЗП РП (zp_status) — статусы расходятся, старый
+    # код вечно показывал чужой статус / «Не запрошен».
     zp_label = {
         "not_requested": "⏳ Не запрошен",
         "requested": "📤 Отправлен ГД",
         "approved": "✅ ЗП ОК",
-    }.get(inv.get("zp_status", "not_requested"), inv.get("zp_status", ""))
+        "payment_sent": "💸 Выплата отправлена",
+        "confirmed": "✅ Выплата подтверждена",
+        "not_applicable": "➖ Не требуется",
+    }.get(inv.get("zp_installer_status") or "not_requested", inv.get("zp_installer_status") or "")
     text += f"💵 Расчёт ЗП: {zp_label}\n"
 
     # EDO status
