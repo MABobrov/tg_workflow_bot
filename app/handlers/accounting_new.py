@@ -828,6 +828,14 @@ async def acc_doc_menu(cb: CallbackQuery, db: Database) -> None:
     )
 
 
+# Аудит №68: флаги/комментарии документов бухгалтерии не меняются у полностью
+# закрытого счёта (ended) — снятие ✅ возвращало счёт в «Счета в работе» и
+# дёргало данные без подтверждения. Меню остаётся читаемым, меняется только запись.
+def _acc_doc_edit_blocked(inv: dict[str, Any]) -> bool:
+    """True, если счёт закрыт (ended) — правки документов заблокированы."""
+    return inv.get("status") == "ended"
+
+
 @router.callback_query(F.data.regexp(r"^acc_doc:prim_edo:\d+$"))
 async def acc_doc_toggle_prim_edo(cb: CallbackQuery, db: Database, notifier: Notifier) -> None:
     """Toggle primary docs EDO status."""
@@ -839,6 +847,9 @@ async def acc_doc_toggle_prim_edo(cb: CallbackQuery, db: Database, notifier: Not
     if not inv:
         return
     new_val = 0 if inv.get("docs_edo_signed") else 1
+    if _acc_doc_edit_blocked(inv):
+        await cb.answer("⛔ Счёт закрыт (End) — флаг «Первичка ЭДО» не меняется.", show_alert=True)
+        return
     await db.set_invoice_docs_edo_signed(inv_id, bool(new_val), actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     label = "✅ подписано" if new_val else "⏳ не подписано"
@@ -862,6 +873,9 @@ async def acc_doc_toggle_clos_edo(cb: CallbackQuery, db: Database, notifier: Not
     if not inv:
         return
     new_val = 0 if inv.get("edo_signed") else 1
+    if _acc_doc_edit_blocked(inv):
+        await cb.answer("⛔ Счёт закрыт (End) — флаг «Вторичка ЭДО» не меняется.", show_alert=True)
+        return
     await db.set_invoice_edo_signed(inv_id, signed=bool(new_val), actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     label = "✅ подписано" if new_val else "⏳ не подписано"
@@ -928,6 +942,10 @@ async def acc_doc_prim_orig_set(cb: CallbackQuery, db: Database, notifier: Notif
     inv_id = int(parts[3])
     val = parts[4]
     holder = None if val == "none" else val
+    inv = await db.get_invoice(inv_id)
+    if inv and _acc_doc_edit_blocked(inv):
+        await cb.answer("⛔ Счёт закрыт (End) — «Оригиналы первички» не меняются.", show_alert=True)
+        return
     await db.set_docs_originals_holder(inv_id, holder, actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     if not inv:
@@ -952,6 +970,10 @@ async def acc_doc_clos_orig_set(cb: CallbackQuery, db: Database, notifier: Notif
     inv_id = int(parts[3])
     val = parts[4]
     holder = None if val == "none" else val
+    inv = await db.get_invoice(inv_id)
+    if inv and _acc_doc_edit_blocked(inv):
+        await cb.answer("⛔ Счёт закрыт (End) — «Оригиналы вторички» не меняются.", show_alert=True)
+        return
     await db.set_closing_originals_holder(inv_id, holder, actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     if not inv:
@@ -981,6 +1003,9 @@ async def acc_doc_toggle_prim_paper(cb: CallbackQuery, db: Database, notifier: N
     if not inv:
         return
     new_val = 0 if inv.get("docs_paper_signed") else 1
+    if _acc_doc_edit_blocked(inv):
+        await cb.answer("⛔ Счёт закрыт (End) — флаг «Первичка бумага» не меняется.", show_alert=True)
+        return
     await db.set_invoice_docs_paper_signed(inv_id, bool(new_val), actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     label = "✅ подписано" if new_val else "⏳ не подписано"
@@ -1008,6 +1033,9 @@ async def acc_doc_toggle_no_debts(cb: CallbackQuery, db: Database, notifier: Not
     if not inv:
         return
     new_val = 0 if inv.get("no_debts") else 1
+    if _acc_doc_edit_blocked(inv):
+        await cb.answer("⛔ Счёт закрыт (End) — флаг «Долгов нет» не меняется.", show_alert=True)
+        return
     await db.set_invoice_no_debts(inv_id, bool(new_val), actor_id=cb.from_user.id)
     inv = await db.get_invoice(inv_id)
     label = "✅ долгов нет" if new_val else "❌ есть долги"
@@ -1031,6 +1059,10 @@ async def acc_doc_prim_comment_start(cb: CallbackQuery, state: FSMContext, db: D
         return
     await cb.answer()
     inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if inv and _acc_doc_edit_blocked(inv):
+        await cb.answer("⛔ Счёт закрыт (End) — комментарий первички не меняется.", show_alert=True)
+        return
     await state.clear()
     await state.set_state(AccDocCommentSG.waiting_text)
     await state.update_data(inv_id=inv_id, field="docs_originals_comment")
@@ -1048,6 +1080,10 @@ async def acc_doc_clos_comment_start(cb: CallbackQuery, state: FSMContext, db: D
         return
     await cb.answer()
     inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if inv and _acc_doc_edit_blocked(inv):
+        await cb.answer("⛔ Счёт закрыт (End) — комментарий вторички не меняется.", show_alert=True)
+        return
     await state.clear()
     await state.set_state(AccDocCommentSG.waiting_text)
     await state.update_data(inv_id=inv_id, field="closing_originals_comment")
@@ -1065,6 +1101,10 @@ async def acc_doc_clos_status_start(cb: CallbackQuery, state: FSMContext, db: Da
         return
     await cb.answer()
     inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
+    inv = await db.get_invoice(inv_id)
+    if inv and _acc_doc_edit_blocked(inv):
+        await cb.answer("⛔ Счёт закрыт (End) — статус закр.док не меняется.", show_alert=True)
+        return
     await state.clear()
     await state.set_state(AccDocCommentSG.waiting_text)
     await state.update_data(inv_id=inv_id, field="closing_docs_status")
@@ -1087,6 +1127,10 @@ async def acc_doc_comment_save(message: Message, state: FSMContext, db: Database
         return
     text = message.text.strip()  # type: ignore[union-attr]
     value = None if text == "—" else text
+    inv = await db.get_invoice(int(inv_id))
+    if inv and _acc_doc_edit_blocked(inv):
+        await message.answer("⛔ Счёт уже закрыт (End) — правка документов заблокирована.")
+        return
     actor_id = message.from_user.id if message.from_user else None
     await db.set_invoice_doc_text_field(int(inv_id), field, value, actor_id=actor_id)
     inv = await db.get_invoice(int(inv_id))
@@ -1416,6 +1460,24 @@ async def acc_work_request_send(
 
     inv = await db.get_invoice(invoice_id) if invoice_id else None
     num = (inv.get("invoice_number") if inv else None) or f"#{invoice_id}"
+
+    # Аудит №68: дедуп — не плодить повторные EDO_REQUEST по счёту, пока
+    # открыт предыдущий запрос бухгалтерии (раньше можно было слать сколько угодно).
+    if invoice_id:
+        from ..enums import TaskType
+        existing = await db.list_tasks_by_invoice(int(invoice_id), limit=30)
+        dup = any(
+            t.get("type") == TaskType.EDO_REQUEST
+            and t.get("status") in ("open", "in_progress")
+            and t.get("assigned_to") == int(manager_id)
+            for t in existing
+        )
+        if dup:
+            await cb.answer(
+                f"⚠️ Менеджеру уже отправлен открытый запрос по счёту №{num}.",
+                show_alert=True,
+            )
+            return
 
     from ..enums import TaskType
     from ..utils import utcnow, to_iso
