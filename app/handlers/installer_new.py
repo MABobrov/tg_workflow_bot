@@ -651,6 +651,28 @@ async def _finalize_invoice_ok(
             await state.clear()
             return None
 
+        # №32 (owner 14.11): ручное заполнение «Дата Факт» монтажником («Счёт ОК»)
+        # тоже запускает авто-закрытие кредитного счёта — раньше триггером был
+        # только импорт ОП (sheet_commands) и выплата ЗП. Гейты внутри
+        # _auto_close_credit_invoice (ЗП монтаж выплачена, долг, status) общие.
+        try:
+            from ..services.sheet_commands import _auto_close_credit_invoice
+            if inv.get("is_credit"):
+                _closed32 = await _auto_close_credit_invoice(
+                    invoice=inv,
+                    fact_date=str(inv.get("actual_completion_date") or today_iso),
+                    db=db,
+                    integrations=integrations,
+                    notifier=notifier,
+                    config=config,
+                )
+                if _closed32:
+                    inv = await db.get_invoice(invoice_id)
+        except Exception:
+            log.exception(
+                "invoice_ok: auto-close credit failed invoice_id=%s", invoice_id,
+            )
+
         # Create task
         task = await db.create_task(
             project_id=None,
