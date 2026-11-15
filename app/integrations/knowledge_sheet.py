@@ -27,7 +27,10 @@ _RANGE_RE = re.compile(r"^[A-Za-z]+\d+:[A-Za-z]+\d+$")
 _BLOCK_PREFIX = "⬇️"
 
 # Ограничители выгрузки в промт виртуального менеджера.
-_DIGEST_MAX_CHARS = 8000
+# На лист: «Правила · Деньги и ЗП» один ~13 000 знаков — при общем лимите 8000
+# лист «Запреты и Не трогать» обрезался почти в ноль (выкатка 15.11).
+_DIGEST_MAX_CHARS = 16000
+_DIGEST_SHEET_MAX_CHARS = 8000
 _DIGEST_ROW_MAX_CHARS = 500
 
 
@@ -241,9 +244,15 @@ class KnowledgeSheetService:
                     line = line[: _DIGEST_ROW_MAX_CHARS - 1] + "…"
                 lines.append(line)
             block = "\n".join(lines)
+            if len(block) > _DIGEST_SHEET_MAX_CHARS:
+                log.warning(
+                    "Knowledge digest: лимит %d знаков на лист — лист «%s» обрезан",
+                    _DIGEST_SHEET_MAX_CHARS, name,
+                )
+                block = block[: _DIGEST_SHEET_MAX_CHARS - 1] + "…"
             if total + len(block) > _DIGEST_MAX_CHARS:
                 log.warning(
-                    "Knowledge digest: лимит %d знаков — лист «%s» обрезан",
+                    "Knowledge digest: общий лимит %d знаков — лист «%s» обрезан",
                     _DIGEST_MAX_CHARS, name,
                 )
                 room = _DIGEST_MAX_CHARS - total
