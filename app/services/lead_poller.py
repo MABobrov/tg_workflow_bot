@@ -55,7 +55,7 @@ def _fmt_lead_card(
         title=title,
         items=items,
         compact=True,
-        width=40,
+        width=32,
     )
 
 

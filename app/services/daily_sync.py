@@ -19,6 +19,7 @@ from ..enums import MANAGER_ROLES, Role
 from ..utils import (
     build_gd_sync_card_text,
     fmt_money,
+    card_addr,
     format_card_section,
     format_installer_sync_card,
     format_manager_sync_card,
@@ -306,7 +307,7 @@ async def _maybe_add_gd_salary(
                 ("Сумма б/н", fmt_money(amount)),
                 ("Куда", "Баланс компании"),
             ],
-            width=40, compact=True,
+            width=32, compact=True,
         )
         text = (
             f"{card}\n"
@@ -348,7 +349,7 @@ async def _maybe_send_server_payment_reminder(
             ("Что оплатить", "VDS-сервер (хостинг бота)"),
             ("Если пропустить", "бот и хранилище остановятся"),
         ],
-        width=40, compact=True,
+        width=32, compact=True,
     )
 
     sent = 0
@@ -402,7 +403,7 @@ async def _send_debt_summaries(
             items=[(num, fmt_money(d)) for num, d in debts[:20]],
             footer=("Счетов", str(len(debts))),
             total=fmt_money(total),
-            width=29,
+            width=32,
             sep_ratio=0.5,
         )
         if len(debts) > 20:
@@ -529,7 +530,7 @@ async def _send_final_payment_followups(
         st = inv.get("final_payment_track_state") or ""
         debt = float(inv.get("outstanding_debt") or 0)
         num = str(inv.get("invoice_number") or inv_id)
-        addr = inv.get("object_address") or "—"
+        addr = card_addr(inv.get("object_address"))
 
         # --- доплата получена: planned/overdue + долг закрыт → paid (1×) ---
         if st in ("planned", "overdue") and debt <= 0:
@@ -807,7 +808,7 @@ async def _remind_stuck_final_payment_tasks(
             continue
 
         num = str(inv.get("invoice_number") or inv_id)
-        addr = inv.get("object_address") or "—"
+        addr = card_addr(inv.get("object_address"))
         debt_str = f"{int(round(debt)):,}".replace(",", " ")
         b = InlineKeyboardBuilder()
         b.button(text="📅 Указать ориентировочную дату", callback_data=f"fpeta:{inv_id}")
@@ -960,7 +961,7 @@ async def _remind_stuck_doc_tasks(
             continue
 
         num = str(inv.get("invoice_number") or inv_id)
-        addr = inv.get("object_address") or "—"
+        addr = card_addr(inv.get("object_address"))
         try:
             # Эталон-v2: секция <pre> с мета (Счёт/Адрес, compact — адрес длинный),
             # призыв обычным текстом ниже (owner 27.06: «эталонный дизайн»).

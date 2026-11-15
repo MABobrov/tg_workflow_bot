@@ -38,7 +38,7 @@ from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryManualPaySG, ZameryQuickBookSG, ZameryZpSG
-from ..utils import answer_service, format_card_section, format_zamery_settlement_card, get_initiator_label, maybe_truncated_note, private_only_reply_markup, refresh_recipient_keyboard, tail_note
+from ..utils import answer_service, card_addr, format_card_section, format_zamery_settlement_card, get_initiator_label, maybe_truncated_note, private_only_reply_markup, refresh_recipient_keyboard, tail_note
 from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
@@ -2561,7 +2561,7 @@ async def zamery_zp_confirm_count(
         "💰", f"Расчёт ЗП — {html.quote(initiator)}",
         items=[
             ("Счёт", html.quote(str(invoice_number))),
-            ("Адрес", html.quote(str(address))),
+            ("Адрес", html.quote(card_addr(address))),
             ("Замеров", str(count)),
             ("Цена за замер", _fmt_money(cost)),
         ],

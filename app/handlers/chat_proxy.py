@@ -1587,7 +1587,7 @@ async def _finalize_credit_execution(
             ("Инициатор", _html.escape(initiator_name)),
             ("Исполнил", _html.escape(executor_name)),
         ] + ([("Счёт ГД", f"снят — {gd_closed}")] if gd_closed else []),
-        total=fmt_money(amount), width=38, compact=True,
+        total=fmt_money(amount), width=32, compact=True,
     )
     recipients: list[int] = []
     cb_id = task.get("created_by")
@@ -1685,7 +1685,7 @@ async def credit_task_reject_reason(
             ("Назначение", _html.escape(p.get("purpose") or "—")),
             ("Причина", _html.escape(reason)),
         ],
-        total=fmt_money(amount), width=38, compact=True,
+        total=fmt_money(amount), width=32, compact=True,
     )
     recipients: list[int] = []
     cb_id = task.get("created_by")
@@ -1748,7 +1748,7 @@ async def credit_spend_gd_confirm(
     _txt = format_card_section(
         "💳", f"Подтверждение расхода — {wlabel}",
         [("Назначение", _html.escape(p.get("purpose") or "—"))],
-        total=fmt_money(amount), width=38, compact=True,
+        total=fmt_money(amount), width=32, compact=True,
     )
     _txt += (
         "\n\nПрикрепите документ (PDF/фото) и/или напишите комментарий, "
@@ -1858,7 +1858,7 @@ async def _credit_spend_finalize(
             _items.append(("Вложение", f"{len(pp_files)} файл(ов)"))
         _done = format_card_section(
             "✅", f"Расход подтверждён — {wlabel}", _items,
-            total=fmt_money(amount), width=38, compact=True,
+            total=fmt_money(amount), width=32, compact=True,
         )
         try:
             await cb.message.edit_text(_done)  # type: ignore[union-attr]
@@ -1876,7 +1876,7 @@ async def _credit_spend_finalize(
                     ("Назначение", _html.escape(p.get("purpose") or "—")),
                     ("Статус", "записано"),
                 ],
-                total=fmt_money(amount), width=38, compact=True,
+                total=fmt_money(amount), width=32, compact=True,
             )
             try:
                 await notifier.safe_send(int(init_id), note)
@@ -2009,7 +2009,7 @@ async def credit_spend_gd_reject(
                 format_card_section(
                     "❌", f"Расход отклонён — {wlabel}",
                     [("Назначение", _html.escape(p.get("purpose") or "—"))],
-                    total=fmt_money(amount), width=38, compact=True,
+                    total=fmt_money(amount), width=32, compact=True,
                 ),
             )
         except Exception:
@@ -2023,7 +2023,7 @@ async def credit_spend_gd_reject(
                     ("Назначение", _html.escape(p.get("purpose") or "—")),
                     ("Статус", "не записано"),
                 ],
-                total=fmt_money(amount), width=38, compact=True,
+                total=fmt_money(amount), width=32, compact=True,
             )
             try:
                 await notifier.safe_send(int(init_id), note)
@@ -2062,7 +2062,7 @@ async def chat_menu_report(
     if not invoices:
         card = format_card_section(
             emoji="📊", title=f"Баланс кредитных счетов — {label}",
-            items=[("Кредитных счетов пока нет", "")], width=36,
+            items=[("Кредитных счетов пока нет", "")], width=32,
         )
         await message.answer(card, reply_markup=gd_channel_menu(channel))
         return
@@ -2082,7 +2082,7 @@ async def chat_menu_report(
     card = format_card_section(
         emoji="📊", title=f"Баланс кредитных счетов — {label}",
         items=items, footer=("Текущий баланс (DA)", _rub(total_da)),
-        width=36,
+        width=32,
     )
     await message.answer(card, reply_markup=gd_channel_menu(channel))
 

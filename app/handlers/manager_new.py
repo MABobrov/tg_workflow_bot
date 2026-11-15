@@ -100,7 +100,7 @@ from ..states import (
     SelfReminderSG,
     ZameryRequestSG,
 )
-from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, close_gd_invoice_task_after_wallet_spend, find_open_gd_invoice_tasks, gd_invoice_task_brief, build_funds_card, build_invoice_section, card_num as _card_num, close_condition_core_rows, compute_plan_profit, credit_wallet_label, fmt_money, format_card, format_card_section, format_invoice_card_standard, format_manager_invoices_overview, format_manager_recalc_card, format_materials_list, get_initiator_label, invoice_end_fin_rows, manager_zp_net_payout, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_after_wallet_spend, try_json_loads, credit_zp_montazh_unpaid
+from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, close_gd_invoice_task_after_wallet_spend, find_open_gd_invoice_tasks, gd_invoice_task_brief, build_funds_card, build_invoice_section, card_addr, card_num as _card_num, close_condition_core_rows, compute_plan_profit, credit_wallet_label, fmt_money, format_card, format_card_section, format_invoice_card_standard, format_manager_invoices_overview, format_manager_recalc_card, format_materials_list, get_initiator_label, invoice_end_fin_rows, manager_zp_net_payout, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_after_wallet_spend, try_json_loads, credit_zp_montazh_unpaid
 from ._mirror import collect_attachment
 from .auth import RoleFilter, require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
@@ -460,10 +460,10 @@ async def check_kp_pick_lead(cb: CallbackQuery, state: FSMContext, db: Database)
         [
             ("Имя", _cell(client_name)),
             ("Телефон", _cell(payload.get("phone"))),
-            ("Адрес", _cell(address)),
+            ("Адрес", _cell(card_addr(address))),
             ("Источник", _cell(lead_source)),
         ],
-        width=38, compact=True,
+        width=32, compact=True,
     )
     await cb.message.answer(  # type: ignore[union-attr]
         f"{card}\n\nПрикрепите <b>КП</b> (файл или фото расчёта):"
@@ -1957,10 +1957,10 @@ async def _build_invoice_end_cards(
         "🏁", f"Счёт End: №{inv['invoice_number']}",
         [
             ("От", initiator),
-            ("Адрес", _addr),
+            ("Адрес", _html.escape(card_addr(inv.get("object_address")))),
             ("Сумма", fmt_money(inv.get("amount") or 0)),
         ],
-        width=44, compact=True,
+        width=32, compact=True,
     )
 
     # PART B (ТЗ 19.06): справочный финблок — display-only, ТОЛЬКО ГД.
@@ -2260,7 +2260,7 @@ async def invoice_end_gd_pick_list(cb: CallbackQuery, db: Database) -> None:
     # Легенда ⚠️ идёт строкой ПОСЛЕ карточки, как comment_tail у карточки «Счёт End».
     card = format_card_section(
         "🏁", "Закрыть счёт", rows,
-        footer=("Итого", fmt_money(total)), width=38,
+        footer=("Итого", fmt_money(total)), width=32,
     )
     await cb.message.answer(  # type: ignore[union-attr]
         card + "\n\n🔴 — есть невыполненные условия (только «⚠️ Закрыть с задачами»).",
@@ -5008,7 +5008,7 @@ async def _cw_confirm_impl(
             ("Привязка", bind_line),
             ("Назначение", _html.escape(purpose)),
         ],
-        total=fmt_money(amount), width=38, compact=True,
+        total=fmt_money(amount), width=32, compact=True,
     )
 
     async def _notify_gd_rp() -> None:
@@ -5127,7 +5127,7 @@ async def _cw_confirm_impl(
                         ("Назначение", _html.escape(purpose)),
                         ("№ расхода", f"#{spend_id}"),
                     ] + ([("Счёт ГД", f"снят — {gd_closed}")] if gd_closed else []),
-                    total=fmt_money(amount), width=38, compact=True,
+                    total=fmt_money(amount), width=32, compact=True,
                 ),
                 reply_markup=_cw_edit_actions_kb(int(spend_id)),
             )
@@ -5179,7 +5179,7 @@ async def _cw_confirm_impl(
                 ("Привязка", bind_line),
                 ("Назначение", _html.escape(purpose)),
             ],
-            total=fmt_money(amount), width=38, compact=True,
+            total=fmt_money(amount), width=32, compact=True,
         )
         await notifier.safe_send(
             int(owner_id),
@@ -5211,7 +5211,7 @@ async def _cw_confirm_impl(
                 ],
                 total=fmt_money(amount),
                 footer=("Статус", "спишется после исполнения"),
-                width=38, compact=True,
+                width=32, compact=True,
             )
             if task_ok else
             "⚠️ Не удалось создать задачу менеджеру — повторите позже.",
@@ -5753,7 +5753,7 @@ async def cw_edit_save(
                 ("Было→стало", diff),
                 ("Время (МСК)", msk),
             ],
-            total=fmt_money(new_amount), width=38, compact=True,
+            total=fmt_money(new_amount), width=32, compact=True,
         )
         try:
             await cb.message.edit_text(card, reply_markup=_cw_edit_actions_kb(new_spend_id))  # type: ignore[union-attr]
@@ -5768,7 +5768,7 @@ async def cw_edit_save(
                 ("Было→стало", diff),
                 ("Время (МСК)", msk),
             ],
-            total=fmt_money(new_amount), width=38, compact=True,
+            total=fmt_money(new_amount), width=32, compact=True,
         )
         await _cw_notify_credit_change(db, config, notifier, u.id, info)
         await cb.answer("Изменено")
@@ -5849,7 +5849,7 @@ async def cw_cancel_yes(
             "❌", f"Расход отменён — {wlabel}",
             [("Сумма", fmt_money(amount)), ("Время (МСК)", msk)],
             footer=("Итог", "баланс восстановлен" if reversed_ok else "проверьте баланс у ГД"),
-            width=38, compact=True,
+            width=32, compact=True,
         )
         try:
             await cb.message.edit_text(card)  # type: ignore[union-attr]
@@ -5863,7 +5863,7 @@ async def cw_cancel_yes(
                 ("Время (МСК)", msk),
             ],
             footer=("Итог", "баланс восстановлен" if reversed_ok else "проверьте баланс"),
-            width=38, compact=True,
+            width=32, compact=True,
         )
         await _cw_notify_credit_change(db, config, notifier, u.id, info)
         await cb.answer("Отменено")
@@ -6119,7 +6119,7 @@ async def _cw_edit_task_save(
         ],
         total=fmt_money(new_amount),
         footer=("Статус", "спишется после исполнения"),
-        width=38, compact=True,
+        width=32, compact=True,
     )
     try:
         await cb.message.edit_text(card, reply_markup=_cw_task_edit_actions_kb(tid))  # type: ignore[union-attr]
@@ -6138,7 +6138,7 @@ async def _cw_edit_task_save(
         ],
         total=fmt_money(new_amount),
         footer=("Статус", "исполните по новым данным"),
-        width=38, compact=True,
+        width=32, compact=True,
     )
     await _cw_notify_request_change(db, config, notifier, u.id, owner_id, info)
     await cb.answer("Изменено")
@@ -6253,7 +6253,7 @@ async def cw_task_cancel_yes(
             [("Запрос", f"#{tid}"), ("Время (МСК)", msk)],
             total=fmt_money(amount),
             footer=("Итог", "владелец не спишет"),
-            width=38, compact=True,
+            width=32, compact=True,
         )
         try:
             await cb.message.edit_text(card)  # type: ignore[union-attr]
@@ -6269,7 +6269,7 @@ async def cw_task_cancel_yes(
             ],
             total=fmt_money(amount),
             footer=("Итог", "исполнять не нужно"),
-            width=38, compact=True,
+            width=32, compact=True,
         )
         await _cw_notify_request_change(db, config, notifier, u.id, owner_id, info)
         await cb.answer("Отменено")
@@ -6465,7 +6465,7 @@ async def _cw_reattribute_save(
         ],
         total=fmt_money(amount),
         footer=("Сумма", "не изменилась — перенос назначения"),
-        width=38, compact=True,
+        width=32, compact=True,
     )
     try:
         await cb.message.edit_text(card, reply_markup=_cw_reattr_actions_kb(tid))  # type: ignore[union-attr]
@@ -6488,7 +6488,7 @@ async def _cw_reattribute_save(
         ],
         total=fmt_money(amount),
         footer=("Сумма", "не изменилась"),
-        width=38, compact=True,
+        width=32, compact=True,
     )
     await _cw_notify_request_change(db, config, notifier, u.id, owner_id, info)
     await cb.answer("Перенесено")
@@ -6916,7 +6916,7 @@ async def _manager_zp_show(
         title="Запрос ЗП",
         items=card_rows,
         footer=("Итого к запросу", fmt_money(total_zp)),
-        width=29,
+        width=32,
     )
     tail = "\n\nВыберите счёт (статус «Счёт End»):"
     if flagged_ids:
@@ -7083,10 +7083,10 @@ async def manager_zp_pick(cb: CallbackQuery, state: FSMContext, db: Database) ->
         head_section = format_card_section(
             "🧾", f"Счёт: №{inv['invoice_number']}",
             [
-                ("Адрес", _html.escape(str(inv.get("object_address") or "—"))),
+                ("Адрес", _html.escape(card_addr(inv.get("object_address")))),
                 ("Источник", src_label),
             ],
-            width=38, compact=True,
+            width=32, compact=True,
         )
         calc_section = format_card_section(
             "📊", "Расчёт ЗП",
@@ -7095,7 +7095,7 @@ async def manager_zp_pick(cb: CallbackQuery, state: FSMContext, db: Database) ->
                 ("ЗП РП (10%)", fmt_money(pf["rp_zp"])),
             ],
             footer=("Ваша доля", fmt_money(auto_amount)),
-            width=30,
+            width=32,
         )
         await cb.message.answer(  # type: ignore[union-attr]
             "💰 <b>ЗП рассчитана автоматически</b>\n\n"
@@ -7919,7 +7919,7 @@ async def mgr_advfill_credit_apply(
                         ("Счёт", f"№{inv_num}"),
                         ("Кошелёк", credit_wallet_label(role_key)),
                     ],
-                    total=fmt_money(amt), width=38, compact=True,
+                    total=fmt_money(amt), width=32, compact=True,
                 )
                 await notifier.safe_send(
                     int(gd_id_cw),

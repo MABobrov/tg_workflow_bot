@@ -564,7 +564,7 @@ def format_invoice_card_standard(
     status = inv.get("status") or ""
     is_credit = bool(inv.get("is_credit"))
     num = html.quote(str(inv.get("invoice_number") or "?"))
-    addr = html.quote(str(inv.get("object_address") or "—"))
+    addr = html.quote(card_addr(inv.get("object_address")))
     client = html.quote(str(inv.get("client_name") or "—"))
     amount = float(inv.get("amount") or 0)
     creator = html.quote(str(creator_label or "—"))
@@ -603,7 +603,7 @@ def format_invoice_card_standard(
             title=title,
             items=meta_items,
             total=status_total,
-            width=44,
+            width=32,
             compact=True,  # «Адрес: ...» в одной строке, без столбика-переноса
         )
     ]
@@ -1706,9 +1706,9 @@ def format_invoice_end_financials(inv: dict[str, Any], pf: dict[str, Any]) -> st
     дало бы худшее из двух: ни валюты, ни колонки. Прежняя редакция стояла
     на compact=True с декоративным width=44 и печатала ₽ внутри значений.
 
-    Ширина 34 — та же, что у объединённого блока ГД в manager_new: один и тот же
+    Ширина 32 — единый стандарт карточек (owner 15.11): один и тот же
     счёт обязан выглядеть одинаково в обеих витринах ГД (приём принят owner
-    23.08 для карточки «Счёт снят автором»). 44 не берём: owner 22.08
+    23.08 для карточки «Счёт снят автором»). Больше 32 не берём: owner 22.08
     жаловался ровно на переносы строк.
 
     ⚠️ Известная мелочь: format_card_section считает отступ len(), а не vw(),
@@ -1725,7 +1725,7 @@ def format_invoice_end_financials(inv: dict[str, Any], pf: dict[str, Any]) -> st
     rows = invoice_end_fin_rows(inv, pf)
     if not rows:
         return ""
-    return format_card_section("📊", "Финансы (справочно)", rows, width=34)
+    return format_card_section("📊", "Финансы (справочно)", rows, width=32)
 
 
 def credit_zp_montazh_unpaid(inv: dict[str, Any]) -> bool:
@@ -2175,14 +2175,14 @@ def format_installer_sync_card(metrics: dict[str, Any]) -> str:
       - 💼 ЗП-монтажник {year} помесячно (BS=montazh_fact_op), Итого года — в шапке
       - 💰 Финансы: Баланс аванса (Лист «Авансы».H), ЗП в работе (BJ=zp_installer_amount)
 
-    Ширина 27 колонок — подгон под телефон, данные без переноса (как РП-карточка,
-    project_rp_card_widthfit). Эталон: docs/rules/feedback_card_template_standard.md.
+    Ширина 32 колонки — единый стандарт карточек (owner 15.11), данные без
+    переноса (как РП-карточка, project_rp_card_widthfit).
     """
     import re as _re
     from datetime import datetime as _dt
     from zoneinfo import ZoneInfo as _ZI
     _now = _dt.now(_ZI("Europe/Moscow"))
-    _W = 27  # ширина под экран телефона монтажника (данные без переноса, как РП)
+    _W = 32  # единый стандарт карточек (owner 15.11), без переноса строк
 
     def _f(n: float) -> str:
         return f"{n:,.0f}".replace(",", " ")
@@ -2283,8 +2283,11 @@ def _format_gd_inwork_section(
     """
     HEAVY = "━"
     INDENT = "   "
-    W = 42
-    W_LABEL = 22
+    # Стандарт width=32 (owner 15.11): правый край всех строк — 32 колонки,
+    # ничего не переносится на вторую строку. W_LABEL=17 — по самой длинной
+    # подписи «Оплата поставщику» (17): строка = 3+17+2+2+c2w+1+5 ≤ 32.
+    W = 32
+    W_LABEL = 17
     # Правый край столбца 2 выровнен по самому широкому значению (мин. 2), чтобы
     # единицы и подписи /день//год стояли в колонку (user 28.05).
     _c2w = max(2, len(str(paid_today_inv)), len(str(paid_today_sup)),
@@ -2302,8 +2305,8 @@ def _format_gd_inwork_section(
     title = "Счета в работе"
     header = f"<b>📋  {title}</b>"
     sep = INDENT + HEAVY * max(3, W - len(INDENT))
-    itogo_row = f"{INDENT}{'Итого':<{W_LABEL}}{total:>13}"
-    msg_row = f"{INDENT}{'Входящие сообщения':<{W_LABEL}}{unread_msgs:>13}"
+    itogo_row = f"{INDENT}{'Итого':<{W_LABEL}}{total:>12}"
+    msg_row = f"{INDENT}{'Входящие сообщения':<{W_LABEL}}{unread_msgs:>12}"
     body = "\n".join([*rows, itogo_row, sep, msg_row])
     return f"{header}\n<pre>{body}</pre>"
 
@@ -2361,7 +2364,7 @@ def build_fpeta_debt_card(
         return f"{s[8:10]}.{s[5:7]}.{s[0:4]}" if len(s) >= 10 else "—"
 
     num = html.quote(str(inv.get("invoice_number") or inv.get("id") or "—"))
-    addr = html.quote(str(inv.get("object_address") or "—"))
+    addr = html.quote(card_addr(inv.get("object_address")))
 
     items: list[tuple[str, str]] = [
         ("Сумма счёта", _rub(inv.get("amount"))),
@@ -4342,8 +4345,14 @@ def format_card_section(
                 body_lines.append(f"{INDENT}{label}")
         else:
             used = len(INDENT) + len(label) + len(value)
-            pad_n = max(1, width - used)
-            body_lines.append(f"{INDENT}{label}{' ' * pad_n}{value}")
+            if used >= width:
+                # Стандарт width=32 (owner 15.11): паддинг НИКОГДА не выносит
+                # строку за ширину — иначе value уезжает на вторую строку.
+                # Не влезает — рендерим без колонки, но одной строкой.
+                body_lines.append(f"{INDENT}{label}: {value}" if value else f"{INDENT}{label}")
+            else:
+                pad_n = max(1, width - used)
+                body_lines.append(f"{INDENT}{label}{' ' * pad_n}{value}")
 
     foot_rows: list[tuple[str, str]] = []
     if footer is not None:
@@ -4360,11 +4369,42 @@ def format_card_section(
                 body_lines.append(f"{INDENT}{flabel}: {fvalue}" if fvalue else f"{INDENT}{flabel}")
             else:
                 used = len(INDENT) + len(flabel) + len(fvalue)
-                pad_n = max(1, width - used)
-                body_lines.append(f"{INDENT}{flabel}{' ' * pad_n}{fvalue}")
+                if used >= width:
+                    # Тот же гарант «без переноса», что и у обычных строк.
+                    body_lines.append(f"{INDENT}{flabel}: {fvalue}" if fvalue else f"{INDENT}{flabel}")
+                else:
+                    pad_n = max(1, width - used)
+                    body_lines.append(f"{INDENT}{flabel}{' ' * pad_n}{fvalue}")
 
+    # Стандарт width=32 (owner 15.11 «дорежь и адреса»): НИ одна строка тела
+    # не длиннее width — длинные значения (адреса и пр.) режем с «…», чтобы
+    # информация не переносилась на вторую строку.
+    body_lines = [
+        ln if len(ln) <= width else ln[: width - 1] + "…" for ln in body_lines
+    ]
     body = "\n".join(body_lines)
     return f"{header}\n<pre>{body}</pre>"
+
+
+def card_addr(addr: Any, width: int = 26) -> str:
+    """Адрес для ЛЮБОЙ карточки — единое правило owner 15.11 (раньше 25.07/30.07
+    точечно для ГД/монтажника): город Москва → только название улицы;
+    иногородний объект → название ГОРОДА. Пустой/непарсимый → «—».
+
+    Канон парсинга — rp_start_card._addr_cell (тот же, что в «Этапах работы»).
+    Импорт ленивый: rp_start_card сам импортирует utils (format_card_section).
+    """
+    from .rp_start_card import _addr_cell
+    a = str(addr or "").strip()
+    # «Москва, ул…» БЕЗ «г.»: _addr_cell город не видит (_CITY_RE требует «г»),
+    # а _street срезал бы по первой запятой и вернул «Москва». Снимаем ведущую
+    # Москву сами — остаётся улица. Иногородние без «г.» НЕ трогаем: там первая
+    # часть до запятой и есть город — _addr_cell вернёт его как надо.
+    _msk = re.match(r"^(?:[Гг]\.?\s*)?[Мм]осква[\s,]+", a)
+    if _msk and a[_msk.end():].strip():
+        a = a[_msk.end():].strip()
+    s = _addr_cell(a, width)
+    return "—" if (not s or s == "?") else s
 
 
 def format_zamery_settlement_card(
@@ -4478,7 +4518,7 @@ def format_zamery_settlement_detail_cards(rows: list[dict[str, Any]]) -> str:
                 paid_tot += cost
             opl = (_dd(pd) if pd else "опл") if paid else "—"
             mgr = _MGR.get(str(r.get("requester_role") or ""), "—")
-            addr = html.quote(_zam_street(r.get("address")))
+            addr = html.quote(card_addr(r.get("address")))
             body.append(
                 f"{INDENT}{_dd(r.get('scheduled_date'))}  {_n(cost):>6}  {opl:>5}  {mgr} {addr}"
             )
@@ -4658,7 +4698,7 @@ async def build_credit_wallet_card_ex(db: "Database", role: str, *, recent: int 
         title=f"Кредитный баланс — {label}",
         items=items,
         footer=("Итого", bal_s),
-        width=36,
+        width=32,
         sep_ratio=0.5,  # разделитель вдвое короче (user 2026-06-10)
     )
 
@@ -5550,7 +5590,7 @@ async def build_funds_card(
         items=[("Аванс", _rub(adv)), ("Депозит", _rub(depo))],
         total=total_s,
         footer=("Итого", total_s),
-        width=36,
+        width=32,
     )
 
     # wallet-фильтр строк (зеркало db._wallet_clause): None→все; 'rp'→только rp;
@@ -5595,7 +5635,7 @@ async def build_funds_card(
             emoji="🧾",
             title="Последние движения",
             items=move_items,
-            width=36,
+            width=32,
             compact=True,
         )
         return f"{main}\n\n{moves}"
@@ -5690,7 +5730,7 @@ async def build_advance_history_card(
         items=move_items,
         total=bal_s,
         footer=("Баланс Итого", bal_s),
-        width=36,
+        width=32,
         compact=True,
     )
 
@@ -5714,7 +5754,7 @@ async def build_advance_history_card(
             items=prows,
             total=_rub(ptotal),
             footer=("Итого к выплате", _rub(ptotal)),
-            width=36,
+            width=32,
         )
         return f"{card}\n\n{zp}"
     return card
@@ -5837,7 +5877,8 @@ async def build_installer_advance_card(
         bj = max(0.0, agreed - paid) if agreed > 0 else 0.0
         zp = bj + adv_cg
         adv_date = _dd(await db.get_installer_advance_date_for_invoice(inv_id))
-        street = _street(r.get("object_address") or inv.get("object_address"), 14) or num
+        _s = card_addr(r.get("object_address") or inv.get("object_address"), 14)
+        street = num if _s == "—" else _s
         marker = "кр." if is_credit else "б/н"  # кредит-признак счёта (user 09.06 веч.)
         table.append((street, marker, zp, adv_cg, adv_date, bj))
         sum_adv += adv_cg
@@ -6114,7 +6155,7 @@ async def build_deposit_history_card(
         items=move_items,
         total=bal_s,
         footer=("Баланс Итого", bal_s),
-        width=36,
+        width=32,
         compact=True,
     )
 
@@ -6151,7 +6192,7 @@ def fmt_project_card(project: dict[str, Any], tz_name: str) -> str:
             ("Создан", created),
             ("Обновлён", updated),
         ],
-        width=44,
+        width=32,
         compact=True,
     )
 

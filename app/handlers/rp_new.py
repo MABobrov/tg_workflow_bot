@@ -94,7 +94,7 @@ from ..states import (
     RpRazmerySG,
     RpSupplierInvoiceSG,
 )
-from ..utils import answer_service, build_invoice_section, close_condition_core_rows, fmt_money, format_invoice_card_standard, get_initiator_label, invoice_status_emoji, invoice_status_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, tail_note, try_json_loads
+from ..utils import answer_service, build_invoice_section, card_addr, close_condition_core_rows, fmt_money, format_invoice_card_standard, get_initiator_label, invoice_status_emoji, invoice_status_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, tail_note, try_json_loads
 from ..rp_start_card import _matrix, _street
 from ._mirror import collect_attachment
 from .installer_new import (
@@ -491,7 +491,7 @@ async def _build_rp_sent_invoices_card(
         if inv_id:
             inv = await db.get_invoice(int(inv_id))
             addr = (inv or {}).get("object_address") or ""
-        street = _street(addr, 14) if addr else "—"
+        street = card_addr(addr, 14)
         mgr = ("КИА" if "КИА" in inv_num else "НПН" if "НПН" in inv_num
                else "САБ" if "САБ" in inv_num else "КВ")
         if not sections or sections[-1][0] != cat:
@@ -1696,7 +1696,7 @@ async def _build_montazh_zp_card(
 
     items: list[tuple[str, str]] = [
         ("Счёт", f"№{inv.get('invoice_number', '?')}"),
-        ("Адрес", str(inv.get("object_address") or "—")),
+        ("Адрес", card_addr(inv.get("object_address"))),
         ("Расчётная ЗП", _f(est)),
         ("Выплачено", _f(dr)),
         ("Остаток расчёта", _f(max(est - dr, 0.0))),
@@ -1705,7 +1705,7 @@ async def _build_montazh_zp_card(
     if agreed > 0:  # наёмная ветка: сумма уже введена РП — показать, кнопка = исправить
         items.append(("Согласовано", _f(agreed)))
     card_text = format_card_section(
-        emoji="💰", title="ЗП монтаж", items=items, width=27, compact=True,
+        emoji="💰", title="ЗП монтаж", items=items, width=32, compact=True,
     )
     b = InlineKeyboardBuilder()
     b.button(text="✏️ Внести сумму ЗП монтаж", callback_data=f"rp_montazh:zp_edit:{invoice_id}")
@@ -2766,7 +2766,7 @@ async def _do_montazh_assign(
         await integrations.sync_invoice_row(invoice_id)
 
     num = inv.get("invoice_number", "?")
-    addr = inv.get("object_address") or "—"
+    addr = card_addr(inv.get("object_address"))
 
     # Тип менеджера из номера
     if "КИА" in num:
@@ -2845,7 +2845,7 @@ async def _do_montazh_assign(
         title=f"Новый счёт: №{num}",
         items=items,
         total=_f(est_val) if est_val else None,
-        width=27,
+        width=32,
         compact=True,
     ) + "\n\nНажмите «🔨 В Работу» для подтверждения."
 
@@ -4387,7 +4387,7 @@ async def _rp_sinv_finalize(
     if due_label:
         _items.append(("Срок", due_label))
     if inv and inv.get("object_address"):
-        _items.append(("Объект", inv["object_address"][:50]))
+        _items.append(("Объект", card_addr(inv["object_address"])))
     if attachments:
         _items.append(("Вложений", str(len(attachments))))
     gd_text = format_card_section(
@@ -4397,7 +4397,7 @@ async def _rp_sinv_finalize(
         items=_items,
         footer=("💬", comment) if comment else None,
         compact=True,
-        width=40,
+        width=32,
     )
 
     from ..keyboards import task_actions_kb

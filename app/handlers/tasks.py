@@ -21,7 +21,7 @@ from ..services.menu_context import build_main_menu_for_user
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
 from ..states import CreditPaymentExecuteSG, DeliveryPaymentSG, InvoicePaymentSG, MontazhCommentSG, SupplierPaymentSG, TaskCancelReasonSG, TaskCompleteSG
-from ..utils import answer_service, build_manager_task_open_card, build_rp_zp_family_open_card, build_task_done_card, enrich_task_invoice_label, fmt_task_card, format_invoice_end_financials, gd_task_with_live_amounts, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
+from ..utils import answer_service, build_manager_task_open_card, build_rp_zp_family_open_card, build_task_done_card, card_addr, enrich_task_invoice_label, fmt_task_card, format_invoice_end_financials, gd_task_with_live_amounts, get_initiator_label, parse_roles, private_only_reply_markup, refresh_recipient_keyboard, task_type_label, try_json_loads
 from ._mirror import collect_attachment, mirror_attachment
 from .money_guard import money_confirm_guard
 
@@ -2008,7 +2008,7 @@ async def _invoice_pp_finalize_core(
         try:
             import re as _re
             from ..utils import format_card_section
-            from ..rp_start_card import CATS, _money, _mt_to_cat, _street
+            from ..rp_start_card import CATS, _money, _mt_to_cat
 
             def _short(block: str) -> str:
                 parts = block.split("<pre>", 1)
@@ -2031,7 +2031,7 @@ async def _invoice_pp_finalize_core(
 
             items = [
                 ("От", "Ген.Дир"),
-                ("Объект", _street(object_address, 22) if object_address else "—"),
+                ("Объект", card_addr(object_address, 22)),
                 ("№ счёта", inv_num),
                 ("Тип", _ptype),
             ]
@@ -2040,7 +2040,7 @@ async def _invoice_pp_finalize_core(
                 title=title_txt,
                 items=items,
                 total=f"{_money(amount)} ₽",
-                width=30,
+                width=32,
                 compact=True,
             ))
         except Exception:

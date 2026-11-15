@@ -425,7 +425,7 @@ def _build_acc_work_list_card(
     title = f"<b>{title_label} ━━━ {_full(total_amount)} ₽</b>"
     head = INDENT + f"{'№':<{W_NUM}} {'Сумма':<{W_SUM}} {'Адрес':<{W_ADDR}} Долг"
     body = [head] + rows
-    body.append(INDENT + "━" * 17)
+    body.append(INDENT + "━" * 30)
     if total_debt > 0:
         body.append(f"{INDENT}Итого: {len(invoices)} · долг {_full(total_debt)} ₽")
     else:
@@ -561,10 +561,10 @@ def _acc_addr(addr: Any) -> str:
     бухгалтера показываем «—» вместо «?» (user 2026-06-14, счёт 26416-1 без
     распознаваемой улицы). Общий _street НЕ трогаем — его делят карточки РП.
     """
-    from ..rp_start_card import _street
+    from ..utils import card_addr
 
-    s = _clip_addr_consonant(_street(addr, 99))
-    return s if s and s != "?" else "—"
+    s = _clip_addr_consonant(card_addr(addr, 99))
+    return s if s and s != "—" else "—"
 
 
 async def build_acc_start_card_text(db: Database, user_id: int) -> str:
@@ -597,7 +597,8 @@ async def build_acc_start_card_text(db: Database, user_id: int) -> str:
         return title + "\n<pre>   Нет счетов в работе ✅</pre>"
 
     INDENT = "  "
-    W_NUM, W_SUM, W_ADDR, W_MGR = 7, 5, 6, 6
+    # Край строки = 32 (единый стандарт owner 15.11): 2+7+1+5+1+6+1+5+1+док(3).
+    W_NUM, W_SUM, W_ADDR, W_MGR = 7, 5, 6, 5
 
     # Имена менеджеров — один batch-запрос (created_by → first name), без N+1.
     creator_ids = {int(inv["created_by"]) for inv in invoices if inv.get("created_by")}
@@ -697,7 +698,7 @@ async def build_acc_start_card_text(db: Database, user_id: int) -> str:
             + f"{_mgr(inv):<{W_MGR}} {_doc_state(inv)}"
         )
 
-    body.append(INDENT + "━" * 17)
+    body.append(INDENT + "━" * 30)
     body.append(f"{INDENT}Итого: {len(invoices)}")
 
     legend = (

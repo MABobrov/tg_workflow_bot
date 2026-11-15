@@ -66,7 +66,7 @@ from ..states import (
     InstallerZpInitSG,
     InstallerZpSG,
 )
-from ..utils import answer_service, build_advance_history_card, build_deposit_history_card, build_installer_advance_card, build_installer_zp_invoiceok_card, build_task_done_card, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, tail_note, try_json_loads
+from ..utils import answer_service, build_advance_history_card, build_deposit_history_card, build_installer_advance_card, build_installer_zp_invoiceok_card, build_task_done_card, card_addr, fmt_money, format_card_section, get_initiator_label, private_only_reply_markup, refresh_recipient_keyboard, tail_note, try_json_loads
 from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
@@ -1761,7 +1761,7 @@ async def installer_zp_accept(
     await integrations.sync_invoice_row(inv_id)
 
     inv_number = inv.get("invoice_number") or "—"
-    addr = inv.get("object_address") or "—"
+    addr = card_addr(inv.get("object_address"))
 
     gd_id = await resolve_default_assignee(db, config, Role.GD)
     if gd_id:
@@ -1804,7 +1804,7 @@ async def installer_zp_accept(
             emoji="✅", title="Запрос ЗП отправлен ГД",
             items=[("Счёт", f"№{inv_number}")],
             footer=("Сумма", f"{float(amount):,.0f}₽".replace(",", " ")),
-            width=27, compact=True,
+            width=32, compact=True,
         ),
     )
 
@@ -2012,7 +2012,7 @@ def _build_inst_detail_card(
     # телефон скрыт для монтажника
     items: list[tuple[str, str]] = [
         ("Менеджер", mgr),
-        ("Адрес", inv.get("object_address") or "—"),
+        ("Адрес", card_addr(inv.get("object_address"))),
     ]
     if lead_name:
         items.append(("Клиент", lead_name))
@@ -2972,7 +2972,7 @@ async def zpadj_start(cb: CallbackQuery, state: FSMContext, db: Database) -> Non
     # Часть 2 (2.1): базовая сумма заявки = ОСТАТОК = Согласовано − зачтённый аванс ×1.10.
     remainder, agreed, advance_cg = await _zp_remainder_for_invoice(db, inv)
     num = inv.get("invoice_number") or f"#{inv['id']}"
-    addr = inv.get("object_address") or "—"
+    addr = card_addr(inv.get("object_address"))
     pct_note = "" if _is_credit(inv) else " (с учётом 10%)"
 
     await state.clear()
@@ -3002,7 +3002,7 @@ async def zpadj_start(cb: CallbackQuery, state: FSMContext, db: Database) -> Non
         footer = (f"К выплате{pct_note}", _f(remainder))
     card = format_card_section(
         emoji="💰", title="Запрос ЗП", items=items,
-        footer=footer, width=27, compact=True,
+        footer=footer, width=32, compact=True,
     )
     # C/D (user 2026-06-18): комментарий БОЛЬШЕ не обязателен на старте.
     # Два пути: «Запросить остаток» (1 тап → подтверждение, comment="") ИЛИ
@@ -3040,7 +3040,7 @@ def _build_zpadj_confirm_text(data: dict[str, Any]) -> str:
     items.append(("Вложений", str(att_count)))
     return format_card_section(
         emoji="📋", title="Подтверждение запроса ЗП", items=items,
-        footer=("Итого к выплате", _f(total)), width=27, compact=True,
+        footer=("Итого к выплате", _f(total)), width=32, compact=True,
     )
 
 
@@ -3336,7 +3336,7 @@ async def zpadj_finalize(
             emoji="✅", title="Запрос ЗП отправлен ГД",
             items=[("Счёт", f"№{inv_number}")],
             footer=("Сумма", f"{float(total):,.0f}₽".replace(",", " ")),
-            width=27, compact=True,
+            width=32, compact=True,
         ),
     )
 
@@ -3630,7 +3630,7 @@ async def installer_work_view_card(
     est_base = _calc_est_montazh_base(inv)
     est_total = _calc_est_montazh(inv)
 
-    addr = inv.get("object_address") or "—"
+    addr = card_addr(inv.get("object_address"))
 
     # Менеджер — тип из номера счёта
     inv_num = inv.get("invoice_number") or ""
@@ -3719,7 +3719,7 @@ async def installer_work_view_card(
         title=f"В работу: №{inv_num}",
         items=items,
         total=total,
-        width=27,
+        width=32,
         compact=True,
     ))
 
@@ -3935,7 +3935,7 @@ async def installer_price_input(
         title=f"Согласование: №{inv.get('invoice_number') or invoice_id}",
         items=items,
         total=_f(agreed),
-        width=27,
+        width=32,
         compact=True,
     ))
 
@@ -4182,7 +4182,7 @@ def _build_inst_zp_card(inv: dict) -> str:
 
     items: list[tuple[str, str]] = [
         ("Менеджер", mgr),
-        ("Адрес", inv.get("object_address") or "—"),
+        ("Адрес", card_addr(inv.get("object_address"))),
     ]
     if lead_name:
         items.append(("Клиент", lead_name))
@@ -4252,7 +4252,7 @@ def _build_inst_zp_summary(
         title="Запрос ЗП",
         items=items,
         footer=footer,
-        width=24,
+        width=32,
     )
 
 
@@ -4441,7 +4441,7 @@ async def installer_zp_amount(message: Message, state: FSMContext, db: Database)
         emoji="💰", title="Подтверждение запроса ЗП",
         items=[("Счёт", f"№{inv_num}")],
         footer=("ЗП к выплате", f"{float(amount):,.0f}₽".replace(",", " ")),
-        width=27, compact=True,
+        width=32, compact=True,
     )
     await message.answer(
         card + "\n\nОтправить запрос ГД?",
@@ -4521,7 +4521,7 @@ async def installer_zp_confirm(
             emoji="✅", title="Запрос ЗП отправлен ГД",
             items=[("Счёт", f"№{inv_number}")],
             footer=("Сумма", f"{float(amount):,.0f}₽".replace(",", " ")),
-            width=27, compact=True,
+            width=32, compact=True,
         ),
     )
 
@@ -4798,7 +4798,7 @@ async def advance_pick_handler(cb: CallbackQuery, state: FSMContext) -> None:
         title=f"{row['address']}{' 🏦 КРЕДИТ' if cred else ''}",
         items=items,
         footer=("Доступно", _fmt_money(available)),
-        width=26,
+        width=32,
     )
     text = (
         f"{card}\n"
