@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import gspread
@@ -39,6 +39,8 @@ class KnowledgeConfig:
     enabled: bool
     spreadsheet_id: str
     map_tab: str = "Карта таблицы"
+    role_cards_tab: str = "Карточки ролей"
+    vm_sheets: list[str] = field(default_factory=list)
     cache_ttl_seconds: int = 600
     service_account_json: str | None = None
     service_account_file: str | None = None
@@ -60,6 +62,16 @@ class SheetData:
     rows: list[dict[str, Any]]
     data_range: str
     stamp: str
+
+
+_ROLE_CODE_RE = re.compile(r"\(([^()]+)\)\s*$")
+
+
+def parse_role_code(label: str) -> str:
+    """«Менеджер НПН (manager_npn)» → «manager_npn»; без скобок — сам текст."""
+    label = (label or "").strip()
+    m = _ROLE_CODE_RE.search(label)
+    return (m.group(1).strip() if m else label).lower()
 
 
 class KnowledgeSheetError(RuntimeError):
@@ -263,3 +275,60 @@ class KnowledgeSheetService:
             parts.append(block)
             total += len(block) + 1
         return "\n\n".join(parts)
+
+    # ---------- карточки ролей ----------
+
+    def read_role_cards(self, refresh: bool = False) -> list[dict[str, Any]]:
+        """Карточки ролей с листа «Карточки ролей» (одна роль = одна строка).
+
+        Каждая карточка: {code, label, row{колонка: значение}}.
+        Ключи «—» (нет данных) из row убираются — остаётся только суть.
+        """
+        if refresh:
+            self._sheet_cache.pop(self.cfg.role_cards_tab, None)
+        data = self.read(self.cfg.role_cards_tab)
+        if data is None:
+            raise KnowledgeSheetError(
+                f"Листа «{self.cfg.role_cards_tab}» нет в «{self.cfg.map_tab}»"
+            )
+        cards: list[dict[str, Any]] = []
+        for row in data.rows:
+            label = next(
+                (str(v).strip() for k, v in row.items()
+                 if "роль" in str(k).lower() and str(v).strip()),
+                "",
+            )
+            if not label or label.startswith(_BLOCK_PREFIX):
+                continue
+            cards.append({
+                "code": parse_role_code(label),
+                "label": label,
+                "row": {k: v for k, v in row.items()
+                        if str(v).strip() and str(v).strip() != "—"},
+            })
+        return cards
+
+    def find_role_card(
+        self,
+        telegram_id: int | str | None = None,
+        code: str | None = None,
+        refresh: bool = False,
+    ) -> dict[str, Any] | None:
+        """Найти карточку роли по telegram_id или коду роли."""
+        cards = self.read_role_cards(refresh=refresh)
+        if telegram_id is not None:
+            wanted = str(telegram_id).strip()
+            for card in cards:
+                tg = next(
+                    (str(v).strip() for k, v in card["row"].items()
+                     if "telegram" in str(k).lower() and str(v).strip()),
+                    "",
+                )
+                if tg and tg == wanted:
+                    return card
+        if code:
+            wanted = (code or "").strip().lower()
+            for card in cards:
+                if card["code"] == wanted or wanted in card["label"].lower():
+                    return card
+        return None

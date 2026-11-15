@@ -44,12 +44,14 @@ async def daily_sync_loop(
     integrations: IntegrationHub,
     target_hour: int = 9,
     target_minute: int = 0,
+    knowledge_sync: object | None = None,
 ) -> None:
     """Background loop: once per day at target_hour:target_minute MSK.
 
     1. Import from ОП sheet (Google Sheets) if enabled.
     2. Export projects/tasks/invoices to Sheets.
     3. Send refreshed keyboard to every active user.
+    4. Knowledge sheet: полный освежающий прогон (карточки ролей + дайджест ВМ).
     """
     while True:
         try:
@@ -68,7 +70,7 @@ async def daily_sync_loop(
             await asyncio.sleep(wait_seconds)
 
             log.info("daily_sync: starting scheduled sync…")
-            await _run_sync(db, notifier, config, integrations)
+            await _run_sync(db, notifier, config, integrations, knowledge_sync=knowledge_sync)
             log.info("daily_sync: completed")
 
         except asyncio.CancelledError:
@@ -84,8 +86,17 @@ async def _run_sync(
     notifier: Notifier,
     config: object,
     integrations: IntegrationHub,
+    knowledge_sync: object | None = None,
 ) -> None:
     """Execute one full sync cycle."""
+
+    # --- 0а. Таблица знаний: полный освежающий прогон (регламент 16.11) ---
+    if knowledge_sync is not None:
+        try:
+            result = await knowledge_sync.refresh_all()
+            log.info("daily_sync: knowledge refresh: %s", result)
+        except Exception:
+            log.exception("daily_sync: knowledge refresh failed")
 
     # --- 0. Авто-ЗП гендиректора в «Баланс компании» (owner 15.10) ---
     # ДО шага 1: export_to_sheets синкает лист БК — новая строка ляжет на лист в этом же прогоне.

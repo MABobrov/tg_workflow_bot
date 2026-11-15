@@ -164,21 +164,26 @@ async def main() -> None:
     # Knowledge sheet «Бот для Телеграмм»: чтение через лист «Карта таблицы»
     # (карта → точный диапазон листа). Ошибки доступа не роняют бота.
     knowledge_service = None
+    knowledge_sync = None
     if config.knowledge_sheet_enabled and config.knowledge_sheet_id:
         from .integrations.knowledge_sheet import (
             KnowledgeConfig,
             KnowledgeSheetService,
         )
+        from .services.knowledge_sync import KnowledgeSync
         knowledge_service = KnowledgeSheetService(
             KnowledgeConfig(
                 enabled=True,
                 spreadsheet_id=config.knowledge_sheet_id,
                 map_tab=config.knowledge_map_tab,
+                role_cards_tab="Карточки ролей",
+                vm_sheets=config.knowledge_vm_sheets,
                 cache_ttl_seconds=config.knowledge_cache_ttl_seconds,
                 service_account_json=config.google_sa_json,
                 service_account_file=config.google_sa_file,
             )
         )
+        knowledge_sync = KnowledgeSync(knowledge_service, db)
         log.info(
             "Knowledge sheet enabled (map tab: «%s», VM sheets: %s)",
             config.knowledge_map_tab, ", ".join(config.knowledge_vm_sheets) or "—",
@@ -294,6 +299,10 @@ async def main() -> None:
     dp.update.outer_middleware(UpdateLoggingMiddleware())
     dp.update.outer_middleware(UsageAuditMiddleware())
     dp.message.outer_middleware(KeepMenuMiddleware())
+    if knowledge_sync is not None:
+        from .middlewares.knowledge_role import KnowledgeRoleMiddleware
+        dp.message.outer_middleware(KnowledgeRoleMiddleware(knowledge_sync))
+        await knowledge_sync.startup_warmup()
     dp.include_router(group_guard.router)
     dp.include_router(common.router)
     dp.include_router(admin.router)
@@ -382,6 +391,7 @@ async def main() -> None:
             integrations=integrations,
             target_hour=9,
             target_minute=0,
+            knowledge_sync=knowledge_sync,
         ),
         name="daily_sync_loop",
     )
@@ -627,6 +637,7 @@ async def main() -> None:
             integrations=integrations,
             storage=storage,
             knowledge=knowledge_service,
+            knowledge_sync=knowledge_sync,
         )
     finally:
         # Cancel all background tasks and await them

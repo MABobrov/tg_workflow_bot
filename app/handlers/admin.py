@@ -366,6 +366,56 @@ async def cmd_knowledge(
         await message.answer(f"Ошибка чтения таблицы знаний: {html.quote(str(exc))}")
 
 
+@router.message(Command("роль"))
+async def cmd_role(
+    message: Message,
+    config: Config,
+    knowledge_sync: object | None = None,
+) -> None:
+    """Карточка роли из таблицы знаний: /роль <код|имя|telegram_id>.
+
+    Сначала из кэша (переживает рестарт), если пусто — свежая вычитка.
+    """
+    u = message.from_user
+    if not u or not _is_admin(u.id, config):
+        return
+
+    if knowledge_sync is None:
+        await message.answer(
+            "Таблица знаний выключена (KNOWLEDGE_SHEET_ENABLED=false или нет ID таблицы)."
+        )
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    query = parts[1].strip() if parts[1:] else ""
+    if not query:
+        await message.answer("Формат: /роль <код роли | имя | telegram_id>")
+        return
+
+    try:
+        if query.isdigit():
+            card = await knowledge_sync.get_role_card(telegram_id=int(query))
+            if card is None:
+                card = await knowledge_sync.refresh_role_card(telegram_id=int(query))
+        else:
+            card = await knowledge_sync.get_role_card(code=query)
+            if card is None:
+                card = await knowledge_sync.refresh_role_card(code=query)
+        if card is None:
+            await message.answer(
+                f"Карточка роли по запросу «{html.quote(query)}» не найдена "
+                "(ищу по коду, имени и Telegram_id)."
+            )
+            return
+        lines = [f"<b>{html.quote(str(card.get('label', '')))}</b>"]
+        for k, v in (card.get("row") or {}).items():
+            lines.append(f"• {html.quote(str(k))}: {html.quote(str(v))}")
+        await _answer_chunked(message, lines)
+    except Exception as exc:
+        log.exception("Role command failed")
+        await message.answer(f"Ошибка чтения карточки роли: {html.quote(str(exc))}")
+
+
 @router.message(F.text == ADMIN_HELP_BUTTON)
 async def menu_admin_help(message: Message, config: Config) -> None:
     await cmd_admin_help(message, config)
