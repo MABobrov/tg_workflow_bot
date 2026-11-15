@@ -82,7 +82,7 @@ def test_rp_credit_zp_channel_in_sum(tmp_path) -> None:
             summary = await db.recalc_rp_zp_on_end(inv_id)
             assert summary is not None
             assert summary["paid_channels"]["credit_zp_extra"] == 5_000.0
-            assert summary["paid_sum"] == 5_000.0
+            assert summary["paid_sum_attributed"] == 5_000.0
             assert len(summary["credit_zp_items"]) == 1
             assert not summary["credit_zp_dupes"]
         finally:
@@ -105,7 +105,7 @@ def test_rp_credit_zp_dupe_excluded(tmp_path) -> None:
             await db.update_invoice(inv_id, status="ended")
             summary = await db.recalc_rp_zp_on_end(inv_id)
             assert summary["paid_channels"]["credit_zp_extra"] == 0.0
-            assert summary["paid_sum"] == 5_000.0  # только AR, без дубля
+            assert summary["paid_sum_attributed"] == 5_000.0  # только AR, без дубля
             assert len(summary["credit_zp_dupes"]) == 1
         finally:
             await db.close()
@@ -170,7 +170,7 @@ def test_manager_credit_zp_channel_in_sum(tmp_path) -> None:
             await db.update_invoice(inv_id, status="ended")
             summary = await db.recalc_manager_zp_on_end(inv_id)
             assert summary["paid_channels"]["credit_zp_extra"] == 8_000.0
-            assert summary["paid_sum"] == 8_000.0
+            assert summary["paid_sum_attributed"] == 8_000.0
             assert len(summary["credit_zp_items"]) == 1
         finally:
             await db.close()
@@ -192,7 +192,7 @@ def test_manager_dupe_excluded(tmp_path) -> None:
             await db.update_invoice(inv_id, status="ended")
             summary = await db.recalc_manager_zp_on_end(inv_id)
             assert summary["paid_channels"]["credit_zp_extra"] == 0.0
-            assert summary["paid_sum"] == 8_000.0
+            assert summary["paid_sum_attributed"] == 8_000.0  # AN-ручная, без дубля
             assert len(summary["credit_zp_dupes"]) == 1
         finally:
             await db.close()

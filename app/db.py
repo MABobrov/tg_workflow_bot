@@ -11505,6 +11505,99 @@ class Database:
             })
         return result
 
+    async def _paid_wallet_topups(
+        self, employee_id: int, wallet_role: str | None = None,
+    ) -> float:
+        """№126 (owner 14.11): Σ paid-пополнений авансового кошелька = НАЛИТОЕ.
+
+        Пополнение кошелька = ВЫПЛАТА в момент налива (слово owner 14.11:
+        «как только деньги ушли в авансовый кошелёк — деньги выплачены»).
+        Типы 'request'/'transfer_depo_to_adv'; deposit НЕ входит (не выплата
+        ЗП: «Положить на мишку» 80 000 07.07 исключена владельцем, №124),
+        системные гашения (oklad/overpay-offset) — другие request_type.
+        Налив ЗП РП в аванс (rp_zp_to_advance) тоже создаёт 'request' —
+        налитое считается здесь, в прямые выплаты НЕ входит (анти-дубль).
+        """
+        wclause, wparams = self._wallet_clause(wallet_role, "r")
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(r.total_amount), 0) FROM installer_advance_requests r "
+            "WHERE r.installer_id = ? AND r.status = 'paid' "
+            "  AND r.request_type IN ('request', 'transfer_depo_to_adv')" + wclause,
+            (int(employee_id), *wparams),
+        )
+        return float((await cur.fetchone())[0] or 0)
+
+    async def _zp_global_overpay(
+        self, *, target: str, employee_id: int,
+        wallet_role: str | None = None, wallet_tag: str | None = None,
+    ) -> dict[str, Any]:
+        """№126 (owner 14.11, решение 15.11 «глобально по кошельку»).
+
+        Переплата роли = Σ налитого (paid-топапов её кошелька) + Σ прямых
+        выплат − Σ факт-ЗП по ВСЕМ закрытым счетам. Зачёт аванса в счёт —
+        разнесение уже налитого, НЕ выплата (в Σ не входит). Прямые:
+          rp       → AR (rp_payout_op) + кредитные ЗП-траты, привязанные
+                     к счетам (анти-дубль №125: журнал = AR + топапы);
+          manager  → AN-ручная (zp_manager_payout − Σ зачётов по счёту) +
+                     кредитные ЗП-траты своего кошелька по счетам.
+        Факт-ЗП считается на лету (compute_fact_profit) по каждому закрытому
+        счёту — старые счета без хранимого rp_zp_fact/mgr_zp_fact не занижают
+        Σ (не то переплата задувалась бы на истории).
+        """
+        topups = await self._paid_wallet_topups(employee_id, wallet_role)
+        if target == "manager":
+            cur = await self.conn.execute(
+                "SELECT id FROM invoices WHERE created_by = ? AND "
+                "(status = 'ended' OR (is_credit = 1 AND montazh_stage = 'invoice_end'))",
+                (int(employee_id),),
+            )
+        else:
+            cur = await self.conn.execute(
+                "SELECT id FROM invoices WHERE "
+                "status = 'ended' OR (is_credit = 1 AND montazh_stage = 'invoice_end')",
+            )
+        inv_ids = [int(r[0]) for r in await cur.fetchall()]
+        direct_sum = 0.0
+        zp_fact_sum = 0.0
+        credit_sum = 0.0
+        for inv_id in inv_ids:
+            inv = await self.get_invoice(inv_id)
+            if not inv:
+                continue
+            fact = compute_fact_profit(inv)
+            number = str(inv.get("invoice_number") or "")
+            if target == "rp":
+                zp_fact_sum += round(float(fact["zp_fact"] or 0), 2)
+                direct_sum += float(inv.get("rp_payout_op") or 0)
+            else:
+                zp_fact_sum += round(float(
+                    manager_zp_fact_from_profit(inv, fact) or 0), 2)
+                an = float(inv.get("zp_manager_payout") or 0)
+                cur = await self.conn.execute(
+                    "SELECT COALESCE(SUM(it.offset_amount), 0) "
+                    "FROM installer_advance_items it WHERE it.invoice_id = ? "
+                    "  AND it.offset_zp_id IS NOT NULL",
+                    (inv_id,),
+                )
+                taken = float((await cur.fetchone())[0] or 0)
+                direct_sum += max(0.0, an - taken)
+            credit_extra = await self._zp_credit_spends_extra(
+                inv_id, number, target=target, wallet_tag=wallet_tag,
+            )
+            credit_sum += credit_extra["total"]
+        direct_sum = round(direct_sum, 2)
+        zp_fact_sum = round(zp_fact_sum, 2)
+        credit_sum = round(credit_sum, 2)
+        overpay = round(topups + direct_sum + credit_sum - zp_fact_sum, 2)
+        return {
+            "topups": round(topups, 2),
+            "direct": direct_sum,
+            "credit": credit_sum,
+            "zp_fact_sum": zp_fact_sum,
+            "closed_invoices": len(inv_ids),
+            "overpay": overpay,
+        }
+
     async def recalc_rp_zp_on_end(self, invoice_id: int) -> dict[str, Any] | None:
         """Пересчёт ЗП РП 10% по ФАКТУ при закрытии счёта — правило owner 13.11.
 
@@ -11522,17 +11615,14 @@ class Database:
              AQ=0, rp_payout_advance_at NULL, нет rp-offset) и факт < плана →
              ничего не списываем: корзина запроса и «К выплате» сами берут
              min(план, rp_zp_fact) (npn_amount НЕ трогаем — sheet-owned).
-          3. ЗП выплачена (ЛЮБОЙ канал: AR>0 | налив в аванс | rp-offset-зачёты |
-             кредитная ЗП-трата кошелька КВ/КИА/НПН, привязанная к счёту —
-             решение owner 14.11 №122/№124, анти-дубль №125 ±2 дня)
-             и Σ выплат > факт-ЗП → переплата = Σ_выплат − факт-ЗП: пишем
-             rp_overpay (неот списанного остатка) и АВТО-СПИСЫВАЕМ из авансового
-             кошелька РП (wallet_role='rp', request_type='rp_overpay_offset',
-             initiator='system', status='paid' — по образцу oklad_offset).
-             Гард: не списывать больше баланса; баланс < переплаты → списать
-             сколько есть, остаток оставить в rp_overpay и пометить в аудите.
-             Трекер rp_overpay_offset (суммарно уже списанное) даёт дельту —
-             повторный End НЕ списывает вторично.
+          3. №126 (owner 14.11, решение 15.11 «глобально по кошельку»):
+             переплата роли = Σ налитого (paid-топапов кошелька РП — налив
+             = выплата в момент налива; deposit/«мишка» и гашения не входят)
+             + Σ прямых (AR + кредитные ЗП-траты по счетам) − Σ факт-ЗП по
+             ВСЕМ закрытым счетам (на лету). Зачёт аванса в счёт — разнесение
+             налитого, НЕ выплата. При переплате → авто-списание из кошелька
+             РП (request_type='rp_overpay_offset', трекер — Σ этих строк,
+             повторный End не списывает вторично). Гард: не больше баланса.
 
         Возвращает сводку пересчёта (для аудита/тестов) или None, если счёт
         не найден/ещё не закрыт.
@@ -11556,7 +11646,9 @@ class Database:
         ar = float(inv.get("rp_payout_op") or 0)
         req_op = float(inv.get("rp_request_op") or 0)
         advance_at = inv.get("rp_payout_advance_at")
-        # rp-offset-зачёты аванса по этому счёту (wallet_role='rp').
+        # rp-offset-зачёты аванса по этому счёту (wallet_role='rp') —
+        # атрибуция налитого для сводки; в Σ выплат НЕ входят (№126: зачёт —
+        # разнесение, налитое уже посчитано топапами).
         cur = await self.conn.execute(
             "SELECT COALESCE(SUM(it.offset_amount), 0) FROM installer_advance_items it "
             "JOIN installer_advance_requests r ON r.id = it.request_id "
@@ -11565,41 +11657,47 @@ class Database:
             (int(invoice_id),),
         )
         rp_offset = float((await cur.fetchone())[0] or 0)
-        # Канал ЗП через кредитные кошельки КВ/КИА/НПН (решение owner 14.11
-        # №122/№124): траты с маркером ЗП РП, привязанные к этому счёту,
-        # минус дубли (анти-дубль №125, ±2 дня, журнал-приёмник первичен).
+        # Кредитные ЗП-траты, привязанные к этому счёту (анти-дубль №125 —
+        # журнал-приёмник AR + топапы; топапы первичны, №126).
         credit_extra = await self._zp_credit_spends_extra(
             int(invoice_id), invoice_number, target="rp",
         )
-        # Σ выплат по ВСЕМ каналам (решение owner 13.11 п.2 + 14.11 №122/№124).
-        paid_sum = ar + (npn if advance_at else 0.0) + rp_offset + credit_extra["total"]
-        offset_done = float(inv.get("rp_overpay_offset") or 0)
+        # Атрибуция по счёту — только для сводки/аудита (не переплата!).
+        paid_sum_attributed = ar + (npn if advance_at else 0.0) + \
+            rp_offset + credit_extra["total"]
 
+        # №126 (owner 14.11, решение 15.11 «глобально по кошельку»):
+        # переплата = Σ налитого (топапов) + Σ прямых − Σ факт-ЗП по всем
+        # закрытым счетам; авто-списание от глобальной цифры, трекер —
+        # Σ request_type='rp_overpay_offset' (идемпотентность повторного End).
         overpay_gross = 0.0
         offset_amount = 0.0
         overpay_remaining = 0.0
         balance_before: float | None = None
-        if paid_sum > 0 and zp_fact < paid_sum - 0.009:
-            overpay_gross = round(paid_sum - zp_fact, 2)
-            # дельта: gross − уже списанное (идемпотентность повторного End)
+        glob: dict[str, Any] | None = None
+        rp_users = await self.find_users_by_role(Role.RP, limit=5)
+        if rp_users:
+            rp_id = int(rp_users[0].telegram_id)
+            glob = await self._zp_global_overpay(
+                target="rp", employee_id=rp_id, wallet_role="rp",
+            )
+            overpay_gross = max(0.0, glob["overpay"])
+            offset_done = await self._sum_rp_overpay_offset(rp_id, "rp")
             overpay_remaining = max(0.0, round(overpay_gross - offset_done, 2))
             if overpay_remaining > 0.009:
-                rp_users = await self.find_users_by_role(Role.RP, limit=5)
-                if rp_users:
-                    rp_id = int(rp_users[0].telegram_id)
-                    balance_before = await self.get_advance_balance(rp_id, "rp")
-                    offset_amount = round(min(overpay_remaining, balance_before), 2)
+                balance_before = await self.get_advance_balance(rp_id, "rp")
+                offset_amount = round(min(overpay_remaining, balance_before), 2)
 
         try:
             # 1) факт-ЗП + дата пересчёта — всегда (бот-локальные поля).
-            # rp_overpay = переплата МИНОС текущее авто-списание (неот списанного).
+            # rp_overpay = глобальный неот списанный остаток переплаты.
             await self.conn.execute(
                 "UPDATE invoices SET rp_zp_fact = ?, rp_fact_recalc_at = ?, "
                 "rp_overpay = ?, updated_at = ? WHERE id = ?",
                 (zp_fact, now_iso, round(overpay_remaining - offset_amount, 2),
                  now_iso, int(invoice_id)),
             )
-            # 2) авто-списание переплаты из авансового кошелька РП.
+            # 2) авто-списание глобальной переплаты из авансового кошелька РП.
             if offset_amount > 0.009:
                 rp_users = await self.find_users_by_role(Role.RP, limit=5)
                 rp_id = int(rp_users[0].telegram_id)  # не None: проверено выше
@@ -11609,16 +11707,11 @@ class Database:
                     " paid_at, initiator, request_type, wallet_role) "
                     "VALUES (?, ?, 'paid', ?, ?, ?, 'system', ?, 'rp')",
                     (rp_id, offset_amount,
-                     f"Списание переплаты ЗП РП: счёт №{invoice_number}",
+                     f"Списание переплаты ЗП РП (глобально, №126): "
+                     f"Σ налитого+прямых−факт-ЗП; триггер — счёт №{invoice_number}",
                      now_iso, now_iso, RP_OVERPAY_OFFSET_TYPE),
                 )
                 req_id = int(cur.lastrowid)
-                await self.conn.execute(
-                    "UPDATE invoices SET "
-                    "rp_overpay_offset = COALESCE(rp_overpay_offset, 0) + ?, "
-                    "updated_at = ? WHERE id = ?",
-                    (offset_amount, now_iso, int(invoice_id)),
-                )
                 overpay_remaining = round(overpay_remaining - offset_amount, 2)
             else:
                 req_id = 0
@@ -11634,7 +11727,7 @@ class Database:
             "zp_fact": zp_fact,
             "fact_profit": round(fact["fact_profit"], 2),
             "incompleteness": fact["incompleteness"],
-            "paid_sum": round(paid_sum, 2),
+            "paid_sum_attributed": round(paid_sum_attributed, 2),
             "paid_channels": {
                 "rp_payout_op": round(ar, 2),
                 "advance_fill": round(npn if advance_at else 0.0, 2),
@@ -11643,13 +11736,14 @@ class Database:
             },
             "credit_zp_items": credit_extra["items"],
             "credit_zp_dupes": credit_extra["dupes"],
-            "unpaid": paid_sum <= 0 and req_op == 0,
+            "unpaid": paid_sum_attributed <= 0 and req_op == 0,
+            "global": glob,
             "overpay_gross": overpay_gross,
             "overpay_remaining": round(overpay_remaining, 2),
             "offset_amount": offset_amount,
             "offset_req_id": req_id,
             "balance_before": balance_before,
-            "shortfall": bool(overpay_gross) and offset_amount < overpay_gross - offset_done - 0.009,
+            "shortfall": bool(overpay_gross) and offset_amount < overpay_gross - 0.009 and overpay_remaining > 0.009,
         }
         try:
             await self.audit(
@@ -11682,15 +11776,14 @@ class Database:
              ((факт-прибыль − 10% РП факт) × 25% лид ГД / 50% свой). Пишем
              mgr_zp_fact + mgr_fact_recalc_at (бот-локальные, реимпорт ОП не
              затирает). Кап невыплаты — в manager_zp_net_payout: min(net, факт).
-          2. Σ выплат менеджера = AN (zp_manager_payout: ручная выплата ГД и
-             зачёт аванса) + кредитные ЗП-траты своего кошелька, привязанные к
-             счёту (решение owner 14.11 №122/№124, анти-дубль №125 ±2 дня).
-          3. Σ выплат > факт-ЗП → переплата: пишем mgr_overpay (остаток) и
-             АВТО-СПИСЫВАЕМ из авансового кошелька менеджера (первичный кошелёк,
-             wallet_role != 'rp', тег из _manager_wallet_tag; request_type=
-             'manager_overpay_offset', initiator='system', status='paid').
-             Гард: не больше баланса; трекер mgr_overpay_offset — повторный End
-             не списывает вторично.
+          2. №126 (owner 14.11, решение 15.11 «глобально по кошельку»):
+             переплата менеджера = Σ налитого (paid-топапов его кошелька)
+             + Σ прямых (AN-ручная = AN − зачёты; зачёт аванса — разнесение
+             налитого, НЕ выплата; + кредитные ЗП-траты своего кошелька по
+             счетам) − Σ факт-ЗП по ВСЕМ закрытым счетам менеджера (на лету).
+             При переплате → авто-списание из авансового кошелька
+             (request_type='manager_overpay_offset'; трекер — Σ этих строк;
+             повторный End не списывает вторично). Гард: не больше баланса.
         """
         inv = await self.get_invoice(invoice_id)
         if not inv:
@@ -11708,29 +11801,47 @@ class Database:
         now_iso = to_iso(utcnow())
         invoice_number = str(inv.get("invoice_number") or "")
 
-        # Σ выплат менеджера: AN (ручная выплата + зачёт аванса) + канал ЗП через
-        # кредитный кошелёк менеджера (решение owner 14.11 №122/№124: траты
-        # своего кредит-кошелька с «ЗП» без маркера РП, привязанные к счёту,
-        # минус дубли — анти-дубль №125, ±2 дня, журнал-приёмник первичен).
+        # Кредитные ЗП-траты своего кошелька, привязанные к счёту (анти-дубль
+        # №125; журнал-приёмник AN). Атрибуция — для сводки/аудита.
         wallet_tag = await self._manager_wallet_tag(manager_id)
         credit_extra = await self._zp_credit_spends_extra(
             int(invoice_id), invoice_number, target="manager", wallet_tag=wallet_tag,
         )
-        paid_sum = float(inv.get("zp_manager_payout") or 0) + credit_extra["total"]
-        offset_done = float(inv.get("mgr_overpay_offset") or 0)
+        # AN-ручная (без зачётов — №126: зачёт = разнесение налитого).
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(it.offset_amount), 0) "
+            "FROM installer_advance_items it WHERE it.invoice_id = ? "
+            "  AND it.offset_zp_id IS NOT NULL",
+            (int(invoice_id),),
+        )
+        taken = float((await cur.fetchone())[0] or 0)
+        an_manual = max(0.0, float(inv.get("zp_manager_payout") or 0) - taken)
+        paid_sum_attributed = an_manual + taken + credit_extra["total"]
 
+        # №126 (owner 14.11, решение 15.11 «глобально по кошельку»):
+        # переплата = Σ налитого (топапов кошелька менеджера) + Σ прямых
+        # (AN-ручная + кредитные) − Σ факт-ЗП по всем закрытым счетам
+        # менеджера; авто-списание от глобальной цифры, трекер —
+        # Σ request_type='manager_overpay_offset'.
         overpay_gross = 0.0
         offset_amount = 0.0
         overpay_remaining = 0.0
         balance_before: float | None = None
-        if paid_sum > 0 and zp_fact < paid_sum - 0.009:
-            overpay_gross = round(paid_sum - zp_fact, 2)
-            overpay_remaining = max(0.0, round(overpay_gross - offset_done, 2))
-            if overpay_remaining > 0.009:
-                balance_before = await self.get_advance_balance(manager_id, wallet_tag)
-                offset_amount = round(min(overpay_remaining, balance_before), 2)
+        glob = await self._zp_global_overpay(
+            target="manager", employee_id=manager_id,
+            wallet_role=wallet_tag, wallet_tag=wallet_tag,
+        )
+        overpay_gross = max(0.0, glob["overpay"])
+        offset_done = await self._sum_manager_overpay_offset(manager_id, wallet_tag)
+        overpay_remaining = max(0.0, round(overpay_gross - offset_done, 2))
+        if overpay_remaining > 0.009:
+            balance_before = await self.get_advance_balance(manager_id, wallet_tag)
+            offset_amount = round(min(overpay_remaining, balance_before), 2)
 
         try:
+            # mgr_overpay = глобальный неот списанный остаток переплаты
+            # (не по-счётный: auto_offset_manager_overpay_on_topup по нему
+            # больше не гасит — при топапе переплата растёт, не гасится).
             await self.conn.execute(
                 "UPDATE invoices SET mgr_zp_fact = ?, mgr_fact_recalc_at = ?, "
                 "mgr_overpay = ?, updated_at = ? WHERE id = ?",
@@ -11744,16 +11855,11 @@ class Database:
                     " paid_at, initiator, request_type, wallet_role) "
                     "VALUES (?, ?, 'paid', ?, ?, ?, 'system', ?, ?)",
                     (manager_id, offset_amount,
-                     f"Списание переплаты ЗП менеджера: счёт №{invoice_number}",
+                     f"Списание переплаты ЗП менеджера (глобально, №126): "
+                     f"Σ налитого+прямых−факт-ЗП; триггер — счёт №{invoice_number}",
                      now_iso, now_iso, MGR_OVERPAY_OFFSET_TYPE, wallet_tag),
                 )
                 req_id = int(cur.lastrowid)
-                await self.conn.execute(
-                    "UPDATE invoices SET "
-                    "mgr_overpay_offset = COALESCE(mgr_overpay_offset, 0) + ?, "
-                    "updated_at = ? WHERE id = ?",
-                    (offset_amount, now_iso, int(invoice_id)),
-                )
                 overpay_remaining = round(overpay_remaining - offset_amount, 2)
             else:
                 req_id = 0
@@ -11770,21 +11876,23 @@ class Database:
             "zp_fact": zp_fact,
             "fact_profit": round(fact["fact_profit"], 2),
             "incompleteness": fact["incompleteness"],
-            "paid_sum": round(paid_sum, 2),
+            "paid_sum_attributed": round(paid_sum_attributed, 2),
             "paid_channels": {
-                "zp_manager_payout": round(float(inv.get("zp_manager_payout") or 0), 2),
+                "zp_manager_payout_manual": round(an_manual, 2),
+                "advance_offset": round(taken, 2),
                 "credit_zp_extra": round(credit_extra["total"], 2),
             },
             "credit_zp_items": credit_extra["items"],
             "credit_zp_dupes": credit_extra["dupes"],
-            "unpaid": paid_sum <= 0,
+            "unpaid": paid_sum_attributed <= 0,
+            "global": glob,
             "overpay_gross": overpay_gross,
             "overpay_remaining": round(overpay_remaining, 2),
             "offset_amount": offset_amount,
             "offset_req_id": req_id,
             "balance_before": balance_before,
             "wallet_tag": wallet_tag,
-            "shortfall": bool(overpay_gross) and offset_amount < overpay_gross - offset_done - 0.009,
+            "shortfall": bool(overpay_gross) and offset_amount < overpay_gross - 0.009 and overpay_remaining > 0.009,
         }
         try:
             await self.audit(

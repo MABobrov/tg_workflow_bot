@@ -114,8 +114,9 @@ def test_fact_below_plan_unpaid_autodecrease(tmp_path) -> None:
 
 
 def test_paid_via_gd_overpay_debits_wallet(tmp_path) -> None:
-    """Выплачено через ГД (rp_payout_op) при факте ниже плана → переплата
-    фиксируется и авто-списывается из кошелька (в пределах баланса)."""
+    """№126 (глобально): переплата = Σ налитого + прямых − Σ факт-ЗП.
+    Топап 5 000 + AR 10 000 − факт-ЗП 800 = 14 200; списано 5 000 (весь
+    баланс), неот списанного остаток 9 200 в rp_overpay."""
     async def scenario() -> None:
         db = await _mk_db(tmp_path)
         try:
@@ -127,10 +128,7 @@ def test_paid_via_gd_overpay_debits_wallet(tmp_path) -> None:
             await db.update_invoice_status(inv_id, "ended")
             inv = await db.get_invoice(inv_id)
             assert inv is not None
-            # переплата = 10 000 − 800 = 9 200; списано 5 000 (весь баланс),
-            # неот списанного остатка 4 200 остаётся в rp_overpay.
-            assert abs(float(inv["rp_overpay"]) - 4_200.0) < 0.01
-            assert abs(float(inv["rp_overpay_offset"] or 0) - 5_000.0) < 0.01
+            assert abs(float(inv["rp_overpay"]) - 9_200.0) < 0.01
             assert abs(await _overpay_offset_sum(db) - 5_000.0) < 0.01
             assert await db.get_advance_balance(RP_TG_ID, "rp") == 0.0
             # аудит переплаты записан
@@ -147,8 +145,8 @@ def test_paid_via_gd_overpay_debits_wallet(tmp_path) -> None:
 
 
 def test_paid_via_advance_fill_overpay_debits_wallet(tmp_path) -> None:
-    """Выплачено наливом своей ЗП в аванс (rp_payout_advance_at) → переплата
-    + авто-списание из кошелька."""
+    """№126: налив = выплата в момент налива. Топап 20 000 считается
+    выплаченным сразу; факт-ЗП 800 → переплата 19 200, списана целиком."""
     async def scenario() -> None:
         db = await _mk_db(tmp_path)
         try:
@@ -158,10 +156,10 @@ def test_paid_via_advance_fill_overpay_debits_wallet(tmp_path) -> None:
             await db.update_invoice_status(inv_id, "ended")
             inv = await db.get_invoice(inv_id)
             assert inv is not None
-            # Σ выплат = npn 10 000 (налив) → переплата 9 200, списана целиком.
+            # Σ выплат (глобально) = налитое 20 000 → переплата 19 200, списана.
             assert abs(float(inv["rp_overpay"]) - 0.0) < 0.01
-            assert abs(float(inv["rp_overpay_offset"] or 0) - 9_200.0) < 0.01
-            assert abs(await db.get_advance_balance(RP_TG_ID, "rp") - 10_800.0) < 0.01
+            assert abs(await _overpay_offset_sum(db) - 19_200.0) < 0.01
+            assert abs(await db.get_advance_balance(RP_TG_ID, "rp") - 800.0) < 0.01
         finally:
             await db.close()
 
@@ -169,8 +167,9 @@ def test_paid_via_advance_fill_overpay_debits_wallet(tmp_path) -> None:
 
 
 def test_paid_via_rp_offset_overpay_debits_wallet(tmp_path) -> None:
-    """Выплачено зачётом аванса (apply_rp_advance_to_invoice_now) → rp-offset
-    входит в Σ выплат, переплата списывается."""
+    """№126: зачёт аванса — разнесение налитого, НЕ выплата. Налитое 20 000
+    посчитано топапом; зачёт 10 000 не добавляется. Переплата 19 200,
+    списание ограничено балансом после зачёта (10 000)."""
     async def scenario() -> None:
         db = await _mk_db(tmp_path)
         try:
@@ -182,9 +181,10 @@ def test_paid_via_rp_offset_overpay_debits_wallet(tmp_path) -> None:
             await db.update_invoice_status(inv_id, "ended")
             inv = await db.get_invoice(inv_id)
             assert inv is not None
-            # Σ выплат = зачёт 10 000 → переплата 9 200, кошелька хватило.
-            assert abs(float(inv["rp_overpay_offset"] or 0) - 9_200.0) < 0.01
-            assert abs(float(inv["rp_overpay"]) - 0.0) < 0.01
+            # переплата = 20 000 − 800 = 19 200; баланс после зачёта 10 000.
+            assert abs(await _overpay_offset_sum(db) - 10_000.0) < 0.01
+            assert abs(float(inv["rp_overpay"]) - 9_200.0) < 0.01
+            assert abs(await db.get_advance_balance(RP_TG_ID, "rp") - 0.0) < 0.01
         finally:
             await db.close()
 
@@ -192,11 +192,12 @@ def test_paid_via_rp_offset_overpay_debits_wallet(tmp_path) -> None:
 
 
 def test_fact_at_or_above_plan_no_changes(tmp_path) -> None:
-    """Факт ≥ Σ выплат → без переплаты и списаний, rp_overpay = 0."""
+    """№126: налитое-впрок = выплата сразу → переплата, пока ЗП не наработана.
+    Топап 20 000 + AR 10 000 − факт-ЗП 10 000 = 20 000 → списан весь кошелёк."""
     async def scenario() -> None:
         db = await _mk_db(tmp_path)
         try:
-            # факт-прибыль = 100 000 → ЗП факт 10 000 == выплачено 10 000.
+            # факт-прибыль = 100 000 → ЗП факт 10 000.
             inv_id = await _mk_invoice(db, materials_fact=0.0)
             await db.update_invoice(inv_id, rp_payout_op=10_000.0)
             await _wallet_topup(db, 20_000.0)
@@ -204,9 +205,9 @@ def test_fact_at_or_above_plan_no_changes(tmp_path) -> None:
             inv = await db.get_invoice(inv_id)
             assert inv is not None
             assert abs(float(inv["rp_zp_fact"]) - 10_000.0) < 0.01
+            assert abs(await _overpay_offset_sum(db) - 20_000.0) < 0.01
             assert float(inv["rp_overpay"] or 0) == 0.0
-            assert await _overpay_offset_sum(db) == 0.0
-            assert abs(await db.get_advance_balance(RP_TG_ID, "rp") - 20_000.0) < 0.01
+            assert abs(await db.get_advance_balance(RP_TG_ID, "rp") - 0.0) < 0.01
         finally:
             await db.close()
 
@@ -263,7 +264,8 @@ def test_sheet_reimport_preserves_new_fields(tmp_path) -> None:
 
 
 def test_repeat_end_idempotent(tmp_path) -> None:
-    """Повторный End не списывает переплату второй раз (трекер-дельта)."""
+    """Повторный End не списывает переплату второй раз (трекер — Σ строк
+    rp_overpay_offset в кошельке, №126)."""
     async def scenario() -> None:
         db = await _mk_db(tmp_path)
         try:
@@ -273,16 +275,17 @@ def test_repeat_end_idempotent(tmp_path) -> None:
             await db.update_invoice_status(inv_id, "ended")
             first = await db.get_invoice(inv_id)
             assert first is not None
-            assert abs(float(first["rp_overpay_offset"] or 0) - 9_200.0) < 0.01
+            # переплата = топап 20 000 + AR 10 000 − 800 = 29 200;
+            # списано 20 000 (весь баланс), остаток 9 200 в rp_overpay.
+            assert abs(await _overpay_offset_sum(db) - 20_000.0) < 0.01
             # повторный End (ре-эмиссия/форс) — списание не дублируется.
             await db.update_invoice_status(inv_id, "ended")
             await db.recalc_rp_zp_on_end(inv_id)
-            assert abs(await _overpay_offset_sum(db) - 9_200.0) < 0.01
+            assert abs(await _overpay_offset_sum(db) - 20_000.0) < 0.01
             inv = await db.get_invoice(inv_id)
             assert inv is not None
-            assert abs(float(inv["rp_overpay_offset"] or 0) - 9_200.0) < 0.01
-            assert abs(float(inv["rp_overpay"]) - 0.0) < 0.01
-            assert abs(await db.get_advance_balance(RP_TG_ID, "rp") - 10_800.0) < 0.01
+            assert abs(float(inv["rp_overpay"]) - 9_200.0) < 0.01
+            assert abs(await db.get_advance_balance(RP_TG_ID, "rp") - 0.0) < 0.01
         finally:
             await db.close()
 

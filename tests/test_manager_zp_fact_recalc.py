@@ -131,8 +131,9 @@ def test_gd_lead_share_25(tmp_path) -> None:
 
 
 def test_paid_via_an_overpay_debits_wallet(tmp_path) -> None:
-    """Выплачено через AN (zp_manager_payout) при факте ниже плана →
-    переплата фиксируется и авто-списывается из кошелька (в пределах баланса)."""
+    """№126 (глобально): переплата = Σ налитого + прямых − Σ факт-ЗП.
+    Топап 5 000 + AN 10 000 − факт 3 600 = 11 400; списано 5 000 (весь
+    баланс), остаток 6 400 в mgr_overpay."""
     async def scenario() -> None:
         db = await _mk_db(tmp_path)
         try:
@@ -143,10 +144,7 @@ def test_paid_via_an_overpay_debits_wallet(tmp_path) -> None:
             await db.update_invoice_status(inv_id, "ended")
             inv = await db.get_invoice(inv_id)
             assert inv is not None
-            # переплата = 10 000 − 3 600 = 6 400; списано 5 000 (весь баланс),
-            # неот списанного остатка 1 400 остаётся в mgr_overpay.
-            assert abs(float(inv["mgr_overpay"]) - 1_400.0) < 0.01
-            assert abs(float(inv["mgr_overpay_offset"] or 0) - 5_000.0) < 0.01
+            assert abs(float(inv["mgr_overpay"]) - 6_400.0) < 0.01
             assert abs(await _overpay_offset_sum(db) - 5_000.0) < 0.01
             assert await db.get_advance_balance(MGR_TG_ID, "manager_npn") == 0.0
             cur = await db.conn.execute(
@@ -184,20 +182,23 @@ def test_fact_at_or_above_payout_no_overpay(tmp_path) -> None:
 
 
 def test_repeat_end_idempotent(tmp_path) -> None:
-    """Повторный End не списывает переплату вторично (трекер mgr_overpay_offset)."""
+    """Повторный End не списывает переплату вторично (трекер — Σ строк
+    manager_overpay_offset, №126)."""
     async def scenario() -> None:
         db = await _mk_db(tmp_path)
         try:
             inv_id = await _mk_invoice(db, materials_fact=92_000.0)  # факт 3 600
             await db.update_invoice(inv_id, zp_manager_payout=10_000.0)
-            await _wallet_topup(db, 20_000.0)  # хватает на всю переплату 6 400
+            await _wallet_topup(db, 20_000.0)
             await db.update_invoice_status(inv_id, "ended")
             await db.update_invoice_status(inv_id, "ended")  # повтор — без эффекта
             inv = await db.get_invoice(inv_id)
             assert inv is not None
-            assert abs(float(inv["mgr_overpay_offset"] or 0) - 6_400.0) < 0.01
-            assert abs(await _overpay_offset_sum(db) - 6_400.0) < 0.01
-            assert float(inv["mgr_overpay"] or 0) == 0.0
+            # переплата = топап 20 000 + AN 10 000 − 3 600 = 26 400;
+            # списано 20 000 (весь баланс), остаток 6 400 в mgr_overpay.
+            assert abs(await _overpay_offset_sum(db) - 20_000.0) < 0.01
+            assert abs(float(inv["mgr_overpay"]) - 6_400.0) < 0.01
+            assert abs(await db.get_advance_balance(MGR_TG_ID, "manager_npn") - 0.0) < 0.01
         finally:
             await db.close()
 
