@@ -490,7 +490,8 @@ async def gd_invoices_work(message: Message, db: Database) -> None:
 
     text = (
         f"📊 <b>Счета в работе</b> ({len(invoices)})\n"
-        f"{' | '.join(header_parts)}\n\n"
+        f"{' | '.join(header_parts)}\n"
+        + tail_note(len(invoices), 20) + "\n"
         "Нажмите на счёт для просмотра:"
     )
     await message.answer(text, reply_markup=b.as_markup())
@@ -546,7 +547,8 @@ async def gd_invoices_work_refresh(cb: CallbackQuery, db: Database) -> None:
 
     text = (
         f"📊 <b>Счета в работе</b> ({len(invoices)})\n"
-        f"{' | '.join(header_parts)}\n\n"
+        f"{' | '.join(header_parts)}\n"
+        + tail_note(len(invoices), 20) + "\n"
         "Нажмите на счёт для просмотра:"
     )
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
@@ -3027,6 +3029,10 @@ async def gd_advance_approve(
     integrations: IntegrationHub,
 ) -> None:
     """ГД одобряет запрос аванса."""
+    # №107 (owner 15.11): role-гард — кнопки авансов без проверки роли позволяли
+    # провести аванс любому, кому переслали карточку.
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     if not cb.from_user:
         return
     await cb.answer()
@@ -3067,6 +3073,9 @@ async def gd_advance_reject_start(
     cb: CallbackQuery, state: FSMContext, db: Database,
 ) -> None:
     """ГД нажимает «Отклонить» — FSM ввода причины."""
+    # №107 (owner 15.11): role-гард (как у одобрения/оплаты).
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     if not cb.from_user:
         return
     await cb.answer()
@@ -3091,6 +3100,9 @@ async def gd_advance_reject_reason_input(
     message: Message, state: FSMContext, db: Database, notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
+    # №107 (owner 15.11): продолжение флоу отклонения — тот же role-гард.
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
+        return
     if not message.from_user:
         return
     reason = (message.text or "").strip()
@@ -3125,6 +3137,9 @@ async def gd_advance_pay_start(
     cb: CallbackQuery, state: FSMContext, db: Database,
 ) -> None:
     """ГД нажимает «Оплатить» — FSM загрузки чека/п/п."""
+    # №107 (owner 15.11): role-гард (как у одобрения/отклонения).
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     if not cb.from_user:
         return
     await cb.answer()
@@ -3149,6 +3164,9 @@ async def gd_advance_pay_receipt_input(
     message: Message, state: FSMContext, db: Database, notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
+    # №107 (owner 15.11): продолжение флоу оплаты — тот же role-гард.
+    if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
+        return
     if not message.from_user:
         return
     data = await state.get_data()
