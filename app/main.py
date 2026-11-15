@@ -161,6 +161,31 @@ async def main() -> None:
             )
         )
 
+    # Knowledge sheet «Бот для Телеграмм»: чтение через лист «Карта таблицы»
+    # (карта → точный диапазон листа). Ошибки доступа не роняют бота.
+    knowledge_service = None
+    if config.knowledge_sheet_enabled and config.knowledge_sheet_id:
+        from .integrations.knowledge_sheet import (
+            KnowledgeConfig,
+            KnowledgeSheetService,
+        )
+        knowledge_service = KnowledgeSheetService(
+            KnowledgeConfig(
+                enabled=True,
+                spreadsheet_id=config.knowledge_sheet_id,
+                map_tab=config.knowledge_map_tab,
+                cache_ttl_seconds=config.knowledge_cache_ttl_seconds,
+                service_account_json=config.google_sa_json,
+                service_account_file=config.google_sa_file,
+            )
+        )
+        log.info(
+            "Knowledge sheet enabled (map tab: «%s», VM sheets: %s)",
+            config.knowledge_map_tab, ", ".join(config.knowledge_vm_sheets) or "—",
+        )
+    else:
+        log.info("Knowledge sheet DISABLED (KNOWLEDGE_SHEET_ENABLED=false или нет ID)")
+
     amocrm_service = None
     if config.amocrm_enabled:
         if not config.amocrm_base_url:
@@ -243,6 +268,7 @@ async def main() -> None:
                     anthropic_client=anthropic_client,
                     store=ConversationStore(db),
                     notifier=notifier,
+                    knowledge=knowledge_service,
                 )
                 log.info(
                     "Virtual manager enabled (model=%s, debounce=%ds, history=%d)",
@@ -600,6 +626,7 @@ async def main() -> None:
             notifier=notifier,
             integrations=integrations,
             storage=storage,
+            knowledge=knowledge_service,
         )
     finally:
         # Cancel all background tasks and await them

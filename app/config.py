@@ -60,6 +60,12 @@ ZAMERY_BASE_COST: int = _parse_int(os.getenv("ZAMERY_BASE_COST")) or 3000
 ZAMERY_MKAD_FREE_KM: int = _parse_int(os.getenv("ZAMERY_MKAD_FREE_KM")) or 5
 ZAMERY_MKAD_RATE: int = _parse_int(os.getenv("ZAMERY_MKAD_RATE")) or 40
 
+# Таблица знаний «Бот для Телеграмм»: бот читает её через лист «Карта таблицы»
+# (точный диапазон каждого листа — из карты, наугад не читаем).
+# KNOWLEDGE_SHEET_ENABLED=true по умолчанию; доступ — тем же сервисным аккаунтом,
+# что и у рабочей таблицы (аккаунт должен иметь доступ к таблице знаний).
+KNOWLEDGE_DEFAULT_SPREADSHEET_ID = "1fJQYT_qBTu7lIc5yHH6TCzb7skspel0VXLMvAiR4MWk"
+
 
 def compute_zamery_cost(mkad_km: float | int | None) -> tuple[int, int, int]:
     """Стоимость замера по единому тарифу.
@@ -180,6 +186,13 @@ class Config:
     amocrm_chat_amojo_url: str
     vm_handoff_status_id: Optional[int]
     vm_field_ids: dict[str, int] = field(default_factory=dict)
+
+    # Knowledge sheet «Бот для Телеграмм» (чтение через «Карту таблицы»)
+    knowledge_sheet_enabled: bool = True
+    knowledge_sheet_id: Optional[str] = None
+    knowledge_map_tab: str = "Карта таблицы"
+    knowledge_vm_sheets: list[str] = field(default_factory=list)
+    knowledge_cache_ttl_seconds: int = 600
 
     def get_role_id(self, role: str) -> int | None:
         """Return default telegram_id for a given role string."""
@@ -332,6 +345,17 @@ def load_config() -> Config:
         except json.JSONDecodeError:
             pass
 
+    # Knowledge sheet «Бот для Телеграмм»
+    knowledge_sheet_enabled = _parse_bool(os.getenv("KNOWLEDGE_SHEET_ENABLED"), default=True)
+    knowledge_sheet_id = (os.getenv("KNOWLEDGE_SHEET_ID") or "").strip() or KNOWLEDGE_DEFAULT_SPREADSHEET_ID
+    knowledge_map_tab = (os.getenv("KNOWLEDGE_MAP_TAB") or "Карта таблицы").strip()
+    knowledge_vm_sheets = [
+        s.strip() for s in (os.getenv("KNOWLEDGE_VM_SHEETS")
+                            or "Правила · Деньги и ЗП,Запреты и Не трогать").split(",")
+        if s.strip()
+    ]
+    knowledge_cache_ttl_seconds = _parse_int(os.getenv("KNOWLEDGE_CACHE_TTL_SECONDS", "600")) or 600
+
     return Config(
         bot_token=token,
         admin_ids=admin_ids,
@@ -407,4 +431,9 @@ def load_config() -> Config:
         amocrm_chat_amojo_url=amocrm_chat_amojo_url,
         vm_handoff_status_id=vm_handoff_status_id,
         vm_field_ids=vm_field_ids,
+        knowledge_sheet_enabled=knowledge_sheet_enabled,
+        knowledge_sheet_id=knowledge_sheet_id,
+        knowledge_map_tab=knowledge_map_tab,
+        knowledge_vm_sheets=knowledge_vm_sheets,
+        knowledge_cache_ttl_seconds=knowledge_cache_ttl_seconds,
     )

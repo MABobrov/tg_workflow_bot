@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 
@@ -13,6 +14,7 @@ from ..callbacks import AdminRoleCb, AdminUserCb, AdminUsersListCb, TaskCb
 from ..config import Config
 from ..db import Database
 from ..enums import Role
+from ..integrations.knowledge_sheet import KnowledgeSheetService
 from ..keyboards import (
     ADMIN_EMPLOYEES_BUTTON,
     ADMIN_HELP_BUTTON,
@@ -290,6 +292,7 @@ async def cmd_admin_help(message: Message, config: Config) -> None:
         "• <code>/stats</code> — статистика использования бота.\n\n"
         "<b>5) Интеграции</b>\n"
         "• <code>/resyncsheets</code> — полная пересинхронизация Google Sheets.\n"
+        "• <code>/знания</code> — карта таблицы знаний; <code>/знания &lt;лист&gt;</code> — содержимое листа.\n"
     )
     await message.answer(text)
 
@@ -303,6 +306,64 @@ async def open_admin_panel(message: Message, db: Database, config: Config) -> No
         "Панель администратора:",
         reply_markup=private_only_reply_markup(message, admin_panel_menu()),
     )
+
+
+@router.message(Command("знания"))
+@router.message(Command("knowledge"))
+async def cmd_knowledge(
+    message: Message,
+    config: Config,
+    knowledge: "KnowledgeSheetService | None" = None,
+) -> None:
+    """Таблица знаний «Бот для Телеграмм»: карта листов и чтение листа.
+
+    /знания — карта (лист, диапазон, штамп актуальности);
+    /знания <имя листа> — содержимое листа по точному диапазону из карты.
+    """
+    u = message.from_user
+    if not u or not _is_admin(u.id, config):
+        return
+
+    if knowledge is None:
+        await message.answer(
+            "Таблица знаний выключена (KNOWLEDGE_SHEET_ENABLED=false или нет ID таблицы)."
+        )
+        return
+
+    sheet_name = (message.text or "").split(maxsplit=1)[1].strip() if (message.text or "").split(maxsplit=1)[1:] else ""
+
+    try:
+        if not sheet_name:
+            entries = await asyncio.to_thread(knowledge.load_map, True)
+            lines = ["<b>Карта таблицы знаний</b> (лист · диапазон · штамп):"]
+            for e in entries:
+                lines.append(f"• <code>{html.quote(e.name)}</code> · {html.quote(e.data_range)} · {html.quote(e.stamp or '—')}")
+            await message.answer("\n".join(lines))
+            return
+
+        data = await asyncio.to_thread(knowledge.read, sheet_name)
+        if data is None:
+            entries = knowledge.load_map()
+            names = ", ".join(f"<code>{html.quote(e.name)}</code>" for e in entries)
+            await message.answer(
+                f"Листa «{html.quote(sheet_name)}» нет в карте таблицы. Доступные листы:\n{names}"
+            )
+            return
+
+        lines = [
+            f"<b>{html.quote(data.name)}</b> · диапазон {html.quote(data.data_range)} · "
+            f"штамп: {html.quote(data.stamp or '—')}",
+        ]
+        for idx, row in enumerate(data.rows, start=1):
+            cells = [f"{html.quote(str(k))}: {html.quote(str(v))}" for k, v in row.items() if str(v).strip()]
+            if cells:
+                lines.append(f"{idx}. " + "; ".join(cells))
+        if len(lines) == 1:
+            lines.append("(лист пуст)")
+        await _answer_chunked(message, lines)
+    except Exception as exc:
+        log.exception("Knowledge command failed")
+        await message.answer(f"Ошибка чтения таблицы знаний: {html.quote(str(exc))}")
 
 
 @router.message(F.text == ADMIN_HELP_BUTTON)

@@ -158,12 +158,16 @@ class VirtualManager:
         anthropic_client: AnthropicClient,
         store: ConversationStore,
         notifier: Notifier,
+        knowledge: Any | None = None,
     ):
         self.cfg = cfg
         self.amocrm = amocrm
         self.anthropic = anthropic_client
         self.store = store
         self.notifier = notifier
+        # Knowledge sheet «Бот для Телеграмм»: правила из таблицы знаний
+        # подмешиваются в системный промт (лист «Карта таблицы» → диапазон).
+        self.knowledge = knowledge
 
         # Allow override via env without code change (keeps DEFAULT in code as a safe fallback)
         env_prompt = (os.getenv("VIRTUAL_MANAGER_SYSTEM_PROMPT") or "").strip()
@@ -173,6 +177,10 @@ class VirtualManager:
         self._debounce_tasks: dict[str, asyncio.Task] = {}
         # Per-chat lock: prevents concurrent processing of the same conversation
         self._chat_locks: dict[str, asyncio.Lock] = {}
+        # Кэш дайджеста правил (обновляется не чаще раза в час; ошибки не роняют бота)
+        self._rules_digest: str | None = None
+        self._rules_digest_ts: float = 0.0
+        self._RULES_DIGEST_TTL_SEC = 3600
 
     # ---------- public entry point ----------
 
@@ -275,7 +283,7 @@ class VirtualManager:
 
             try:
                 resp = await self.anthropic.send_turn(
-                    system_prompt=self.system_prompt,
+                    system_prompt=await self._effective_system_prompt(),
                     tools=TOOLS,
                     history=history,
                 )
@@ -322,6 +330,36 @@ class VirtualManager:
 
         log.warning("VM: tool loop hit MAX_TOOL_LOOPS (%d) on conv %s",
                     self.MAX_TOOL_LOOPS, conv_id)
+
+    # ---------- knowledge-sheet rules ----------
+
+    async def _effective_system_prompt(self) -> str:
+        """Системный промт + дайджест правил из таблицы знаний.
+
+        Ошибки чтения таблицы знаний не должны ронять ответы виртуального
+        менеджера: при любой проблеме работает чистый системный промт.
+        """
+        now = time.monotonic()
+        if self._rules_digest is None or now - self._rules_digest_ts > self._RULES_DIGEST_TTL_SEC:
+            digest = ""
+            if self.knowledge and self.cfg.knowledge_vm_sheets:
+                try:
+                    digest = await asyncio.to_thread(
+                        self.knowledge.rules_digest, self.cfg.knowledge_vm_sheets,
+                    )
+                except Exception:
+                    log.exception("VM: knowledge rules digest failed — falling back to base prompt")
+                    digest = ""
+            self._rules_digest = digest
+            self._rules_digest_ts = now
+        if not self._rules_digest:
+            return self.system_prompt
+        return (
+            self.system_prompt
+            + "\n\nСправочник правил и запретов компании из базы знаний "
+            "(соблюдай их в ответах клиентам):\n\n"
+            + self._rules_digest
+        )
 
     # ---------- tool implementations ----------
 
