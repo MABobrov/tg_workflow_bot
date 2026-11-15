@@ -3248,6 +3248,7 @@ EMPLOYEE_DEPOSIT_WHITELIST: dict[str, int | None] = {
     "Игорь": 1072734744,
     "Кирилл": 5641023011,
     "Илья": 495451226,
+    "Виктор": None,  # tg_id не настроен — кнопка disabled, ждём ID
 }
 
 
@@ -3391,7 +3392,7 @@ async def gd_deposit_nottid(cb: CallbackQuery) -> None:
     name = cb.data.split(":")[-1] if cb.data else "?"  # type: ignore[union-attr]
     await cb.answer(
         f"⚠️ Telegram-ID сотрудника «{name}» не настроен. "
-        "Запросите ID у Сергея и добавьте в EMPLOYEE_DEPOSIT_WHITELIST.",
+        "Запросите ID у сотрудника и добавьте в EMPLOYEE_DEPOSIT_WHITELIST.",
         show_alert=True,
     )
 
