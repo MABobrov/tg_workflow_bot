@@ -373,7 +373,7 @@ async def _build_gd_invoices_view(db: Database, user_id: int):
         return f"{INDENT}{lbl}{' ' * pad}{val}"
 
     def _rule() -> str:
-        return INDENT + "━" * max(3, (width - vw(INDENT)) // 2)  # ━ ≈ 2 колонки
+        return INDENT + "━" * 14  # единая длина: половина карточки
 
     out: list[tuple[str, InlineKeyboardBuilder | None]] = []
 
@@ -1537,7 +1537,7 @@ async def _build_summary(db: Database) -> tuple[str, "InlineKeyboardBuilder"]:
     # carry-in переданные следующему счёту (da=0) скрываем.
     _credit_visible = [r for r in _credit_open if float(r.get("da") or 0) > 0]
     if _credit_visible:
-        lines.append(f"{'─' * 17}")
+        lines.append(f"{'─' * 14}")
         lines.append(f"{'🏦 Кредит':28s} {len(_credit_visible):>5}")
         for _r in _credit_visible:
             _num = _r.get("invoice_number") or f"#{_r['id']}"
@@ -1546,7 +1546,7 @@ async def _build_summary(db: Database) -> tuple[str, "InlineKeyboardBuilder"]:
         lines.append(f"{'  ИТОГО':28s} {_f(_credit_total_da):>10}₽")
 
     lines.extend([
-        f"{'─' * 17}",
+        f"{'─' * 14}",
         f"{'💵 Финансы':28s}",
         f"{'  Сумма':28s} {_f(total_amt):>10}₽",
         f"{'  Долг':28s} {_f(total_debt):>10}₽",
@@ -1554,7 +1554,7 @@ async def _build_summary(db: Database) -> tuple[str, "InlineKeyboardBuilder"]:
 
     total_tasks = urgent + inv_pay + suppl_pay + s["zp_pending"]
     if total_tasks:
-        lines.append(f"{'─' * 17}")
+        lines.append(f"{'─' * 14}")
         lines.append(f"{'📋 Открытые задачи':28s} {total_tasks:>5}")
         if urgent:
             lines.append(f"{'  Срочные ГД':28s} {urgent:>5}")
@@ -1566,7 +1566,7 @@ async def _build_summary(db: Database) -> tuple[str, "InlineKeyboardBuilder"]:
             lines.append(f"{'  ЗП-запросы':28s} {s['zp_pending']:>5}")
 
     if overdue or today_dl or soon_dl:
-        lines.append(f"{'─' * 17}")
+        lines.append(f"{'─' * 14}")
         lines.append(f"{'⏰ Дедлайны':28s}")
         if overdue:
             lines.append(f"{'  🔴 Просрочено':28s} {overdue:>5}")
@@ -1595,7 +1595,7 @@ async def _build_summary(db: Database) -> tuple[str, "InlineKeyboardBuilder"]:
         def _signed(n: float) -> str:
             return ("+" + _f(n)) if n >= 0 else _f(n)
 
-        lines.append(f"{'─' * 17}")
+        lines.append(f"{'─' * 14}")
         lines.append(f"📈 Баланс компании {_balance_year}")
         for _r in _monthly_rows:
             _m = int(_r.get("month") or 0)
@@ -1603,7 +1603,7 @@ async def _build_summary(db: Database) -> tuple[str, "InlineKeyboardBuilder"]:
             _bal = float(_r.get("balance_month") or 0)
             lines.append(f"{'  ' + _label:28s} {_signed(_bal):>10s}₽")
         _ytd = float(_monthly_rows[-1].get("balance_running_ytd") or 0)
-        lines.append(f"{'─' * 17}")
+        lines.append(f"{'─' * 14}")
         lines.append(f"{'  YTD':28s} {_signed(_ytd):>10s}₽")
 
     lines.append("</pre>")

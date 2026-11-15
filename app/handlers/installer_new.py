@@ -2175,7 +2175,7 @@ def _build_archive_card(inv: dict) -> str:
     lines.append(f"{'Адрес':16s} {inv.get('object_address', '—')}")
     if lead_name:
         lines.append(f"{'Клиент':16s} {lead_name}")
-    lines.append(f"{'':16s} {'─' * 8}")
+    lines.append('─' * 14)
     if est_total:
         lines.append(f"{'Монтаж':16s} {est_total:>10,}₽")
     if zp_val:
