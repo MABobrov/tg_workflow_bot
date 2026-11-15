@@ -3404,6 +3404,9 @@ async def gd_deposit_pick_installer(
     """После выбора сотрудника — развилка Аванс/Депозит (TZ synthetic-hopping-ocean)."""
     if not cb.from_user:
         return
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     await cb.answer()
     installer_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     valid_ids = {tid for tid in EMPLOYEE_DEPOSIT_WHITELIST.values() if tid is not None}
@@ -3446,6 +3449,9 @@ async def gd_funds_pick_op(
     op == 'back' возвращает на уровень 1 (экран операций). Остаёмся в состоянии
     select_type — обработчики gd_funds:type:* ловят выбор кошелька (уровень 2).
     """
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     await cb.answer()
     op = (cb.data or "").split(":")[-1]
     data = await state.get_data()
@@ -3464,9 +3470,12 @@ async def gd_funds_pick_op(
 
 @router.callback_query(GdDepositSG.select_type, F.data.startswith("gd_funds:type:deposit"))
 async def gd_funds_pick_deposit(
-    cb: CallbackQuery, state: FSMContext,
+    cb: CallbackQuery, state: FSMContext, db: Database,
 ) -> None:
     """Развилка → Депозит. Переход к вводу суммы депозита."""
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     await cb.answer()
     parts = (cb.data or "").split(":")  # gd_funds:type:deposit[:wallet]
     wallet_role = parts[3] if len(parts) > 3 else None
@@ -3493,6 +3502,9 @@ async def gd_funds_pick_advance(
     Сотрудник сам потом распределяет аванс под конкретный счёт через
     «💰 Распределить аванс» в своём меню.
     """
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     await cb.answer()
     parts = (cb.data or "").split(":")  # gd_funds:type:advance[:wallet]
     wallet_role = parts[3] if len(parts) > 3 else None
@@ -3531,6 +3543,9 @@ async def gd_funds_pick_request(
     cb: CallbackQuery, state: FSMContext, db: Database,
 ) -> None:
     """Развилка → Запрос из депозита. Проверяем остаток, переходим к вводу суммы."""
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     await cb.answer()
     parts = (cb.data or "").split(":")  # gd_funds:type:request[:wallet]
     wallet_role = parts[3] if len(parts) > 3 else None
@@ -3563,8 +3578,11 @@ async def gd_funds_pick_request(
 
 @router.message(GdDepositSG.req_enter_amount, F.text)
 async def gd_request_amount_input(
-    message: Message, state: FSMContext,
+    message: Message, state: FSMContext, db: Database,
 ) -> None:
+    if not await require_role_message(message, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     text = (message.text or "").strip().replace(" ", "").replace(",", ".")
     try:
         amount = float(text)
@@ -3597,6 +3615,9 @@ async def gd_request_amount_input(
 async def gd_request_purpose_input(
     message: Message, state: FSMContext, db: Database,
 ) -> None:
+    if not await require_role_message(message, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     purpose = (message.text or "").strip()
     if not purpose or purpose == "—":
         await message.answer("❌ Назначение обязательно. Напишите, на что запрашивается сумма.")
@@ -3666,6 +3687,9 @@ async def gd_request_skip_file(
     cb: CallbackQuery, state: FSMContext, db: Database,
 ) -> None:
     """req_attach: «Пропустить» — без файла → экран подтверждения."""
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     await cb.answer()
     await state.update_data(req_gd_file_id=None, req_gd_file_type=None)
     await _gd_req_show_confirm(cb.message, state, db)  # type: ignore[arg-type]
@@ -3676,6 +3700,9 @@ async def gd_request_attach_file(
     message: Message, state: FSMContext, db: Database,
 ) -> None:
     """req_attach: ГД прислал фото/документ → сохранить в state → подтверждение."""
+    if not await require_role_message(message, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     file_id: str | None = None
     file_type: str | None = None
     if message.document:
@@ -3703,6 +3730,9 @@ async def gd_request_confirm(
     Депозит НЕ трогается здесь — только после подтверждения сотрудником.
     """
     if not cb.from_user:
+        return
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
         return
     await cb.answer()
     data = await state.get_data()
@@ -3944,6 +3974,9 @@ async def gd_depo_req_emp_reject(
 async def gd_advance_pick_invoice(
     cb: CallbackQuery, state: FSMContext, db: Database,
 ) -> None:
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     inv = await db.get_invoice(invoice_id)
@@ -3977,8 +4010,11 @@ async def gd_advance_pick_invoice(
 
 @router.message(GdDepositSG.adv_enter_amount, F.text)
 async def gd_advance_amount_input(
-    message: Message, state: FSMContext,
+    message: Message, state: FSMContext, db: Database,
 ) -> None:
+    if not await require_role_message(message, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     text = (message.text or "").strip().replace(" ", "").replace(",", ".")
     try:
         amount = float(text)
@@ -4009,8 +4045,11 @@ async def gd_advance_amount_input(
 
 @router.message(GdDepositSG.adv_attach_receipt)
 async def gd_advance_receipt_input(
-    message: Message, state: FSMContext,
+    message: Message, state: FSMContext, db: Database,
 ) -> None:
+    if not await require_role_message(message, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     file_id: str | None = None
     if message.document:
         file_id = message.document.file_id
@@ -4032,8 +4071,11 @@ async def gd_advance_receipt_input(
 
 
 @router.callback_query(GdDepositSG.adv_attach_receipt, F.data == "gd_adv:skip_receipt")
-async def gd_advance_skip_receipt(cb: CallbackQuery, state: FSMContext) -> None:
+async def gd_advance_skip_receipt(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """ГД пропускает чек при пополнении аванса (чек опционален для ГД, ТЗ 30.05)."""
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     await cb.answer()
     await state.update_data(adv_receipt_file_id="")
     await state.set_state(GdDepositSG.adv_enter_comment)
@@ -4051,6 +4093,9 @@ async def gd_advance_skip_receipt(cb: CallbackQuery, state: FSMContext) -> None:
 async def gd_advance_comment_input(
     message: Message, state: FSMContext, db: Database,
 ) -> None:
+    if not await require_role_message(message, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     comment_raw = (message.text or "").strip()
     comment: str | None = None if comment_raw == "—" else comment_raw[:500]
     data = await state.get_data()
@@ -4088,6 +4133,9 @@ async def gd_advance_confirm(
 ) -> None:
     """funds-2balances 25.05: ГД пополняет advance-баланс. Без invoice_id (сотрудник сам распределит)."""
     if not cb.from_user:
+        return
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
         return
     await cb.answer()
     data = await state.get_data()
@@ -4143,8 +4191,11 @@ async def gd_advance_confirm(
 
 @router.message(GdDepositSG.enter_amount, F.text)
 async def gd_deposit_amount_input(
-    message: Message, state: FSMContext,
+    message: Message, state: FSMContext, db: Database,
 ) -> None:
+    if not await require_role_message(message, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     text = (message.text or "").strip().replace(" ", "").replace(",", ".")
     try:
         amount = float(text)
@@ -4175,8 +4226,11 @@ async def gd_deposit_amount_input(
 
 @router.message(GdDepositSG.attach_receipt)
 async def gd_deposit_receipt_input(
-    message: Message, state: FSMContext,
+    message: Message, state: FSMContext, db: Database,
 ) -> None:
+    if not await require_role_message(message, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     file_id: str | None = None
     if message.document:
         file_id = message.document.file_id
@@ -4200,8 +4254,11 @@ async def gd_deposit_receipt_input(
 
 
 @router.callback_query(GdDepositSG.attach_receipt, F.data == "gd_deposit:skip_receipt")
-async def gd_deposit_skip_receipt(cb: CallbackQuery, state: FSMContext) -> None:
+async def gd_deposit_skip_receipt(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     """ГД пропускает чек при внесении депозита (чек опционален для ГД, ТЗ 30.05)."""
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     await cb.answer()
     await state.update_data(deposit_receipt_file_id="")
     await state.set_state(GdDepositSG.enter_comment)
@@ -4219,6 +4276,9 @@ async def gd_deposit_skip_receipt(cb: CallbackQuery, state: FSMContext) -> None:
 async def gd_deposit_comment_input(
     message: Message, state: FSMContext, db: Database,
 ) -> None:
+    if not await require_role_message(message, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
+        return
     comment_raw = (message.text or "").strip()
     comment: str | None = None if comment_raw == "—" else comment_raw[:500]
     data = await state.get_data()
@@ -4257,6 +4317,9 @@ async def gd_deposit_confirm(
     integrations: IntegrationHub,
 ) -> None:
     if not cb.from_user:
+        return
+    if not await require_role_callback(cb, db, roles=[Role.GD, Role.TD]):
+        await state.clear()
         return
     await cb.answer()
     data = await state.get_data()
