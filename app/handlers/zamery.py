@@ -37,7 +37,7 @@ from ..keyboards import (
 from ..services.assignment import resolve_default_assignee
 from ..services.menu_scope import resolve_active_menu_role, resolve_menu_scope
 from ..services.notifier import Notifier
-from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryQuickBookSG, ZameryZpSG
+from ..states import ZameryAcceptSG, ZameryBlackoutSG, ZameryCompleteSG, ZameryManualPaySG, ZameryQuickBookSG, ZameryZpSG
 from ..utils import answer_service, format_card_section, format_zamery_settlement_card, get_initiator_label, maybe_truncated_note, private_only_reply_markup, refresh_recipient_keyboard, tail_note
 from ._mirror import collect_attachment
 from .auth import require_role_callback, require_role_message
@@ -1163,6 +1163,7 @@ async def _render_payment_list(
             text=f"📤 Отправить в оплату · {len(sendable)} зам. · {total_send}₽",
             callback_data="zampay:send_batch",
         )
+    bottom_b.button(text="➕ Внести замеры вручную", callback_data="zampay:manual")
     bottom_b.button(text="⬅️ Назад", callback_data="nav:home")
     bottom_b.adjust(1)
     await msg.answer("⬇️", reply_markup=bottom_b.as_markup())  # type: ignore[union-attr]
@@ -1305,6 +1306,196 @@ async def zamery_confirm_batch(
     await cb.message.answer(  # type: ignore[union-attr]
         f"✅ Запрос на оплату отправлен ГД.\n"
         f"💵 {len(sendable)} замеров на сумму {int(total)}₽"
+    )
+
+
+# --- Ручной ввод замеров (адрес — сумма), пакетом одним запросом ГД ---
+
+@router.callback_query(F.data == "zampay:manual")
+async def zamery_manual_pay_start(
+    cb: CallbackQuery, state: FSMContext, db: Database,
+) -> None:
+    """Замерщик: внести замеры вручную — адрес + стоимость, несколько штук."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    await state.clear()
+    await state.set_state(ZameryManualPaySG.entries)
+    await state.update_data(manual_entries=[])
+    await cb.message.answer(  # type: ignore[union-attr]
+        "➕ <b>Внести замеры вручную</b>\n\n"
+        "Введите каждый замер отдельной строкой.\n\n"
+        "Формат: <code>адрес — сумма</code>\n\n"
+        "Пример:\n"
+        "<code>ул. Ленина 5 — 3000</code>\n"
+        "<code>ул. Мира 10 — 4500</code>\n\n"
+        "Когда закончите, нажмите /done.\n"
+        "Для отмены: <code>/cancel</code>",
+    )
+
+
+@router.message(ZameryManualPaySG.entries)
+async def zamery_manual_pay_entry(
+    message: Message, state: FSMContext,
+) -> None:
+    """Приём строк «адрес — сумма»; /done — превью пакета."""
+    if not message.from_user:
+        return
+    text = (message.text or "").strip()
+
+    if text == "/done":
+        data = await state.get_data()
+        entries: list[dict[str, Any]] = data.get("manual_entries", [])
+        if not entries:
+            await message.answer("Вы не ввели ни одного замера. Введите хотя бы один:")
+            return
+        total = sum(e["cost"] for e in entries)
+        indent = "   "
+        rows = [
+            f"{indent}{_fmt_money(e['cost']):>7}  {html.quote(str(e['address']))}"
+            for e in entries
+        ]
+        body = "\n".join(rows + [indent + "━" * 14, f"{indent}Итого {_fmt_money(total)}"])
+        b = InlineKeyboardBuilder()
+        b.button(
+            text=f"✅ Отправить ГД · {len(entries)} зам. · {_fmt_money(total)} ₽",
+            callback_data="zampay:manual_send",
+        )
+        b.button(text="❌ Отмена", callback_data="zampay:manual_cancel")
+        b.adjust(1)
+        await message.answer(
+            f"📤 <b>Отправить ГД на выплату</b>\n<pre>{body}</pre>",
+            reply_markup=b.as_markup(),
+        )
+        return
+
+    if "—" in text or " - " in text:
+        sep = "—" if "—" in text else " - "
+        parts = text.split(sep, 1)
+        address = parts[0].strip()
+        cost_str = parts[1].strip().replace(",", ".").replace(" ", "")
+    else:
+        await message.answer(
+            "Не удалось разобрать строку. Формат: <code>адрес — сумма</code>\n"
+            "Пример: <code>ул. Ленина 5 — 3000</code>"
+        )
+        return
+
+    try:
+        cost = float(cost_str)
+        if cost <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        await message.answer("Сумма должна быть положительным числом. Пример: <code>ул. Ленина 5 — 3000</code>")
+        return
+    if not address:
+        await message.answer("Адрес пуст. Формат: <code>адрес — сумма</code>")
+        return
+
+    data = await state.get_data()
+    entries = data.get("manual_entries", [])
+    entries.append({"address": address, "cost": cost})
+    await state.update_data(manual_entries=entries)
+    total_so_far = sum(e["cost"] for e in entries)
+    await message.answer(
+        f"✅ Принял: {html.quote(address)} — {cost:,.0f}₽\n"
+        f"Замеров: {len(entries)}, промежуточный итог: {total_so_far:,.0f}₽\n\n"
+        "Введите следующий замер или /done для отправки ГД."
+    )
+
+
+@router.callback_query(F.data == "zampay:manual_cancel")
+async def zamery_manual_pay_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    if not cb.from_user:
+        return
+    await cb.answer()
+    await state.clear()
+    await cb.message.answer("❌ Отменено. Замеры не внесены.")  # type: ignore[union-attr]
+
+
+@router.callback_query(F.data == "zampay:manual_send")
+@money_confirm_guard
+async def zamery_manual_pay_send(
+    cb: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+    notifier: Notifier,
+) -> None:
+    """Создать замеры (done) + одним запросом задачу ГД на выплату (живой ZamZpPay-канал)."""
+    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
+        return
+    await cb.answer()
+    user_id = cb.from_user.id
+    data = await state.get_data()
+    entries: list[dict[str, Any]] = data.get("manual_entries") or []
+    await state.clear()  # anti-replay (+ money_confirm_guard)
+    if not entries:
+        await cb.message.answer("⚠️ Сессия потеряна — начните заново («💰 Оплата замеров» → «➕ Внести замеры вручную»).")  # type: ignore[union-attr]
+        return
+
+    total = sum(e["cost"] for e in entries)
+    gd_id = await resolve_default_assignee(db, config, Role.GD)
+    if not gd_id:
+        await cb.message.answer("⚠️ ГД не найден — замеры не внесены.")  # type: ignore[union-attr]
+        return
+
+    # 1. Создать zamery_requests (status done, исполнитель = сам замерщик)
+    zam_ids: list[int] = []
+    today_iso = date.today().isoformat()
+    for e in entries:
+        zam_id = await db.create_zamery_request(
+            source_type="manual",
+            address=e["address"],
+            requested_by=user_id,
+            requester_role=Role.ZAMERY.value,
+            assigned_to=user_id,
+            total_cost=int(e["cost"]),
+            base_cost=int(e["cost"]),
+        )
+        await db.update_zamery_request(
+            zam_id, status="done", scheduled_date=today_iso,
+        )
+        zam_ids.append(zam_id)
+    # 2. Пометить «На проверке» + 3. задача ГД (как в пакетном флоу)
+    await db.set_zamery_pay_status(zam_ids, "requested", user_id)
+
+    initiator = await get_initiator_label(db, user_id)
+    task = await db.create_task(
+        project_id=None,
+        type_=TaskType.ZP_ZAMERY_BATCH,
+        status=TaskStatus.OPEN,
+        created_by=user_id,
+        assigned_to=int(gd_id),
+        due_at_iso=None,
+        payload={
+            "zam_ids": zam_ids,
+            "total": total,
+            "count": len(entries),
+            "surveyor_id": user_id,
+            "manual": True,
+        },
+    )
+
+    # Уведомить ГД (эталон: число слева / адрес справа)
+    indent = "   "
+    rows = [f"{indent}{_fmt_money(e['cost']):>7}  {html.quote(str(e['address']))}" for e in entries]
+    body = "\n".join(rows + [indent + "━" * 14, f"{indent}Итого {_fmt_money(total)}"])
+    gd_text = (
+        f"💰 <b>ЗП Замерщика — {html.quote(initiator)}</b>\n"
+        f"<pre>{body}</pre>\n"
+        f"({len(entries)} зам., внесено вручную)"
+    )
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Выплатить", callback_data=ZamZpPayCb(task_id=task["id"]).pack())
+    b.button(text="❌ Отклонить", callback_data=ZamZpRejectCb(task_id=task["id"]).pack())
+    b.adjust(2)
+    await notifier.safe_send(int(gd_id), gd_text, reply_markup=b.as_markup())
+    await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"✅ Запрос на оплату отправлен ГД.\n"
+        f"💵 {len(entries)} замеров на сумму {int(total)}₽"
     )
 
 

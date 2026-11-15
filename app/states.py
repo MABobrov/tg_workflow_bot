@@ -444,6 +444,11 @@ class ZameryZpSG(StatesGroup):
     confirm = State()            # подтверждение + отправка ГД
 
 
+class ZameryManualPaySG(StatesGroup):
+    """Замерщик: ручной ввод замеров (адрес — сумма), пакетом одним запросом ГД."""
+    entries = State()            # ввод строк «адрес — сумма» (/done — завершить)
+
+
 class ZamerySettlementPaySG(StatesGroup):
     """ГД: добавление платежа в леджер взаиморасчётов с замерщиком."""
     enter_amount = State()       # сумма платежа
