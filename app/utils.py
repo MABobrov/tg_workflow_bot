@@ -6537,7 +6537,7 @@ def format_rp_oklad_history(history: list[dict[str, Any]], year: int) -> str:
         "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
     )
     marks = {"paid": "✅", "partial": "◐", "open": "⬛"}
-    lines = [f"<pre>📜 <b>Оклад РП {year} — история оплат</b>"]
+    lines = [f"<b>📜  Оклад РП {year} — история оплат</b>\n<pre>"]
     for row in history:
         m = int(row["month"])
         st = row["state"]
@@ -6624,7 +6624,7 @@ def build_rp_zp_family_open_card(
         amount = float(payload.get("amount") or 0)
         month = html.quote(str(payload.get("month") or "—"))
         return "\n".join([
-            "<pre>💼 <b>Запрос оклада</b>",
+            "<b>💼  Запрос оклада</b>\n<pre>",
             f"   От                   {rp_name}",
             f"   Месяц                {month}",
             RP_OKLAD_CARD_SEP,
@@ -6638,7 +6638,7 @@ def build_rp_zp_family_open_card(
     invoices_info = payload.get("invoices") or []
     pt = str(payload.get("payment_type") or "")
     pt_suffix = {"credit": " · 🏦 Кредитные", "beznal": " · 💳 Б/н"}.get(pt, "")
-    lines = [f"<pre>💰 <b>Запрос ЗП РП</b>{pt_suffix}", f"   От                    {rp_name}"]
+    lines = [f"<b>💰  Запрос ЗП РП{pt_suffix}</b>\n<pre>", f"   От                    {rp_name}"]
     for it in invoices_info:
         num = str(it.get("invoice_number") or "?")
         lines.append(f"   №{num:<18s} {_rub(it.get('amount')):>10s} ₽")

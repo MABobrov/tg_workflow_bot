@@ -7655,7 +7655,7 @@ def _render_mgr_adv_fill(
     """Экран наполнения аванса менеджера: счета с незабранной ЗП (toggle-чекбоксы)."""
     sel_total = sum(float(i.get("amount") or 0) for i in invoices if int(i["id"]) in selected)
     avail_total = sum(float(i.get("amount") or 0) for i in invoices)
-    lines = [f"<pre>💵 <b>Наполнить аванс</b>"]
+    lines = [f"<b>💵  Наполнить аванс</b>\n<pre>"]
     lines.append(f"   Доступно ЗП          {fmt_money(avail_total):>11s}")
     lines.append(f"   Выбрано счетов       {len(selected):>11d} / {len(invoices)}")
     lines.append(f"   ━━━━━━━━━━━━━━━━")
@@ -7783,7 +7783,7 @@ async def mgr_advfill_credit_confirm(cb: CallbackQuery, state: FSMContext) -> No
         return
     chosen = [i for i in invoices if int(i["id"]) in selected]
     total = sum(float(i.get("amount") or 0) for i in chosen)
-    lines = [f"<pre>💵 <b>Зачислить в аванс</b>"]
+    lines = [f"<b>💵  Зачислить в аванс</b>\n<pre>"]
     for inv in chosen:
         lines.append(
             f"   {_mgr_advfill_addr(inv.get('object_address'), 18):<18s} "
@@ -7946,7 +7946,7 @@ async def mgr_advfill_credit_apply(
     except Exception:
         log.warning("mgr_advfill: credit ЗП GD-gate block failed", exc_info=True)
 
-    lines = [f"<pre>✅ <b>Зачислено в аванс</b>"]
+    lines = [f"<b>✅  Зачислено в аванс</b>\n<pre>"]
     for c in credited:
         lines.append(f"   №{str(c['invoice_number']):<18s} {fmt_money(float(c['amount'])):>11s}")
     lines.append(f"   Баланс аванса        {fmt_money(new_balance):>11s}")
@@ -7965,7 +7965,7 @@ async def mgr_advfill_credit_apply(
     if gd_id:
         mgr_user = await db.get_user_optional(user_id)
         mgr_label = getattr(mgr_user, "full_name", None) or "Менеджер"
-        gd_lines = [f"<pre>ℹ️ <b>Менеджер пополнил аванс</b>"]
+        gd_lines = [f"<b>ℹ️  Менеджер пополнил аванс</b>\n<pre>"]
         gd_lines.append(f"   Кто                  {mgr_label}")
         gd_lines.append(f"   Источник             ЗП менеджер · {len(credited)} счёт(ов)")
         gd_lines.append(f"   Баланс аванса        {fmt_money(new_balance):>11s}")

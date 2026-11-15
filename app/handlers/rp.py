@@ -1588,7 +1588,7 @@ def _render_rp_zp_type_menu(invoices: list[dict[str, Any]]) -> tuple[str, Any]:
     bn = groups[PAY_TYPE_BEZNAL]
     cr_total = sum(_rp_zp_capped(i, float(i.get("rp_10_pct_op") or 0)) for i in cr)
     bn_total = sum(_rp_zp_capped(i, float(i.get("rp_10_pct_op") or 0)) for i in bn)
-    lines = ["<pre>💰 <b>Запрос ЗП РП</b>"]
+    lines = ["<b>💰  Запрос ЗП РП</b>\n<pre>"]
     lines.append(f"   🏦 Кредитные  {len(cr):>2d} сч  {_fmt_rub(cr_total):>10s} ₽")
     lines.append(f"   💳 Б/н        {len(bn):>2d} сч  {_fmt_rub(bn_total):>10s} ₽")
     lines.append("</pre>")
@@ -1612,7 +1612,7 @@ def _render_rp_zp_type_cart(
 ) -> tuple[str, Any]:
     """Экран 2: корзина одного типа с тумблерами (✓ = выбран). Итого = сумма выбранных."""
     label = _pay_type_label(payment_type)
-    lines = [f"<pre>💰 <b>Запрос ЗП РП</b> · {label}"]
+    lines = [f"<b>💰  Запрос ЗП РП · {label}</b>\n<pre>"]
     for inv in type_invoices:
         inv_id = int(inv["id"])
         num = inv.get("invoice_number") or "?"
@@ -1664,7 +1664,7 @@ def _render_rp_zp_summary(
 ) -> tuple[str, Any]:
     """Сводка: все ended-счета с невыплаченным 10% одной суммой (10% из источника T)."""
     total = sum(float(v) for v in cart.values())
-    lines = [f"<pre>💰 <b>Запрос ЗП РП</b>"]
+    lines = [f"<b>💰  Запрос ЗП РП</b>\n<pre>"]
     for inv_id, amount in cart.items():
         inv = next((i for i in invoices if int(i["id"]) == int(inv_id)), None)
         num = (inv or {}).get("invoice_number") or "?"
@@ -1811,7 +1811,7 @@ async def rp_zp_send(cb: CallbackQuery, state: FSMContext) -> None:
         return
     payment_type = data.get("payment_type") or PAY_TYPE_BEZNAL
     total = sum(float(v) for v in cart.values())
-    lines = [f"<pre>💰 <b>Запрос ЗП РП</b> · {_pay_type_label(payment_type)}"]
+    lines = [f"<b>💰  Запрос ЗП РП · {_pay_type_label(payment_type)}</b>\n<pre>"]
     for inv_id, amount in cart.items():
         inv = next((i for i in invoices if int(i["id"]) == int(inv_id)), None)
         num = (inv or {}).get("invoice_number") or "?"
@@ -1887,7 +1887,7 @@ async def rp_zp_confirm(
     # 3. Создаём ONE task per ГД с группой invoice_ids + notify
     import uuid as _uuid
     group_id = _uuid.uuid4().hex[:12]
-    notify_lines = [f"<pre>💰 <b>Запрос ЗП РП</b> · {_pay_type_label(payment_type)}"]
+    notify_lines = [f"<b>💰  Запрос ЗП РП · {_pay_type_label(payment_type)}</b>\n<pre>"]
     notify_lines.append(f"   От                    {rp_label}")
     for it in inv_payload:
         notify_lines.append(f"   №{it['invoice_number']:<18s} {_fmt_rub(it['amount']):>10s} ₽")
@@ -2051,7 +2051,7 @@ async def rp_salary_request_start(message: Message, state: FSMContext, db: Datab
         user_id, mode="bn", oklad_override=round(remaining * 1.1, 2),
     )
     await message.answer(
-        f"<pre>💼 <b>Запрос оклада</b>\n"
+        f"<b>💼  Запрос оклада</b>\n<pre>\n"
         f"   Месяц                {month_str}\n"
         f"   ━━━━━━━━━━━━━━━━\n"
         + "\n".join(format_rp_oklad_lines(calc, round(remaining * 1.1, 2)))
@@ -2120,7 +2120,7 @@ async def rp_salary_request_submit(
         user_id, mode="bn", oklad_override=round(remaining * 1.1, 2),
     )
     pre_card = (
-        f"<pre>💼 <b>Запрос оклада</b>\n"
+        f"<b>💼  Запрос оклада</b>\n<pre>\n"
         f"   От                   {rp_label}\n"
         f"   Месяц                {month_str}\n"
         f"   ━━━━━━━━━━━━━━━━\n"
@@ -2235,7 +2235,7 @@ async def rp_salary_hub_start(message: Message, state: FSMContext, db: Database)
     except Exception:
         depo_balance = 0.0
     text = (
-        f"<pre>💰 <b>Запрос ЗП</b>\n"
+        f"<b>💰  Запрос ЗП</b>\n<pre>\n"
         f"   Аванс              {_fmt_rub(adv_balance)} ₽\n"
         f"   Депозит            {_fmt_rub(depo_balance)} ₽</pre>\n\n"
         f"Выберите действие:"
@@ -2281,7 +2281,7 @@ async def _render_oklad_month_picker(
     now_msk = datetime.now(ZoneInfo("Europe/Moscow")) if ZoneInfo else datetime.now()
     cy = now_msk.year
     last = (cy + 1, 1) if now_msk.month == 12 else (cy, now_msk.month + 1)
-    lines = [f"<pre>💼 <b>Оклад РП — выбор месяца</b>"]
+    lines = [f"<b>💼  Оклад РП — выбор месяца</b>\n<pre>"]
     if extra_line:
         lines.append(extra_line.rstrip("\n"))
     b = InlineKeyboardBuilder()
@@ -2380,7 +2380,7 @@ async def rp_okl_month_req(
     b.button(text="❌ Отмена", callback_data=RpSalaryRequestCb(action="cancel").pack())
     b.adjust(2)
     await cb.message.answer(  # type: ignore[union-attr]
-        f"<pre>💼 <b>Запрос оклада</b>\n"
+        f"<b>💼  Запрос оклада</b>\n<pre>\n"
         f"   Месяц                {month_str}\n"
         f"   Остаток (тело)       {_fmt_rub(remaining):>10s} ₽\n"
         f"   К выплате б/н        {_fmt_rub(round(remaining * 1.1, 2)):>10s} ₽\n"
@@ -2459,7 +2459,7 @@ def _render_rp_adv_fill(
     """Экран наполнения аванса: счета с незабранной ЗП (10%, toggle) + перевод оклада (A2)."""
     sel_total = sum(float(i.get("npn_amount") or 0) for i in invoices if int(i["id"]) in selected)
     avail_total = sum(float(i.get("npn_amount") or 0) for i in invoices)
-    lines = [f"<pre>💵 <b>Наполнить аванс</b>"]
+    lines = [f"<b>💵  Наполнить аванс</b>\n<pre>"]
     lines.append(f"   Доступно ЗП          {_fmt_rub(avail_total):>10s} ₽")
     lines.append(f"   Выбрано счетов       {len(selected):>10d} / {len(invoices)}")
     lines.append("   ━━━━━━━━━━━━━━━━")
@@ -2603,7 +2603,7 @@ async def rp_adv_credit_confirm(cb: CallbackQuery, state: FSMContext) -> None:
         return
     chosen = [i for i in invoices if int(i["id"]) in selected]
     total = sum(float(i.get("npn_amount") or 0) for i in chosen)
-    lines = [f"<pre>💵 <b>Зачислить в аванс</b>"]
+    lines = [f"<b>💵  Зачислить в аванс</b>\n<pre>"]
     for inv in chosen:
         num = inv.get("invoice_number") or "?"
         lines.append(f"   №{str(num):<18s} {_fmt_rub(float(inv.get('npn_amount') or 0)):>10s} ₽")
@@ -2674,7 +2674,7 @@ async def rp_adv_credit_apply(
     except Exception:
         new_balance = 0.0
     # Карточка РП
-    lines = [f"<pre>✅ <b>Зачислено в аванс</b>"]
+    lines = [f"<b>✅  Зачислено в аванс</b>\n<pre>"]
     for c in credited:
         lines.append(f"   №{str(c['invoice_number']):<18s} {_fmt_rub(float(c['amount'])):>10s} ₽")
     lines.append(f"   Баланс аванса        {_fmt_rub(new_balance):>10s} ₽")
@@ -2688,7 +2688,7 @@ async def rp_adv_credit_apply(
         f"@{rp_user.username}" if rp_user and rp_user.username
         else (rp_user.full_name if rp_user and rp_user.full_name else "РП")
     )
-    gd_lines = [f"<pre>ℹ️ <b>РП пополнил аванс</b>"]
+    gd_lines = [f"<b>ℹ️  РП пополнил аванс</b>\n<pre>"]
     gd_lines.append(f"   Кто                  {rp_label}")
     gd_lines.append(f"   Источник             ЗП РП 10% · {len(credited)} счёт(ов)")
     gd_lines.append(f"   Баланс аванса        {_fmt_rub(new_balance):>10s} ₽")
@@ -2716,7 +2716,7 @@ async def rp_adv_credit_apply(
 def _render_rp_oklad_choose(remaining: float, month_str: str) -> tuple[str, Any]:
     """Экран выбора: весь остаток / ввести часть."""
     text = (
-        f"<pre>💼 <b>Оклад в аванс</b>\n"
+        f"<b>💼  Оклад в аванс</b>\n<pre>\n"
         f"   Месяц                {month_str}\n"
         f"   Остаток оклада       {_fmt_rub(remaining):>10s} ₽\n"
         f"   ━━━━━━━━━━━━━━━━\n"
@@ -2734,7 +2734,7 @@ def _render_rp_oklad_choose(remaining: float, month_str: str) -> tuple[str, Any]
 def _render_rp_oklad_confirm(amount: float, remaining: float, month_str: str) -> tuple[str, Any]:
     """Экран подтверждения перевода оклада."""
     text = (
-        f"<pre>💼 <b>Перевести оклад</b>\n"
+        f"<b>💼  Перевести оклад</b>\n<pre>\n"
         f"   Месяц                {month_str}\n"
         f"   Останется оклада     {_fmt_rub(max(0.0, remaining - amount)):>10s} ₽\n"
         f"   ━━━━━━━━━━━━━━━━\n"
@@ -2905,7 +2905,7 @@ async def rp_oklad_adv_submit(
     except Exception:
         new_balance = 0.0
     # карточка РП
-    lines = [f"<pre>✅ <b>Оклад в аванс</b>"]
+    lines = [f"<b>✅  Оклад в аванс</b>\n<pre>"]
     lines.append(f"   Месяц                {month_str}")
     lines.append(f"   Остаток оклада       {_fmt_rub(rem_after):>10s} ₽")
     lines.append(f"   Баланс аванса        {_fmt_rub(new_balance):>10s} ₽")
@@ -2918,7 +2918,7 @@ async def rp_oklad_adv_submit(
         f"@{rp_user.username}" if rp_user and rp_user.username
         else (rp_user.full_name if rp_user and rp_user.full_name else "РП")
     )
-    gd_lines = [f"<pre>ℹ️ <b>РП перевёл оклад в аванс</b>"]
+    gd_lines = [f"<b>ℹ️  РП перевёл оклад в аванс</b>\n<pre>"]
     gd_lines.append(f"   Кто                  {rp_label}")
     gd_lines.append(f"   Месяц                {month_str}")
     gd_lines.append(f"   Остаток оклада       {_fmt_rub(rem_after):>10s} ₽")
@@ -2952,7 +2952,7 @@ def _render_rp_oklad_recv_confirm(
     """Карточка подтверждения списания оклада из кошелька аванса (owner 31.10)."""
     remaining_after = round(max(0.0, remaining_before - amount), 2)
     text = (
-        f"<pre>✅ <b>Оклад из кошелька аванса</b>\n"
+        f"<b>✅  Оклад из кошелька аванса</b>\n<pre>\n"
         f"   Месяц                 {month_str}\n"
         f"   Кошелёк аванса        {_fmt_rub(wallet_before):>10s} ₽\n"
         f"   Остаток оклада        {_fmt_rub(remaining_before):>10s} ₽\n"
@@ -3129,7 +3129,7 @@ async def rp_oklad_recv_submit(
              f"(можно запросить у ГД или дополнить позже)."
     )
     rp_card = (
-        f"<pre>✅ <b>Оклад списан из кошелька</b>\n"
+        f"<b>✅  Оклад списан из кошелька</b>\n<pre>\n"
         f"   Месяц                {month_str}\n"
         f"   Списано              {_fmt_rub(amount):>10s} ₽\n"
         f"   ━━━━━━━━━━━━━━━━\n"
@@ -3139,7 +3139,7 @@ async def rp_oklad_recv_submit(
     await _edit_or_send(cb, rp_card + sync_note)
     # инфо-уведомление ГД
     gd_text = (
-        f"<pre>ℹ️ <b>РП списал оклад из кошелька аванса</b>\n"
+        f"<b>ℹ️  РП списал оклад из кошелька аванса</b>\n<pre>\n"
         f"   Кто                  {rp_label}\n"
         f"   Месяц                {month_str}\n"
         f"   Списано              {_fmt_rub(amount):>10s} ₽\n"
@@ -3167,7 +3167,7 @@ async def rp_oklad_recv_submit(
 
 def _render_rp_adv_dist_list(invoices: list[dict[str, Any]], unalloc: float) -> tuple[str, Any]:
     """Экран выбора счёта для зачёта аванса в его ЗП-10%."""
-    lines = [f"<pre>💰 <b>Распределить аванс</b>"]
+    lines = [f"<b>💰  Распределить аванс</b>\n<pre>"]
     lines.append(f"   Свободно аванса      {_fmt_rub(unalloc):>10s} ₽")
     lines.append("   ━━━━━━━━━━━━━━━━")
     lines.append(f"   Итого  {_fmt_rub(unalloc)} ₽</pre>")
@@ -3233,7 +3233,7 @@ async def rp_adv_dist_pick(cb: CallbackQuery, state: FSMContext) -> None:
     b.button(text="❌ Отмена", callback_data="rpdist:cancel")
     await _edit_or_send(
         cb,
-        f"<pre>📋 <b>Счёт №{num}</b>\n"
+        f"<b>📋  Счёт №{num}</b>\n<pre>\n"
         f"   ЗП-10% (остаток)     {_fmt_rub(rem):>10s} ₽\n"
         f"   Свободно аванса      {_fmt_rub(unalloc):>10s} ₽\n"
         f"   ━━━━━━━━━━━━━━━━\n"
@@ -3263,7 +3263,7 @@ async def rp_adv_dist_amount(message: Message, state: FSMContext) -> None:
     b.button(text="❌ Нет", callback_data="rpdist:cancel")
     b.adjust(2)
     await message.answer(
-        f"<pre>💰 <b>Зачесть аванс в 10%</b>\n"
+        f"<b>💰  Зачесть аванс в 10%</b>\n<pre>\n"
         f"   Счёт                 №{num}\n"
         f"   ━━━━━━━━━━━━━━━━\n"
         f"   Итого  {_fmt_rub(amount)} ₽</pre>\n\n"
@@ -3319,7 +3319,7 @@ async def rp_adv_dist_confirm(
         if res.get("full_closed")
         else f"10% покрыто частично, остаток {_fmt_rub(res.get('remaining'))} ₽."
     )
-    lines = [f"<pre>✅ <b>Аванс зачтён в 10%</b>"]
+    lines = [f"<b>✅  Аванс зачтён в 10%</b>\n<pre>"]
     lines.append(f"   Счёт                 №{num}")
     lines.append(f"   Зачтено              {_fmt_rub(res.get('applied')):>10s} ₽")
     lines.append(f"   Баланс аванса        {_fmt_rub(new_balance):>10s} ₽")
@@ -3332,7 +3332,7 @@ async def rp_adv_dist_confirm(
         f"@{rp_user.username}" if rp_user and rp_user.username
         else (rp_user.full_name if rp_user and rp_user.full_name else "РП")
     )
-    gd_lines = [f"<pre>ℹ️ <b>РП зачёл аванс в 10%</b>"]
+    gd_lines = [f"<b>ℹ️  РП зачёл аванс в 10%</b>\n<pre>"]
     gd_lines.append(f"   Кто                  {rp_label}")
     gd_lines.append(f"   Счёт                 №{num}")
     gd_lines.append(f"   Зачтено              {_fmt_rub(res.get('applied')):>10s} ₽")

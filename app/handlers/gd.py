@@ -3285,8 +3285,8 @@ async def _gd_funds_type_screen(
         def _f(v: float) -> str:
             return f"{v:,.0f}".replace(",", " ")
         text = (
-            f"<pre>👤 <b>{html.escape(str(name))}</b> ━━━━━━ <b>РП + менеджер</b>\n"
-            f"🟦 РП\n"
+            f"<b>👤  {html.escape(str(name))} · РП + менеджер</b>\n"
+            f"<pre>🟦 РП\n"
             f"   {'Аванс':<9}{_f(rp_adv):>9} ₽\n"
             f"   {'Депозит':<9}{_f(rp_depo):>9} ₽\n"
             f"🟨 Менеджер\n"
@@ -3307,8 +3307,8 @@ async def _gd_funds_type_screen(
             else "Для этой роли доступен только депозит (кошелёк).\n\n"
         )
         text = (
-            f"<pre>👤 <b>{html.escape(str(name))}</b> ━━━━━━ <b>{role_hint}</b>\n"
-            f"   {'Аванс':<9}{_f(advance_bal):>9} ₽\n"
+            f"<b>👤  {html.escape(str(name))} · {role_hint}</b>\n"
+            f"<pre>   {'Аванс':<9}{_f(advance_bal):>9} ₽\n"
             f"   {'Депозит':<9}{_f(deposit_bal):>9} ₽</pre>\n\n"
             f"{type_hint}"
             f"Выберите тип операции:"
@@ -3375,8 +3375,8 @@ async def gd_deposit_start(
     b.button(text="❌ Отмена", callback_data="gd_deposit:cancel")
     b.adjust(1)
     summary_card = (
-        "<pre>👥 <b>Сотрудники</b> ━━━━━━ <b>Финансы</b>\n"
-        + "\n".join(card_rows)
+        "<b>👥  Сотрудники · Финансы</b>\n"
+        "<pre>" + "\n".join(card_rows)
         + "</pre>\n\n"
     )
     await state.set_state(GdDepositSG.select_installer)
@@ -4618,7 +4618,7 @@ def _render_rp_zp_select(
     pt_suffix = (" · 🏦 Кредитные" if payment_type == "credit" else " · 💳 Б/н") if payment_type else ""
     total = sum(float(it.get("amount") or 0) for it in unpaid if int(it.get("invoice_id") or 0) in selected)
     n_sel = sum(1 for it in unpaid if int(it.get("invoice_id") or 0) in selected)
-    lines = [f"<pre>💰 <b>Выплата ЗП РП 10%</b>{pt_suffix}"]
+    lines = [f"<b>💰  Выплата ЗП РП 10%{pt_suffix}</b>\n<pre>"]
     for it in unpaid:
         iid = int(it.get("invoice_id") or 0)
         num = str(it.get("invoice_number") or "?")
@@ -4991,7 +4991,7 @@ async def rp_zp_pay_submit(
     receipt_note = "\n   Платёжка              приложена" if (receipt_file_id and paid_lines) else ""
     if rp_id and paid_lines:
         notify = (
-            f"<pre>✅ <b>Выплачено ЗП РП</b>{pt_suffix}\n"
+            f"<b>✅  Выплачено ЗП РП{pt_suffix}</b>\n<pre>\n"
             + "\n".join(paid_lines)
             + f"\n   Дата                  {today_str}"
             + receipt_note
@@ -5017,7 +5017,7 @@ async def rp_zp_pay_submit(
     # 4. Update GD's own card
     if paid_lines:
         gd_text = (
-            f"<pre>✅ <b>Выплачено</b>{pt_suffix}\n"
+            f"<b>✅  Выплачено{pt_suffix}</b>\n<pre>\n"
             + "\n".join(paid_lines)
             + f"\n   Дата                  {today_str}"
             + receipt_note
@@ -5097,13 +5097,13 @@ async def gd_rp_zp_reject(
         try:
             await notifier.safe_send(
                 int(rp_id),
-                f"<pre>❌ <b>Запрос ЗП РП отклонён</b>{pt_suffix}\n{body}</pre>",
+                f"<b>❌  Запрос ЗП РП отклонён{pt_suffix}</b>\n<pre>\n{body}</pre>",
             )
         except Exception:
             log.exception("gd_rp_zp_reject: notify РП %s failed", rp_id)
     try:
         await cb.message.edit_text(  # type: ignore[union-attr]
-            f"<pre>❌ <b>Отклонено</b>{pt_suffix}\n" + "\n".join(rejected_lines) + "</pre>",
+            f"<b>❌  Отклонено{pt_suffix}</b>\n<pre>\n" + "\n".join(rejected_lines) + "</pre>",
         )
     except Exception:
         log.exception("gd_rp_zp_reject: edit_text failed")
@@ -5131,7 +5131,7 @@ def _render_zam_zp_select(
     """
     total = sum(float(z.get("total_cost") or 0) for z in zamery if int(z.get("id") or 0) in selected)
     n_sel = sum(1 for z in zamery if int(z.get("id") or 0) in selected)
-    lines = ["<pre>💰 <b>Выплата ЗП замерщика</b>"]
+    lines = ["<b>💰  Выплата ЗП замерщика</b>\n<pre>"]
     for z in zamery:
         zid = int(z.get("id") or 0)
         addr = html.escape(str(z.get("address") or f"#{zid}"))
@@ -5483,7 +5483,7 @@ async def zam_zp_pay_submit(
     receipt_note = "\n   Платёжка              приложена" if (receipt_file_id and paid_lines) else ""
     if paid_lines:
         notify = (
-            "<pre>✅ <b>Выплачено ЗП замерщика</b>\n"
+            "<b>✅  Выплачено ЗП замерщика</b>\n<pre>\n"
             + "\n".join(paid_lines)
             + f"\n   Дата                  {today_disp}"
             + receipt_note
@@ -5509,7 +5509,7 @@ async def zam_zp_pay_submit(
     # 5. Update GD's own card
     if paid_lines:
         gd_text = (
-            "<pre>✅ <b>Выплачено</b>\n"
+            "<b>✅  Выплачено</b>\n<pre>\n"
             + "\n".join(paid_lines)
             + f"\n   Дата                  {today_disp}"
             + receipt_note
@@ -5585,7 +5585,7 @@ async def gd_zam_zp_reject(
         try:
             await notifier.safe_send(
                 int(surveyor_id),
-                "<pre>❌ <b>Запрос ЗП замерщика отклонён</b>\nЗамеры возвращены в «К оплате».</pre>",
+                "<b>❌  Запрос ЗП замерщика отклонён</b>\n<pre>\nЗамеры возвращены в «К оплате».</pre>",
             )
         except Exception:
             log.exception("gd_zam_zp_reject: notify замерщику %s failed", surveyor_id)

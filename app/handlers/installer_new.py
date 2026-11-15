@@ -5025,7 +5025,7 @@ def _render_inst_adv_fill(
     """Экран наполнения аванса монтажника: счета с невыплаченной ЗП (toggle-чекбоксы)."""
     sel_total = sum(float(i.get("agreed") or 0) for i in invoices if int(i["id"]) in selected)
     avail_total = sum(float(i.get("agreed") or 0) for i in invoices)
-    lines = [f"<pre>💵 <b>Наполнить аванс</b>"]
+    lines = [f"<b>💵  Наполнить аванс</b>\n<pre>"]
     lines.append(f"   Доступно ЗП          {_fmt_money(avail_total):>10s} ₽")
     lines.append(f"   Выбрано счетов       {len(selected):>10d} / {len(invoices)}")
     lines.append(f"   ━━━━━━━━━━━━━━━━")
@@ -5150,7 +5150,7 @@ async def inst_advfill_credit_confirm(cb: CallbackQuery, state: FSMContext) -> N
         return
     chosen = [i for i in invoices if int(i["id"]) in selected]
     total = sum(float(i.get("agreed") or 0) for i in chosen)
-    lines = [f"<pre>💵 <b>Зачислить в аванс</b>"]
+    lines = [f"<b>💵  Зачислить в аванс</b>\n<pre>"]
     for inv in chosen:
         lines.append(
             f"   {_advfill_addr(inv.get('object_address'), 18):<18s} "
@@ -5226,7 +5226,7 @@ async def inst_advfill_credit_apply(
         new_balance = await db.get_advance_balance(user_id)
     except Exception:
         new_balance = 0.0
-    lines = [f"<pre>✅ <b>Зачислено в аванс</b>"]
+    lines = [f"<b>✅  Зачислено в аванс</b>\n<pre>"]
     for c in credited:
         lines.append(f"   №{str(c['invoice_number']):<18s} {_fmt_money(float(c['amount'])):>10s} ₽")
     lines.append(f"   Баланс аванса        {_fmt_money(new_balance):>10s} ₽")
@@ -5239,7 +5239,7 @@ async def inst_advfill_credit_apply(
     if gd_id:
         inst_user = await db.get_user_optional(user_id)
         inst_label = getattr(inst_user, "full_name", None) or "Монтажник"
-        gd_lines = [f"<pre>ℹ️ <b>Монтажник пополнил аванс</b>"]
+        gd_lines = [f"<b>ℹ️  Монтажник пополнил аванс</b>\n<pre>"]
         gd_lines.append(f"   Кто                  {inst_label}")
         gd_lines.append(f"   Источник             монтажная ЗП · {len(credited)} счёт(ов)")
         gd_lines.append(f"   Баланс аванса        {_fmt_money(new_balance):>10s} ₽")

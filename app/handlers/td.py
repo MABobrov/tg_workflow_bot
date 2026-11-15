@@ -814,7 +814,7 @@ async def gd_pay_rpzp_open(cb: CallbackQuery, db: Database, task_id: int | None 
     total = float(payload.get("total") or 0)
     rp_name = payload.get("rp_name") or "РП"
     invoices_info = payload.get("invoices") or []
-    lines = [f"<pre>💰 <b>Запрос ЗП РП</b>"]
+    lines = [f"<b>💰  Запрос ЗП РП</b>\n<pre>"]
     lines.append(f"   От                    {rp_name}")
     for it in invoices_info:
         num = it.get("invoice_number") or "?"
@@ -2842,7 +2842,7 @@ async def rp_salary_confirm(
         log.exception("rp_salary_confirm: audit failed entry_id=%s", entry_id)
     # 4. Notify РП: pre-card + платёжка вложением
     caption_card = (
-        f"<pre>✅ <b>Оклад РП выплачен</b>\n"
+        f"<b>✅  Оклад РП выплачен</b>\n<pre>\n"
         f"   Месяц                 {month_str}\n"
         f"   Дата                  {date_display}\n"
         f"   Форма                 {mode_label}\n"
@@ -3079,7 +3079,7 @@ async def rp_salary_reject_submit(
     # 3. Notify РП
     if rp_id:
         notify_text = (
-            f"<pre>❌ <b>Запрос оклада отклонён</b>\n"
+            f"<b>❌  Запрос оклада отклонён</b>\n<pre>\n"
             f"   Месяц                {month_str}\n"
             f"   Причина              {html.escape(reason)[:60]}</pre>\n\n"
             f"Можно повторить запрос за этот же месяц."
