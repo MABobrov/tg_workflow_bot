@@ -5435,7 +5435,7 @@ async def zam_zp_pay_submit(
                 entry_date=today_iso,
                 kind="payment",
                 amount=paid_sum,
-                comment=f"ЗП замерщика: {len(paid_ids)} замер(ов)",
+                comment=f"ЗП замерщика (пакет): {len(paid_ids)} замер(ов)",
                 created_by=cb.from_user.id,
             )
         except Exception:
@@ -5446,7 +5446,7 @@ async def zam_zp_pay_submit(
                 action="zam_zp_payout",
                 entity="surveyor",
                 entity_id=str(surveyor_id),
-                payload={"amount": paid_sum, "date": today_iso, "zam_ids": sorted(paid_ids), "task_id": task_id},
+                payload={"amount": paid_sum, "date": today_iso, "zam_ids": sorted(paid_ids), "task_id": task_id, "channel": "packet"},
             )
         except Exception:
             log.exception("zam_zp_pay_submit: audit failed")

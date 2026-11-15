@@ -2871,14 +2871,14 @@ async def zamery_zp_pay_act(
     today_iso = datetime.now().strftime("%Y-%m-%d")
     today_disp = datetime.now().strftime("%d.%m.%Y")
 
-    # 1. Платёж в леджер взаиморасчётов
+    # 1. Платёж в леджер взаиморасчётов (канал: по счёту — №103, разделение с пакетным zampay)
     try:
         await db.add_zamery_settlement_entry(
             surveyor_id=int(zamery_id),
             entry_date=today_iso,
             kind="payment",
             amount=total,
-            comment=f"ЗП замерщика: счёт №{inv['invoice_number']}",
+            comment=f"ЗП замерщика (по счёту №{inv['invoice_number']})",
             created_by=cb.from_user.id,
         )
     except Exception:
@@ -2894,7 +2894,7 @@ async def zamery_zp_pay_act(
             action="zamzp_payout",
             entity="invoice",
             entity_id=str(invoice_id),
-            payload={"amount": total, "date": today_iso},
+            payload={"amount": total, "date": today_iso, "channel": "invoice"},
         )
     except Exception:
         log.exception("zamery_zp_pay_act: audit failed invoice=%s", invoice_id)
