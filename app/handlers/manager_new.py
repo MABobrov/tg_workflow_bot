@@ -7658,7 +7658,7 @@ def _render_mgr_adv_fill(
     lines = [f"<b>💵  Наполнить аванс</b>\n<pre>"]
     lines.append(f"   Доступно ЗП          {fmt_money(avail_total):>11s}")
     lines.append(f"   Выбрано счетов       {len(selected):>11d} / {len(invoices)}")
-    lines.append(f"   ━━━━━━━━━━━━━━━━")
+    lines.append(f"   ━━━━━━━━━━━━━━")
     lines.append(f"   Итого  {fmt_money(sel_total)}</pre>")
     if invoices:
         lines.append("\nВыберите счета, по которым забрать ЗП менеджера в кошелёк аванса.")
@@ -7789,7 +7789,7 @@ async def mgr_advfill_credit_confirm(cb: CallbackQuery, state: FSMContext) -> No
             f"   {_mgr_advfill_addr(inv.get('object_address'), 18):<18s} "
             f"{fmt_money(float(inv.get('amount') or 0)):>11s}"
         )
-    lines.append(f"   ━━━━━━━━━━━━━━━━")
+    lines.append(f"   ━━━━━━━━━━━━━━")
     lines.append(f"   Итого  {fmt_money(total)}")
     lines.append("</pre>")
     lines.append(f"\nЗачислить ЗП менеджера по {len(chosen)} счёт(ам) в кошелёк аванса?")
@@ -7950,7 +7950,7 @@ async def mgr_advfill_credit_apply(
     for c in credited:
         lines.append(f"   №{str(c['invoice_number']):<18s} {fmt_money(float(c['amount'])):>11s}")
     lines.append(f"   Баланс аванса        {fmt_money(new_balance):>11s}")
-    lines.append(f"   ━━━━━━━━━━━━━━━━")
+    lines.append(f"   ━━━━━━━━━━━━━━")
     lines.append(f"   Итого  {fmt_money(total)}</pre>")
     _msg = "\n".join(lines)
     if credit_zp_sent:
@@ -7969,7 +7969,7 @@ async def mgr_advfill_credit_apply(
         gd_lines.append(f"   Кто                  {mgr_label}")
         gd_lines.append(f"   Источник             ЗП менеджер · {len(credited)} счёт(ов)")
         gd_lines.append(f"   Баланс аванса        {fmt_money(new_balance):>11s}")
-        gd_lines.append(f"   ━━━━━━━━━━━━━━━━")
+        gd_lines.append(f"   ━━━━━━━━━━━━━━")
         gd_lines.append(f"   Итого  {fmt_money(total)}</pre>")
         try:
             await notifier.safe_send(int(gd_id), "\n".join(gd_lines))

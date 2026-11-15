@@ -77,7 +77,7 @@ def render_calendar(year: int, month: int, busy_days: set[int], off_days: set[in
     lines = [INDENT + head_inner]
     for i in range(0, len(cells), 7):
         lines.append(INDENT + " ".join(cells[i:i + 7]))
-    lines.append(INDENT + "━" * width)
+    lines.append(INDENT + "━" * (width // 2))  # ━ ≈ 2 колонки — половина ширины
     footer = f"{INDENT}📐 {len(busy_days)} замеров"
     if off_days:
         footer += f"  ·  🚫 {len(off_days)} вых."

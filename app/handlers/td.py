@@ -820,7 +820,7 @@ async def gd_pay_rpzp_open(cb: CallbackQuery, db: Database, task_id: int | None 
         num = it.get("invoice_number") or "?"
         amt = float(it.get("amount") or 0)
         lines.append(f"   №{num:<18s} {_fmt_rub_td(amt):>10s} ₽")
-    lines.append("   ━━━━━━━━━━━━━━━━")
+    lines.append("   ━━━━━━━━━━━━━━")
     lines.append(f"   Итого  {_fmt_rub_td(total)} ₽")
     lines.append("</pre>")
     from ..callbacks import RpZpPayCb, RpZpRejectCb
@@ -2846,7 +2846,7 @@ async def rp_salary_confirm(
         f"   Месяц                 {month_str}\n"
         f"   Дата                  {date_display}\n"
         f"   Форма                 {mode_label}\n"
-        f"   ━━━━━━━━━━━━━━━━\n"
+        f"   ━━━━━━━━━━━━━━\n"
         + "\n".join(format_rp_oklad_lines(
             {"deduct": adv_deduct, "payout": amount, "carry": float(paid["carry"])},
             oklad_full,

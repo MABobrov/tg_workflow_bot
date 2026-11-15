@@ -1107,7 +1107,7 @@ def build_purchases_in_work_block(invoices: list[dict[str, Any]]) -> list[str]:
             tp += p
             tf += f
             tr += rv if isinstance(rv, (int, float)) else 0
-        rows_out.append(f"{INDENT}{'━' * 32}")
+        rows_out.append(f"{INDENT}{'━' * 16}")
         rows_out.append(_row("Итого", tp, tf, tr))
         return rows_out
 
@@ -1463,7 +1463,7 @@ def format_plan_fact_card(
         _row("Установка", est_inst, fact_inst),
         _row("Грузчики", est_load, fact_load),
         _row("Логистика", est_log, fact_log),
-        f"{'─' * 50}",
+        f"{'─' * 25}",
         _row("Себест-ть", est_total, fact_total if _has_key_facts else 0),
     ]
     if not is_credit_inv:
@@ -1474,7 +1474,7 @@ def format_plan_fact_card(
         if npn_p > 0 or npn_f > 0:
             lines.append(_row("НПН 10%", npn_p, npn_f if _has_key_facts else 0))
     lines += [
-        f"{'─' * 50}",
+        f"{'─' * 25}",
         _row("Прибыль", est_profit, fact_profit if _has_key_facts else 0, invert=True),
         f"{'Рент-ть':14s} {est_pct:>9.1f}% " + (f"{fact_pct:>9.1f}%" if _has_key_facts else ""),
     ]
@@ -1496,7 +1496,7 @@ def format_plan_fact_card(
     src_label = "📋 Лид ГД (75/25)" if client_source == "gd_lead" else "👤 Клиент менеджера (50/50)"
 
     if pf.get("has_estimated") and est_profit > 0:
-        lines.append(f"{'─' * 50}")
+        lines.append(f"{'─' * 25}")
         lines.append(src_label)
         lines.append(f"{'Распределение прибыли:'}")
         lines.append(f"{'  ЗП РП (10%)':14s} {rp_zp:>10,.0f}₽")
@@ -1859,7 +1859,7 @@ def format_inwork_summary(invoices: list[dict[str, Any]]) -> str:
         f"{'Установка':14s} {_f(est_inst):>8s} {_fv(fact_inst):>8s}",
         f"{'Грузчики':14s} {_f(est_load):>8s} {_fv(fact_load):>8s}",
         f"{'Логистика':14s} {_f(est_log):>8s} {_fv(fact_log):>8s}",
-        f"{'─' * 24}",
+        f"{'─' * 16}",
         f"{'Итого затрат':14s} {_f(est_total):>8s} {_fv(fact_total):>8s}",
         "</pre>",
     ]
@@ -1970,13 +1970,13 @@ def format_monthly_ended_summary(months: list[dict[str, Any]]) -> str:
         lines.append("<pre>")
         lines.append(f"{'Сумма счетов':14s} {_f(m['total_amount']):>8s}")
         lines.append(f"{'Долги':14s} {_f(debt):>8s}")
-        lines.append(f"{'─' * 32}")
+        lines.append(f"{'─' * 16}")
         lines.append(f"{'':14s} {'План':>8s} {'Факт':>8s}")
         lines.append(f"{'Материалы':14s} {_f(m['est_materials']):>8s} {_f(m['fact_materials']):>8s}")
         lines.append(f"{'Установка':14s} {_f(m['est_installation']):>8s} {_f(m['fact_montazh']):>8s}")
         lines.append(f"{'Грузчики':14s} {_f(m['est_loaders']):>8s} {_f(m['fact_loaders']):>8s}")
         lines.append(f"{'Логистика':14s} {_f(m['est_logistics']):>8s} {_f(m['fact_logistics']):>8s}")
-        lines.append(f"{'─' * 32}")
+        lines.append(f"{'─' * 16}")
         lines.append(f"{'Затраты':14s} {_f(est_cost):>8s} {_f(fact_cost):>8s}")
         # ТЗ 2026-05-19 блок B: «ЗП монтажник» убрана (уже включена в «Установка»
         # через fact_montazh); «ЗП менеджер» и «Налоги» — теперь с колонкой План.
@@ -1984,7 +1984,7 @@ def format_monthly_ended_summary(months: list[dict[str, Any]]) -> str:
         est_taxes = float(m.get("est_taxes") or 0)
         lines.append(f"{'ЗП менеджер':14s} {_f(est_mgr_zp):>8s} {_f(m['zp_manager']):>8s}")
         lines.append(f"{'Налоги':14s} {_f(est_taxes):>8s} {_f(taxes_total):>8s}")
-        lines.append(f"{'─' * 32}")
+        lines.append(f"{'─' * 16}")
         lines.append(f"{'Прибыль':14s} {_f(est_profit):>8s} {_f(profit):>8s}")
         lines.append("</pre>")
 
@@ -4301,7 +4301,7 @@ def format_card_section(
     footer: tuple[str, str] | None = None,
     width: int = 32,
     compact: bool = False,
-    sep_ratio: float = 1.0,
+    sep_ratio: float = 0.5,  # ━ ≈ 2 колонки: 0.5 => разделитель = половина ширины
     total_label: str = "Итого",
 ) -> str:
     """Рендер одной секции карточки в эталонном дизайне.
@@ -4315,7 +4315,7 @@ def format_card_section(
         <b>{emoji}  {title} ━━━━━━━━ {total}</b>            ← опц. total
         <pre>   {label_1}{padding}{value_1}
            {label_2}{padding}{value_2}
-           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━                     ← опц. separator
+           ━━━━━━━━━━━━━━                     ← опц. separator
            {footer_label}{padding}{footer_value}</pre>      ← опц. footer
 
     Структура (compact=True) — без right-align padding, label/value на одной
@@ -4360,8 +4360,8 @@ def format_card_section(
     if total is not None:
         foot_rows.append((total_label, total))
     if foot_rows:
-        # sep_ratio<1.0 укорачивает разделитель (━ ≈ 2 симв., user 2026-06-10);
-        # default 1.0 сохраняет прежнюю длину для всех прочих карточек.
+        # ━ ≈ 2 симв. (user 2026-06-10): default 0.5 => разделитель = половина
+        # ширины карточки, чтобы полоса не переносилась на вторую строку.
         sep_len = max(3, int((width - len(INDENT)) * sep_ratio))
         body_lines.append(INDENT + HEAVY * sep_len)
         for flabel, fvalue in foot_rows:
@@ -6513,7 +6513,7 @@ def fmt_task_card(
     return format_card(sections)
 
 
-RP_OKLAD_CARD_SEP = "   ━━━━━━━━━━━━━━━━"
+RP_OKLAD_CARD_SEP = "   ━━━━━━━━━━━━━━"
 
 RP_OKLAD_HIST_KINDS = {
     "gd_bn": "б/н ГД",
@@ -6642,7 +6642,7 @@ def build_rp_zp_family_open_card(
     for it in invoices_info:
         num = str(it.get("invoice_number") or "?")
         lines.append(f"   №{num:<18s} {_rub(it.get('amount')):>10s} ₽")
-    lines.append("   ━━━━━━━━━━━━━━━━")
+    lines.append("   ━━━━━━━━━━━━━━")
     lines.append(f"   Итого  {_rub(total)} ₽")
     lines.append(f"   Статус  {status_lbl}")
     lines.append("</pre>")

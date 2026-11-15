@@ -255,7 +255,7 @@ async def _matrix(db, col_sep=1, name_w=7, show_legend=True, empty="⬛"):
         body.append(f"{INDENT}◎ {label}")
         body.extend(_data_rows(rows, ordered, zp_open, col_sep, name_w, empty))
 
-    sep_w = vw(head) - len(INDENT)
+    sep_w = (vw(head) - len(INDENT)) // 2  # ━ ≈ 2 колонки — половина ширины
     body.append(INDENT + "━" * sep_w)
     body.append(f"{INDENT}Итого: {len(inv_rows)}")
     return title + "\n<pre>" + "\n".join(body) + "</pre>" + _leg
@@ -332,7 +332,7 @@ async def _block_inwork(db, cfg, uid):
     body = [rfull("Входящие задачи", rp_tasks), rfull("Оплачено счетов", paid_month)]
     body += r2lines
     body.append(rfull("Итого", total))
-    body.append(INDENT + "━" * (width - len(INDENT)))
+    body.append(INDENT + "━" * ((width - len(INDENT)) // 2))  # ━ ≈ 2 колонки
     body.append(rfull("Входящие сообщения", x["unread_msgs"]))
 
     title = f"📋  Счета в работе · {_month_now()}"
@@ -544,7 +544,7 @@ async def _block_profit(db, config, uid):
     title = f"ЗП РП {year}"
     total = _money(m.get("rp_total_year"))
     tw = sum(_PROFIT_COLS) + 3
-    body.append(INDENT + "━" * tw)
+    body.append(INDENT + "━" * (tw // 2))  # ━ ≈ 2 колонки — половина ширины
     body.append(INDENT + "Итого" + " " * max(1, tw - vw("Итого") - vw(total)) + total)
     header = f"<b>📈  {title}</b>"
     return header + "\n<pre>" + "\n".join(body) + "</pre>"

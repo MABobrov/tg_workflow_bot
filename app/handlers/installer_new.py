@@ -2175,7 +2175,7 @@ def _build_archive_card(inv: dict) -> str:
     lines.append(f"{'Адрес':16s} {inv.get('object_address', '—')}")
     if lead_name:
         lines.append(f"{'Клиент':16s} {lead_name}")
-    lines.append(f"{'':16s} {'─' * 16}")
+    lines.append(f"{'':16s} {'─' * 8}")
     if est_total:
         lines.append(f"{'Монтаж':16s} {est_total:>10,}₽")
     if zp_val:
@@ -5028,7 +5028,7 @@ def _render_inst_adv_fill(
     lines = [f"<b>💵  Наполнить аванс</b>\n<pre>"]
     lines.append(f"   Доступно ЗП          {_fmt_money(avail_total):>10s} ₽")
     lines.append(f"   Выбрано счетов       {len(selected):>10d} / {len(invoices)}")
-    lines.append(f"   ━━━━━━━━━━━━━━━━")
+    lines.append(f"   ━━━━━━━━━━━━━━")
     lines.append(f"   Итого  {_fmt_money(sel_total)} ₽</pre>")
     if invoices:
         lines.append("\nВыберите счета, по которым забрать монтажную ЗП в кошелёк аванса.")
@@ -5156,7 +5156,7 @@ async def inst_advfill_credit_confirm(cb: CallbackQuery, state: FSMContext) -> N
             f"   {_advfill_addr(inv.get('object_address'), 18):<18s} "
             f"{_fmt_money(float(inv.get('agreed') or 0)):>10s} ₽"
         )
-    lines.append(f"   ━━━━━━━━━━━━━━━━")
+    lines.append(f"   ━━━━━━━━━━━━━━")
     lines.append(f"   Итого  {_fmt_money(total)} ₽")
     lines.append("</pre>")
     lines.append(f"\nЗачислить монтажную ЗП по {len(chosen)} счёт(ам) в кошелёк аванса?")
@@ -5230,7 +5230,7 @@ async def inst_advfill_credit_apply(
     for c in credited:
         lines.append(f"   №{str(c['invoice_number']):<18s} {_fmt_money(float(c['amount'])):>10s} ₽")
     lines.append(f"   Баланс аванса        {_fmt_money(new_balance):>10s} ₽")
-    lines.append(f"   ━━━━━━━━━━━━━━━━")
+    lines.append(f"   ━━━━━━━━━━━━━━")
     lines.append(f"   Итого  {_fmt_money(total)} ₽</pre>")
     await _inst_advfill_edit_or_send(cb, "\n".join(lines))
     await cb.answer("Зачислено")
@@ -5243,7 +5243,7 @@ async def inst_advfill_credit_apply(
         gd_lines.append(f"   Кто                  {inst_label}")
         gd_lines.append(f"   Источник             монтажная ЗП · {len(credited)} счёт(ов)")
         gd_lines.append(f"   Баланс аванса        {_fmt_money(new_balance):>10s} ₽")
-        gd_lines.append(f"   ━━━━━━━━━━━━━━━━")
+        gd_lines.append(f"   ━━━━━━━━━━━━━━")
         gd_lines.append(f"   Итого  {_fmt_money(total)} ₽</pre>")
         try:
             await notifier.safe_send(int(gd_id), "\n".join(gd_lines))
