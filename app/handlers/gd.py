@@ -38,9 +38,6 @@ from ..keyboards import (
     GD_BTN_CHAT_RP,
     GD_BTN_INVOICES,
     GD_BTN_INVOICES_WORK,
-    GD_BTN_KIA_CRED,
-    GD_BTN_NPN_CRED,
-    GD_BTN_KV_CRED,
     GD_SUBBTN_KIA_CRED,
     GD_SUBBTN_NPN_CRED,
     GD_SUBBTN_KV_CRED,
@@ -1146,21 +1143,21 @@ async def gd_chat_sales(message: Message, state: FSMContext, db: Database) -> No
     )
 
 
-@router.message(lambda m: any((m.text or "").strip().startswith(b) for b in (GD_BTN_KV_CRED, GD_SUBBTN_KV_CRED)))
+@router.message(lambda m: (m.text or "").strip().startswith(GD_SUBBTN_KV_CRED))
 async def gd_chat_kv(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     await enter_chat_menu(message, state, channel="manager_kv", db=db)
 
 
-@router.message(lambda m: any((m.text or "").strip().startswith(b) for b in (GD_BTN_KIA_CRED, GD_SUBBTN_KIA_CRED)))
+@router.message(lambda m: (m.text or "").strip().startswith(GD_SUBBTN_KIA_CRED))
 async def gd_chat_kia(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
     await enter_chat_menu(message, state, channel="manager_kia", db=db)
 
 
-@router.message(lambda m: any((m.text or "").strip().startswith(b) for b in (GD_BTN_NPN_CRED, GD_SUBBTN_NPN_CRED)))
+@router.message(lambda m: (m.text or "").strip().startswith(GD_SUBBTN_NPN_CRED))
 async def gd_chat_npn(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=GD_ACCESS_ROLES):
         return
