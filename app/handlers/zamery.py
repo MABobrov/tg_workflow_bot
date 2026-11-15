@@ -2380,8 +2380,8 @@ async def zamery_zp_confirm_count(
 
     if gd_id:
         b = InlineKeyboardBuilder()
-        b.button(text="✅ Утвердить", callback_data=f"zamzp_approve:yes:{invoice_id}")
-        b.button(text="❌ Отклонить", callback_data=f"zamzp_approve:no:{invoice_id}")
+        b.button(text="✅ Утвердить", callback_data=f"zamzp_approve:yes:{invoice_id}:{message.from_user.id}")
+        b.button(text="❌ Отклонить", callback_data=f"zamzp_approve:no:{invoice_id}:{message.from_user.id}")
         b.adjust(1)
         await notifier.safe_send(int(gd_id), summary, reply_markup=b.as_markup())
         await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
@@ -2537,22 +2537,52 @@ async def zamery_zp_approve(
     except (ValueError, TypeError):
         await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
         return
+    try:
+        initiator_id = int(parts[3]) if len(parts) > 3 else 0
+    except (ValueError, TypeError):
+        initiator_id = 0
 
     inv = await db.get_invoice(invoice_id)
     if not inv:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
         return
 
-    zamery_id = await resolve_default_assignee(db, config, Role.ZAMERY)
+    # №102: zp_status-гард — повторный approve/reject по старой карточке
+    if inv.get("zp_status") != "requested":
+        await cb.answer(
+            f"Уже обработано (статус: {inv.get('zp_status')}).", show_alert=True,
+        )
+        return
+
+    zamery_id = initiator_id or await resolve_default_assignee(db, config, Role.ZAMERY)
 
     if decision == "yes":
         await db.set_invoice_zp_status(invoice_id, "approved")
         total = inv.get("zp_zamery_total", 0) or 0
+        try:
+            await db.audit(
+                actor_id=cb.from_user.id,
+                action="zamzp_approve",
+                entity="invoice",
+                entity_id=str(invoice_id),
+                payload={"amount": total, "initiator_id": initiator_id or None},
+            )
+        except Exception:
+            log.exception("zamery_zp_approve: audit failed invoice=%s", invoice_id)
         await cb.message.answer(  # type: ignore[union-attr]
             f"✅ ЗП замерщика по счёту №{inv['invoice_number']} утверждена.\n"
             f"Сумма: {total:,.0f}₽"
         )
-        # Уведомляем замерщика
+        # №102: сразу предлагаем реальную выплату — платёж в леджер
+        b = InlineKeyboardBuilder()
+        b.button(text=f"💳 Выплатить {total:,.0f}₽", callback_data=f"zamzp_payact:pay:{invoice_id}")
+        b.button(text="▫️ Позже", callback_data=f"zamzp_payact:later:{invoice_id}")
+        b.adjust(1)
+        await cb.message.answer(  # type: ignore[union-attr]
+            "Выплатить сейчас? Платёж уйдёт во взаиморасчёты замерщика.",
+            reply_markup=b.as_markup(),
+        )
+        # Уведомляем инициатора расчёта (или дефолтного замерщика)
         if zamery_id:
             await notifier.safe_send(
                 int(zamery_id),
@@ -2563,6 +2593,16 @@ async def zamery_zp_approve(
             await refresh_recipient_keyboard(notifier, db, config, int(zamery_id))
     else:
         await db.set_invoice_zp_status(invoice_id, "not_requested")
+        try:
+            await db.audit(
+                actor_id=cb.from_user.id,
+                action="zamzp_reject",
+                entity="invoice",
+                entity_id=str(invoice_id),
+                payload={"initiator_id": initiator_id or None},
+            )
+        except Exception:
+            log.exception("zamery_zp_approve: audit (reject) failed invoice=%s", invoice_id)
         await cb.message.answer(  # type: ignore[union-attr]
             f"❌ ЗП замерщика по счёту №{inv['invoice_number']} отклонена."
         )
@@ -2574,3 +2614,113 @@ async def zamery_zp_approve(
                 "Свяжитесь с ГД для уточнения.",
             )
             await refresh_recipient_keyboard(notifier, db, config, int(zamery_id))
+
+
+@router.callback_query(F.data.startswith("zamzp_payact:"))
+@money_confirm_guard
+async def zamery_zp_pay_act(
+    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
+) -> None:
+    """№102: «💳 Выплатить» / «▫️ Позже» после утверждения ЗП замерщика.
+
+    pay — реальная выплата: платёж в леджер (zamery_settlement_entries) +
+    zp_status → payment_sent. Идемпотентно: платит только из статуса approved.
+    later — остаётся approved (кнопка выплаты доступна на карточке ГД).
+    """
+    if not await require_role_callback(cb, db, roles=[Role.GD]):
+        return
+    await cb.answer()
+    parts = cb.data.split(":")  # type: ignore[union-attr]
+    if len(parts) < 3:
+        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
+        return
+    action = parts[1]
+    try:
+        invoice_id = int(parts[2])
+    except (ValueError, TypeError):
+        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
+        return
+
+    if action == "later":
+        await cb.message.answer(  # type: ignore[union-attr]
+            "▫️ Выплата отложена. Статус: одобрено — выплатите позже с этой карточки."
+        )
+        return
+    if action != "pay":
+        await cb.message.answer("❌ Некорректные данные.")  # type: ignore[union-attr]
+        return
+
+    inv = await db.get_invoice(invoice_id)
+    if not inv:
+        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        return
+
+    status = inv.get("zp_status") or ""
+    if status == "payment_sent":
+        await cb.answer("Уже выплачено.", show_alert=True)
+        return
+    if status != "approved":
+        await cb.answer(
+            f"Нельзя выплатить: статус «{status}». Сначала утвердите расчёт.", show_alert=True,
+        )
+        return
+
+    total = float(inv.get("zp_zamery_total") or 0)
+    if total <= 0:
+        await cb.answer("Сумма расчёта пуста — выплата невозможна.", show_alert=True)
+        return
+
+    zamery_id = await resolve_default_assignee(db, config, Role.ZAMERY)
+    if not zamery_id:
+        await cb.answer(
+            "Замерщик не назначен в ролях — выплатить нельзя. Назначьте и повторите.",
+            show_alert=True,
+        )
+        return
+    today_iso = datetime.now().strftime("%Y-%m-%d")
+    today_disp = datetime.now().strftime("%d.%m.%Y")
+
+    # 1. Платёж в леджер взаиморасчётов
+    try:
+        await db.add_zamery_settlement_entry(
+            surveyor_id=int(zamery_id),
+            entry_date=today_iso,
+            kind="payment",
+            amount=total,
+            comment=f"ЗП замерщика: счёт №{inv['invoice_number']}",
+            created_by=cb.from_user.id,
+        )
+    except Exception:
+        log.exception("zamery_zp_pay_act: ledger entry failed invoice=%s", invoice_id)
+        await cb.message.answer("❌ Ошибка записи выплаты. Попробуйте ещё раз.")  # type: ignore[union-attr]
+        return
+    # 2. Статус → payment_sent («Платёж отправлен»)
+    await db.set_invoice_zp_status(invoice_id, "payment_sent")
+    # 3. Аудит
+    try:
+        await db.audit(
+            actor_id=cb.from_user.id,
+            action="zamzp_payout",
+            entity="invoice",
+            entity_id=str(invoice_id),
+            payload={"amount": total, "date": today_iso},
+        )
+    except Exception:
+        log.exception("zamery_zp_pay_act: audit failed invoice=%s", invoice_id)
+
+    await cb.message.answer(  # type: ignore[union-attr]
+        f"💳 <b>Выплата ЗП замерщика</b>\n\n"
+        f"Счёт №: <code>{inv['invoice_number']}</code>\n"
+        f"Сумма: {total:,.0f}₽\n"
+        f"Дата: {today_disp}\n\n"
+        f"Записано во взаиморасчёты (статус: платёж отправлен)."
+    )
+    if zamery_id:
+        await notifier.safe_send(
+            int(zamery_id),
+            f"💳 <b>Выплачена ЗП</b>\n\n"
+            f"Счёт №: <code>{inv['invoice_number']}</code>\n"
+            f"Сумма: {total:,.0f}₽\n"
+            f"Дата: {today_disp}",
+        )
+        await refresh_recipient_keyboard(notifier, db, config, int(zamery_id))
