@@ -2424,11 +2424,15 @@ async def request_final_payment_eta(
         debt = float(inv.get("outstanding_debt") or 0)
         if debt <= 0:
             return False
-        # владелец-менеджер счёта: резолвим по creator_role (created_by у счетов
-        # из «Импорт ОП»/синка ГД = ГД, а не реальный менеджер — иначе задача
-        # ушла бы ГД). Fallback — created_by.
-        manager_id = await resolve_invoice_manager_id(db, config, inv)
-        if not manager_id:
+        # 16.11 (жалоба ГД «Счёт END», слово владельца: «дату финального платежа
+        # слать мне по всем счетам»): задача и карточка уходят ГД по ВСЕМ счетам,
+        # а не менеджеру-владельцу счёта. Fallback — прежний резолв менеджера,
+        # если пользователя с ролью ГД вдруг нет (не терять задачу молча).
+        from .services.assignment import resolve_default_assignee
+        recipient_id = await resolve_default_assignee(db, config, "gd")
+        if not recipient_id:
+            recipient_id = await resolve_invoice_manager_id(db, config, inv)
+        if not recipient_id:
             return False
         # дедуп: уже в трекинге или есть открытая задача
         if (inv.get("final_payment_track_state") or "") in ("planned", "overdue", "paid"):
@@ -2443,7 +2447,7 @@ async def request_final_payment_eta(
                 type_=TaskType.FINAL_PAYMENT_ETA,
                 status=TaskStatus.OPEN,
                 created_by=actor_id,
-                assigned_to=int(manager_id),
+                assigned_to=int(recipient_id),
                 due_at_iso=None,
                 payload={
                     "invoice_id": invoice_id,
@@ -2472,7 +2476,7 @@ async def request_final_payment_eta(
                 f"Остаток долга: <b>{debt_str} ₽</b>\n\n"
                 "Когда планируется <b>финальный платёж</b>? Укажите ориентировочную дату."
             )
-        await notifier.safe_send(int(manager_id), card, reply_markup=b.as_markup())
+        await notifier.safe_send(int(recipient_id), card, reply_markup=b.as_markup())
         return True
     except Exception:
         _log.exception("request_final_payment_eta: unexpected inv=%s", invoice_id)
