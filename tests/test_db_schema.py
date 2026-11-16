@@ -213,7 +213,10 @@ def test_import_invoice_from_sheet_updates_existing_invoice_fields(tmp_path) -> 
         assert invoice["deadline_days"] is None
         assert invoice["actual_completion_date"] == "2026-03-05"
         assert invoice["first_payment_amount"] is None
-        assert invoice["outstanding_debt"] is None
+        # №160: outstanding_debt — money-preserve поле (баг 9б, 05.08):
+        # пустое значение из листа НЕ затирает долг; погашение — только
+        # литеральным 0. Здесь None, поэтому старый долг 700.0 сохраняется.
+        assert invoice["outstanding_debt"] == 700.0
         assert invoice["contract_type"] is None
         assert invoice["closing_docs_status"] is None
         assert invoice["payment_terms"] is None
@@ -248,7 +251,10 @@ def test_import_invoice_from_sheet_accepts_dict_payload_and_computes_status(tmp_
         assert invoice is not None
         assert invoice["created_by"] == 55
         assert invoice["creator_role"] == "manager_kv"
-        assert invoice["status"] == "paid"
+        # №160: статус НЕ вычисляется автоматически по actual_completion_date
+        # и долгу (half-state фикс): «Счёт End» ставит менеджер явно через
+        # InvoiceEndSG. Новому счёту без явного status — in_progress.
+        assert invoice["status"] == "in_progress"
         assert invoice["description"] == "dict import"
 
     asyncio.run(scenario())
