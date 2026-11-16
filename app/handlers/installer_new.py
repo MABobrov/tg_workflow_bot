@@ -207,6 +207,8 @@ async def start_order_materials(message: Message, state: FSMContext, db: Databas
     b.button(text="⏩ Без привязки", callback_data="inst_order_inv:skip")
     b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
+    # №149: допзаказ помечается, чтобы РП отличал его от основного заказа материалов
+    await state.update_data(order_extra=False)
     await state.set_state(InstallerOrderMaterialsSG.invoice_pick)
     await message.answer(
         "📦 <b>Заказ материалов</b>\n\n"
@@ -322,6 +324,8 @@ async def order_mat_finalize(
             "description": description,
             "comment": comment,
             "source": "installer",
+            # №149: признак допзаказа — РП отличает его от основного заказа
+            "extra": bool(data.get("order_extra")),
             "sender_id": u.id,
             "invoice_id": data.get("invoice_id"),
         },
@@ -338,8 +342,10 @@ async def order_mat_finalize(
         )
 
     initiator = await get_initiator_label(db, u.id)
+    # №149: допзаказ получает свою пометку в заголовке сообщения РП
+    order_label = "Заказ доп.материалов" if data.get("order_extra") else "Заказ материалов"
     msg = (
-        f"📦 <b>Заказ материалов от монтажника</b>\n"
+        f"📦 <b>{order_label} от монтажника</b>\n"
         f"👤 От: {initiator}\n\n"
         f"📝 {description}\n"
     )
@@ -355,7 +361,8 @@ async def order_mat_finalize(
     role, isolated_role = await _current_menu(db, u.id)
     await state.clear()
     await cb.message.answer(  # type: ignore[union-attr]
-        "✅ Заказ материалов отправлен РП.",
+        # №149: подтверждение тоже с пометкой допзаказа
+        f"✅ {order_label} отправлен РП.",
         reply_markup=private_only_reply_markup(
             cb.message,
             main_menu(
@@ -391,6 +398,8 @@ async def start_order_extra(message: Message, state: FSMContext, db: Database) -
     b.button(text="⏩ Без привязки", callback_data="inst_order_inv:skip")
     b.button(text="⬅️ Назад", callback_data="inst_nav:home")
     b.adjust(1)
+    # №149: допзаказ помечается, чтобы РП отличал его от основного заказа материалов
+    await state.update_data(order_extra=True)
     await state.set_state(InstallerOrderMaterialsSG.invoice_pick)
     await message.answer(
         "📦 <b>Заказ доп.материалов</b>\n\n"
@@ -4331,8 +4340,8 @@ async def installer_zp_start(message: Message, state: FSMContext, db: Database) 
 
         b = InlineKeyboardBuilder()
         if zp_st == "not_requested":
-            b.button(text="✏️ Изменить стоимость", callback_data=f"instzpadj:start:{inv['id']}")
-            b.button(text="💰 Запросить ЗП", callback_data=f"instzpadj:start:{inv['id']}")
+            # №150: одна кнопка вместо двух одинаковых — обе вели на один callback
+            b.button(text="✏️ Изменить стоимость / ЗП", callback_data=f"instzpadj:start:{inv['id']}")
         elif _can_edit_zp_amount(inv):
             # Часть 2 (2.3): повторная правка суммы на этапе «Счет End».
             b.button(text="✏️ Изменить сумму", callback_data=f"instzpadj:start:{inv['id']}")
@@ -4699,8 +4708,8 @@ async def inst_zp_classic(cb: CallbackQuery, state: FSMContext, db: Database) ->
         zp_amount = inv.get("zp_installer_amount")
         kb = InlineKeyboardBuilder()
         if zp_st == "not_requested":
-            kb.button(text="✏️ Изменить стоимость", callback_data=f"instzpadj:start:{inv['id']}")
-            kb.button(text="💰 Запросить ЗП", callback_data=f"instzpadj:start:{inv['id']}")
+            # №150: одна кнопка вместо двух одинаковых — обе вели на один callback
+            kb.button(text="✏️ Изменить стоимость / ЗП", callback_data=f"instzpadj:start:{inv['id']}")
         elif _can_edit_zp_amount(inv):
             # Часть 2 (2.3): повторная правка суммы на этапе «Счет End».
             kb.button(text="✏️ Изменить сумму", callback_data=f"instzpadj:start:{inv['id']}")

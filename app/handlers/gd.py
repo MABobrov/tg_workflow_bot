@@ -601,7 +601,9 @@ async def gd_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
 # ---------------------------------------------------------------------------
 
 @router.message(
-    lambda m: (m.text or "").strip() in {GD_BTN_SEARCH_INVOICE, "Поиск Счета"}
+    # №146: startswith — поддержка будущего бейджа «🔴N», как у остальных ГД-кнопок
+    lambda m: (m.text or "").strip().startswith(GD_BTN_SEARCH_INVOICE)
+    or (m.text or "").strip().startswith("Поиск Счета")
 )
 async def gd_search_invoice_start(message: Message, state: FSMContext, db: Database) -> None:
     """Start invoice search flow."""

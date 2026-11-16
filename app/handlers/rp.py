@@ -2510,6 +2510,8 @@ async def rp_hub_adv_fill_start(cb: CallbackQuery, state: FSMContext, db: Databa
 
     Гард от устаревшей inline-кнопки: наполнение кошелька сотрудником запрещено
     (включая перевод оклада), кошелёк используется только в счёт ЗП.
+
+    №158: недостижимый хвост после return вычищен 17.11.
     """
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
@@ -2517,30 +2519,6 @@ async def rp_hub_adv_fill_start(cb: CallbackQuery, state: FSMContext, db: Databa
     await cb.message.answer(  # type: ignore[union-attr]
         "⛔ Наполнение аванса доступно только ГД.\n"
         "Авансовый кошелёк используется только в счёт ЗП.")
-    return
-    user_id = cb.from_user.id
-    invoices = await db.list_rp_advance_fill_invoices()
-    # A2: доступность перевода оклада за следующий месяц
-    oklad: dict[str, Any] | None = None
-    try:
-        ny, nm, okl_month = _next_month_msk()
-        st = await db.get_rp_oklad_advance_status(ny, nm)
-        if st["remaining"] > 0 and not st["gd_paid"] and not await _has_pending_rp_salary(db, user_id, okl_month):
-            oklad = {"month_str": okl_month, "remaining": st["remaining"]}
-    except Exception:
-        log.exception("rp_hub_adv_fill_start: oklad status failed")
-    if not invoices and not oklad:
-        await cb.message.answer(  # type: ignore[union-attr]
-            "📭 Нет ни счетов с незабранной ЗП РП (10%), ни доступного оклада.\n\n"
-            "Счета появляются, когда в таблице есть сумма «НПН 10%» и ЗП ещё не выдана "
-            "(столбец «Выдано РП» пуст)."
-        )
-        return
-    selected = {int(i["id"]) for i in invoices}  # по умолчанию выбраны все
-    await state.set_state(RpAdvanceFillSG.list_invoices)
-    await state.update_data(adv_invoices=invoices, adv_selected=list(selected), adv_oklad=oklad)
-    text, kb = _render_rp_adv_fill(invoices, selected, oklad)
-    await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data.startswith("rpadv:pick:"), RpAdvanceFillSG.list_invoices)

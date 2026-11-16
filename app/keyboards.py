@@ -11,7 +11,6 @@ from .utils import parse_roles, task_status_label, task_type_label, try_json_loa
 
 
 BACK_TO_HOME = "⬅️ Назад в главное меню"
-BACK_TO_ROLE_SELECTOR = "⬅️ Назад в главное меню"  # legacy alias, no longer used
 OPEN_ACTIONS = "📂 Ещё действия"
 OPEN_HELP = "📚 Справка"
 OPEN_ADMIN_PANEL = "🛠 Адм.панель"
@@ -123,8 +122,10 @@ RP_BTN_URGENT = "🚨 Срочно ГД"                    # legacy
 RP_BTN_SEARCH_INVOICE = "🔍 Поиск счёта"          # legacy
 RP_BTN_SYNC = "🔄 Синхронизация данных"            # legacy
 RP_BTN_HELP = "📚 Справка"                        # legacy
-RP_BTN_ZP_RP = "💰 Запрос ЗП РП"                  # B1 TZ v8 legacy (handler dead-code, см. RP_BTN_SALARY_HUB)
-RP_BTN_SALARY_REQUEST = "💼 Запрос оклада"        # B5 v2 TZ 27.05 legacy (handler dead-code, см. RP_BTN_SALARY_HUB)
+# №158: пометки «handler dead-code» сняты — хендлеры живы и работают через хаб
+# «💰 Запрос ЗП» (rp_hub:b2 / rp_hub:b5); кнопки в меню нет — вход только из хаба.
+RP_BTN_ZP_RP = "💰 Запрос ЗП РП"                  # legacy, хендлер жив (хаб ЗП)
+RP_BTN_SALARY_REQUEST = "💼 Запрос оклада"        # legacy, хендлер жив (хаб ЗП)
 RP_BTN_SALARY_HUB = "💰 Запрос ЗП"                # TZ 28.05 хаб: Оклад / ЗП-счета / Аванс / Депозит
 
 # --- Accounting buttons ---
@@ -152,14 +153,9 @@ INST_BTN_SYNC = "🔄 Синхронизация данных"
 ZAM_BTN_ZAMERY = "📋 Заявка на замер"
 ZAM_BTN_MY_OBJECTS = "📋 Мои замеры"
 ZAM_BTN_URGENT = "🚨 Срочно ГД"
-ZAM_BTN_NOT_URGENT = "📩 Не срочно ГД"
 ZAM_BTN_SYNC = "🔄 Синхронизация данных"
 ZAM_BTN_PAYMENT = "💰 Оплата замеров"
 ZAM_BTN_SCHEDULE = "📅 График замеров"
-
-# Legacy — kept for backward compat, no longer used
-ROLE_SELECTOR_PREFIX = "🎭 "
-ROLE_SELECTOR_LABELS: dict[str, str] = {}
 
 
 def _build_reply_rows(rows: list[list[str]]) -> ReplyKeyboardMarkup:
@@ -175,24 +171,8 @@ def _build_reply_rows(rows: list[list[str]]) -> ReplyKeyboardMarkup:
     return kb.as_markup(resize_keyboard=True, is_persistent=True)
 
 
-def role_selector_label(role: str) -> str:
-    return ROLE_SELECTOR_LABELS.get(role, f"{ROLE_SELECTOR_PREFIX}{role}")
-
-
-def role_selector_choices(role_value: str | None) -> dict[str, str]:
-    return {role_selector_label(role): role for role in parse_roles(role_value)}
-
-
-def role_selector_menu(role_value: str | None, is_admin: bool = False) -> ReplyKeyboardMarkup:
-    rows: list[list[str]] = []
-    role_buttons = [role_selector_label(role) for role in parse_roles(role_value)]
-    for index in range(0, len(role_buttons), 2):
-        rows.append(role_buttons[index:index + 2])
-    rows.append([OPEN_HELP, "🔄 Обновить меню"])
-    if is_admin:
-        rows.append([OPEN_ADMIN_PANEL])
-    rows.append(["❌ Отмена"])
-    return _build_reply_rows(rows)
+# №155 (17.11): мёртвый кластер role_selector_* удалён — ROLE_SELECTOR_LABELS был
+# пустым словарём, role_selector_menu не вызывался ни одним хендлером.
 
 
 def _role_primary_action_rows(role: str | None) -> list[list[str]]:
@@ -277,9 +257,11 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
 
 def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
     # --- 3 менеджера (КВ / КИА / НПН) — подменю "Еще" ---
+    # №147: MGR_BTN_CRED убрана из рядов — до кнопки нельзя добраться ни из
+    # одного экрана (кредит-чат жив внутри «🏦 Кредит»); хендлер оставлен
+    # как legacy на старые клавиатуры в чатах.
     if role in MANAGER_ROLES or role == Role.MANAGER:
         return [
-            [MGR_BTN_CRED],
             [MGR_BTN_GD_CONTACT, MGR_BTN_SEARCH_INVOICE],
             ["📋 Все задачи", MGR_BTN_HELP],
             [MGR_BTN_CANCEL, MGR_BTN_BACK_HOME],

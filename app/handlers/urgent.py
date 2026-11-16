@@ -93,7 +93,10 @@ async def _show_invoice_picker_or_skip(
 # "🚨 Срочно ГД"
 # ===========================================================================
 
-@router.message(F.text == "🚨 Срочно ГД")
+@router.message(
+    # №155: startswith — поддержка будущего бейджа «🔴N» (как у «📋 Все задачи»)
+    lambda m: (m.text or "").strip().startswith("🚨 Срочно ГД")
+)
 async def start_urgent_gd(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=ALLOWED_ROLES):
         return

@@ -7695,36 +7695,12 @@ async def mgr_advfill_start(cb: CallbackQuery, state: FSMContext, db: Database) 
 
     Гард от устаревшей inline-кнопки: наполнение кошелька сотрудником запрещено,
     кошелёк используется только в счёт ЗП.
+    №148: недостижимый хвост после return вычищен 17.11.
     """
     await cb.answer()
     await cb.message.answer(  # type: ignore[union-attr]
         "⛔ Наполнение аванса доступно только ГД.\n"
         "Авансовый кошелёк используется только в счёт ЗП.")
-    return
-    if not await _mgr_cb_ok(cb, db):
-        return
-    user_id = cb.from_user.id  # type: ignore[union-attr]
-    role_key = await _mgr_role_key(db, user_id)
-    if not role_key:
-        await cb.answer("Доступно только менеджерам КВ/КИА/НПН.", show_alert=True)
-        return
-    await state.clear()
-    invoices = await db.list_manager_advance_fill_invoices(role_key, user_id)
-    if not invoices:
-        await cb.message.answer(  # type: ignore[union-attr]
-            "📭 Нет счетов с незабранной ЗП менеджера.\n\n"
-            "Счёт появляется, когда по нему есть ЗП менеджера (по бланку), ещё не "
-            "забранная и не в выплате."
-        )
-        return
-    selected = {int(i["id"]) for i in invoices}  # по умолчанию выбраны все
-    await state.set_state(ManagerAdvanceFillSG.list_invoices)
-    await state.update_data(
-        mgr_advfill_invoices=invoices, mgr_advfill_selected=list(selected),
-        mgr_advfill_role_key=role_key,
-    )
-    text, kb = _render_mgr_adv_fill(invoices, selected)
-    await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
 
 
 @router.callback_query(F.data.startswith("mgr_advfill:pick:"), ManagerAdvanceFillSG.list_invoices)

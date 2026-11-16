@@ -64,7 +64,9 @@ async def _current_menu(db: Database, user_id: int) -> tuple[str | None, bool]:
 # ВХОДЯЩИЕ ЗАДАЧИ (бухгалтерия — только непринятые)
 # =====================================================================
 
-@router.message(lambda m: (m.text or "").strip().startswith("📥 Входящие задачи"))
+# №154: регистрация «📥 Входящие задачи» удалена — текст раньше перехватывает
+# общий роутер common.inbox_tasks_universal, который сам делегирует сюда
+# бухгалтерии; прямая регистрация была недостижимым дублём.
 async def acc_inbox_tasks(message: Message, db: Database) -> None:
     """Входящие задачи бухгалтерии — только без подтверждения получения."""
     if not message.from_user:
