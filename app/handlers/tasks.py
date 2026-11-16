@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 from typing import Any
 
@@ -306,6 +307,9 @@ _TASKCOMPLETE_ALLOWED_TYPES: frozenset[str] = frozenset({
     TaskType.QUOTE_REQUEST,
     TaskType.CLOSING_DOCS,
     TaskType.URGENT_GD,
+    # GD_TASK (owner 16.11): «✅ Завершить» у исполнителя уводит в сбор
+    # комментария/вложений для постановщика-ГД, а не в безмолвное закрытие.
+    TaskType.GD_TASK,
 })
 
 
@@ -510,6 +514,20 @@ async def task_actions(
         await integrations.sync_task(task, project_code=project.get("code", "") if project else "")
         await _safe_edit_task_markup(cb.message, reply_markup=task_actions_kb(task, viewer_role=viewer_role))
         await answer_service(cb.message, _task_take_text(task, project))  # type: ignore[arg-type]
+        # GD_TASK (owner 16.11): сразу после «Взять в работу» — возможность
+        # комментария постановщику-ГД, не дожидаясь «Завершить».
+        if task.get("type") == TaskType.GD_TASK and cb.message:
+            _pl = try_json_loads(task.get("payload_json")) or {}
+            _src = str(_pl.get("source") or "")
+            _channel = _src.split(":", 1)[1] if _src.startswith("chat_proxy:") and ":" in _src else "rp"
+            _rb = InlineKeyboardBuilder()
+            _rb.button(text="💬 Ответить ГД", callback_data=f"reply_to_gd:{_channel}")
+            _rb.adjust(1)
+            await cb.message.answer(
+                "Задача взята в работу. Если есть что сказать по ходу — "
+                "нажмите «💬 Ответить ГД».",
+                reply_markup=_rb.as_markup(),
+            )
         return
 
     # ACCEPT+TAKE — менеджерская единая «Принято» (ТЗ 23.06): принять + взять в
@@ -1591,7 +1609,10 @@ async def task_actions_part2(
         # вернуться постановщику ФАЙЛАМИ, а не только карточкой «Задача выполнена».
         # Адресат — created_by, а не manager_id: у urgent_gd project_id пуст, поэтому
         # прежнее условие `and project` не пускало сюда этот тип в принципе.
-        _urgent_reply = task.get("type") == TaskType.URGENT_GD
+        # GD_TASK (owner 16.11): «✅ Завершить» у исполнителя — сначала комментарий
+        # (текст) и/или файлы постановщику-ГД, потом закрытие. Безмолвное закрытие
+        # оставляло ГД без ответа по существу задачи (случай №710, Павел).
+        _urgent_reply = task.get("type") in {TaskType.URGENT_GD, TaskType.GD_TASK}
         if _docs_reply or _urgent_reply:
             if _docs_reply:
                 target_user_id = project.get("manager_id")
@@ -1601,6 +1622,14 @@ async def task_actions_part2(
                     "Пришлите готовые документы (файлы/фото) несколькими сообщениями.\n"
                     "Когда закончите — нажмите «✅ Отправить и закрыть».\n"
                     "Или можно «⏭ Закрыть без отправки»."
+                )
+            elif task.get("type") == TaskType.GD_TASK:
+                target_user_id = task.get("created_by")
+                _prompt = (
+                    "Напишите комментарий по задаче (текстом) и/или приложите файлы — "
+                    "можно несколькими сообщениями.\n"
+                    "Когда закончите — нажмите «✅ Отправить и закрыть».\n"
+                    "Если комментарий не нужен — «⏭ Закрыть без комментария»."
                 )
             else:
                 target_user_id = task.get("created_by")
@@ -1665,6 +1694,15 @@ async def taskcomplete_collect(
     state: FSMContext,
     storage: MinioStorage | None = None,
 ) -> None:
+    # Текст = комментарий исполнителя (owner 16.11, GD_TASK): собираем в state,
+    # отправим постановщику при «✅ Отправить и закрыть».
+    if message.text and not message.text.startswith("/"):
+        data = await state.get_data()
+        comments = data.get("comments") or []
+        comments.append(message.text.strip())
+        await state.update_data(comments=comments)
+        await message.answer("💬 Комментарий принят. Можно дописать ещё или приложить файлы.")
+        return
     uid = message.from_user.id if message.from_user else "anon"
     att, count = await collect_attachment(message, state, storage, prefix=f"tasks/{uid}")
     if att is None:
@@ -1740,14 +1778,22 @@ async def taskcomplete_finalize(
             else None
         )
         initiator = await get_initiator_label(db, cb.from_user.id)
-        # «Срочно ГД» — это ответ ГД постановщику, а не «документы по проекту»: шапка
-        # своя, чтобы бухгалтерия видела, на какой свой запрос пришёл файл.
-        if task.get("type") == TaskType.URGENT_GD:
+        # Комментарий исполнителя (owner 16.11, GD_TASK): текст, собранный
+        # taskcomplete_collect, уходит постановщику вместе с вложениями.
+        comments = [c for c in (data.get("comments") or []) if str(c).strip()]
+        comment_block = "\n\n".join(html.quote(str(c)) for c in comments)
+        # «Срочно ГД»/GD_TASK — это ответ исполнителя постановщику, а не «документы
+        # по проекту»: шапка своя, чтобы постановщик видел, на какой свой запрос
+        # пришёл ответ.
+        if task.get("type") in {TaskType.URGENT_GD, TaskType.GD_TASK}:
             _head = (
-                f"📎 <b>Ответ на задачу #{task_id}</b>\n"
-                f"👤 От: {initiator}\n\n"
-                f"См. вложения."
+                f"💬 <b>Ответ на задачу</b>\n"
+                f"👤 От: {initiator}\n"
             )
+            if comment_block:
+                _head += f"\n{comment_block}\n"
+            if attachments:
+                _head += "\n📎 См. вложения."
         else:
             _head = (
                 f"📄 <b>Документы по задаче #{task_id} готовы</b>\n"

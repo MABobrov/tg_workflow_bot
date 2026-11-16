@@ -794,15 +794,16 @@ def task_actions_kb(
             b.adjust(1)
         return b.as_markup()
 
-    # Бухгалтерия — упрощённая клавиатура: Принято + Вопрос
+    # Бухгалтерия — упрощённая клавиатура: Взять в работу + Вопрос (owner 16.11:
+    # кнопки «Принято» больше нет — take сам ставит accepted_at = подтверждение принятия)
     if assigned_role == "accounting":
         if status == TaskStatus.OPEN and not task.get("accepted_at"):
-            b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+            b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="take").pack())
         b.button(text="❓ Вопрос", callback_data=f"acc_q:{tid}")
         b.adjust(1)
         return b.as_markup()
 
-    # ZP installer для ГД — «Принято» (для OPEN без accepted_at) + «Завершить» (→ FSM платёжки) + «Снять задачу».
+    # ZP installer для ГД — «Взять в работу» (take = accepted_at, owner 16.11) + «Завершить» (→ FSM платёжки) + «Снять задачу».
     # «Завершить» переадресует на gdzp_inst:pdf:{invoice_id} (td.gd_zp_payment_start):
     # FSM запросит PDF → перешлёт монтажнику → закроет задачу.
     if ttype == TaskType.ZP_INSTALLER and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
@@ -810,7 +811,7 @@ def task_actions_kb(
         _inv_id = (_payload or {}).get("invoice_id") if isinstance(_payload, dict) else None
         b = InlineKeyboardBuilder()
         if status == TaskStatus.OPEN and not task.get("accepted_at"):
-            b.button(text=_take_txt or "✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+            b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="take").pack())
         if _inv_id:
             b.button(
                 text="💳 Оплачено (платёжка)" if _gd_view else "✅ Завершить",
@@ -844,15 +845,13 @@ def task_actions_kb(
     if ttype == TaskType.RP_SALARY and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         from .callbacks import RpSalaryTaskCb
         b = InlineKeyboardBuilder()
-        # «✅ Принято» (owner 31.07) — ТОЛЬКО подтверждение получения, по образцу
-        # ZP_INSTALLER выше: task_actions accept → db.accept_task ставит accepted_at
-        # (глушит 15-мин напоминание) и статус НЕ меняет. Задача остаётся open,
-        # бейджи ГД считают по status → неоплаченный оклад из меню не исчезает.
+        # «⏳ Взять в работу» (owner 16.11: кнопки «Принято» больше нет) — take
+        # ставит accepted_at (глушит 15-мин напоминание) и переводит в IN_PROGRESS.
         # Выплата по-прежнему возможна ТОЛЬКО через «✅ Выплатить» (запись в БК +
         # гашение аванса + notify РП).
         _show_accept = status == TaskStatus.OPEN and not task.get("accepted_at")
         if _show_accept:
-            b.button(text=_take_txt or "✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+            b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="take").pack())
         b.button(
             text="💳 Выплатить" if _gd_view else "✅ Выплатить",
             callback_data=RpSalaryTaskCb(task_id=tid, action="open").pack(),
@@ -902,7 +901,8 @@ def task_actions_kb(
         return b.as_markup()
 
     # «Нет документов по счёту» (INVOICE_DOCS_MISSING, ТЗ 10.07): менеджеру —
-    # «✅ Принято» (глушит 15-мин эскалацию, не закрывая задачу) + выбор статуса
+    # «⏳ Взять в работу» (owner 16.11: вместо «Принято»; take ставит accepted_at
+    # и глушит 15-мин эскалацию, не закрывая задачу) + выбор статуса
     # первички (docstat:*). Generic «Завершить/Взять/Отклонить» закрыли бы задачу
     # мимо смысла и не дают «указать статус документов» — свой early-return.
     # «✅ Оформлены» доспрашивает ЭДО/держателя оригиналов → пишет в счёт →
@@ -910,7 +910,7 @@ def task_actions_kb(
     if ttype == TaskType.INVOICE_DOCS_MISSING and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         b = InlineKeyboardBuilder()
         if status == TaskStatus.OPEN and not task.get("accepted_at"):
-            b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+            b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="take").pack())
         b.button(text="✅ Оформлены", callback_data=f"docstat:formalized:{tid}")
         b.button(text="⏳ В работе", callback_data=f"docstat:in_work:{tid}")
         b.button(text="📤 Запрошены у клиента", callback_data=f"docstat:requested:{tid}")
@@ -972,18 +972,16 @@ def task_actions_kb(
         b.adjust(1)
         return b.as_markup()
 
-    # Менеджер (ТЗ 23.06): единая кнопка «Принято» = принять + взять в работу +
+    # Менеджер (ТЗ 23.06): единая кнопка = принять + взять в работу +
     # уведомить постановщика за один тап (action=accept_take). Прочие роли —
-    # прежние «Принято» (accept) + «Взять в работу» (take).
+    # «Взять в работу» (take). Owner 16.11: отдельной кнопки «Принято» больше
+    # НЕТ ни у одной роли — нажатие «Взять в работу» и есть подтверждение
+    # принятия (take/accept_take сами ставят accepted_at).
     _is_manager_viewer = viewer_role in MANAGER_ROLES or viewer_role == Role.MANAGER
-
-    # accept button — only for open tasks not yet accepted
-    if status == TaskStatus.OPEN and not task.get("accepted_at") and not _is_manager_viewer:
-        b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
 
     if status == TaskStatus.OPEN:
         if _is_manager_viewer:
-            b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept_take").pack())
+            b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="accept_take").pack())
         b.button(text="✅ Завершить", callback_data=TaskCb(task_id=tid, action="done").pack())
         if not _is_manager_viewer:
             b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="take").pack())
