@@ -6864,6 +6864,30 @@ class Database:
                 continue
         return False
 
+    async def has_open_invoice_end_request(self, invoice_id: int) -> bool:
+        """16.11 (жалоба ГД «Счёт END»): True, если по счёту есть открытая
+        (open/in_progress) задача INVOICE_END_REQUEST — закрытие реально
+        ждёт подтверждения ГД. False → счёт в closing «завис»: запрос был,
+        но закрыт мимо подтверждения (кейс 66 / 26721-1НПН, 29.08–16.11:
+        невидим в списках и напоминаниях 2,5 месяца)."""
+        from .enums import TaskType, TaskStatus
+        tasks = await self.search_tasks_by_payload(
+            field="invoice_id",
+            value=str(invoice_id),
+            type_filter=[TaskType.INVOICE_END_REQUEST],
+            limit=30,
+        )
+        for t in tasks:
+            if t.get("status") not in (TaskStatus.OPEN, TaskStatus.IN_PROGRESS):
+                continue
+            try:
+                payload = json.loads(t.get("payload_json") or "{}")
+            except (ValueError, TypeError):
+                continue
+            if int(payload.get("invoice_id") or 0) == int(invoice_id):
+                return True
+        return False
+
     async def count_invoices_ready_for_end(self, manager_id: int) -> int:
         """ТЗ 18.06: число материнских счетов менеджера, готовых к закрытию
         (монтаж «Счёт ОК» + долга нет + статус активный) — для бейджа 🔴 на
@@ -6998,6 +7022,11 @@ class Database:
         отдельно в invend_final.
 
         Свежие — первыми: у ГД это разовая ручная операция по «зависшему» счёту.
+
+        16.11 (жалоба ГД «Счёт END»): плюс зависшие closing — статус 'closing'
+        БЕЗ открытой задачи INVOICE_END_REQUEST (запрос закрыт мимо
+        подтверждения; кейс 66). Раньше такие счета выпадали и отсюда —
+        ГД не мог закрыть их самостоятельно.
         """
         _stages = tuple(str(s) for s in INVOICE_END_READY_STAGES)
         _ph = ",".join("?" * len(_stages))
@@ -7009,7 +7038,22 @@ class Database:
             "ORDER BY id DESC LIMIT ?",
             (*_stages, int(limit)),
         )
-        return [dict(r) for r in await cur.fetchall()]
+        invoices = [dict(r) for r in await cur.fetchall()]
+        # closing без открытого запроса — отдельным проходом (их единицы):
+        # фильтр по задачам не делается в SQL, а per-invoice в Python.
+        cur = await self.conn.execute(
+            "SELECT * FROM invoices "
+            "WHERE parent_invoice_id IS NULL "
+            "AND status = 'closing' "
+            "ORDER BY id DESC",
+        )
+        for r in await cur.fetchall():
+            inv = dict(r)
+            if await self.has_open_invoice_end_request(int(inv["id"])):
+                continue
+            invoices.append(inv)
+        invoices.sort(key=lambda i: int(i["id"]), reverse=True)
+        return invoices[: int(limit)]
 
     async def list_invoices_missing_primary_docs(self) -> list[dict[str, Any]]:
         """ТЗ 18.06 (B): активные материнские б/н счета без первичных документов

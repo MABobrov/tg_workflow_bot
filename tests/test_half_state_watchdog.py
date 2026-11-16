@@ -3,7 +3,9 @@
 #    invoice_end + audit (безопасно, без денежных хуков);
 # 2) stage='invoice_end' при status не ended/closing → уведомление ГД,
 #    не чаще раза в сутки по счёту; статус НЕ переводится (деньги);
-# 3) closing + invoice_end — НЕ полу-состояние (ожидание ГД, задача №31).
+# 3) closing с ОТКРЫТОЙ задачей INVOICE_END_REQUEST — НЕ полу-состояние
+#    (ожидание ГД, задача №31); closing БЕЗ открытого запроса — «зависшее»
+#    закрытие, алертится (жалоба ГД «Счёт END», 16.11, кейс 66/26721-1НПН).
 from __future__ import annotations
 
 import asyncio
@@ -84,7 +86,7 @@ def test_open_end_stage_alerts_gd_once_per_day(tmp_path) -> None:
             assert len(notifier.sent) == 1, notifier.sent
             chat_id, text = notifier.sent[0]
             assert chat_id == GD_TG_ID, chat_id
-            assert "29002-1НПН" in text and "in_progress" in text, text
+            assert "29002-1НПН" in text and "в работе" in text, text
             # тот же день — повторного уведомления нет
             _synced2, alerted2 = await half_state_watchdog_run_once(db, notifier, notified)
             assert alerted2 == 0 and len(notifier.sent) == 1, (alerted2, notifier.sent)
@@ -101,11 +103,30 @@ def test_closing_end_stage_is_not_half_state(tmp_path) -> None:
     async def scenario() -> None:
         db = await _mk_db(tmp_path)
         try:
-            await _mk_invoice(db, "29003-1КВ", "closing", "invoice_end")
+            # closing БЕЗ открытого запроса — «зависшее» закрытие: алерт ГД
+            inv = await _mk_invoice(db, "29003-1КВ", "closing", "invoice_end")
             notifier = _FakeNotifier()
             synced, alerted = await half_state_watchdog_run_once(db, notifier)
-            assert synced == 0 and alerted == 0, (synced, alerted)
-            assert not notifier.sent, notifier.sent
+            assert synced == 0 and alerted == 1, (synced, alerted)
+            assert len(notifier.sent) == 1, notifier.sent
+            assert "29003-1КВ" in notifier.sent[0][1], notifier.sent
+            assert "закрытие зависло" in notifier.sent[0][1], notifier.sent
+            # closing С открытой задачей INVOICE_END_REQUEST — ожидание ГД: молчим
+            inv2 = await _mk_invoice(db, "29006-1КВ", "closing", "invoice_end")
+            await db.create_task(
+                None, "invoice_end", "open", GD_TG_ID, GD_TG_ID, None,
+                {"invoice_id": inv2, "comment": "закройте счёт"},
+            )
+            notifier2 = _FakeNotifier()
+            synced2, alerted2 = await half_state_watchdog_run_once(db, notifier2)
+            # алерт только по «зависшему» 29003; по 29006 (живой запрос) — молчим
+            assert synced2 == 0 and alerted2 == 1, (synced2, alerted2)
+            assert len(notifier2.sent) == 1, notifier2.sent
+            assert "29003-1КВ" in notifier2.sent[0][1], notifier2.sent
+            assert "29006-1КВ" not in notifier2.sent[0][1], notifier2.sent
+            # статус не тронут сторожем
+            row = await db.get_invoice(inv)
+            assert row["status"] == "closing", row["status"]
         finally:
             await db.close()
 
