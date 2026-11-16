@@ -990,6 +990,24 @@ def task_actions_kb(
         b.button(text="✅ Завершить", callback_data=TaskCb(task_id=tid, action="done").pack())
         b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
 
+    # GD_TASK (owner 16.11: «к задаче Павла добавь третью кнопку — написать»):
+    # «✏️ Написать» — ответ постановщику-ГД в любой момент жизни задачи, не
+    # дожидаясь «Завершить». Канал — из payload source (chat_proxy:rp → rp,
+    # fallback rp). Показывается исполнителю, не ГД (ГД пишет себе = бессмыслица).
+    if (
+        ttype == TaskType.GD_TASK
+        and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}
+        and Role.GD not in parse_roles(viewer_role or "")
+    ):
+        _gp = try_json_loads(task.get("payload_json"))
+        _gsrc = str((_gp or {}).get("source") or "") if isinstance(_gp, dict) else ""
+        _gchannel = (
+            _gsrc.split(":", 1)[1]
+            if _gsrc.startswith("chat_proxy:") and ":" in _gsrc
+            else "rp"
+        )
+        b.button(text="✏️ Написать", callback_data=f"reply_to_gd:{_gchannel}")
+
     # payment confirm special actions (TD)
     if ttype == TaskType.PAYMENT_CONFIRM and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         b = InlineKeyboardBuilder()
