@@ -336,7 +336,8 @@ async def urgent_gd_finalize(
 # "📞 Связь с ГД" — единая кнопка монтажника (поведение = «Не срочно ГД»)
 # ===========================================================================
 
-@router.message(F.text == "📞 Связь с ГД")
+# №169: startswith — поддержка будущего бейджа
+@router.message(lambda m: (m.text or "").strip().startswith("📞 Связь с ГД"))
 async def start_gd_contact(message: Message, state: FSMContext, db: Database) -> None:
     """Монтажник: единая «Связь с ГД». Переиспользует поток NOT_URGENT_GD
     (задача ГД, дедлайн 7 дней, без рассылки в рабочий чат), но с нейтральными
@@ -358,7 +359,8 @@ async def start_gd_contact(message: Message, state: FSMContext, db: Database) ->
 # "📩 Не срочно ГД" — задача с пониженным приоритетом
 # ===========================================================================
 
-@router.message(lambda m: (m.text or "").strip() in {"📩 Не срочно ГД", "Не срочно ГД"})
+# №169: startswith — поддержка будущего бейджа
+@router.message(lambda m: (m.text or "").strip().startswith("📩 Не срочно ГД"))
 async def start_not_urgent_gd(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=ALLOWED_ROLES):
         return

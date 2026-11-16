@@ -36,7 +36,8 @@ from ..enums import (
 )
 from ..integrations.minio_storage import MinioStorage
 from ..keyboards import (
-    MGR_BTN_ADV_DISTRIBUTE_BASE,
+    # №166: MGR_BTN_ADV_DISTRIBUTE_BASE/MGR_BTN_DEPO_TO_ADV_BASE/MGR_BTN_DEPOSIT_WITHDRAW/MGR_BTN_ISSUE
+    # удалены из импорта вместе с мёртвыми reply-хендлерами
     MGR_BTN_CHECK_KP,
     MGR_BTN_CHAT_RP,
     MGR_BTN_CRED,
@@ -49,12 +50,9 @@ from ..keyboards import (
     MGR_BTN_GD_CONTACT,
     RP_BTN_CREDIT_BAL,
     RP_BTN_CREDIT_SPEND,
-    MGR_BTN_DEPO_TO_ADV_BASE,
-    MGR_BTN_DEPOSIT_WITHDRAW,
     MGR_BTN_EDO,
     MGR_BTN_INVOICE_END,
     MGR_BTN_INVOICE_START,
-    MGR_BTN_ISSUE,
     MGR_BTN_REMIND,
     MGR_BTN_MONTAZH,
     MGR_BTN_MY_INVOICES,
@@ -89,7 +87,7 @@ from ..states import (
     InvoiceEndSG,
     InvoiceSearchSG,
     InvoiceStartSG,
-    IssueSG,
+    # №166: IssueSG удалён из импорта вместе с мёртвым reply-хендлером
     ManagerAdvDistributeSG,
     ManagerAdvanceFillSG,
     ManagerChatProxySG,
@@ -3039,24 +3037,9 @@ async def manager_invoice_materials(cb: CallbackQuery, db: Database) -> None:
 # ПРОБЛЕМА / ВОПРОС (existing Issue flow)
 # =====================================================================
 
-@router.message(F.text == MGR_BTN_ISSUE, RoleFilter(ALL_MANAGER_ROLES))
-async def start_manager_issue(message: Message, state: FSMContext, db: Database) -> None:
-    await state.clear()
-    await state.set_state(IssueSG.project)
-    projects = await db.list_recent_projects(limit=20)
-    from ..keyboards import projects_kb
-    if projects:
-        await message.answer(
-            "🆘 <b>Проблема / Вопрос</b>\n\n"
-            "Шаг 1: Выберите проект (или напишите номер/название):",
-            reply_markup=projects_kb(projects, ctx="issue"),
-        )
-    else:
-        await message.answer(
-            "🆘 <b>Проблема / Вопрос</b>\n\n"
-            "Опишите проблему или вопрос:"
-        )
-        await state.set_state(IssueSG.description)
+# №166: мёртвый reply-хендлер start_manager_issue (MGR_BTN_ISSUE) удалён —
+# кнопка не выводится на клавиатуры; живой вход — inline-кнопка «🆘 Проблема / вопрос»
+# в карточке проекта (ManagerProjectCb action="issue", manager.py).
 
 
 # =====================================================================
@@ -7043,11 +7026,21 @@ async def fpeta_date_input(
 
 @router.callback_query(F.data.startswith("mgrzp:pick:"), ManagerZpSG.select_invoice)
 async def manager_zp_pick(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
+    # №167: гард роли + авторство счёта — раньше пикер был доступен без проверки
+    if not cb.from_user:
+        return
+    if not await require_role_callback(cb, db, roles=ALL_MANAGER_ROLES):
+        return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     inv = await db.get_invoice(invoice_id)
     if not inv:
         await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
+        await state.clear()
+        return
+    # №167: счёт должен принадлежать нажавшему (как в списке пикера created_by = ?)
+    if int(inv.get("created_by") or 0) != cb.from_user.id:
+        await cb.message.answer("⛔ Это не ваш счёт.")  # type: ignore[union-attr]
         await state.clear()
         return
     # ч.3.3 (Q4) + ТЗ 14.06: блок ЗП при долге ИЛИ открытых задачах-устранения
@@ -7548,6 +7541,18 @@ async def funds_withdraw(cb: CallbackQuery, state: FSMContext, db: Database) -> 
         return
     wallet_role = await _mgr_wallet_role(db, user_id)
     balance = await db.get_deposit_balance(user_id, wallet_role)
+    # №166: RP-кошелёк-фолбэк перенесён из удалённого мёртвого reply-хендлера
+    # (инцидент 16.07 «баланс 0 при живых 80 000», Павел = РП+НПН, кошельки разные)
+    if balance <= 0:
+        try:
+            _u = await db.get_user_optional(user_id)
+            _is_rp = bool(_u) and "rp" in str(getattr(_u, "role", "") or "").split(",")
+        except Exception:
+            _is_rp = False
+        if _is_rp:
+            _rp_bal = await db.get_deposit_balance(user_id, "rp")
+            if _rp_bal > 0:
+                wallet_role, balance = "rp", _rp_bal
     if balance <= 0:
         await cb.message.answer("❌ На депозите нет средств для расхода.")  # type: ignore[union-attr]
         return
@@ -8068,47 +8073,9 @@ async def cred_chat(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
     )
 
 
-@router.message(F.text == MGR_BTN_DEPOSIT_WITHDRAW)
-async def manager_withdraw_start(
-    message: Message, state: FSMContext, db: Database,
-) -> None:
-    """Менеджер нажимает «💸 Расход депозита» — старт FSM."""
-    from .gd import EMPLOYEE_DEPOSIT_WHITELIST
-    if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
-        return
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    whitelist_ids = {tid for tid in EMPLOYEE_DEPOSIT_WHITELIST.values() if tid}
-    if user_id not in whitelist_ids:
-        await message.answer(
-            "⛔ Функция недоступна.\n"
-            "Запросите ГД добавить вас в whitelist депозитов.",
-        )
-        return
-    wallet_role = await _mgr_wallet_role(db, user_id)
-    balance = await db.get_deposit_balance(user_id, wallet_role)
-    # Павел = РП+НПН, кошельки РАЗНЫЕ (rp-npn-separate-wallets): менеджерская кнопка
-    # смотрит первичный кошелёк, но депозит ГД мог положить в РП-кошелёк — инцидент
-    # 16.07 «баланс 0 при живых 80 000». Первичный пуст, РП-кошелёк не пуст → расход с него.
-    if balance <= 0:
-        try:
-            _u = await db.get_user_optional(user_id)
-            _is_rp = bool(_u) and "rp" in str(getattr(_u, "role", "") or "").split(",")
-        except Exception:
-            _is_rp = False
-        if _is_rp:
-            _rp_bal = await db.get_deposit_balance(user_id, "rp")
-            if _rp_bal > 0:
-                wallet_role, balance = "rp", _rp_bal
-    if balance <= 0:
-        await message.answer("❌ На депозите нет средств для расхода.")
-        return
-    await state.set_state(ManagerWithdrawSG.enter_amount)
-    await state.update_data(mgr_withdraw_balance=balance, mgr_withdraw_wallet_role=wallet_role)
-    await message.answer(
-        f"💸 <b>Расход с депозита</b>\n"
-        f"Доступно: <b>{fmt_money(balance)}</b>\n\n"
-        f"Введите сумму расхода (₽, ≤ {fmt_money(balance)}):",
-    )
+# №166: мёртвый reply-хендлер manager_withdraw_start (MGR_BTN_DEPOSIT_WITHDRAW)
+# удалён — кнопка не выводится на клавиатуры, живой вход funds:withdraw (callback);
+# RP-кошелёк-фолбэк перенесён в funds_withdraw выше.
 
 
 @router.message(ManagerWithdrawSG.enter_amount, F.text)
@@ -8228,6 +8195,7 @@ async def _manager_withdraw_show_confirm(
 
 
 @router.callback_query(ManagerWithdrawSG.confirm, F.data == "mgr_withdraw:confirm")
+@money_confirm_guard  # №168: анти-двойной-клик на денежном подтверждении
 async def manager_withdraw_confirm(
     cb: CallbackQuery, state: FSMContext, db: Database, notifier: Notifier,
     integrations: IntegrationHub, config: Config,
@@ -8314,52 +8282,8 @@ async def manager_withdraw_cancel(
 # =====================================================================
 
 
-@router.message(F.text.startswith(MGR_BTN_ADV_DISTRIBUTE_BASE))
-async def manager_adv_distribute_start(
-    message: Message, state: FSMContext, db: Database,
-) -> None:
-    """Менеджер нажимает «💰 Наполнить ЗП из аванса (X ₽)» — старт FSM."""
-    from .gd import EMPLOYEE_DEPOSIT_WHITELIST
-    if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
-        return
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    whitelist_ids = {tid for tid in EMPLOYEE_DEPOSIT_WHITELIST.values() if tid}
-    if user_id not in whitelist_ids:
-        await message.answer("⛔ Функция недоступна.")
-        return
-    wallet_role = await _mgr_wallet_role(db, user_id)
-    unallocated = await db.get_advance_outstanding_unallocated(user_id, wallet_role)
-    if unallocated <= 0:
-        await message.answer("✅ Нечего распределять — свободного advance нет.")
-        return
-    invoices = await db.list_invoices_for_manager(user_id)
-    if not invoices:
-        await message.answer(
-            "❌ Нет активных счетов без выплаченной ЗП.\n"
-            "<i>Аванс можно распределять только на счета где Invoices.AN (ЗП-менеджер) = 0.</i>",
-        )
-        return
-    await state.set_state(ManagerAdvDistributeSG.select_invoice)
-    await state.update_data(mgr_adv_dist_unallocated=unallocated)
-    b = InlineKeyboardBuilder()
-    for inv in invoices[:15]:
-        num = inv.get("invoice_number") or f"id={inv['id']}"
-        addr = (inv.get("object_address") or "—")[:25]
-        # net = ЗП бланк − удержание (CN) при погашенном долге (механизм перерасчёта,
-        # owner 23.06); cap распределения аванса по net-ЗП к выплате.
-        plan = manager_zp_net_payout(inv)
-        label = f"№{num} {addr}"
-        if plan > 0:
-            label += f" • план {fmt_money(plan)}"
-        b.button(text=label[:60], callback_data=f"mgr_adv_dist:inv:{inv['id']}")
-    b.button(text="❌ Отмена", callback_data="mgr_adv_dist:cancel")
-    b.adjust(1)
-    await message.answer(
-        f"💰 <b>Наполнить ЗП из аванса</b>\n"
-        f"🔓 Свободно: <b>{fmt_money(unallocated)}</b>\n\n"
-        f"Выберите счёт, под который зачислить часть аванса:",
-        reply_markup=b.as_markup(),
-    )
+# №166: мёртвый reply-хендлер manager_adv_distribute_start (MGR_BTN_ADV_DISTRIBUTE_BASE)
+# удалён — кнопка не выводится на клавиатуры, живой вход funds:advdist (callback).
 
 
 @router.callback_query(
@@ -8467,6 +8391,7 @@ async def manager_adv_distribute_amount(
 
 
 @router.callback_query(ManagerAdvDistributeSG.confirm, F.data == "mgr_adv_dist:confirm")
+@money_confirm_guard  # №168: анти-двойной-клик на денежном подтверждении
 async def manager_adv_distribute_confirm(
     cb: CallbackQuery, state: FSMContext, db: Database, notifier: Notifier,
     integrations: IntegrationHub, config: Config,
@@ -8569,31 +8494,8 @@ async def manager_adv_distribute_cancel(
 # =====================================================================
 
 
-@router.message(F.text.startswith(MGR_BTN_DEPO_TO_ADV_BASE))
-async def manager_depo_to_adv_start(
-    message: Message, state: FSMContext, db: Database,
-) -> None:
-    from .gd import EMPLOYEE_DEPOSIT_WHITELIST
-    if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES):
-        return
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    whitelist_ids = {tid for tid in EMPLOYEE_DEPOSIT_WHITELIST.values() if tid}
-    if user_id not in whitelist_ids:
-        await message.answer("⛔ Функция недоступна.")
-        return
-    wallet_role = await _mgr_wallet_role(db, user_id)
-    depo = await db.get_deposit_balance(user_id, wallet_role)
-    if depo <= 0:
-        await message.answer("❌ На депозите нет средств.")
-        return
-    await state.set_state(ManagerDepoToAdvSG.enter_amount)
-    await state.update_data(mgr_depo_to_adv_balance=depo, mgr_depo_to_adv_wallet_role=wallet_role)
-    await message.answer(
-        f"↔️ <b>Перевод Депозит → Аванс</b>\n"
-        f"Депозит: <b>{fmt_money(depo)}</b>\n\n"
-        f"Введите сумму перевода (₽, ≤ {fmt_money(depo)}):\n"
-        f"<i>Переведённые деньги попадут в advance — сможете распределить по счетам.</i>",
-    )
+# №166: мёртвый reply-хендлер manager_depo_to_adv_start (MGR_BTN_DEPO_TO_ADV_BASE)
+# удалён — кнопка не выводится на клавиатуры, живой вход funds:depo_to_adv (callback).
 
 
 @router.message(ManagerDepoToAdvSG.enter_amount, F.text)

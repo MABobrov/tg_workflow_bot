@@ -314,6 +314,9 @@ async def gd_end_tasks(cb: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data == "gd_lead_stats")
 async def gd_lead_stats_handler(cb: CallbackQuery, db: Database, config: Config) -> None:
     """Show lead statistics for GD: менеджер (RP-приоритет) + воронка РП + источники."""
+    # №171: гард роли — раньше статистика лидов была доступна без проверки
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     await cb.answer()
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     from ..utils import format_lead_stats_card

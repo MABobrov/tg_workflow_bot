@@ -1464,7 +1464,8 @@ async def gd_write_send_message(
 # ---------------------------------------------------------------------------
 
 @router.message(
-    lambda m: (m.text or "").strip() == GD_BTN_DAILY_SUMMARY
+    # №169: startswith — поддержка будущего бейджа
+    lambda m: (m.text or "").strip().startswith(GD_BTN_DAILY_SUMMARY)
 )
 async def gd_daily_summary(message: Message, db: Database, config: Config) -> None:
     """Агрегированная сводка дня для ГД."""
@@ -1652,6 +1653,9 @@ async def gd_summary_drilldown(
     cb: CallbackQuery, callback_data: SummaryCb, db: Database,
 ) -> None:
     """Show individual items for a summary section."""
+    # №171: гард роли — drill-down сводки был доступен без проверки
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     from datetime import date as _date, datetime as _dt
 
     section = callback_data.section
@@ -1802,6 +1806,9 @@ async def gd_summary_drilldown(
 @router.callback_query(SummaryCb.filter(F.action == "back"))
 async def gd_summary_back(cb: CallbackQuery, db: Database) -> None:
     """Return to the daily summary view."""
+    # №171: гард роли — возврат к сводке был доступен без проверки
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     text, markup = await _build_summary(db)
     try:
         await cb.message.edit_text(text, reply_markup=markup)  # type: ignore[union-attr]
@@ -1813,6 +1820,9 @@ async def gd_summary_back(cb: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data == "purchases:detail")
 async def gd_purchases_detail(cb: CallbackQuery, db: Database) -> None:
     """Подробная таблица закупок по каждому счёту in_progress+credit — отдельным сообщением."""
+    # №171: гард роли — таблица закупок была доступна без проверки
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     from ..utils import build_purchases_in_work_block
 
     invoices = await db.list_invoices(statuses=["in_progress", "credit"], limit=100)
@@ -1947,7 +1957,8 @@ async def _backup_status_card(db: Database, now: datetime | None = None) -> str 
 # ---------------------------------------------------------------------------
 
 @router.message(
-    lambda m: (m.text or "").strip() == GD_BTN_SYNC
+    # №169: startswith — поддержка будущего бейджа
+    lambda m: (m.text or "").strip().startswith(GD_BTN_SYNC)
 )
 async def gd_sync_data(
     message: Message,
@@ -2112,7 +2123,8 @@ async def _send_manager_recalc_cards(message: Message, db: Database) -> int:
 
 
 @router.message(
-    lambda m: (m.text or "").strip() == GD_BTN_RECALC
+    # №169: startswith — поддержка будущего бейджа
+    lambda m: (m.text or "").strip().startswith(GD_BTN_RECALC)
 )
 async def gd_manager_recalc(message: Message, db: Database) -> None:
     """ГД жмёт «📊 Перерасчёт прибыли» — карточки по счетам с переплатой ЗП мен."""
@@ -2225,31 +2237,8 @@ async def gd_recalc_send(
 # ---------------------------------------------------------------------------
 # Invoice cost statistics + all messages per invoice
 # ---------------------------------------------------------------------------
-
-@router.callback_query(F.data.regexp(r"^inv_stats:\d+$"))
-async def gd_invoice_stats(cb: CallbackQuery, db: Database) -> None:
-    """Полная карточка себестоимости по родительскому счёту."""
-    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
-        return
-    await cb.answer()
-    parent_id = int(cb.data.split(":")[1])  # type: ignore[union-attr]
-    inv = await db.get_invoice(parent_id)
-    if not inv:
-        await cb.message.answer("⚠️ Счёт не найден.")  # type: ignore[union-attr]
-        return
-
-    cost = await db.get_full_invoice_cost_card(parent_id)
-    from ..utils import format_cost_card
-    # Add Plan/Fact button if estimated data exists
-    pf = await db.get_plan_fact_card(parent_id)
-    b = InlineKeyboardBuilder()
-    if pf.get("has_estimated"):
-        b.button(text="📊 План/Факт", callback_data=f"inv_planfact:{parent_id}")
-        b.adjust(1)
-    await cb.message.answer(  # type: ignore[union-attr]
-        format_cost_card(inv, cost),
-        reply_markup=b.as_markup() if pf.get("has_estimated") else None,
-    )
+# №172: мёртвый хендлер gd_invoice_stats (inv_stats:N) удалён — кнопка
+# inv_stats нигде не эмитится; живая карточка себестоимости — gd_work:view.
 
 
 @router.callback_query(F.data.regexp(r"^inv_planfact:\d+$"))

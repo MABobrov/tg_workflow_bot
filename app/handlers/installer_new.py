@@ -53,7 +53,7 @@ from ..states import (
     AdvanceDistributeSG,
     AdvanceRequestSG,
     DepoReqExecuteSG,
-    InstallerAdvanceFillSG,
+    # №175: импорт InstallerAdvanceFillSG удалён вместе с мёртвым FSM
     InstallerDailyReportSG,
     InstallerDepoToAdvSG,
     InstallerInvoiceOkSG,
@@ -188,7 +188,8 @@ async def installer_back_home(
 # ЗАКАЗ МАТЕРИАЛОВ (to RP)
 # =====================================================================
 
-@router.message(F.text == INST_BTN_ORDER_MAT)
+# №164: startswith — поддержка будущего бейджа кнопки
+@router.message(lambda m: (m.text or "").strip().startswith(INST_BTN_ORDER_MAT))
 async def start_order_materials(message: Message, state: FSMContext, db: Database) -> None:
     if not await require_role_message(message, db, roles=[Role.INSTALLER]):
         return
@@ -2201,8 +2202,7 @@ def _build_archive_card(inv: dict) -> str:
     lines.append("</pre>")
 
     return text + "\n".join(lines)
-
-    return text
+    # №174: мёртвый хвост «return text» после return удалён
 
 
 @router.callback_query(F.data.startswith("instobj:view:"))
@@ -4055,62 +4055,8 @@ async def installer_price_confirm(
             pass
 
 
-@router.callback_query(F.data.startswith("inst_work:confirm:"))
-async def installer_work_confirm(
-    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
-    integrations: IntegrationHub,
-) -> None:
-    """Монтажник подтверждает «В работу» → montazh_stage=IN_WORK."""
-    if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
-        return
-    await cb.answer()
-    u = cb.from_user
-    if not u:
-        return
-
-    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    inv = await db.get_invoice(invoice_id)
-    if not inv:
-        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
-        return
-
-    await db.update_montazh_stage(invoice_id, MontazhStage.IN_WORK)
-    # #2: Привязать счёт к монтажнику при «В работу»
-    await db.conn.execute(
-        "UPDATE invoices SET assigned_to = ?, updated_at = ? WHERE id = ?",
-        (u.id, datetime.now().isoformat(), invoice_id),
-    )
-    await db.conn.commit()
-
-    await integrations.sync_invoice_status(
-        inv["invoice_number"], inv.get("status", ""), MontazhStage.IN_WORK,
-    )
-
-    # Уведомить РП
-    initiator = await get_initiator_label(db, u.id)
-    msg = (
-        f"🔨 <b>Монтажник — В работу</b>\n"
-        f"👤 От: {initiator}\n\n"
-        f"Счёт №{inv['invoice_number']} принят в работу ✅"
-    )
-    rp_id = await resolve_default_assignee(db, config, Role.RP)
-    if rp_id:
-        await notifier.safe_send(int(rp_id), msg)
-        await refresh_recipient_keyboard(notifier, db, config, int(rp_id))
-
-    role, isolated_role = await _current_menu(db, u.id)
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"✅ Счёт №{inv['invoice_number']} принят в работу.",
-        reply_markup=private_only_reply_markup(
-            cb.message,
-            main_menu(
-                role,
-                is_admin=u.id in (config.admin_ids or set()),
-                unread=await db.count_unread_tasks(u.id),
-                isolated_role=isolated_role,
-            ),
-        ),
-    )
+# №175: мёртвый хендлер installer_work_confirm (inst_work:confirm:N) удалён —
+# кнопка нигде не эмитится (принятие в работу — inst_ok:accept / ветка согласования).
 
 
 # =====================================================================
@@ -4400,26 +4346,9 @@ async def zp_init_done(cb: CallbackQuery, state: FSMContext, db: Database) -> No
     )
 
 
-@router.callback_query(F.data.startswith("instzp:pick:"), InstallerZpSG.select_invoice)
-async def installer_zp_pick(cb: CallbackQuery, state: FSMContext, db: Database) -> None:
-    await cb.answer()
-    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    inv = await db.get_invoice(invoice_id)
-    if not inv:
-        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
-        await state.clear()
-        return
-    if not _is_work_done_for_zp(inv):
-        await cb.answer(_ZP_WORK_NOT_DONE_MSG, show_alert=True)
-        await state.clear()
-        return
-    await state.update_data(zp_invoice_id=invoice_id)
-    await state.set_state(InstallerZpSG.amount)
-    await cb.message.answer(  # type: ignore[union-attr]
-        f"💰 Счёт: <b>№{inv['invoice_number']}</b>\n"
-        f"📍 Адрес: {inv.get('object_address') or '—'}\n\n"
-        "Введите сумму ЗП (число):",
-    )
+# №175: мёртвый хендлер installer_zp_pick (instzp:pick:N) удалён —
+# состояние InstallerZpSG.select_invoice нигде не ставится, кнопка не эмитится
+# (живой поток запроса ЗП — inst_zp_classic + instzpadj:start).
 
 
 @router.message(InstallerZpSG.amount)
@@ -5012,56 +4941,8 @@ async def advance_balance_handler(cb: CallbackQuery, db: Database) -> None:
 # счёт → zp_installer_status='confirmed' (→ «Монтаж Факт»=agreed, ветка-3), Σ → ОДИН
 # topup кошелька. Без одобрения ГД (своя ЗП), инфо-уведомление ГД. ТЗ 04.06.
 # =====================================================================
-
-
-def _advfill_addr(addr: Any, width: int = 22) -> str:
-    """Короткий адрес объекта для кнопки/строки (обрезка с …)."""
-    s = (str(addr).strip() if addr else "") or "—"
-    return s if len(s) <= width else s[: width - 1] + "…"
-
-
-async def _inst_advfill_edit_or_send(cb: CallbackQuery, text: str, markup: Any = None) -> None:
-    """edit_text текущего сообщения; при ошибке (не изменено / нет прав) — новое."""
-    try:
-        await cb.message.edit_text(text, reply_markup=markup)  # type: ignore[union-attr]
-    except Exception:
-        await cb.message.answer(text, reply_markup=markup)  # type: ignore[union-attr]
-
-
-def _render_inst_adv_fill(
-    invoices: list[dict[str, Any]], selected: set[int],
-) -> tuple[str, Any]:
-    """Экран наполнения аванса монтажника: счета с невыплаченной ЗП (toggle-чекбоксы)."""
-    sel_total = sum(float(i.get("agreed") or 0) for i in invoices if int(i["id"]) in selected)
-    avail_total = sum(float(i.get("agreed") or 0) for i in invoices)
-    lines = [f"<b>💵  Наполнить аванс</b>\n<pre>"]
-    lines.append(f"   Доступно ЗП          {_fmt_money(avail_total):>10s} ₽")
-    lines.append(f"   Выбрано счетов       {len(selected):>10d} / {len(invoices)}")
-    lines.append(f"   ━━━━━━━━━━━━━━")
-    lines.append(f"   Итого  {_fmt_money(sel_total)} ₽</pre>")
-    if invoices:
-        lines.append("\nВыберите счета, по которым забрать монтажную ЗП в кошелёк аванса.")
-        lines.append("По выбранным «Монтаж Факт» заполнится согласованной суммой.")
-    b = InlineKeyboardBuilder()
-    for inv in invoices:
-        inv_id = int(inv["id"])
-        amount = float(inv.get("agreed") or 0)
-        mark = "✅" if inv_id in selected else "▫️"
-        b.button(
-            text=f"{mark} {_advfill_addr(inv.get('object_address'))} — {_fmt_money(amount)}₽",
-            callback_data=f"inst_advfill:pick:{inv_id}",
-        )
-    if invoices:
-        if len(selected) < len(invoices):
-            b.button(text="☑️ Выбрать все", callback_data="inst_advfill:all")
-        else:
-            b.button(text="⬜ Снять все", callback_data="inst_advfill:none")
-        if selected:
-            b.button(text=f"💵 Зачислить в аванс ({_fmt_money(sel_total)} ₽)",
-                     callback_data="inst_advfill:credit")
-    b.button(text="❌ Отмена", callback_data="inst_advfill:cancel")
-    b.adjust(1)
-    return "\n".join(lines), b.as_markup()
+# №175: хелперы _advfill_addr/_inst_advfill_edit_or_send/_render_inst_adv_fill
+# удалены вместе с мёртвым FSM наполнения аванса (отключено 2026-06-30).
 
 
 @router.callback_query(F.data == "inst_advfill:start")
@@ -5077,187 +4958,16 @@ async def inst_advfill_start(cb: CallbackQuery, state: FSMContext, db: Database)
     await cb.message.answer(  # type: ignore[union-attr]
         "⛔ Наполнение аванса доступно только ГД.\n"
         "Авансовый кошелёк используется только в счёт ЗП.")
-    return
-    from ..config import ADVANCE_ENABLED_INSTALLERS
-    user_id = cb.from_user.id  # type: ignore[union-attr]
-    if user_id not in ADVANCE_ENABLED_INSTALLERS:
-        await cb.answer("⛔ Функция недоступна.", show_alert=True)
-        return
-    await cb.answer()
-    await state.clear()
-    invoices = await db.list_installer_advance_fill_invoices(user_id)
-    if not invoices:
-        await cb.message.answer(  # type: ignore[union-attr]
-            "📭 Нет счетов с невыплаченной монтажной ЗП.\n\n"
-            "Счёт появляется, когда ЗП-монтаж согласована, а «Монтаж Факт» ещё пуст."
-        )
-        return
-    selected = {int(i["id"]) for i in invoices}  # по умолчанию выбраны все
-    await state.set_state(InstallerAdvanceFillSG.list_invoices)
-    await state.update_data(advfill_invoices=invoices, advfill_selected=list(selected))
-    text, kb = _render_inst_adv_fill(invoices, selected)
-    await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
+    # №174/№175: мёртвый хвост потока (после return) и мёртвый FSM
+    # InstallerAdvanceFillSG удалены — наполнение отключено 2026-06-30.
 
 
-@router.callback_query(F.data.startswith("inst_advfill:pick:"), InstallerAdvanceFillSG.list_invoices)
-async def inst_advfill_pick(cb: CallbackQuery, state: FSMContext) -> None:
-    """Toggle одного счёта в выборке наполнения."""
-    await cb.answer()
-    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    data = await state.get_data()
-    invoices = data.get("advfill_invoices") or []
-    selected = set(data.get("advfill_selected") or [])
-    if inv_id in selected:
-        selected.discard(inv_id)
-    else:
-        selected.add(inv_id)
-    await state.update_data(advfill_selected=list(selected))
-    text, kb = _render_inst_adv_fill(invoices, selected)
-    await _inst_advfill_edit_or_send(cb, text, kb)
+# №175: мёртвый FSM advfill (pick/all/none/cancel/credit/apply) удалён —
+# вход отключён, кнопки inst_advfill:* нигде не эмитятся.
 
 
-@router.callback_query(F.data == "inst_advfill:all", InstallerAdvanceFillSG.list_invoices)
-async def inst_advfill_all(cb: CallbackQuery, state: FSMContext) -> None:
-    """Выбрать все счета."""
-    await cb.answer()
-    data = await state.get_data()
-    invoices = data.get("advfill_invoices") or []
-    selected = {int(i["id"]) for i in invoices}
-    await state.update_data(advfill_selected=list(selected))
-    text, kb = _render_inst_adv_fill(invoices, selected)
-    await _inst_advfill_edit_or_send(cb, text, kb)
-
-
-@router.callback_query(F.data == "inst_advfill:none", InstallerAdvanceFillSG.list_invoices)
-async def inst_advfill_none(cb: CallbackQuery, state: FSMContext) -> None:
-    """Снять выбор со всех счетов."""
-    await cb.answer()
-    data = await state.get_data()
-    invoices = data.get("advfill_invoices") or []
-    await state.update_data(advfill_selected=[])
-    text, kb = _render_inst_adv_fill(invoices, set())
-    await _inst_advfill_edit_or_send(cb, text, kb)
-
-
-@router.callback_query(F.data == "inst_advfill:cancel")
-async def inst_advfill_cancel(cb: CallbackQuery, state: FSMContext) -> None:
-    """Отмена наполнения на любом шаге."""
-    await cb.answer()
-    await state.clear()
-    await _inst_advfill_edit_or_send(cb, "❌ Наполнение аванса отменено.")
-
-
-@router.callback_query(F.data == "inst_advfill:credit", InstallerAdvanceFillSG.list_invoices)
-async def inst_advfill_credit_confirm(cb: CallbackQuery, state: FSMContext) -> None:
-    """«💵 Зачислить» → подтверждение со списком выбранных счетов."""
-    await cb.answer()
-    data = await state.get_data()
-    invoices = data.get("advfill_invoices") or []
-    selected = set(data.get("advfill_selected") or [])
-    if not selected:
-        await cb.answer("Выберите хотя бы один счёт.", show_alert=True)
-        return
-    chosen = [i for i in invoices if int(i["id"]) in selected]
-    total = sum(float(i.get("agreed") or 0) for i in chosen)
-    lines = [f"<b>💵  Зачислить в аванс</b>\n<pre>"]
-    for inv in chosen:
-        lines.append(
-            f"   {_advfill_addr(inv.get('object_address'), 18):<18s} "
-            f"{_fmt_money(float(inv.get('agreed') or 0)):>10s} ₽"
-        )
-    lines.append(f"   ━━━━━━━━━━━━━━")
-    lines.append(f"   Итого  {_fmt_money(total)} ₽")
-    lines.append("</pre>")
-    lines.append(f"\nЗачислить монтажную ЗП по {len(chosen)} счёт(ам) в кошелёк аванса?")
-    lines.append("По счетам «Монтаж Факт» заполнится согласованной суммой (ЗП считается выданной).")
-    b = InlineKeyboardBuilder()
-    b.button(text="✅ Да", callback_data="inst_advfill:confirm:yes")
-    b.button(text="❌ Нет", callback_data="inst_advfill:confirm:no")
-    b.adjust(2)
-    await state.set_state(InstallerAdvanceFillSG.confirm)
-    await cb.message.answer("\n".join(lines), reply_markup=b.as_markup())  # type: ignore[union-attr]
-
-
-@router.callback_query(F.data.startswith("inst_advfill:confirm:"), InstallerAdvanceFillSG.confirm)
-@money_confirm_guard
-async def inst_advfill_credit_apply(
-    cb: CallbackQuery,
-    state: FSMContext,
-    db: Database,
-    integrations: IntegrationHub,
-    notifier: Notifier,
-    config: Config,
-) -> None:
-    """Финал: credit_installer_zp_to_advance (атомарно) + sync + инфо ГД.
-
-    ОТКЛЮЧЕНО 2026-06-30: наполнение кошелька — только ГД. Гард от устаревшего
-    FSM-состояния/кнопки «✅ Да» (денежная запись не выполняется).
-    """
-    await state.clear()
-    await cb.answer("⛔ Наполнение аванса отключено (только ГД).", show_alert=True)
-    return
-    answer = cb.data.split(":")[-1] if cb.data else "no"  # type: ignore[union-attr]
-    if answer != "yes":
-        await state.clear()
-        await _inst_advfill_edit_or_send(cb, "❌ Отменено.")
-        await cb.answer()
-        return
-    data = await state.get_data()
-    selected = list({int(x) for x in (data.get("advfill_selected") or [])})
-    if not selected:
-        await cb.answer("Список пуст", show_alert=True)
-        await state.clear()
-        return
-    user_id = cb.from_user.id  # type: ignore[union-attr]
-    try:
-        req_id, total, credited = await db.credit_installer_zp_to_advance(user_id, selected)
-    except Exception:
-        log.exception("inst_advfill_credit_apply: credit failed user_id=%s", user_id)
-        await state.clear()
-        await cb.answer("Ошибка зачисления, попробуйте позже.", show_alert=True)
-        await cb.message.answer("❌ Не удалось зачислить в аванс. Попробуйте позже.")  # type: ignore[union-attr]
-        return
-    for c in credited:
-        try:
-            await integrations.sync_invoice_row(int(c["invoice_id"]))
-        except Exception:
-            log.exception("inst_advfill_credit_apply: sync_invoice_row failed inv=%s", c.get("invoice_id"))
-    try:
-        await integrations.sync_advances_journal()
-    except Exception:
-        log.warning("inst_advfill_credit_apply: sync_advances_journal failed")
-    await state.clear()
-    if not credited:
-        await _inst_advfill_edit_or_send(cb, "ℹ️ Выбранные счета уже выплачены ранее — изменений нет.")
-        await cb.answer()
-        return
-    try:
-        new_balance = await db.get_advance_balance(user_id)
-    except Exception:
-        new_balance = 0.0
-    lines = [f"<b>✅  Зачислено в аванс</b>\n<pre>"]
-    for c in credited:
-        lines.append(f"   №{str(c['invoice_number']):<18s} {_fmt_money(float(c['amount'])):>10s} ₽")
-    lines.append(f"   Баланс аванса        {_fmt_money(new_balance):>10s} ₽")
-    lines.append(f"   ━━━━━━━━━━━━━━")
-    lines.append(f"   Итого  {_fmt_money(total)} ₽</pre>")
-    await _inst_advfill_edit_or_send(cb, "\n".join(lines))
-    await cb.answer("Зачислено")
-    # Инфо-уведомление ГД (использование кошелька аванса)
-    gd_id = await resolve_default_assignee(db, config, Role.GD)
-    if gd_id:
-        inst_user = await db.get_user_optional(user_id)
-        inst_label = getattr(inst_user, "full_name", None) or "Монтажник"
-        gd_lines = [f"<b>ℹ️  Монтажник пополнил аванс</b>\n<pre>"]
-        gd_lines.append(f"   Кто                  {inst_label}")
-        gd_lines.append(f"   Источник             монтажная ЗП · {len(credited)} счёт(ов)")
-        gd_lines.append(f"   Баланс аванса        {_fmt_money(new_balance):>10s} ₽")
-        gd_lines.append(f"   ━━━━━━━━━━━━━━")
-        gd_lines.append(f"   Итого  {_fmt_money(total)} ₽</pre>")
-        try:
-            await notifier.safe_send(int(gd_id), "\n".join(gd_lines))
-        except Exception:
-            log.exception("inst_advfill_credit_apply: notify ГД failed")
+# №175: мёртвый FSM advfill (pick/all/none/cancel/credit/apply) удалён —
+# вход отключён 2026-06-30, кнопки inst_advfill:* нигде не эмитятся.
 
 
 # =====================================================================

@@ -20,7 +20,8 @@ from ..keyboards import (
     BACK_TO_HOME, OPEN_ACTIONS, OPEN_HELP, actions_menu, main_menu,
     gd_more_menu, GD_BTN_BACK_HOME, GD_BTN_MORE,
     manager_more_menu, MGR_BTN_MORE, MGR_BTN_BACK_HOME, MGR_BTN_SYNC,
-    rp_more_menu, rp_team_menu, RP_BTN_MORE, RP_BTN_BACK_HOME, RP_BTN_TEAM,
+    # №165: rp_team_menu и RP_BTN_TEAM удалены — мёртвый код
+    rp_more_menu, RP_BTN_MORE, RP_BTN_BACK_HOME,
     tasks_kb,
 )
 from ..services.integration_hub import IntegrationHub
@@ -702,18 +703,7 @@ async def role_back_to_home(message: Message, state: FSMContext, db: Database, c
     await _show_main_menu(message, db, config, role=role, silent=True)
 
 
-@router.message(lambda m: (m.text or "").strip() == RP_BTN_TEAM)
-async def rp_menu_team(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    """RP: open 'Команда' submenu."""
-    await state.clear()
-    if not await _guard_blocked_message(message, db):
-        return
-    user = await db.get_user_optional(message.from_user.id) if message.from_user else None
-    _, isolated_role = _menu_scope(message.from_user.id if message.from_user else None, user.role if user else None)
-    await _answer_menu_silent(
-        message,
-        rp_team_menu(show_role_selector_back=isolated_role),
-    )
+# №165: хендлер rp_menu_team (RP_BTN_TEAM «👥 Команда») удалён вместе с кнопкой
 
 
 @router.message(lambda m: (m.text or "").strip() in {OPEN_HELP, "Справка"})

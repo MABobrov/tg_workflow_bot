@@ -30,10 +30,10 @@ from ..states import (
     InvoiceCreateSG,
     ManagerWithdrawSG,
     OrderMaterialSG,
-    RpAdvanceFillSG,
+    # №162: RpAdvanceFillSG удалён вместе с мёртвым FSM rpadv:*
     RpAdvDistributeSG,
     RpOkladReceivedSG,
-    RpOkladToAdvanceSG,
+    # №162: RpOkladToAdvanceSG удалён вместе с мёртвым FSM оклада
     RpSalaryRequestSG,
     RpZpRequestSG,
     TintingRequestSG,
@@ -66,19 +66,9 @@ async def _list_managers(db: Database, limit_per_role: int = 30) -> list[Any]:
 
 # ==================== ВХОДЯЩИЕ ЗАДАЧИ ====================
 
-@router.message(F.text == "📥 Входящие задачи")
-async def inbox_tasks(message: Message, db: Database) -> None:
-    if not await require_role_message(message, db, roles=[Role.MANAGER, Role.MANAGER_KV, Role.MANAGER_KIA, Role.MANAGER_NPN, Role.RP, Role.TD, Role.ACCOUNTING, Role.GD, Role.DRIVER, Role.LOADER, Role.TINTER, Role.ZAMERY]):
-        return
-    tasks = await db.list_tasks_for_user(message.from_user.id, limit=30)  # type: ignore
-    if not tasks:
-        await message.answer("Входящих задач нет ✅")
-        return
-    await message.answer(
-        f"📥 Ваши задачи: <b>{len(tasks)}</b>\n"
-        "Нажмите на задачу, чтобы открыть карточку и доступные действия.",
-        reply_markup=tasks_kb(tasks, back_callback="nav:home"),
-    )
+# №161: регистрация дубль-хендлера «Входящие задачи» удалена — общий роутер
+# common.inbox_tasks_universal (startswith, подключён раньше в main.py)
+# перехватывает и чистый текст, и текст с бейджем для всех ролей, включая РП.
 
 
 @router.message(F.text == "🗂 Проекты")
@@ -98,7 +88,8 @@ async def list_projects(message: Message, db: Database, config: Config) -> None:
 
 # ==================== ЗАКАЗ МАТЕРИАЛОВ (РП -> Поставщик) ====================
 
-@router.message(F.text == "📦 Заказ материалов")
+# №164: startswith — поддержка будущего бейджа кнопки
+@router.message(lambda m: (m.text or "").strip().startswith("📦 Заказ материалов"))
 async def start_order_material(message: Message, state: FSMContext, db: Database) -> None:
     # If user is in installer menu, delegate to installer handler
     if message.from_user:
@@ -1147,6 +1138,9 @@ async def invoice_finalize(
     integrations: "IntegrationHub",
 ) -> None:
     """Create INVOICE_PAYMENT task and notify GD."""
+    # №163: денежный флоу — гард роли, как у соседних force/repl-callback'ов
+    if not await require_role_callback(cb, db, roles=[Role.RP]):
+        return
     await cb.answer()
     await _invoice_create_finalize(cb, state, db, config, notifier, integrations)
 
@@ -2452,48 +2446,8 @@ async def rp_hub_depo_withdraw(cb: CallbackQuery, state: FSMContext, db: Databas
 # wallet_role='rp'. Инфо-уведомление ГД при зачислении.
 
 
-def _render_rp_adv_fill(
-    invoices: list[dict[str, Any]], selected: set[int],
-    oklad: dict[str, Any] | None = None,
-) -> tuple[str, Any]:
-    """Экран наполнения аванса: счета с незабранной ЗП (10%, toggle) + перевод оклада (A2)."""
-    sel_total = sum(float(i.get("npn_amount") or 0) for i in invoices if int(i["id"]) in selected)
-    avail_total = sum(float(i.get("npn_amount") or 0) for i in invoices)
-    lines = [f"<b>💵  Наполнить аванс</b>\n<pre>"]
-    lines.append(f"   Доступно ЗП          {_fmt_rub(avail_total):>10s} ₽")
-    lines.append(f"   Выбрано счетов       {len(selected):>10d} / {len(invoices)}")
-    lines.append("   ━━━━━━━━━━━━━━")
-    lines.append(f"   Итого  {_fmt_rub(sel_total)} ₽</pre>")
-    if invoices:
-        lines.append("\nВыберите счета, по которым забрать свою ЗП (10%) в кошелёк аванса.")
-        lines.append("Выбранная ЗП уйдёт в кошелёк аванса (отразится в журнале авансирования).")
-    if oklad:
-        lines.append(
-            f"\n💼 Доступен перевод оклада {oklad['month_str']} "
-            f"(остаток {_fmt_rub(oklad['remaining'])} ₽) — кнопка ниже."
-        )
-    b = InlineKeyboardBuilder()
-    for inv in invoices:
-        inv_id = int(inv["id"])
-        num = inv.get("invoice_number") or "?"
-        amount = float(inv.get("npn_amount") or 0)
-        mark = "✅" if inv_id in selected else "▫️"
-        b.button(text=f"{mark} №{num} — {_fmt_rub(amount)}₽", callback_data=f"rpadv:pick:{inv_id}")
-    if invoices:
-        if len(selected) < len(invoices):
-            b.button(text="☑️ Выбрать все", callback_data="rpadv:all")
-        else:
-            b.button(text="⬜ Снять все", callback_data="rpadv:none")
-        if selected:
-            b.button(text=f"💵 Зачислить в аванс ({_fmt_rub(sel_total)} ₽)", callback_data="rpadv:credit")
-    if oklad:
-        b.button(
-            text=f"💼 Оклад {oklad['month_str']} → аванс (остаток {_fmt_rub(oklad['remaining'])} ₽)",
-            callback_data=RpOkladAdvCb(action="start").pack(),
-        )
-    b.button(text="❌ Отмена", callback_data="rpadv:cancel")
-    b.adjust(1)
-    return "\n".join(lines), b.as_markup()
+# №162: мёртвый рендер _render_rp_adv_fill удалён вместе с FSM rpadv:*
+# (наполнение кошелька РП отключено 2026-06-30, вход — гард rp_hub:adv_fill).
 
 
 async def _edit_or_send(cb: CallbackQuery, text: str, markup: Any = None) -> None:
@@ -2521,167 +2475,8 @@ async def rp_hub_adv_fill_start(cb: CallbackQuery, state: FSMContext, db: Databa
         "Авансовый кошелёк используется только в счёт ЗП.")
 
 
-@router.callback_query(F.data.startswith("rpadv:pick:"), RpAdvanceFillSG.list_invoices)
-async def rp_adv_pick(cb: CallbackQuery, state: FSMContext) -> None:
-    """Toggle одного счёта в выборке наполнения аванса."""
-    await cb.answer()
-    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    data = await state.get_data()
-    invoices = data.get("adv_invoices") or []
-    selected = set(data.get("adv_selected") or [])
-    if inv_id in selected:
-        selected.discard(inv_id)
-    else:
-        selected.add(inv_id)
-    await state.update_data(adv_selected=list(selected))
-    text, kb = _render_rp_adv_fill(invoices, selected, data.get("adv_oklad"))
-    await _edit_or_send(cb, text, kb)
-
-
-@router.callback_query(F.data == "rpadv:all", RpAdvanceFillSG.list_invoices)
-async def rp_adv_all(cb: CallbackQuery, state: FSMContext) -> None:
-    """Выбрать все счета."""
-    await cb.answer()
-    data = await state.get_data()
-    invoices = data.get("adv_invoices") or []
-    selected = {int(i["id"]) for i in invoices}
-    await state.update_data(adv_selected=list(selected))
-    text, kb = _render_rp_adv_fill(invoices, selected, data.get("adv_oklad"))
-    await _edit_or_send(cb, text, kb)
-
-
-@router.callback_query(F.data == "rpadv:none", RpAdvanceFillSG.list_invoices)
-async def rp_adv_none(cb: CallbackQuery, state: FSMContext) -> None:
-    """Снять выбор со всех счетов."""
-    await cb.answer()
-    data = await state.get_data()
-    invoices = data.get("adv_invoices") or []
-    await state.update_data(adv_selected=[])
-    text, kb = _render_rp_adv_fill(invoices, set(), data.get("adv_oklad"))
-    await _edit_or_send(cb, text, kb)
-
-
-@router.callback_query(F.data == "rpadv:cancel")
-async def rp_adv_cancel(cb: CallbackQuery, state: FSMContext) -> None:
-    """Отмена наполнения аванса на любом шаге."""
-    await cb.answer()
-    await state.clear()
-    await _edit_or_send(cb, "❌ Наполнение аванса отменено.")
-
-
-@router.callback_query(F.data == "rpadv:credit", RpAdvanceFillSG.list_invoices)
-async def rp_adv_credit_confirm(cb: CallbackQuery, state: FSMContext) -> None:
-    """«💵 Зачислить» → подтверждение со списком выбранных счетов."""
-    await cb.answer()
-    data = await state.get_data()
-    invoices = data.get("adv_invoices") or []
-    selected = set(data.get("adv_selected") or [])
-    if not selected:
-        await cb.answer("Выберите хотя бы один счёт.", show_alert=True)
-        return
-    chosen = [i for i in invoices if int(i["id"]) in selected]
-    total = sum(float(i.get("npn_amount") or 0) for i in chosen)
-    lines = [f"<b>💵  Зачислить в аванс</b>\n<pre>"]
-    for inv in chosen:
-        num = inv.get("invoice_number") or "?"
-        lines.append(f"   №{str(num):<18s} {_fmt_rub(float(inv.get('npn_amount') or 0)):>10s} ₽")
-    lines.append("   ━━━━━━━━━━━━━━")
-    lines.append(f"   Итого  {_fmt_rub(total)} ₽")
-    lines.append("</pre>")
-    lines.append(f"\nЗачислить ЗП по {len(chosen)} счёт(ам) в кошелёк аванса?")
-    lines.append("ЗП по ним уйдёт в кошелёк аванса (журнал авансирования; 10% по ним считается забранным).")
-    b = InlineKeyboardBuilder()
-    b.button(text="✅ Да", callback_data="rpadv:confirm:yes")
-    b.button(text="❌ Нет", callback_data="rpadv:confirm:no")
-    b.adjust(2)
-    await state.set_state(RpAdvanceFillSG.confirm)
-    await cb.message.answer("\n".join(lines), reply_markup=b.as_markup())  # type: ignore[union-attr]
-
-
-@router.callback_query(F.data.startswith("rpadv:confirm:"), RpAdvanceFillSG.confirm)
-@money_confirm_guard
-async def rp_adv_credit_apply(
-    cb: CallbackQuery,
-    state: FSMContext,
-    db: Database,
-    integrations: IntegrationHub,
-    notifier: Notifier,
-) -> None:
-    """Финал: credit_rp_zp_to_advance (атомарно) + sync счетов + инфо-уведомление ГД.
-
-    ОТКЛЮЧЕНО 2026-06-30: наполнение кошелька — только ГД. Гард от устаревшего
-    FSM-состояния/кнопки «✅ Да» (денежная запись не выполняется).
-    """
-    await state.clear()
-    await cb.answer("⛔ Наполнение аванса отключено (только ГД).", show_alert=True)
-    return
-    answer = cb.data.split(":")[-1] if cb.data else "no"  # type: ignore[union-attr]
-    if answer != "yes":
-        await state.clear()
-        await _edit_or_send(cb, "❌ Отменено.")
-        await cb.answer()
-        return
-    data = await state.get_data()
-    selected = list({int(x) for x in (data.get("adv_selected") or [])})
-    if not selected:
-        await cb.answer("Список пуст", show_alert=True)
-        await state.clear()
-        return
-    rp_id = cb.from_user.id
-    try:
-        req_id, total, credited = await db.credit_rp_zp_to_advance(rp_id, selected)
-    except Exception:
-        log.exception("rp_adv_credit_apply: credit_rp_zp_to_advance failed rp_id=%s", rp_id)
-        await state.clear()
-        await cb.answer("Ошибка зачисления, попробуйте позже.", show_alert=True)
-        await cb.message.answer("❌ Не удалось зачислить в аванс. Попробуйте позже.")  # type: ignore[union-attr]
-        return
-    # sync каждого затронутого счёта в Sheets (после успешной БД-транзакции)
-    for c in credited:
-        try:
-            await integrations.sync_invoice_row(int(c["invoice_id"]))
-        except Exception:
-            log.exception("rp_adv_credit_apply: sync_invoice_row failed inv=%s", c.get("invoice_id"))
-    await state.clear()
-    if not credited:
-        await _edit_or_send(cb, "ℹ️ Выбранные счета уже забраны ранее — изменений нет.")
-        await cb.answer()
-        return
-    try:
-        new_balance = await db.get_advance_balance(rp_id, wallet_role="rp")
-    except Exception:
-        new_balance = 0.0
-    # Карточка РП
-    lines = [f"<b>✅  Зачислено в аванс</b>\n<pre>"]
-    for c in credited:
-        lines.append(f"   №{str(c['invoice_number']):<18s} {_fmt_rub(float(c['amount'])):>10s} ₽")
-    lines.append(f"   Баланс аванса        {_fmt_rub(new_balance):>10s} ₽")
-    lines.append("   ━━━━━━━━━━━━━━")
-    lines.append(f"   Итого  {_fmt_rub(total)} ₽</pre>")
-    await _edit_or_send(cb, "\n".join(lines))
-    await cb.answer("Зачислено")
-    # Инфо-уведомление ГД (п.10 ТЗ — при использовании баланса аванса)
-    rp_user = await db.get_user_optional(rp_id)
-    rp_label = (
-        f"@{rp_user.username}" if rp_user and rp_user.username
-        else (rp_user.full_name if rp_user and rp_user.full_name else "РП")
-    )
-    gd_lines = [f"<b>ℹ️  РП пополнил аванс</b>\n<pre>"]
-    gd_lines.append(f"   Кто                  {rp_label}")
-    gd_lines.append(f"   Источник             ЗП РП 10% · {len(credited)} счёт(ов)")
-    gd_lines.append(f"   Баланс аванса        {_fmt_rub(new_balance):>10s} ₽")
-    gd_lines.append("   ━━━━━━━━━━━━━━")
-    gd_lines.append(f"   Итого  {_fmt_rub(total)} ₽</pre>")
-    gd_text = "\n".join(gd_lines)
-    try:
-        gd_users = await db.find_users_by_role(Role.GD, limit=10)
-        for gd in gd_users:
-            try:
-                await notifier.safe_send(int(gd.telegram_id), gd_text)
-            except Exception:
-                log.exception("rp_adv_credit_apply: notify ГД %s failed", gd.telegram_id)
-    except Exception:
-        log.exception("rp_adv_credit_apply: GD lookup failed")
+# №162: мёртвый FSM rpadv:pick/all/none/credit/confirm + rp_adv_credit_apply удалён —
+# наполнение отключено 2026-06-30, кнопки rpadv:* нигде не эмитятся.
 
 
 # ==================== A2: перевод оклада РП (60К/часть) в кошелёк аванса ====================
@@ -2691,39 +2486,8 @@ async def rp_adv_credit_apply(
 # (td.py rp_salary_confirm) и запросом оклада (rp_hub:b5). ТЗ advance-wallet-fill 30.05.
 
 
-def _render_rp_oklad_choose(remaining: float, month_str: str) -> tuple[str, Any]:
-    """Экран выбора: весь остаток / ввести часть."""
-    text = (
-        f"<b>💼  Оклад в аванс</b>\n<pre>\n"
-        f"   Месяц                {month_str}\n"
-        f"   Остаток оклада       {_fmt_rub(remaining):>10s} ₽\n"
-        f"   ━━━━━━━━━━━━━━\n"
-        f"   Итого  {_fmt_rub(remaining)} ₽</pre>\n\n"
-        f"Сколько перевести в кошелёк аванса?"
-    )
-    b = InlineKeyboardBuilder()
-    b.button(text=f"💵 Весь остаток ({_fmt_rub(remaining)} ₽)", callback_data=RpOkladAdvCb(action="whole").pack())
-    b.button(text="✏️ Часть (ввести сумму)", callback_data=RpOkladAdvCb(action="part").pack())
-    b.button(text="❌ Отмена", callback_data=RpOkladAdvCb(action="cancel").pack())
-    b.adjust(1)
-    return text, b.as_markup()
-
-
-def _render_rp_oklad_confirm(amount: float, remaining: float, month_str: str) -> tuple[str, Any]:
-    """Экран подтверждения перевода оклада."""
-    text = (
-        f"<b>💼  Перевести оклад</b>\n<pre>\n"
-        f"   Месяц                {month_str}\n"
-        f"   Останется оклада     {_fmt_rub(max(0.0, remaining - amount)):>10s} ₽\n"
-        f"   ━━━━━━━━━━━━━━\n"
-        f"   Итого  {_fmt_rub(amount)} ₽</pre>\n\n"
-        f"Перевести {_fmt_rub(amount)} ₽ из оклада в кошелёк аванса?"
-    )
-    b = InlineKeyboardBuilder()
-    b.button(text="✅ Да", callback_data=RpOkladAdvCb(action="submit").pack())
-    b.button(text="❌ Нет", callback_data=RpOkladAdvCb(action="cancel").pack())
-    b.adjust(2)
-    return text, b.as_markup()
+# №162: мёртвые рендеры _render_rp_oklad_choose/_render_rp_oklad_confirm удалены
+# вместе с FSM RpOkladToAdvanceSG (whole/part/amount).
 
 
 @router.callback_query(RpOkladAdvCb.filter(F.action == "start"))
@@ -2739,180 +2503,29 @@ async def rp_oklad_adv_start(cb: CallbackQuery, state: FSMContext, db: Database)
         "⛔ Наполнение аванса доступно только ГД.\n"
         "Авансовый кошелёк используется только в счёт ЗП.")
     return
-    user_id = cb.from_user.id
-    ny, nm, month_str = _next_month_msk()
-    st = await db.get_rp_oklad_advance_status(ny, nm)
-    if (st["gd_paid"] or st["remaining"] <= 0
-            or await _has_pending_rp_salary(db, user_id, month_str)):
-        await cb.message.answer(  # type: ignore[union-attr]
-            f"❌ Оклад за {month_str} сейчас недоступен для перевода в аванс "
-            f"(уже выплачен, переведён полностью или ожидает решения ГД)."
-        )
-        return
-    remaining = st["remaining"]
-    now_msk = datetime.now(ZoneInfo("Europe/Moscow")) if ZoneInfo else datetime.now()
-    await state.set_state(RpOkladToAdvanceSG.choose)
-    await state.update_data(
-        okl_year=ny, okl_month=nm, okl_month_str=month_str,
-        okl_remaining=remaining, okl_date=now_msk.strftime("%d.%m.%Y"),
-    )
-    text, kb = _render_rp_oklad_choose(remaining, month_str)
-    await cb.message.answer(text, reply_markup=kb)  # type: ignore[union-attr]
-
-
-@router.callback_query(RpOkladAdvCb.filter(F.action == "whole"), RpOkladToAdvanceSG.choose)
-async def rp_oklad_adv_whole(cb: CallbackQuery, state: FSMContext) -> None:
-    """Перевести весь остаток оклада → подтверждение."""
-    await cb.answer()
-    data = await state.get_data()
-    remaining = float(data.get("okl_remaining") or 0)
-    month_str = data.get("okl_month_str") or ""
-    if remaining <= 0:
-        await state.clear()
-        await cb.answer("Остаток оклада исчерпан.", show_alert=True)
-        return
-    await state.update_data(okl_amount=remaining)
-    await state.set_state(RpOkladToAdvanceSG.confirm)
-    text, kb = _render_rp_oklad_confirm(remaining, remaining, month_str)
-    await _edit_or_send(cb, text, kb)
-
-
-@router.callback_query(RpOkladAdvCb.filter(F.action == "part"), RpOkladToAdvanceSG.choose)
-async def rp_oklad_adv_part(cb: CallbackQuery, state: FSMContext) -> None:
-    """Запросить ввод части оклада."""
-    await cb.answer()
-    data = await state.get_data()
-    remaining = float(data.get("okl_remaining") or 0)
-    await state.set_state(RpOkladToAdvanceSG.enter_amount)
-    b = InlineKeyboardBuilder()
-    b.button(text="❌ Отмена", callback_data=RpOkladAdvCb(action="cancel").pack())
-    await _edit_or_send(
-        cb,
-        f"Введите сумму для перевода в аванс — целое число, не больше {_fmt_rub(remaining)} ₽:",
-        b.as_markup(),
-    )
-
-
-@router.message(RpOkladToAdvanceSG.enter_amount, F.text)
-async def rp_oklad_adv_amount(message: Message, state: FSMContext) -> None:
-    """Обработать ввод части оклада → подтверждение."""
-    data = await state.get_data()
-    remaining = float(data.get("okl_remaining") or 0)
-    month_str = data.get("okl_month_str") or ""
-    amount = parse_amount((message.text or "").strip())
-    if amount is None or amount <= 0:
-        await message.answer("❌ Введите положительное число (например, 30000).")
-        return
-    if amount != int(amount):
-        await message.answer("❌ Оклад переводится без копеек — введите целое число.")
-        return
-    amount = float(int(amount))
-    if amount > remaining + 1e-6:
-        await message.answer(
-            f"❌ Сумма больше остатка оклада ({_fmt_rub(remaining)} ₽). Введите меньше."
-        )
-        return
-    await state.update_data(okl_amount=amount)
-    await state.set_state(RpOkladToAdvanceSG.confirm)
-    text, kb = _render_rp_oklad_confirm(amount, remaining, month_str)
-    await message.answer(text, reply_markup=kb)
+    # №162: мёртвый хвост перевода оклада удалён (отключено 2026-06-30).
 
 
 @router.callback_query(RpOkladAdvCb.filter(F.action == "cancel"))
 async def rp_oklad_adv_cancel(cb: CallbackQuery, state: FSMContext) -> None:
-    """Отмена перевода оклада на любом шаге."""
+    """Отмена перевода оклада на любом шаге (гард старых клавиатур)."""
     await cb.answer()
     await state.clear()
     await _edit_or_send(cb, "❌ Перевод оклада в аванс отменён.")
 
 
-@router.callback_query(RpOkladAdvCb.filter(F.action == "submit"), RpOkladToAdvanceSG.confirm)
+@router.callback_query(RpOkladAdvCb.filter(F.action == "submit"))
 async def rp_oklad_adv_submit(
-    cb: CallbackQuery,
-    state: FSMContext,
-    db: Database,
-    integrations: IntegrationHub,
-    notifier: Notifier,
+    cb: CallbackQuery, state: FSMContext, db: Database,
+    integrations: IntegrationHub, notifier: Notifier,
 ) -> None:
-    """Финал: credit_rp_oklad_to_advance (атомарно) + sync БК + карточка РП + инфо ГД.
-
-    ОТКЛЮЧЕНО 2026-06-30: наполнение кошелька — только ГД. Гард от устаревшего
-    FSM-состояния/кнопки «✅ Да» (денежная запись не выполняется).
+    """Гард от устаревшей кнопки «✅ Да»: наполнение кошелька — только ГД
+    (отключено 2026-06-30). №162: мёртвый хвост после return удалён.
     """
     await state.clear()
     await cb.answer("⛔ Наполнение аванса отключено (только ГД).", show_alert=True)
     return
-    await cb.answer()
-    data = await state.get_data()
-    await state.clear()  # anti-replay: сразу очищаем state (повторный submit не пройдёт)
-    rp_id = cb.from_user.id
-    ny = int(data.get("okl_year") or 0)
-    nm = int(data.get("okl_month") or 0)
-    month_str = data.get("okl_month_str") or ""
-    amount = round(float(data.get("okl_amount") or 0), 2)
-    date_display = data.get("okl_date") or datetime.now().strftime("%d.%m.%Y")
-    if not ny or not nm or amount <= 0:
-        await _edit_or_send(cb, "❌ Данные перевода потерялись, начните заново.")
-        return
-    try:
-        entry_id, req_id, rem_after = await db.credit_rp_oklad_to_advance(
-            rp_id, ny, nm, amount, month_str, date_display,
-        )
-    except OkladAlreadyPaidError:
-        await _edit_or_send(cb, f"❌ Оклад за {month_str} уже выплачен ГД — перевод невозможен.")
-        return
-    except OkladAmountExceedsRemainingError as e:
-        await _edit_or_send(
-            cb, f"❌ Остаток оклада уменьшился до {_fmt_rub(e.remaining)} ₽. Откройте перевод заново."
-        )
-        return
-    except Exception:
-        log.exception("rp_oklad_adv_submit: credit_rp_oklad_to_advance failed rp=%s", rp_id)
-        await _edit_or_send(cb, "❌ Не удалось перевести оклад. Попробуйте позже.")
-        return
-    # sync лист «Баланс компании» (НЕ sync_invoice_row — счетов в этой операции нет)
-    sync_note = ""
-    if integrations.sheets:
-        try:
-            await integrations.sheets.sync_balance_company_sheet(db)
-        except Exception as ex:
-            log.warning("rp_oklad_adv_submit: sync_balance_company_sheet failed: %s", ex)
-            sync_note = "\n⚠️ Лист «Баланс компании» не пересинхронизирован (ошибка)."
-    try:
-        new_balance = await db.get_advance_balance(rp_id, wallet_role="rp")
-    except Exception:
-        new_balance = 0.0
-    # карточка РП
-    lines = [f"<b>✅  Оклад в аванс</b>\n<pre>"]
-    lines.append(f"   Месяц                {month_str}")
-    lines.append(f"   Остаток оклада       {_fmt_rub(rem_after):>10s} ₽")
-    lines.append(f"   Баланс аванса        {_fmt_rub(new_balance):>10s} ₽")
-    lines.append("   ━━━━━━━━━━━━━━")
-    lines.append(f"   Итого  {_fmt_rub(amount)} ₽</pre>")
-    await _edit_or_send(cb, "\n".join(lines) + sync_note)
-    # инфо-уведомление ГД (п.10 ТЗ — при использовании баланса аванса)
-    rp_user = await db.get_user_optional(rp_id)
-    rp_label = (
-        f"@{rp_user.username}" if rp_user and rp_user.username
-        else (rp_user.full_name if rp_user and rp_user.full_name else "РП")
-    )
-    gd_lines = [f"<b>ℹ️  РП перевёл оклад в аванс</b>\n<pre>"]
-    gd_lines.append(f"   Кто                  {rp_label}")
-    gd_lines.append(f"   Месяц                {month_str}")
-    gd_lines.append(f"   Остаток оклада       {_fmt_rub(rem_after):>10s} ₽")
-    gd_lines.append(f"   Баланс аванса        {_fmt_rub(new_balance):>10s} ₽")
-    gd_lines.append("   ━━━━━━━━━━━━━━")
-    gd_lines.append(f"   Итого  {_fmt_rub(amount)} ₽</pre>")
-    gd_text = "\n".join(gd_lines)
-    try:
-        gd_users = await db.find_users_by_role(Role.GD, limit=10)
-        for gd in gd_users:
-            try:
-                await notifier.safe_send(int(gd.telegram_id), gd_text)
-            except Exception:
-                log.exception("rp_oklad_adv_submit: notify ГД %s failed", gd.telegram_id)
-    except Exception:
-        log.exception("rp_oklad_adv_submit: GD lookup failed")
+    # №162: мёртвый хвост (credit_rp_oklad_to_advance + карточки + ГД-инфо) удалён.
 
 
 # ============ ХАБ → «✅ ОКЛАД ПОЛУЧЕН»: СПИСАНИЕ ИЗ КОШЕЛЬКА АВАНСА (owner 31.10) ============

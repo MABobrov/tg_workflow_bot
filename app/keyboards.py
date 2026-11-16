@@ -32,7 +32,7 @@ GD_BTN_MONTAZH = "Монтажная гр."
 GD_BTN_SALES = "Отд.Продаж"
 GD_BTN_SYNC = "Синхронизация данных"
 GD_BTN_MORE = "📂 Ещё"
-GD_BTN_CRED = "💬 Кред"
+# №170: GD_BTN_CRED «💬 Кред» удалена — нигде не используется
 GD_BTN_CANCEL = "❌ Отмена"
 GD_BTN_ADMIN = "🛠 Адм.панель"
 GD_BTN_KV_CRED = "КВ Кред"
@@ -108,12 +108,12 @@ RP_BTN_ROLE_RP_INACTIVE = "📋 РП"
 RP_BTN_ROLE_NPN_ACTIVE = "✅ Менеджер НПН"
 RP_BTN_BACK_HOME = BACK_TO_HOME
 # --- RP legacy aliases (kept for backward compat in handlers) ---
-RP_BTN_INBOX_SALES = "📥 Входящие Отд.Продаж"   # legacy
+# №165: RP_BTN_INBOX_SALES удалена — не выводится ни на одну клавиатуру
 RP_BTN_NOT_URGENT = "📩 Не срочно ГД"            # legacy
 RP_BTN_INVOICE_START = "💼 Счета в Работу"        # legacy
 RP_BTN_INVOICE_END = "🏁 Счет End"                # legacy
 RP_BTN_ISSUE = "🆘 Проблема/Вопрос"              # legacy
-RP_BTN_TEAM = "👥 Команда"                        # legacy
+# №165: RP_BTN_TEAM удалена — не выводится ни на одну клавиатуру
 RP_SUBBTN_MGR_KV = "Менеджер КВ"                  # legacy
 RP_SUBBTN_MGR_KIA = "Менеджер КИА"                # legacy
 RP_SUBBTN_MONTAZH = "Монтаж"                      # legacy
@@ -446,9 +446,7 @@ def main_menu(
     if unread > 0:
         inbox_label = f"{MGR_BTN_INBOX} 🔴{unread}"
 
-    rp_inbox_label = RP_BTN_INBOX_SALES
-    if unread > 0:
-        rp_inbox_label += f" 🔴{unread}"
+    # №165: rp_inbox_label (RP_BTN_INBOX_SALES) удалён — кнопки нет на клавиатурах
 
     # GD inbox uses separate counter (tasks only, excl. invoices & payment confirms)
     _gd_count = gd_inbox_unread if gd_inbox_unread is not None else unread
@@ -506,8 +504,7 @@ def main_menu(
                 if unread > 0:
                     if btn == MGR_BTN_INBOX or btn == ACC_BTN_INBOX or btn == INST_BTN_INBOX or btn == "📥 Входящие задачи":
                         row[i] = inbox_label
-                    elif btn == RP_BTN_INBOX_SALES:
-                        row[i] = rp_inbox_label
+                    # №165: RP_BTN_INBOX_SALES-бейдж удалён вместе с кнопкой
                     elif btn == GD_BTN_INBOX_GD:
                         row[i] = gd_inbox_label
                     elif btn == ZAM_BTN_ZAMERY:
@@ -1245,16 +1242,6 @@ def rp_more_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
         [RP_BTN_SALARY_HUB],
         [RP_BTN_CREDIT_BAL, RP_BTN_CREDIT_SPEND],
         [RP_BTN_HELP, "📋 Все задачи"],
-    ]
-    rows.append([RP_BTN_CANCEL, RP_BTN_BACK_HOME])
-    return _build_reply_rows(rows)
-
-
-def rp_team_menu(show_role_selector_back: bool = False) -> ReplyKeyboardMarkup:
-    """Подменю 'Команда' для РП."""
-    rows = [
-        [RP_SUBBTN_MGR_KV, RP_SUBBTN_MGR_KIA],
-        [RP_SUBBTN_MONTAZH],
     ]
     rows.append([RP_BTN_CANCEL, RP_BTN_BACK_HOME])
     return _build_reply_rows(rows)

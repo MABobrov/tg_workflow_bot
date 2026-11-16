@@ -564,34 +564,8 @@ async def zamery_my_requests(cb: CallbackQuery, db: Database) -> None:
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
-@router.callback_query(F.data == "zam_my:invoices")
-async def zamery_my_invoices(cb: CallbackQuery, db: Database) -> None:
-    """Подменю: счета в работе."""
-    if not await require_role_callback(cb, db, roles=[Role.ZAMERY]):
-        return
-    await cb.answer()
-    user_id = cb.from_user.id
-    invoices = await db.list_invoices(assigned_to=user_id, limit=50)
-    active = [i for i in invoices if i["status"] in (
-        InvoiceStatus.IN_PROGRESS, InvoiceStatus.PAID,
-    )]
-    if not active:
-        await cb.message.answer("📋 Нет счетов в работе.")  # type: ignore[union-attr]
-        return
-
-    items = []
-    for inv in active[:20]:
-        status_emoji = {"in_progress": "🔄", "paid": "✅"}.get(inv["status"], "❓")
-        items.append((
-            f"{status_emoji} №{inv['invoice_number']}",
-            html.quote((inv.get("object_address") or "—")[:30]),
-        ))
-    text = format_card_section(
-        "📋", "Счета в работе", items=items,
-        footer=("Всего", str(len(active))), compact=True,
-    )
-    text += tail_note(len(active), 20)
-    await cb.message.answer(text)  # type: ignore[union-attr]
+# №176: мёртвый хендлер zamery_my_invoices (zam_my:invoices) удалён —
+# кнопка нигде не эмитится.
 
 
 @router.callback_query(F.data == "zam_my:back")
