@@ -933,6 +933,10 @@ async def gd_zp_installer_approve(
     cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
+    # 17.11 (ревизия гардов): gdzp_* кнопки уходят только ГД, но сами callback'и
+    # были без гарда роли — как cwbal (№143). ЗП-деньги: только GD/TD.
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     inv = await db.get_invoice(invoice_id)
@@ -1043,6 +1047,10 @@ async def gd_zp_installer_reject(
     cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
     integrations: IntegrationHub,
 ) -> None:
+    # 17.11 (ревизия гардов): gdzp_* кнопки уходят только ГД, но сами callback'и
+    # были без гарда роли — как cwbal (№143). ЗП-деньги: только GD/TD.
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     inv = await db.get_invoice(invoice_id)
@@ -1283,6 +1291,10 @@ async def gd_zp_installer_edit_cancel(
     cb: CallbackQuery, state: FSMContext,
 ) -> None:
     """Отмена FSM на любом шаге."""
+    # 17.11 (ревизия гардов): gdzp_* кнопки уходят только ГД, но сами callback'и
+    # были без гарда роли — как cwbal (№143). ЗП-деньги: только GD/TD.
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     await state.clear()
     await cb.answer("Отменено")
     try:
@@ -1570,6 +1582,10 @@ async def gd_zp_payment_start(
     cb: CallbackQuery, db: Database, state: FSMContext,
 ) -> None:
     """ГД нажал '📎 Отправить платёжку' — входим в FSM."""
+    # 17.11 (ревизия гардов): gdzp_* кнопки уходят только ГД, но сами callback'и
+    # были без гарда роли — как cwbal (№143). ЗП-деньги: только GD/TD.
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     inv = await db.get_invoice(invoice_id)
@@ -1661,6 +1677,10 @@ async def gd_zp_payment_upload(
 @router.callback_query(F.data.startswith("gdzp_zam:view:"))
 async def gd_zp_zamery_view(cb: CallbackQuery, db: Database, invoice_id: int | None = None) -> None:
     """View zamery ZP request card."""
+    # 17.11 (ревизия гардов): gdzp_* кнопки уходят только ГД, но сами callback'и
+    # были без гарда роли — как cwbal (№143). ЗП-деньги: только GD/TD.
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     await cb.answer()
     if invoice_id is None:
         invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
@@ -1685,6 +1705,10 @@ async def gd_zp_zamery_view(cb: CallbackQuery, db: Database, invoice_id: int | N
 @router.callback_query(F.data.startswith("gdzp_mgr:view:"))
 async def gd_zp_manager_view(cb: CallbackQuery, db: Database, invoice_id: int | None = None) -> None:
     """View manager ZP request card with Plan/Fact comparison."""
+    # 17.11 (ревизия гардов): gdzp_* кнопки уходят только ГД, но сами callback'и
+    # были без гарда роли — как cwbal (№143). ЗП-деньги: только GD/TD.
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     await cb.answer()
     if invoice_id is None:
         invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
@@ -2094,6 +2118,10 @@ async def gd_zp_manager_attach_cancel(cb: CallbackQuery, state: FSMContext) -> N
 async def gd_zp_manager_reject(
     cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
 ) -> None:
+    # 17.11 (ревизия гардов): gdzp_* кнопки уходят только ГД, но сами callback'и
+    # были без гарда роли — как cwbal (№143). ЗП-деньги: только GD/TD.
+    if not await require_role_callback(cb, db, roles=GD_ACCESS_ROLES):
+        return
     await cb.answer()
     invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     inv = await db.get_invoice(invoice_id)
