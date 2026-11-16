@@ -98,15 +98,16 @@ def test_parse_op_row_from_webhook_keeps_blank_cells_for_authoritative_sync() ->
 
     assert parsed is not None
     assert parsed["invoice_number"] == "A-100"
-    assert parsed["client_name"] is None
-    assert parsed["receipt_date"] is None
-    assert parsed["amount"] is None
-    assert parsed["outstanding_debt"] is None
+    # Пустая ячейка НЕ кладёт ключ (фикс 27.07: пустое не стирает значения в БД)
+    assert parsed.get("client_name") is None
+    assert parsed.get("receipt_date") is None
+    assert parsed.get("amount") is None
+    assert parsed.get("outstanding_debt") is None
 
 
 def test_upsert_invoice_sync_writes_sheet_dates_and_clears_empty_cells(monkeypatch) -> None:
     service = _sheets_service()
-    fake_ws = _FakeWorksheet(row=2, first_col_values=["№", "12"])
+    fake_ws = _FakeWorksheet(row=2, first_col_values=["№", "A-100"])
     monkeypatch.setattr(service, "_get_or_create_ws", lambda title, header: fake_ws)
 
     service.upsert_invoice_sync(
@@ -124,8 +125,8 @@ def test_upsert_invoice_sync_writes_sheet_dates_and_clears_empty_cells(monkeypat
 
     updates = _expand_row_batch_updates(fake_ws.batch_data)
     assert updates["E2"] == ""
-    assert updates["K2"] == "=DATE(2026,3,5)"
-    assert updates["N2"] == "=DATE(2026,3,10)"
+    assert updates["K2"] == "=DATE(2026;3;5)"
+    assert updates["N2"] == "=DATE(2026;3;10)"
     assert updates["P2"] == ""
 
 
@@ -412,7 +413,9 @@ def test_send_deadline_notifications_counts_only_successful_sends(tmp_path) -> N
                 object_address="Москва",
             )
 
-            notifier = _FakeNotifier({1: False, 99: True})
+            # ГД (admin_ids) дедлайн-пуши не получает — у него sync-карточка;
+            # менеджер (created_by=1) — единственный получатель
+            notifier = _FakeNotifier({1: True})
             sent = await _send_deadline_notifications(
                 db,
                 notifier,
@@ -422,7 +425,7 @@ def test_send_deadline_notifications_counts_only_successful_sends(tmp_path) -> N
             await db.close()
 
         assert sent == 1
-        assert sorted(chat_id for chat_id, _text in notifier.calls) == [1, 99]
+        assert sorted(chat_id for chat_id, _text in notifier.calls) == [1]
 
     asyncio.run(scenario())
 
@@ -473,8 +476,10 @@ def test_upsert_invoice_from_op_uses_common_sheet_import_logic(tmp_path) -> None
         assert first is not None
         assert second is not None
         assert first["creator_role"] == Role.MANAGER_KV
-        assert first["status"] == InvoiceStatus.ENDED
-        assert second["status"] == InvoiceStatus.PAID
+        # «Счёт End»/«Оплачен» по импорту ОП автоматически НЕ ставятся (half-state
+        # фикс): фактическая дата/долг не меняют статус, его ставит менеджер явно
+        assert first["status"] == InvoiceStatus.IN_PROGRESS
+        assert second["status"] == InvoiceStatus.IN_PROGRESS
 
     asyncio.run(scenario())
 
