@@ -583,13 +583,6 @@ async def build_rp_start_card_text(db, config, user_id):
             sections.append(_tasks)
     except Exception:
         logger.exception("RP start card: блок задач упал")
-    # «📅 График замеров» — агрегат-календарь всех замерщиков внизу карты (owner 25.06).
-    # Лимит задач РП не трогаем (9): база РП компактна, запас под 4096 большой.
-    try:
-        from .zamery_start_card import build_zamery_calendar_section
-        _cal = await build_zamery_calendar_section(db)
-        if _cal:
-            sections.append(_cal)
-    except Exception:
-        logger.exception("RP start card: блок календаря замеров упал")
+    # «📅 График замеров» УБРАН из карточки (owner 16.11: блок замеров — не в
+    # карточках ни у одной роли; график остаётся на кнопке «Замеры» у ГД).
     return f"<b><i>Т в о я   А т м о с ф е р а</i></b>\n\n{format_card(sections)}"

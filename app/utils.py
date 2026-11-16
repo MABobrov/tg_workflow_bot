@@ -3270,9 +3270,10 @@ async def _build_gd_tasks_section(db: "Database", user_id: int, limit: int = 9, 
 
 async def with_manager_tasks_section(db: "Database", user_id: int, card_text: str) -> str:
     """Дописывает менеджеру под его sync-карту блок «Задачи ролям» (ТОЛЬКО его
-    задачи — создал ИЛИ назначен; ТЗ 25.06 «касаемо именно его роли») + блок
-    «📅 График замеров» (2-месячный агрегат-календарь всех замерщиков, как у
-    ГД/РП; owner 26.06). Display/read-only; при ошибке/пусто секция пропускается.
+    задачи — создал ИЛИ назначен; ТЗ 25.06 «касаемо именно его роли»).
+    Display/read-only; при ошибке/пусто секция пропускается.
+    «📅 График замеров» УБРАН из карточки (owner 16.11: блок замеров — не в
+    утренних карточках ни у одной роли; график остаётся на кнопке «Замеры»).
     """
     try:
         sec = await _build_gd_tasks_section(db, user_id, limit=9, for_user=user_id)
@@ -3281,15 +3282,6 @@ async def with_manager_tasks_section(db: "Database", user_id: int, card_text: st
         sec = None
     if sec:
         card_text = f"{card_text}\n\n{sec}"
-    # «📅 График замеров» — агрегат-календарь всех замерщиков внизу карты
-    # (owner 26.06: «как у ГД/РП»). Тот же build_zamery_calendar_section(db).
-    try:
-        from .zamery_start_card import build_zamery_calendar_section
-        cal = await build_zamery_calendar_section(db)
-        if cal:
-            card_text = f"{card_text}\n\n{cal}"
-    except Exception:
-        log.exception("manager card: zamery calendar section failed")
     return card_text
 
 
