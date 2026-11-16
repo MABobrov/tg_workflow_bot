@@ -6511,6 +6511,10 @@ async def cw_balance_rp(message: Message, state: FSMContext, db: Database) -> No
 
 @router.callback_query(F.data.startswith("cwbal:"))
 async def cw_balance_show(cb: CallbackQuery, db: Database) -> None:
+    # 17.11 (RP-ревизия): гард роли — вход гардован (RP+TD), но сам callback
+    # был без гарда; кошелёк — только этим ролям.
+    if not await require_role_callback(cb, db, roles=[Role.RP, Role.TD]):
+        return
     role = cb.data.split(":")[-1]  # type: ignore[union-attr]
     if role not in CREDIT_WALLET_ROLES:
         await cb.answer("Некорректный кошелёк", show_alert=True)
