@@ -33,8 +33,12 @@ GD_BTN_MONTAZH = "Монтажная гр."
 GD_BTN_SALES = "Отд.Продаж"
 GD_BTN_SYNC = "Синхронизация данных"
 GD_BTN_MORE = "📂 Ещё"
+GD_BTN_CRED = "💬 Кред"
 GD_BTN_CANCEL = "❌ Отмена"
 GD_BTN_ADMIN = "🛠 Адм.панель"
+GD_BTN_KV_CRED = "КВ Кред"
+GD_BTN_KIA_CRED = "КИА Кред"
+GD_BTN_NPN_CRED = "НПН Кред"
 GD_SUBBTN_KV_CRED = "Менеджер КВ (кредит)"
 GD_SUBBTN_KIA_CRED = "Менеджер КИА (кредит)"
 GD_SUBBTN_NPN_CRED = "Менеджер НПН (кредит)"
@@ -213,15 +217,14 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [RP_BTN_GD_CONTACT, RP_BTN_MORE],
             [MGR_BTN_REMIND, RP_BTN_CANCEL],
         ]
-    if role in (Role.TD, Role.GD):
-        # TD merged into GD (owner 16.11) — единое меню ГД, отдельной раскладки ТД нет
+    if role == Role.TD:
+        # TD merged into GD — redirect to GD menu
         return [
             [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
-            [GD_BTN_INVOICES_WORK, GD_BTN_SYNC],
-            [GD_BTN_DAILY_SUMMARY, GD_BTN_SUPPLIER_PAY],
+            [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
             [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
-            [GD_BTN_SEARCH_INVOICE, GD_BTN_ZAMERY],
+            [GD_BTN_SYNC, GD_BTN_SEARCH_INVOICE],
             [GD_BTN_CANCEL, GD_BTN_MORE],
         ]
     if role == Role.ACCOUNTING:
@@ -239,6 +242,15 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [INST_BTN_MY_OBJECTS, INST_BTN_DAILY_REPORT],
             [INST_BTN_ZP, INST_BTN_GD_CONTACT],
             [INST_BTN_SYNC, "📋 Все задачи"],
+        ]
+    if role == Role.GD:
+        return [
+            [GD_BTN_INBOX_GD, GD_BTN_INVOICES],
+            [GD_BTN_DAILY_SUMMARY, GD_BTN_SUPPLIER_PAY],
+            [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
+            [GD_BTN_MONTAZH, GD_BTN_SALES],
+            [GD_BTN_SEARCH_INVOICE, GD_BTN_ZAMERY],
+            [GD_BTN_CANCEL, GD_BTN_MORE],
         ]
     if role == Role.DRIVER:
         return [
@@ -279,8 +291,8 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
             [RP_BTN_HELP],
             [RP_BTN_CANCEL, RP_BTN_BACK_HOME],
         ]
-    if role in (Role.TD, Role.GD):
-        # TD merged into GD (owner 16.11) — единое подменю ГД
+    if role == Role.TD:
+        # TD merged into GD — use GD submenu
         return [
             [GD_SUBBTN_KV_CRED, GD_SUBBTN_KIA_CRED],
             [GD_SUBBTN_NPN_CRED],
@@ -290,6 +302,12 @@ def _role_secondary_action_rows(role: str | None) -> list[list[str]]:
         return []  # Accounting has no submenu
     if role == Role.INSTALLER:
         return []  # Installer has no submenu (all buttons in primary)
+    if role == Role.GD:
+        return [
+            [GD_SUBBTN_KV_CRED, GD_SUBBTN_KIA_CRED],
+            [GD_SUBBTN_NPN_CRED],
+            ["📋 Все задачи"],
+        ]
     if role == Role.DRIVER:
         return [
             ["📌 Поиск проекта", "🚨 Срочно ГД"],
@@ -554,7 +572,8 @@ def main_menu(
 
     # GD gets a custom layout — Отмена и Ещё уже в grid, админ в подменю
     if _is_pure_gd(role) or _is_pure_td(role):
-        rows: list[list[str]] = [list(r) for r in _role_primary_action_rows(Role.GD)]
+        gd_like_role = Role.TD if _is_pure_td(role) else Role.GD
+        rows: list[list[str]] = [list(r) for r in _role_primary_action_rows(gd_like_role)]
         _patch_inbox(rows)
         return _build_reply_rows(rows)
 
@@ -1107,8 +1126,9 @@ def gd_more_menu(
 
     rows = [
         [_badge(GD_SUBBTN_KV_CRED, "manager_kv"), _badge(GD_SUBBTN_KIA_CRED, "manager_kia")],
-        [_badge(GD_SUBBTN_NPN_CRED, "manager_npn"), GD_BTN_RECALC],
+        [_badge(GD_SUBBTN_NPN_CRED, "manager_npn"), GD_BTN_SYNC],
         [invoice_end_label, all_tasks_label],
+        [GD_BTN_RECALC],
     ]
     if is_admin:
         rows.append([GD_BTN_ADMIN, GD_BTN_REFRESH])
