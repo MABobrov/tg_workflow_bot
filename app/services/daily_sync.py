@@ -389,7 +389,7 @@ async def _send_debt_summaries(
 ) -> int:
     """Send morning debt summary to each manager with outstanding debts."""
     invoices = await db.list_invoices(limit=10000)
-    by_manager: dict[int, list[tuple[str, float]]] = {}
+    by_manager: dict[int, list[tuple[str, float, str]]] = {}
     for inv in invoices:
         # Счета «САБ» ведёт ГД (creator_role='gd') — утреннюю сводку долгов по ним
         # не шлём (owner 19.10: «сводку долгов по САБ — убрать»).
@@ -398,20 +398,32 @@ async def _send_debt_summaries(
         debt = float(inv.get("outstanding_debt") or 0)
         status = str(inv.get("status") or "")
         if debt > 0 and inv.get("created_by") and status not in ("ended", "cancelled"):
+            # 16.11 (слово владельца): столбец «ориентировочная дата доплаты» —
+            # дата, указанная менеджером (planned_final_payment_date).
+            eta = ""
+            raw_eta = str(inv.get("planned_final_payment_date") or "")
+            if raw_eta:
+                try:
+                    eta = datetime.fromisoformat(raw_eta[:10]).strftime("%d.%m.%Y")
+                except (ValueError, TypeError):
+                    eta = ""
             mid = int(inv["created_by"])
             by_manager.setdefault(mid, []).append(
-                (str(inv.get("invoice_number", "?")), debt),
+                (str(inv.get("invoice_number", "?")), debt, eta),
             )
 
     sent = 0
     for manager_id, debts in by_manager.items():
-        total = sum(d for _, d in debts)
+        total = sum(d for _, d, _ in debts)
         # Эталон-v2: секция <pre>, счета построчно, в теле под ━ — «Счетов» и
         # «Итого» (owner 27.06: «изменить дизайн на эталонный»).
         text = format_card_section(
             emoji="📊",
             title="Сводка по долгам (утро)",
-            items=[(num, fmt_money(d)) for num, d in debts[:20]],
+            items=[
+                (num, fmt_money(d) + (f" · {eta}" if eta else ""))
+                for num, d, eta in debts[:20]
+            ],
             footer=("Счетов", str(len(debts))),
             total=fmt_money(total),
             width=32,
