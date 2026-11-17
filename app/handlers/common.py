@@ -312,7 +312,7 @@ def _role_guide(role: str | None) -> str:
             "• «💸 Оплата поставщику» — зафиксировать оплату поставщику.\n"
             "• «Чат с РП», «Замеры», «Бухгалтерия», «Монтажная гр.», «Отд.Продаж» — чаты с сотрудниками.\n"
             "• «Синхронизация данных» — синхронизация с Google Sheets.\n"
-            "• «💬 Кред» — КВ, КИА, НПН.\n"
+            # №183: строка «💬 Кред» удалена — кнопки не существует (GD_BTN_CRED удалена в №170)
         )
     if Role.DRIVER in roles or show_all:
         sections.append(
@@ -998,6 +998,12 @@ async def sync_data_non_gd(
         # Delegate to GD-specific sync handler
         from .gd import gd_sync_data
         await gd_sync_data(message, db, config, integrations, notifier)
+        return
+    # №180: бухгалтерии — своя синхронизация-витрина (accounting_new.acc_sync_data):
+    # раньше общий синк перехватывал кнопку и бухгалтерия теряла стартовую сводку
+    if active_role == Role.ACCOUNTING:
+        from .accounting_new import acc_sync_data
+        await acc_sync_data(message, db, config)
         return
     is_admin = message.from_user.id in (config.admin_ids or set())
     menu_context = await _menu_context(db, message.from_user.id, active_role or role)

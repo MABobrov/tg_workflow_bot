@@ -4927,33 +4927,15 @@ async def rp_invoice_closed_search(cb: CallbackQuery, state: FSMContext, db: Dat
 # =====================================================================
 # ПОИСК СЧЁТА (кнопка подменю «Ещё») — #44
 # =====================================================================
-
-@router.message(lambda m: (m.text or "").strip() in {RP_BTN_SEARCH_INVOICE, "🔍 Поиск счёта", "Поиск счёта"})
-async def rp_search_invoice_btn(message: Message, state: FSMContext, db: Database) -> None:
-    """#44: Хендлер кнопки «Поиск счёта» в подменю РП."""
-    if not await require_role_message(message, db, roles=[Role.RP]):
-        return
-    from ..states import InvoiceSearchSG
-    await state.clear()
-    await state.set_state(InvoiceSearchSG.value)
-    await message.answer(
-        "🔍 <b>Поиск счёта</b>\n\n"
-        "Введите номер счёта или адрес для поиска:",
-    )
+# №178: мёртвый дубль rp_search_invoice_btn удалён — тот же текст раньше
+# перехватывает manager_new.search_invoice_start (РП там разрешён).
 
 
 # =====================================================================
 # СИНХРОНИЗАЦИЯ (кнопка подменю «Ещё»)
 # =====================================================================
-
-@router.message(lambda m: (m.text or "").strip() in {RP_BTN_SYNC, "🔄 Синхронизация данных"})
-async def rp_sync_data(message: Message, db: Database, config: Config) -> None:
-    """Хендлер кнопки «Синхронизация данных» в подменю РП."""
-    if not await require_role_message(message, db, roles=[Role.RP]):
-        return
-    # Делегируем в общий обработчик синхронизации
-    from .common import sync_data_non_gd
-    await sync_data_non_gd(message, db, config)
+# №179: мёртвый дубль rp_sync_data удалён — тот же текст раньше ловит
+# common.sync_data_non_gd (сам обрабатывает РП).
 
 
 # =====================================================================

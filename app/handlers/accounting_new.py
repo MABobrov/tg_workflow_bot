@@ -522,7 +522,8 @@ async def acc_pay_month(cb: CallbackQuery, db: Database) -> None:
         "",
         "🙈 Кредитные счета скрыты",
     ]
-    await cb.answer()
+    # №181: второй await cb.answer() удалён — повторный ответ на тот же callback
+    # даёт TelegramBadRequest в логах на каждый клик
     await cb.message.answer("<pre>" + "\n".join(lines) + "</pre>")
 
 
@@ -739,26 +740,8 @@ async def acc_invoices_work_card(cb: CallbackQuery, db: Database) -> None:
     await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
 
 
-@router.callback_query(F.data.regexp(r"^acc_work:view:\d+$"))
-async def acc_invoices_work_view(cb: CallbackQuery, db: Database) -> None:
-    """Карточка счёта в работе — бухгалтерия (legacy fallback)."""
-    if not await require_role_callback(cb, db, roles=[Role.ACCOUNTING]):
-        return
-    await cb.answer()
-
-    invoice_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    inv = await db.get_invoice(invoice_id)
-    if not inv:
-        await cb.message.answer("❌ Счёт не найден.")  # type: ignore[union-attr]
-        return
-
-    text = await _format_acc_card(inv, db)
-    b = InlineKeyboardBuilder()
-    b.button(text="📨 Запрос менеджеру", callback_data=f"acc_work:req:{inv['id']}")
-    b.button(text="⬅️ Назад к списку", callback_data="acc_work:refresh")
-    b.adjust(1)
-
-    await cb.message.answer(text, reply_markup=b.as_markup())  # type: ignore[union-attr]
+# №182: мёртвый legacy-хендлер acc_invoices_work_view (acc_work:view:N) удалён —
+# кнопка нигде не эмитится (карточка счёта строится на месте, строка выше).
 
 
 # =====================================================================

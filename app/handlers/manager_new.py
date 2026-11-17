@@ -3322,6 +3322,14 @@ async def self_reminder_cancel(cb: CallbackQuery, db: Database) -> None:
     lambda m: (m.text or "").strip() in {MGR_BTN_SEARCH_INVOICE, "🔍 Поиск Счета", "🔍 Найти Счет №", "🔍 Поиск счёта"}
 )
 async def search_invoice_start(message: Message, state: FSMContext, db: Database) -> None:
+    # №177: ГД/ТД делегируем в их собственный поиск с выбором критерия (gd.py),
+    # раньше общий матч «🔍 Поиск счёта» отклонял ГД («нет доступа» вместо поиска)
+    if message.from_user:
+        _u = await db.get_user_optional(message.from_user.id)
+        _roles = {r.strip() for r in str(getattr(_u, "role", "") or "").split(",") if r.strip()}
+        if _roles & {"gd", "td"}:
+            from .gd import gd_search_invoice_start
+            return await gd_search_invoice_start(message, state, db)
     if not await require_role_message(message, db, roles=ALL_MANAGER_ROLES + [Role.RP, Role.ACCOUNTING]):
         return
     await state.clear()
