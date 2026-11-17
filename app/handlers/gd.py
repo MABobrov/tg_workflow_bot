@@ -436,7 +436,8 @@ async def gd_invoices(message: Message, db: Database, config: Config) -> None:
 
 
 # ---------------------------------------------------------------------------
-# "📊 Счета в работе" — full invoice list for GD (same as RP dashboard)
+# «Счета в работе ГД» (№173: свой текст, не пересекается с бухгалтерской кнопкой)
+# — full invoice list for GD (same as RP dashboard)
 # ---------------------------------------------------------------------------
 
 @router.message(F.text.startswith(GD_BTN_INVOICES_WORK))

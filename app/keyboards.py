@@ -44,7 +44,9 @@ GD_SUBBTN_NPN_CRED = "Менеджер НПН (кредит)"
 # TZ кошелёк 02.06: действия внутри finance-канала ГД (кошелёк = канал).
 GD_BTN_CRED_BAL = "🏦 Баланс кошелька"
 GD_BTN_CRED_SPEND = "➕ Расход кредита"
-GD_BTN_INVOICES_WORK = "📊 Счета в работе"
+# №173: свой текст ГД — раньше совпадал с ACC_BTN_INVOICES_WORK («📊 Счета в работе»)
+# и бухгалтерский хендлер перехватывал текст раньше по порядку роутеров
+GD_BTN_INVOICES_WORK = "📊 Счета в работе ГД"
 GD_BTN_INVOICE_END_GD = "🏁 Счёт END"
 GD_BTN_SUPPLIER_PAY = "💸 Оплата поставщику"
 GD_BTN_BACK_HOME = BACK_TO_HOME
@@ -204,6 +206,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [GD_BTN_INVOICE_END_GD, GD_BTN_SUPPLIER_PAY],
             [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
+            [GD_BTN_INVOICES_WORK, GD_BTN_ZAMERY],  # №173: возвращена с текстом ГД
             [GD_BTN_SYNC, GD_BTN_SEARCH_INVOICE],
             [GD_BTN_CANCEL, GD_BTN_MORE],
         ]
@@ -230,6 +233,7 @@ def _role_primary_action_rows(role: str | None) -> list[list[str]]:
             [GD_BTN_CHAT_RP, GD_BTN_ACCOUNTING],
             [GD_BTN_MONTAZH, GD_BTN_SALES],
             [GD_BTN_SEARCH_INVOICE, GD_BTN_ZAMERY],
+            [GD_BTN_INVOICES_WORK],  # №173: возвращена с текстом ГД
             [GD_BTN_CANCEL, GD_BTN_MORE],
         ]
     if role == Role.DRIVER:
