@@ -2761,8 +2761,11 @@ class Database:
         seen_task_ids: set[int] = set()
 
         # 1) Новая таблица supplier_payments
+        # payment_date / created_at: дата оплаты для экспорта «экспортОРГ объекты»
+        # (owner 20.11): payment_date (реквизиты п/п), fallback created_at.
         cur = await self.conn.execute(
-            "SELECT id, invoice_number, amount, material_type, supplier, task_id "
+            "SELECT id, invoice_number, amount, material_type, supplier, task_id, "
+            "payment_date, created_at "
             "FROM supplier_payments WHERE parent_invoice_id = ? ORDER BY id",
             (invoice_id,),
         )
@@ -2774,6 +2777,8 @@ class Database:
                 "material_type": r.get("material_type", ""),
                 "invoice_number": r.get("invoice_number", ""),
                 "task_id": r.get("task_id"),
+                "payment_date": r.get("payment_date"),
+                "created_at": r.get("created_at"),
             })
             if r.get("task_id"):
                 seen_task_ids.add(r["task_id"])
