@@ -1519,9 +1519,10 @@ async def _finalize_installer_zp_payment(
             await notifier.safe_send_media(int(requested_by), file_type, file_id)
         await refresh_recipient_keyboard(notifier, db, config, int(requested_by))
 
-    # owner 2026-07-03: ЗП монтаж выплачена → если это кредитный счёт с заполненной
-    # «Дата Факт», чьё закрытие в «Счет End» откладывалось (гейт credit_zp_montazh_unpaid),
-    # теперь до-закрываем его — симметрично авто-закрытию по «Дата Факт».
+    # owner 20.11: гейт «ЗП монтаж не выплачена» для кредитных снят — счёт
+    # закрывается по «Дата Факт» и без выплаты; этот до-закрывающий хвост
+    # остаётся страховкой для счетов, закрытых раньше выплаты (идемпотентен:
+    # уже закрытый счёт пропускается).
     try:
         inv_after = await db.get_invoice(invoice_id)
         _fd = inv_after.get("actual_completion_date") if inv_after else None

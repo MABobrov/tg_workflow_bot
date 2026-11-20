@@ -1728,31 +1728,6 @@ def format_invoice_end_financials(inv: dict[str, Any], pf: dict[str, Any]) -> st
     return format_card_section("📊", "Финансы (справочно)", rows, width=32)
 
 
-def credit_zp_montazh_unpaid(inv: dict[str, Any]) -> bool:
-    """owner 2026-07-03: КРЕДИТНЫЙ счёт нельзя закрывать в «Счет End», пока ЗП
-    монтажнику НЕ выплачена — до выплаты счёт остаётся «Счет ОК».
-
-    True  → закрытие нужно ЗАБЛОКИРОВАТЬ (кредит + ЗП монтаж заявлена/согласована,
-            но платёж НЕ отправлен).
-    False → не блокируем: не кредит, ЗП уже выплачена (payment_sent/confirmed),
-            неактуальна (not_applicable) либо обязательства по ЗП монтаж нет.
-    Скоуп: только кредит (у б/н закрытие идёт через свои условия no_debts/ЭДО).
-    """
-    if not inv:
-        return False
-    is_credit = bool(inv.get("is_credit")) or str(
-        inv.get("invoice_number") or ""
-    ).upper().startswith("ЗМ")
-    if not is_credit:
-        return False
-    st = str(inv.get("zp_installer_status") or "")
-    if st in ("payment_sent", "confirmed", "not_applicable"):
-        return False
-    # Обязательство по ЗП монтаж есть, если сумма согласована ИЛИ заявка в процессе.
-    owed = (float(inv.get("montazh_agreed_amount") or 0) > 0) or st in ("requested", "approved")
-    return owed
-
-
 def format_manager_recalc_card(inv: dict[str, Any], pf: dict[str, Any] | None = None) -> str:
     """Компактная карточка «Перерасчёт прибыли» по счёту с переплатой ЗП менеджера.
 
