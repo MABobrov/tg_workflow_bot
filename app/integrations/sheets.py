@@ -2144,7 +2144,7 @@ class GoogleSheetsService:
         with self._sync_lock:
             ws = self._get_or_create_ws(self.ORG_EXPORT_TAB, self.ORG_EXPORT_HEADER)
             n_cols = len(self.ORG_EXPORT_HEADER)
-            col_letter = gspread.utils.get_column_letter(n_cols)
+            col_letter = gspread.utils.rowcol_to_a1(1, n_cols)[:-1]
             ws.batch_clear([f"A2:{col_letter}{ws.row_count}"])
             if rows:
                 ws.update(rows, f"A2:{col_letter}{len(rows) + 1}")
