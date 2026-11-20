@@ -398,6 +398,17 @@ async def export_to_sheets(
         if _fd_filled:
             log.info("Дата Факт автозаполнена у %s счетов (полный синк)", _fd_filled)
 
+        # --- «экспортОРГ объекты»: данные для Орг.Объектов (owner 20.11) ---
+        # Полная перезапись листа из БД; формулы переноса в «Орг.Объекты»
+        # строит владелец сам. Порядок строк = порядок листа Invoices.
+        org_count = 0
+        try:
+            org_count = await _export_org_objects(db, sheets, invoice_items)
+        except Exception:
+            log.exception("export_org_objects failed")
+    else:
+        org_count = 0
+
     # --- Leads (amoCRM) ---
     # Webhook keeps DB live; full daily-sync just mirrors visible leads to Sheet.
     # Filter: год=2026 (бот живёт с янв 2026), все воронки, exclude status=143 (закрыт-не-реализован).
@@ -432,4 +443,89 @@ async def export_to_sheets(
         "invoices": invoice_count,
         "leads": lead_count,
         "balance_company": balance_count,
+        "org_objects_export": org_count,
     }
+
+
+async def _export_org_objects(
+    db: Database,
+    sheets: GoogleSheetsService,
+    invoice_items: list[tuple[dict[str, Any], str, dict[str, Any] | None]],
+) -> int:
+    """Собрать строки листа «экспортОРГ объекты» и записать их.
+
+    Одна строка = один счёт. Металл = платежи с material_type metal/profile,
+    стекло = glass. Дата оплаты: payment_date (реквизиты п/п), fallback created_at.
+    """
+    rows: list[list[Any]] = []
+    for invoice, _manager, _cost in invoice_items:
+        if invoice.get("parent_invoice_id"):
+            continue  # дочерние (РП/счета поставщиков) не выгружаем — только материнские
+
+        inv_id = int(invoice["id"])
+        try:
+            payments = await db.list_supplier_payments_for_invoice(inv_id)
+        except Exception:
+            log.debug("supplier payments failed for %s", inv_id, exc_info=True)
+            payments = []
+
+        def _fmt_date(v: Any) -> str:
+            s = str(v or "").strip()
+            if not s:
+                return ""
+            if len(s) >= 10 and s[2] == "." and s[5] == ".":
+                # дд.мм.гггг (payment_date) → ГГГГ-ММ-ДД
+                return f"{s[6:10]}-{s[3:5]}-{s[0:2]}"
+            return s[:10]
+
+        metal_pays = [p for p in payments if (p.get("material_type") or "") in ("metal", "profile")]
+        glass_pays = [p for p in payments if (p.get("material_type") or "") == "glass"]
+        metal_sum = sum(float(p.get("amount") or 0) for p in metal_pays)
+        glass_sum = sum(float(p.get("amount") or 0) for p in glass_pays)
+        metal_date = next(
+            (_fmt_date(p.get("payment_date") or p.get("created_at")) for p in metal_pays
+             if _fmt_date(p.get("payment_date") or p.get("created_at"))), "",
+        )
+        glass_date = next(
+            (_fmt_date(p.get("payment_date") or p.get("created_at")) for p in glass_pays
+             if _fmt_date(p.get("payment_date") or p.get("created_at"))), "",
+        )
+
+        installer_label = ""
+        _inst = invoice.get("_installer_id") or invoice.get("assigned_to")
+        if _inst:
+            try:
+                u = await db.get_user_optional(int(_inst))
+                if u:
+                    installer_label = f"@{u.username}" if u.username else (u.full_name or "")
+            except Exception:
+                installer_label = ""
+
+        rows.append([
+            str(invoice.get("invoice_number") or ""),
+            str(invoice.get("client_name") or invoice.get("client_contact") or ""),
+            str(invoice.get("object_address") or ""),
+            _fmt_date(invoice.get("receipt_date") or invoice.get("created_at")),
+            float(invoice.get("amount") or 0) or "",
+            str(invoice.get("status") or ""),
+            "да" if invoice.get("is_credit") else "",
+            metal_sum or "",
+            metal_date,
+            str(invoice.get("metal_order_status") or ""),
+            "",  # Готовность металл — формула владельца
+            glass_sum or "",
+            glass_date,
+            str(invoice.get("glass_order_status") or ""),
+            "",  # Готовность стекло — формула владельца
+            _fmt_date(invoice.get("montazh_assigned_at")),
+            installer_label,
+            float(invoice.get("estimated_loaders") or 0) or "",
+            float(invoice.get("estimated_logistics") or 0) or "",
+            float(invoice.get("materials_fact_op") or 0) or "",
+            float(invoice.get("montazh_fact_op") or 0) or "",
+            float(invoice.get("loaders_fact_op") or 0) or "",
+            float(invoice.get("logistics_fact_op") or 0) or "",
+            str(invoice.get("status") or ""),
+        ])
+
+    return await sheets.upsert_org_export(rows)

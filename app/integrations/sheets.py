@@ -2103,6 +2103,53 @@ class GoogleSheetsService:
             ws.batch_clear([f"W1:AI{ws.row_count}"])
             ws.update(values, f"W1:AI{len(values)}")
 
+    # ---------- Экспорт «экспортОРГ объекты» (данные Орг.Объектов из БД бота) ----------
+
+    ORG_EXPORT_TAB = "экспортОРГ объекты"
+
+    ORG_EXPORT_HEADER: list[str] = [
+        "№счёта",                    # A
+        "Контрагент",                # B
+        "Адрес",                     # C
+        "Дата счёта",                # D
+        "Сумма",                     # E
+        "Статус",                    # F
+        "Кредит",                    # G
+        "Счёт металл",               # H — Σ счетов РП/оплат по металлу
+        "Дата опл. металл",          # I
+        "Металл заказ",              # J — metal_order_status
+        "Готовность металл",         # K — считает формула владельца, бот не пишет
+        "Счёт стекло",               # L
+        "Дата опл. стекло",          # M
+        "Стекло заказ",              # N — glass_order_status
+        "Готовность стекло",         # O — считает формула владельца, бот не пишет
+        "Монтаж назначен",           # P — montazh_assigned_at
+        "Монтажник",                 # Q
+        "Грузчики расч",             # R
+        "Логистика расч",            # S
+        "Материалы факт",            # T
+        "Монтаж факт",               # U
+        "Грузчики факт",             # V
+        "Логистика факт",            # W
+        "Статус (авто)",             # X
+    ]
+
+    async def upsert_org_export(self, rows: list[list[Any]]) -> int:
+        """Полная перезапись листа «экспортОРГ объекты» (1 строка = 1 счёт)."""
+        if not self.cfg.enabled:
+            return 0
+        return await asyncio.to_thread(self.upsert_org_export_sync, rows)
+
+    def upsert_org_export_sync(self, rows: list[list[Any]]) -> int:
+        with self._sync_lock:
+            ws = self._get_or_create_ws(self.ORG_EXPORT_TAB, self.ORG_EXPORT_HEADER)
+            n_cols = len(self.ORG_EXPORT_HEADER)
+            col_letter = gspread.utils.rowcol_to_a1(1, n_cols)[:-1]
+            ws.batch_clear([f"A2:{col_letter}{ws.row_count}"])
+            if rows:
+                ws.update(rows, f"A2:{col_letter}{len(rows) + 1}")
+            return len(rows)
+
     def upsert_invoices_bulk_sync(
         self,
         items: list[tuple[dict[str, Any], str, dict[str, Any] | None]],
