@@ -98,7 +98,7 @@ from ..states import (
     SelfReminderSG,
     ZameryRequestSG,
 )
-from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, close_gd_invoice_task_after_wallet_spend, find_open_gd_invoice_tasks, gd_invoice_task_brief, build_funds_card, build_invoice_section, card_addr, card_num as _card_num, close_condition_core_rows, compute_plan_profit, credit_wallet_label, fmt_money, format_card, format_card_section, format_invoice_card_standard, format_manager_invoices_overview, format_manager_recalc_card, format_materials_list, get_initiator_label, invoice_end_fin_rows, manager_zp_net_payout, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_after_wallet_spend, try_json_loads, credit_zp_montazh_unpaid
+from ..utils import answer_service, apply_credit_wallet_spend, build_credit_wallet_card, close_gd_invoice_task_after_wallet_spend, find_open_gd_invoice_tasks, gd_invoice_task_brief, build_funds_card, build_invoice_section, card_addr, card_num as _card_num, close_condition_core_rows, compute_plan_profit, credit_wallet_label, fmt_money, format_card, format_card_section, format_invoice_card_standard, format_manager_invoices_overview, format_manager_recalc_card, format_materials_list, get_initiator_label, invoice_end_fin_rows, manager_zp_net_payout, private_only_reply_markup, refresh_recipient_keyboard, resolve_installer_zp_after_wallet_spend, try_json_loads
 from ._mirror import collect_attachment
 from .auth import RoleFilter, require_role_callback, require_role_message
 from .money_guard import money_confirm_guard
@@ -2112,16 +2112,9 @@ async def invoice_end_comment(
         await state.clear()
         return
 
-    # owner 2026-07-03: кредитный счёт нельзя закрывать в «Счет End», пока ЗП
-    # монтажнику не выплачена — счёт остаётся «Счет ОК» до выплаты.
-    if credit_zp_montazh_unpaid(inv):
-        await message.answer(
-            f"⛔️ Счёт №{inv['invoice_number']} — кредитный, ЗП монтажнику ещё НЕ выплачена.\n"
-            "Закрыть в «Счет End» можно только после выплаты ЗП монтаж — сейчас счёт "
-            "остаётся «Счет ОК». Повторите после отправки платёжки по ЗП монтажника."
-        )
-        await state.clear()
-        return
+    # owner 20.11: гейт «кредитный → Счёт End только после выплаты ЗП монтаж» СНЯТ.
+    # Кредитный счёт закрывается как обычный: невыплаченная ЗП монтажа уходит
+    # долгом в перерасчёт фактической прибыли (db.py, pending montazh).
 
     # Create task for GD
     gd_id = await resolve_default_assignee(db, config, Role.GD)
@@ -2377,14 +2370,9 @@ async def invoice_end_gd_final(
             )
             return
 
-        # owner 2026-07-03: кредит нельзя закрывать в «Счет End», пока ЗП монтаж
-        # не выплачена (блокирует и «⚠️ Закрыть с задачами»).
-        if credit_zp_montazh_unpaid(inv):
-            await cb.message.answer(  # type: ignore[union-attr]
-                f"⛔️ Счёт №{inv['invoice_number']} — кредитный, ЗП монтажнику не выплачена.\n"
-                "«Счет End» доступен только после выплаты ЗП монтаж. Пока — «Счет ОК»."
-            )
-            return
+        # owner 20.11: гейт «кредит нельзя закрывать в «Счет End», пока ЗП монтаж
+        # не выплачена» СНЯТ — невыплаченная ЗП уходит долгом в перерасчёт прибыли
+        # (db.py, pending montazh), закрываем по общим условиям ниже.
 
         conditions = await db.check_close_conditions(invoice_id)
 

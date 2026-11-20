@@ -34,7 +34,6 @@ from ..enums import (
 )
 from ..services.assignment import resolve_default_assignee
 from ..utils import format_cost_card, refresh_recipient_keyboard, utcnow, to_iso
-from ..utils import credit_zp_montazh_unpaid
 from ..utils import compute_plan_profit
 
 log = logging.getLogger(__name__)
@@ -641,16 +640,10 @@ async def _auto_close_credit_invoice(
     if not fact_date:
         log.debug("auto_close_credit: empty fact_date for %s, no-op", invoice.get("invoice_number"))
         return False
-    # owner 2026-07-03: кредит закрывается в «Счет End» ТОЛЬКО когда ЗП монтаж
-    # выплачена. Пока не выплачена — «Дата Факт» НЕ форсит закрытие, счёт остаётся
-    # «Счет ОК». Закрытие до-сработает при выплате ЗП (td.gd_zp_payment_upload).
-    # force=True (force_close_half_state.py) обход сохранён.
-    if not force and credit_zp_montazh_unpaid(invoice):
-        log.info(
-            "auto_close_credit: %s — ЗП монтаж не выплачена (%s), оставляем «Счет ОК»",
-            invoice.get("invoice_number"), invoice.get("zp_installer_status"),
-        )
-        return False
+    # owner 20.11: гейт «кредит закрывается в «Счет End» ТОЛЬКО когда ЗП монтаж
+    # выплачена» СНЯТ — невыплаченная ЗП уходит долгом в перерасчёт фактической
+    # прибыли (db.py, pending montazh), авто-закрытие по «Дата Факт» больше не
+    # ждёт выплаты. force=True (force_close_half_state.py) обход сохранён.
 
     invoice_id = int(invoice["id"])
     invoice_number = str(invoice["invoice_number"])

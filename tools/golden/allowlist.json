@@ -148,13 +148,6 @@
  },
  {
   "mod": "app.utils",
-  "name": "credit_zp_montazh_unpaid",
-  "kind": "calc",
-  "async": false,
-  "sig": "credit_zp_montazh_unpaid(inv: dict[str, Any]) -> bool"
- },
- {
-  "mod": "app.utils",
   "name": "format_manager_recalc_card",
   "kind": "render",
   "async": false,

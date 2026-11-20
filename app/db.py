@@ -3527,12 +3527,16 @@ class Database:
         _pending_montazh = 0.0
         if _fact_visible_bg and not inv.get("is_credit"):
             _pending = await self.get_pending_costs_for_invoice(inv)
-            # ЗП монтажа отдельным признаком: у 26324-1НПН (пример owner) открытой
-            # задачи НЕТ вовсе — её сняли 02.09, — но сумма СОГЛАСОВАНА ГД
-            # (zp_installer_status='approved', montazh_agreed_amount=155 000) и по
-            # логике owner «уже не изменится». Предикат по задачам её бы не поймал.
-            # _montazh_bs здесь либо 0 (выплата неполная), либо >= _agreed, поэтому
-            # разность даёт ровно недостающую часть и задвоения с BS не создаёт.
+        # ЗП монтажа отдельным признаком: у 26324-1НПН (пример owner) открытой
+        # задачи НЕТ вовсе — её сняли 02.09, — но сумма СОГЛАСОВАНА ГД
+        # (zp_installer_status='approved', montazh_agreed_amount=155 000) и по
+        # логике owner «уже не изменится». Предикат по задачам её бы не поймал.
+        # _montazh_bs здесь либо 0 (выплата неполная), либо >= _agreed, поэтому
+        # разность даёт ровно недостающую часть и задвоения с BS не создаёт.
+        # owner 20.11: долг по монтажу входит в перерасчёт И для кредитных —
+        # кредит больше не висит на «Счёт ОК» из-за невыплаты ЗП монтажу.
+        # Заявка без согласования ('requested') не считается: сумма ещё не финальна.
+        if _fact_visible_bg:
             if (inv.get("zp_installer_status") == "approved"
                     and _agreed > 0 and _montazh_bs < _agreed - 0.001):
                 _pending_montazh = _agreed - _montazh_bs
