@@ -1626,21 +1626,23 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
         if cat == "waiting":
             zp_st = inv.get("zp_installer_status") or "not_requested"
             # #18 / Часть 2 (2.3): правка суммы — первичная или повторная на «Счет End».
-            if _can_edit_zp_amount(inv):
-                _lbl = "✏️ Изменить стоимость" if zp_st == "not_requested" else "✏️ Изменить сумму"
-                b.button(text=_lbl, callback_data=f"instzpadj:start:{inv['id']}")
+            if _can_edit_zp_amount(inv) and zp_st != "not_requested":
+                b.button(text="✏️ Изменить сумму", callback_data=f"instzpadj:start:{inv['id']}")
             if zp_st == "not_requested":
-                b.button(text="✅ Принять", callback_data=f"instzp_accept:{inv['id']}")
+                # 21.11 (owner): «✅ Принять» убран — он молча отправлял заявку на
+                # выплату ЗП ГД прямо из списка. ЗП — только отдельным шагом
+                # через явную задачу «💰 Запрос ЗП» (диалог + подтверждение).
+                b.button(text="💰 Запрос ЗП", callback_data=f"instzpadj:start:{inv['id']}")
                 b.button(text="✅ ЗП получено", callback_data=f"instzp_done:{inv['id']}")
             # #20: Кнопка "Цена ок"
             b.button(text="💲 Цена ок", callback_data=f"instzp_price_ok:{inv['id']}")
         elif cat == "work":
             zp_st = inv.get("zp_installer_status") or "not_requested"
+            # Шаг 1 (owner 21.11): в работе — только согласование стоимости.
+            # «✅ Принять» убран: он отправлял заявку ЗП ГД до завершения работ.
             if _can_edit_zp_amount(inv):
                 _lbl = "✏️ Изменить стоимость" if zp_st == "not_requested" else "✏️ Изменить сумму"
                 b.button(text=_lbl, callback_data=f"instzpadj:start:{inv['id']}")
-            if zp_st == "not_requested":
-                b.button(text="✅ Принять", callback_data=f"instzp_accept:{inv['id']}")
         b.button(text="⬅️ Назад", callback_data="instobj:back")
         b.adjust(1)
         await cb.message.answer(card_text, reply_markup=b.as_markup())  # type: ignore[union-attr]
@@ -1721,101 +1723,20 @@ async def installer_zp_done(
 
 @router.callback_query(F.data.startswith("instzp_accept:"))
 async def installer_zp_accept(
-    cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
-    integrations: IntegrationHub,
+    cb: CallbackQuery, db: Database,
 ) -> None:
-    """Монтажник принимает расчётную сумму ЗП без FSM.
+    """Кнопка «✅ Принять» устарела (owner 21.11) и из меню убрана.
 
-    not_requested → requested с amount=_calc_est_montazh(inv). Эквивалент
-    instzpadj-флоу, но без диалога — согласие с предложенной суммой.
+    Хендлер оставлен только для старых inline-кнопок в истории чата:
+    молчаливая заявка ЗП ГД в один клик была ловушкой — монтажник думал,
+    что соглашается со стоимостью (инцидент 21.11: 3 заявки за 40 секунд).
     """
     if not await require_role_callback(cb, db, roles=[Role.INSTALLER]):
         return
-    inv_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
-    inv = await db.get_invoice(inv_id)
-    if not inv:
-        await cb.answer("❌ Счёт не найден", show_alert=True)
-        return
-
-    zp_st = inv.get("zp_installer_status") or "not_requested"
-    if zp_st != "not_requested":
-        await cb.answer("⚠️ ЗП уже в обработке", show_alert=True)
-        return
-
-    if not _is_work_done_for_zp(inv):
-        await cb.answer(_ZP_WORK_NOT_DONE_MSG, show_alert=True)
-        return
-
-    # Часть 2 (2.1, 2026-06-08): «✅ Принять» = заявка на ОСТАТОК ЗП
-    # (Согласовано − зачтённый аванс ×1.10), а не вся сумма. Без аванса остаток = Итого.
-    remainder, agreed, advance_cg = await _zp_remainder_for_invoice(db, inv)
-    if remainder <= 0:
-        if advance_cg > 0:
-            await cb.answer("✅ ЗП уже покрыта авансом — остатка нет", show_alert=True)
-        else:
-            await cb.answer("⚠️ Сумма не рассчитана", show_alert=True)
-        return
-    amount = remainder
-    # Зафиксировать «Согласовано» если РП не проставил — для консистентности BJ/BS.
-    if not float(inv.get("montazh_agreed_amount") or 0) and agreed > 0:
-        await db.update_invoice(inv_id, montazh_agreed_amount=agreed)
-
-    u = cb.from_user
-    if not u:
-        return
-    await cb.answer(f"✅ Принято к выплате: {amount:,.0f}₽")
-
-    await db.set_invoice_zp_installer_status(
-        inv_id, "requested", amount=amount, requested_by=u.id, is_remainder=True,
-    )
-    await integrations.sync_invoice_row(inv_id)
-
-    inv_number = inv.get("invoice_number") or "—"
-    addr = card_addr(inv.get("object_address"))
-
-    gd_id = await resolve_default_assignee(db, config, Role.GD)
-    if gd_id:
-        await db.create_task(
-            project_id=None,
-            type_=TaskType.ZP_INSTALLER,
-            status=TaskStatus.OPEN,
-            created_by=u.id,
-            assigned_to=int(gd_id),
-            due_at_iso=None,
-            payload={
-                "invoice_id": inv_id,
-                "invoice_number": inv_number,
-                "amount": amount,
-                "source": "installer_zp_accept",
-            },
-        )
-        initiator = await get_initiator_label(db, u.id)
-        b = InlineKeyboardBuilder()
-        b.button(text="✅ ЗП ОК", callback_data=f"gdzp_inst:ok:{inv_id}")
-        b.button(text="❌ Отклонить", callback_data=f"gdzp_inst:no:{inv_id}")
-        b.adjust(2)
-        await notifier.safe_send(
-            int(gd_id),
-            _gd_zp_request_card(
-                inv, float(amount), initiator=initiator,
-                agreed=agreed, advance_cg=advance_cg,
-            ),
-            reply_markup=b.as_markup(),
-        )
-        await refresh_recipient_keyboard(notifier, db, config, int(gd_id))
-
-    try:
-        await cb.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
-    except Exception:
-        pass
-    await _ensure_reply_kb(cb, db, config)
-    await cb.message.answer(  # type: ignore[union-attr]
-        format_card_section(
-            emoji="✅", title="Запрос ЗП отправлен ГД",
-            items=[("Счёт", f"№{inv_number}")],
-            footer=("Сумма", f"{float(amount):,.0f}₽".replace(",", " ")),
-            width=32, compact=True,
-        ),
+    await cb.answer(
+        "⚠️ Кнопка устарела. ЗП — через «💰 Запрос ЗП» "
+        "(диалог с суммой и подтверждением).",
+        show_alert=True,
     )
 
 
@@ -2232,8 +2153,7 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
     zp_st = inv.get("zp_installer_status") or "not_requested"
     if cat == "waiting" and zp_st not in ("approved", "requested"):
         b.button(text="💰 Запрос ЗП", callback_data=f"instzpadj:start:{invoice_id}")
-    if zp_st == "not_requested":
-        b.button(text="✅ Принять", callback_data=f"instzp_accept:{invoice_id}")
+    # 21.11 (owner): «✅ Принять» убран — молчаливая заявка ЗП ГД из карточки.
     # Чат с менеджером
     b.button(text="💬 Чат с менеджером", callback_data=f"inv_chat:menu:{invoice_id}")
     b.button(text="⬅️ Назад", callback_data=f"instobj:cat:{cat}")
