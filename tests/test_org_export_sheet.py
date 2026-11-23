@@ -106,8 +106,11 @@ def test_org_export_metal_glass_rows(tmp_path) -> None:
             assert row[9] == "ordered", row
             assert row[13] == "blank_sent", row
             assert row[15] == "2026-11-15", row
-            # K/O «Готовность» — бот не пишет, пусто
-            assert row[10] == "" and row[14] == "", row
+            # K «Готовность металл» (owner 23.11): оплата 2026-11-12 (чт)
+            # + 4 рабочих дня (пт 13, пн 16, вт 17, ср 18) = 2026-11-18;
+            # O «Готовность стекло» — профиль знает только владелец, бот не пишет
+            assert row[10] == "2026-11-18", row
+            assert row[14] == "", row
         finally:
             await db.close()
     asyncio.run(scenario())
