@@ -647,13 +647,30 @@ async def _finalize_invoice_ok(
                                     f"ZP-статус → confirmed, BT не пополнен.",
                                 )
 
-        # Set actual completion date (Дата Факт)
+        # Set actual completion date (Дата Факт).
+        # owner 24.11 (баги 24.08 / 16.11): монтажник «Счёт ОК» ставил «Дата Факт»
+        # счётам в работе — с непогашенным долгом счёт уезжал в закрытые.
+        # Гейт: единая формула check_close_conditions (долг<=0 ИЛИ подтверждение ГД)
+        # — та же, что у всех путей закрытия (owner 22.09 «Счёт End при долге — ошибка»).
         today_iso = datetime.now().strftime("%Y-%m-%d")
-        await db.conn.execute(
-            "UPDATE invoices SET actual_completion_date = ? WHERE id = ? AND actual_completion_date IS NULL",
-            (today_iso, invoice_id),
-        )
-        await db.conn.commit()
+        _close_block_reason = None
+        try:
+            _conds = await db.check_close_conditions(invoice_id)
+            if not _conds.get("no_debts"):
+                _close_block_reason = "по счёту есть непогашенный долг"
+        except Exception:
+            log.exception("invoice_ok: check_close_conditions failed invoice_id=%s", invoice_id)
+        if _close_block_reason:
+            log.info(
+                "invoice_ok: Дата Факт НЕ поставлена — счёт в работе: %s (%s)",
+                invoice_id, _close_block_reason,
+            )
+        else:
+            await db.conn.execute(
+                "UPDATE invoices SET actual_completion_date = ? WHERE id = ? AND actual_completion_date IS NULL",
+                (today_iso, invoice_id),
+            )
+            await db.conn.commit()
 
         inv = await db.get_invoice(invoice_id)
         if not inv:
@@ -667,7 +684,7 @@ async def _finalize_invoice_ok(
         # _auto_close_credit_invoice (ЗП монтаж выплачена, долг, status) общие.
         try:
             from ..services.sheet_commands import _auto_close_credit_invoice
-            if inv.get("is_credit"):
+            if inv.get("is_credit") and not _close_block_reason:
                 _closed32 = await _auto_close_credit_invoice(
                     invoice=inv,
                     fact_date=str(inv.get("actual_completion_date") or today_iso),
@@ -712,7 +729,7 @@ async def _finalize_invoice_ok(
 
         # Write Дата Факт back to source ОП spreadsheet
         try:
-            if integrations and integrations.sheets:
+            if integrations and integrations.sheets and not _close_block_reason:
                 await integrations.sheets.write_date_fact_to_op(
                     inv["invoice_number"], today_iso,
                 )

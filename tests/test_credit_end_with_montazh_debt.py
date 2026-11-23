@@ -149,6 +149,41 @@ def test_auto_close_credit_with_unpaid_zp(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+def test_fact_date_autofill_blocked_by_debt(tmp_path) -> None:
+    """owner 24.11 (баги 24.08/16.11): «Дата Факт» не ставится счёту
+    в работе — при непогашенном долге автозаполнение по цепочке дат
+    (AZ «Счет End») пропускается; без долга — ставится как раньше."""
+    async def scenario() -> None:
+        db = await _mk_db(tmp_path)
+        try:
+            inv_id = await _mk_invoice(
+                db, number="27020-1КВ", is_credit=True,
+                agreed=0.0, zp_status="not_requested",
+            )
+            await db.update_invoice(
+                inv_id,
+                outstanding_debt=95_100.0,
+                final_surcharge_date="2026-11-16",
+            )
+            inv = await db.get_invoice(inv_id)
+            res = await db.fill_fact_date_on_invoice_end(inv_id, inv)
+            assert res is None, "при долге дата факта ставиться не должна"
+            inv_after = await db.get_invoice(inv_id)
+            assert not (inv_after.get("actual_completion_date") or ""), (
+                inv_after.get("actual_completion_date"))
+
+            # контроль: долг погашен — дата ставится по цепочке (AD)
+            await db.update_invoice(inv_id, outstanding_debt=0.0)
+            inv2 = await db.get_invoice(inv_id)
+            res2 = await db.fill_fact_date_on_invoice_end(inv_id, inv2)
+            assert res2 == "2026-11-16", res2
+            inv_after2 = await db.get_invoice(inv_id)
+            assert inv_after2["actual_completion_date"] == "2026-11-16"
+        finally:
+            await db.close()
+    asyncio.run(scenario())
+
+
 def test_bn_pending_montazh_unchanged(tmp_path) -> None:
     """б/н: долг по монтажу входил в перерасчёт и раньше — поведение
     не изменилось (регрессия)."""

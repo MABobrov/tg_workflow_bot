@@ -7168,6 +7168,20 @@ class Database:
         """
         if str(invoice.get("actual_completion_date") or "").strip():
             return None
+        # owner 24.11 (баги 24.08 / 16.11): дата факта не ставится счётам в
+        # работе — единый гейт no_debts из check_close_conditions (долг<=0
+        # ИЛИ подтверждение ГД), как у всех путей закрытия (owner 22.09
+        # «Счёт End при долге — это ошибка»).
+        try:
+            _conds = await self.check_close_conditions(invoice_id)
+            if not _conds.get("no_debts"):
+                log.info(
+                    "fact_date_autofill: %s — пропуск, счёт в работе (no_debts=False)",
+                    invoice_id,
+                )
+                return None
+        except Exception:
+            log.exception("fact_date_autofill: check_close_conditions failed for %s", invoice_id)
         picked: str | None = None
         src = ""
         for field, col in self._FACT_DATE_CHAIN:
