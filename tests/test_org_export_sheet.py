@@ -106,8 +106,11 @@ def test_org_export_metal_glass_rows(tmp_path) -> None:
             assert row[9] == "ordered", row
             assert row[13] == "blank_sent", row
             assert row[15] == "2026-11-15", row
-            # K/O «Готовность» — бот не пишет, пусто
-            assert row[10] == "" and row[14] == "", row
+            # K «Готовность металл» (owner 23.11): оплата 2026-11-12 (чт)
+            # + 4 рабочих дня (пт 13, пн 16, вт 17, ср 18) = 2026-11-18;
+            # O «Готовность стекло» — профиль знает только владелец, бот не пишет
+            assert row[10] == "2026-11-18", row
+            assert row[14] == "", row
         finally:
             await db.close()
     asyncio.run(scenario())
@@ -138,6 +141,7 @@ def test_org_export_skips_children_and_empty_dates(tmp_path) -> None:
             assert count == 1, count
             row = sheets.rows[0]
             assert row[7] == "" and row[8] == "", row      # металл пусто
+            assert row[10] == "", row                      # готовность металл пусто
             assert row[11] == "" and row[12] == "", row    # стекло пусто
             assert row[15] == "", row                      # монтаж не назначен
         finally:

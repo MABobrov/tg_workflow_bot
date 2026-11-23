@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import date, timedelta
 from typing import Any
 
 from ..db import Database
@@ -447,6 +448,22 @@ async def export_to_sheets(
     }
 
 
+def _add_business_days(iso: str, n: int) -> str:
+    """Дата (ГГГГ-ММ-ДД) + n рабочих дней (пн–пт, праздники не учитываются)."""
+    if not iso:
+        return ""
+    try:
+        d = date.fromisoformat(str(iso)[:10])
+    except ValueError:
+        return ""
+    added = 0
+    while added < n:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            added += 1
+    return d.isoformat()
+
+
 async def _export_org_objects(
     db: Database,
     sheets: GoogleSheetsService,
@@ -512,7 +529,8 @@ async def _export_org_objects(
             metal_sum or "",
             metal_date,
             str(invoice.get("metal_order_status") or ""),
-            "",  # Готовность металл — формула владельца
+            # Готовность металл (owner 23.11): дата оплаты + 4 рабочих дня
+            _add_business_days(metal_date, 4),
             glass_sum or "",
             glass_date,
             str(invoice.get("glass_order_status") or ""),
