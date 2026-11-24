@@ -962,7 +962,21 @@ def task_actions_kb(
     # принятия (take/accept_take сами ставят accepted_at).
     _is_manager_viewer = viewer_role in MANAGER_ROLES or viewer_role == Role.MANAGER
 
-    if status == TaskStatus.OPEN:
+    # Owner 24.11 (инцидент Игорь 16.11): у чистого монтажника в «Входящих
+    # задачах» — только «⏳ Взять в работу» и «🚫 Отмена». «✅ Завершить» и
+    # «❌ Отклонить» убраны: монтажник жаловал ими получение как «отчёт» и
+    # закрывал задачу мимо принятия. Отмена безопасна: cancel только снимает
+    # задачу (REJECTED), денег и счёта не касается.
+    _is_installer_viewer = (
+        Role.GD not in parse_roles(viewer_role or assigned_role or "")
+        and Role.INSTALLER in parse_roles(viewer_role or assigned_role or "")
+    )
+
+    if _is_installer_viewer:
+        if status == TaskStatus.OPEN:
+            b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="take").pack())
+        b.button(text="🚫 Отмена", callback_data=TaskCb(task_id=tid, action="cancel").pack())
+    elif status == TaskStatus.OPEN:
         if _is_manager_viewer:
             b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="accept_take").pack())
         b.button(text="✅ Завершить", callback_data=TaskCb(task_id=tid, action="done").pack())
@@ -1067,8 +1081,9 @@ def task_actions_kb(
             b.adjust(2, 1)
             return b.as_markup()
 
-    # «Снять задачу» — для всех активных задач
-    if status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+    # «Снять задачу» — для всех активных задач (кроме чистого монтажника —
+    # у него вместо неё «🚫 Отмена» того же действия, дубль не нужен)
+    if status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS} and not _is_installer_viewer:
         b.button(text="🚫 Снять задачу", callback_data=TaskCb(task_id=tid, action="cancel").pack())
 
     # Доп. кнопка «Закрыть» — только для менеджера НПН (для очистки устаревших
