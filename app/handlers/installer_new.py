@@ -482,7 +482,9 @@ async def invoice_ok_select(
     b = InlineKeyboardBuilder()
     if agreed:
         b.button(text=f"✅ Ок ({agreed:,.0f}₽)", callback_data=f"instok:price_ok:{invoice_id}")
-    b.button(text="✏️ Изменить сумму", callback_data=f"instok:price_edit:{invoice_id}")
+    # Owner 24.11: менять стоимость можно только в двух местах — «В Работу»
+    # (при приёме счёта) и «Запрос ЗП» (сумма + обязательный комментарий).
+    # Кнопки «✏️ Изменить сумму» здесь больше нет.
     b.adjust(1)
 
     await _ensure_reply_kb(cb, db, config)
@@ -1649,10 +1651,10 @@ async def installer_objects_category(cb: CallbackQuery, db: Database) -> None:
                 # 21.11 (owner): «✅ Принять» убран — он молча отправлял заявку на
                 # выплату ЗП ГД прямо из списка. ЗП — только отдельным шагом
                 # через явную задачу «💰 Запрос ЗП» (диалог + подтверждение).
+                # 24.11 (owner): менять стоимость — только «В Работу» и «Запрос ЗП».
                 b.button(text="💰 Запрос ЗП", callback_data=f"instzpadj:start:{inv['id']}")
                 b.button(text="✅ ЗП получено", callback_data=f"instzp_done:{inv['id']}")
-            # #20: Кнопка "Цена ок"
-            b.button(text="💲 Цена ок", callback_data=f"instzp_price_ok:{inv['id']}")
+            # #20: Кнопка "Цена ок" — убрана у монтажника 24.11 (дубль «Счет ок»)
         elif cat == "work":
             zp_st = inv.get("zp_installer_status") or "not_requested"
             # Шаг 1 (owner 21.11): в работе — только согласование стоимости.
@@ -2171,6 +2173,7 @@ async def installer_object_card(cb: CallbackQuery, db: Database) -> None:
     if cat == "waiting" and zp_st not in ("approved", "requested"):
         b.button(text="💰 Запрос ЗП", callback_data=f"instzpadj:start:{invoice_id}")
     # 21.11 (owner): «✅ Принять» убран — молчаливая заявка ЗП ГД из карточки.
+    # 24.11 (owner): менять стоимость — только «В Работу» и «Запрос ЗП».
     # Чат с менеджером
     b.button(text="💬 Чат с менеджером", callback_data=f"inv_chat:menu:{invoice_id}")
     b.button(text="⬅️ Назад", callback_data=f"instobj:cat:{cat}")
