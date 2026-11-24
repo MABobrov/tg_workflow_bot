@@ -2153,20 +2153,16 @@ async def rp_salary_request_submit(
             log.exception("rp_salary_request_submit: create_task failed for gd=%s", gd_chat_id)
             continue
         kb_gd = InlineKeyboardBuilder()
-        # «✅ Принято» (owner 01.08) — ровно то же, что уже есть на карточке задачи
-        # (keyboards.py::task_actions_kb, ветка RP_SALARY): generic accept →
-        # handlers/tasks.py::task_actions → db.accept_task ставит ТОЛЬКО accepted_at.
-        # Статус остаётся open, денег не двигает, из бейджей ГД задача не исчезает —
-        # они считают по status (db.py::count_gd_inbox_tasks и соседи).
-        # Пуш — та поверхность, где ГД видит оклад ПЕРВЫМ, поэтому кнопка нужна и здесь.
-        # Гард пишем явно, хотя задача создана строкой выше и условие истинно всегда:
-        # он самодокументирует инвариант и переживёт перестановку кода.
-        # ⚠️ Задача у каждого ГД СВОЯ (цикл по gd_users): «Принято» одного НЕ гасит
-        # напоминания остальным — у accept нет группового закрытия по group_id,
+        # «⏳ Взять в работу» (owner 24.11: отдельное «Принято» убрано) —
+        # accept_take: ставит accepted_at («получена») + IN_PROGRESS +
+        # уведомляет постановщика одним тапом. Пуш — поверхность, где ГД видит
+        # оклад ПЕРВЫМ, поэтому кнопка нужна и здесь.
+        # ⚠️ Задача у каждого ГД СВОЯ (цикл по gd_users): «Взять в работу» одного
+        # НЕ гасит напоминания остальным — группового закрытия по group_id нет,
         # в отличие от «Выплатить». Owner объём подтвердил, расширять не просил.
         _show_accept = task.get("status") == TaskStatus.OPEN and not task.get("accepted_at")
         if _show_accept:
-            kb_gd.button(text="✅ Принято", callback_data=TaskCb(task_id=task_id, action="accept").pack())
+            kb_gd.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=task_id, action="accept_take").pack())
         kb_gd.button(text="✅ Выплатить", callback_data=RpSalaryTaskCb(task_id=task_id, action="open").pack())
         kb_gd.button(text="❌ Отклонить", callback_data=RpSalaryTaskCb(task_id=task_id, action="reject_start").pack())
         if _show_accept:

@@ -1263,9 +1263,9 @@ async def razmery_send_to_rp(
     inv_num = inv["invoice_number"] if inv else "?"
     initiator = await get_initiator_label(db, u.id)
 
-    # Уведомить РП
+    # Уведомить РП (owner 24.11: «ОК (принял)» → «Взять в работу»)
     b = InlineKeyboardBuilder()
-    b.button(text="✅ ОК (принял)", callback_data=f"razmok_rp:received:{req_id}")
+    b.button(text="⏳ Взять в работу", callback_data=f"razmok_rp:received:{req_id}")
     b.adjust(1)
 
     msg = (

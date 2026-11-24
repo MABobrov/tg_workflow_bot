@@ -1033,11 +1033,11 @@ def task_actions_kb(
         b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
         b.button(text="🚫 Снять задачу", callback_data=TaskCb(task_id=tid, action="cancel").pack())
 
-    # Счёт на оплату — кнопки для ГД (2 шага: принять → подтвердить оплату)
+    # Счёт на оплату — кнопки для ГД (2 шага: взять в работу → подтвердить оплату)
     if ttype == TaskType.INVOICE_PAYMENT:
         if status == TaskStatus.OPEN:
             b = InlineKeyboardBuilder()
-            b.button(text=_take_txt or "✅ Принять", callback_data=TaskCb(task_id=tid, action="inv_received").pack())
+            b.button(text=_take_txt or "⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="inv_received").pack())
             b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="inv_reject").pack())
         elif status == TaskStatus.IN_PROGRESS:
             b = InlineKeyboardBuilder()
@@ -1051,7 +1051,7 @@ def task_actions_kb(
     if ttype == TaskType.DELIVERY_REQUEST and status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
         b = InlineKeyboardBuilder()
         if status == TaskStatus.OPEN:
-            b.button(text="✅ Принял", callback_data=TaskCb(task_id=tid, action="del_accept").pack())
+            b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="del_accept").pack())
             b.button(text="❌ Отклонить", callback_data=TaskCb(task_id=tid, action="reject").pack())
         else:
             b.button(text="💳 Оплатить", callback_data=TaskCb(task_id=tid, action="del_pay").pack())
@@ -1540,7 +1540,7 @@ def mgr_check_kp_card_kb(
     if finished and has_docs and not rejected:
         b.button(text="📄 Получить документы", callback_data=f"kp_hist:docs:{task_id}")
     if finished and not confirmed and not rejected:
-        b.button(text="✅ Подтвердить получение", callback_data=f"mgr_kp_ok:{task_id}")
+        b.button(text="⏳ Взять в работу", callback_data=f"mgr_kp_ok:{task_id}")
     b.button(text="⬅️ К списку", callback_data="kp_menu:history")
     b.adjust(1)
     return b.as_markup()

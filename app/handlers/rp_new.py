@@ -3242,7 +3242,7 @@ async def rp_razmery_view(cb: CallbackQuery, db: Database) -> None:
 
     b = InlineKeyboardBuilder()
     if req["status"] == "pending":
-        b.button(text="✅ ОК (принял)", callback_data=f"razmok_rp:received:{req_id}")
+        b.button(text="⏳ Взять в работу", callback_data=f"razmok_rp:received:{req_id}")
     elif req["status"] in ("rp_received", "error"):
         b.button(text="📐 Отправить форму", callback_data=f"razmok_rp:send_form:{req_id}")
     elif req["status"] == "verification_sent":
@@ -3261,10 +3261,10 @@ async def rp_razmery_noop(cb: CallbackQuery) -> None:
 async def rp_razmery_confirm_receipt(
     cb: CallbackQuery, db: Database, config: Config, notifier: Notifier,
 ) -> None:
-    """РП подтверждает получение бланка."""
+    """РП берёт бланк размеров в работу (получение = взятие, owner 24.11)."""
     if not await require_role_callback(cb, db, roles=[Role.RP]):
         return
-    await cb.answer("✅ Принял")
+    await cb.answer("✅ Взял в работу")
     req_id = int(cb.data.split(":")[-1])  # type: ignore[union-attr]
     req = await db.get_razmery_request(req_id)
     if not req:
@@ -6062,7 +6062,7 @@ async def kp_review_comment(
 
         confirm_kb = InlineKeyboardBuilder()
         confirm_kb.button(
-            text="✅ Задача ок",
+            text="⏳ Взять в работу",
             callback_data=f"mgr_kp_ok:{task_id}",
         )
         await notifier.safe_send(

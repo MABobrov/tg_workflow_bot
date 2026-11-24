@@ -453,7 +453,7 @@ async def acceptance_reminders_loop(
                     _text = await _reminder_with_card(
                         db, task, timezone_name,
                         "🔔 <b>Напоминание</b> — задача ожидает подтверждения.",
-                        "Нажмите «✅ Принято» для подтверждения.",
+                        "Нажмите «⏳ Взять в работу» для подтверждения.",
                     )
                 settled = await _deliver(notifier, int(assigned), _text, reply_markup=_kb)
                 # ⛔ КУРСОР двигаем ВСЕГДА: last_reminded_at это не «отправлено»,
@@ -534,7 +534,7 @@ async def installer_acceptance_reminders_loop(
     """Installer-only loop with shorter intervals and MSK quiet hours.
 
     - Not-accepted tasks: re-ping every `not_accepted_interval_min` minutes
-      until the installer hits «✅ Принято».
+      until the installer hits «⏳ Взять в работу».
     - Accepted-but-not-done tasks: re-ping every `post_accept_interval_min`
       minutes until status='done'.
     - Quiet window [`quiet_start_hour`, `quiet_end_hour`) in MSK skips all pings
@@ -569,7 +569,7 @@ async def installer_acceptance_reminders_loop(
                     await _reminder_with_card(
                         db, task, timezone_name,
                         "🔔 <b>Срочное напоминание</b> — задача ожидает подтверждения.",
-                        f"Нажмите «✅ Принято» — иначе будем повторять каждые {not_accepted_interval_min} мин.",
+                        f"Нажмите «⏳ Взять в работу» — иначе будем повторять каждые {not_accepted_interval_min} мин.",
                     ),
                     reply_markup=task_actions_kb(task, assigned_role="installer"),
                 )

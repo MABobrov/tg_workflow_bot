@@ -141,8 +141,9 @@ async def acc_inbox_tasks(message: Message, db: Database) -> None:
 
         from ..callbacks import TaskCb
         b = InlineKeyboardBuilder()
-        # Кнопка "Принято" + "Документы" если привязан к счёту + "Вопрос"
-        b.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+        # Кнопка "Взять в работу" (получена + в работе одним тапом, owner 24.11:
+        # отдельное подтверждение получения убрано) + "Документы" + "Вопрос"
+        b.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="accept_take").pack())
         inv_id = payload.get("invoice_id")
         if inv_id:
             b.button(text="✏️ Документы", callback_data=f"acc_doc:menu:{inv_id}")

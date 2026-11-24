@@ -2856,11 +2856,12 @@ async def edo_finalize(
     if comment:
         msg += f"\n\n💬 Пояснение: {comment}"
 
-    # Inline buttons: Принято + Вопрос + Ответить на ЭДО
+    # Inline buttons: Взять в работу (owner 24.11: без отдельного подтверждения
+    # получения) + Вопрос + Ответить на ЭДО
     from ..callbacks import TaskCb
     b_edo_resp = InlineKeyboardBuilder()
     tid = int(task["id"])
-    b_edo_resp.button(text="✅ Принято", callback_data=TaskCb(task_id=tid, action="accept").pack())
+    b_edo_resp.button(text="⏳ Взять в работу", callback_data=TaskCb(task_id=tid, action="accept_take").pack())
     b_edo_resp.button(text="❓ Вопрос", callback_data=f"acc_q:{tid}")
     b_edo_resp.button(text="📄 Ответить на ЭДО", callback_data=f"edo_respond:{tid}")
     b_edo_resp.adjust(2, 1)

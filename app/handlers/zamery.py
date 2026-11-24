@@ -187,7 +187,7 @@ async def zamery_view_request(
     b = InlineKeyboardBuilder()
     if req.get("status") in ("open", "in_progress"):
         if req.get("status") == "open":
-            b.button(text="✅ Принять", callback_data=f"zam_in:accept:{req_id}")
+            b.button(text="⏳ Взять в работу", callback_data=f"zam_in:accept:{req_id}")
         b.button(text="❌ Отклонить", callback_data=f"zam_in:reject:{req_id}")
         b.adjust(2)
 
